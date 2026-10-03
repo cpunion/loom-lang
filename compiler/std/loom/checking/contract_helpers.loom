@@ -110,9 +110,22 @@ fn with_body(function Function, body Expr) Function {
 }
 
 fn checked_contracts(context Context, id Int, function Function) Result[Function, Failure] {
-    let backend = get(context.env.inputs, 0).build.proof_backend
     let node = symbol(context.env, context.signature.symbol).node
     let has_ensures = has(node, NodeKind.Ensures) || inherited_method_contract(context.env, context.signature.symbol, NodeKind.Ensures)
+    if !has_ensures {
+        return checked_contracts_fresh(context, id, function, node, false)
+    }
+    let completed = completed_contract(context, id, function)
+    if length(completed) != 0 {
+        return Result.Ok(with_contracts(function, function.preconditions, completed))
+    }
+    let checked = checked_contracts_fresh(context, id, function, node, true)?
+    retain_contract(context, id, checked)
+    Result.Ok(checked)
+}
+
+fn checked_contracts_fresh(context Context, id Int, function Function, node Node, has_ensures Bool) Result[Function, Failure] {
+    let backend = get(context.env.inputs, 0).build.proof_backend
     let body_calls = has_ensures && proof_body_calls(function.body)
     if !contract_helpers(node) && !inherited_method_helpers(context.env, context.signature.symbol) && !body_calls {
         if !has_ensures { return Result.Ok(function) }

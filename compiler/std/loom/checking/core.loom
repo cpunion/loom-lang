@@ -444,6 +444,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, conc
             concept_references = new[ConceptReference]()
             result_shapes = new[ResultShape]()
             constraint_errors = new[Int]()
+            contracts = new[ContractCertificate]()
         })
     let env = Environment {
         inputs = input_state

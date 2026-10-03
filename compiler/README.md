@@ -2343,6 +2343,9 @@ proved sorted copy directly, retains checks for unknown input ordering, and runs
 the contracted copying/sorting functions at compile time. CTFE executes source
 preconditions and bodies, not statically proved `ensures` metadata, matching native
 execution without an extra return check or a runtime implementation of proof operators.
+Completed sequential contract proofs are reused only within one binding/input
+snapshot and exact function instance; pending promises and captured/stored
+compile-time state are excluded, and shared-state proofs run independently.
 
 Length-preserving loops can infer bounds/equalities for observed Int, Bool and
 Text elements, and scalar field relations in immutable inline elements. Source

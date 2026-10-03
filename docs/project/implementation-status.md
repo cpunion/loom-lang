@@ -323,6 +323,9 @@ without replaying argument effects or bypassing fresh-storage validation. The
 returns a read-only constrained sorted copy directly; unknown ordering keeps
 the checked `Result` boundary. CTFE ignores statically proved `ensures` metadata
 while retaining executable preconditions, bodies and faults.
+Completed sequential proofs are shared across private queues in the same checked
+snapshot, not across edits or via pending/cyclic promises. Shared verification
+remains separate.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining

@@ -32,6 +32,16 @@ pub fn scalar(value Int) Positive {
 pub fn aggregate(value Int) Ordered {
     Ordered(interval(value))
 }
+
+fn fixed(comptime value Int) Int
+ensures result == value
+{
+    value
+}
+
+pub fn selected() Positive {
+    Positive(fixed(1))
+}
 """)
     rejects_result("""
 type Positive = Int where self > 0
@@ -42,6 +52,23 @@ fn unchanged(value Int) Int {
 
 pub fn unproved(value Int) Positive {
     Positive(unchanged(value))
+}
+""")
+    rejects_result("""
+type Positive = Int where self > 0
+
+fn fixed(comptime value Int) Int
+ensures result == value
+{
+    value
+}
+
+pub fn first() Positive {
+    Positive(fixed(1))
+}
+
+pub fn different_instance() Positive {
+    Positive(fixed(-1))
 }
 """)
 }

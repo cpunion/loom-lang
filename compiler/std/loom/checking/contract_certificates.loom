@@ -1,0 +1,71 @@
+// Only completed sequential proofs in this binding/type/input snapshot. The
+// shared CheckInputs cell survives private queues, not a later check or edit.
+// Shared-state verification remains independent. Visiting/cyclic promises,
+// captured callbacks and stored compile-time values supply no cached evidence.
+record ContractCertificate {
+    signature Int
+    arguments List[Int]
+    constants List[StaticValue]
+    params List[Int]
+    result Int
+    result_local Int
+    locals List[Int]
+    postconditions List[Expr]
+}
+
+fn contract_cacheable(context Context) Bool {
+    if !context.emit {
+        return false
+    }
+    var index = 0
+    while index < length(context.constants) {
+        if get(context.constants, index).storage != -1 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn contract_local_types(function Function) List[Int] {
+    let types = new[Int]()
+    var index = 0
+    while index < length(function.locals) {
+        push(types, get(function.locals, index).ty)
+        index = index + 1
+    }
+    types
+}
+
+fn completed_contract(context Context, id Int, function Function) List[Expr] {
+    let certificates = get(context.env.inputs, 0).contracts
+    if length(certificates) != 0 && contract_cacheable(context) {
+        var index = 0
+        while index < length(certificates) {
+            let saved = get(certificates, index)
+            if saved.signature == id && saved.result == function.result && saved.result_local == function.result_local &&
+            same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) &&
+            same(saved.params, function.params) && same(saved.locals, contract_local_types(function)) {
+                return saved.postconditions
+            }
+            index = index + 1
+        }
+    }
+    new[Expr]()
+}
+
+fn retain_contract(context Context, id Int, function Function) {
+    if !contract_cacheable(context) || length(function.postconditions) == 0 {
+        return
+    }
+    push(get(context.env.inputs, 0).contracts, ContractCertificate {
+            signature = id
+            arguments = context.arguments
+            constants = context.constants
+            params = function.params
+            result = function.result
+            result_local = function.result_local
+            locals = contract_local_types(function)
+            postconditions = function.postconditions
+        })
+}
