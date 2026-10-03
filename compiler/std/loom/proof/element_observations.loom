@@ -19,7 +19,7 @@ fn observation_guard(valid Predicate, state State) Predicate {
 fn read_element_outcomes(proof Verification, ty Int, identity Int, index Linear,
     entry State) Result[List[Outcome], Text] {
     let output = new[Outcome]()
-    var state = entry
+    var state = array_contents(proof, identity, entry)?
     let cells = list_state(identity, state)?.cells
     var position = length(cells)
     var changed = true
@@ -56,7 +56,8 @@ fn read_element_outcomes(proof Verification, ty Int, identity Int, index Linear,
     }
     let value = record_parameter_value(proof, ty, 0)
     discard add_outcome(output, Outcome {
-            state = remember_element(identity, index, value, bounded(value, state))?
+            state = remember_element(identity, index, value,
+                array_read(proof, identity, index, value, Predicate.Constant(true), bounded(value, state))?)?
             value = value
         })?
     Result.Ok(output)

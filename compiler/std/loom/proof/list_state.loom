@@ -47,6 +47,7 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
             size = size
             allocated = allocated
             private_storage = private_storage
+            contents = -1
             cells = new[ListCell]()
         })
     extent_bounds(size, State {
@@ -102,6 +103,7 @@ fn published_storage(state State) State {
                 size = extent.size
                 allocated = extent.allocated
                 private_storage = false
+                contents = extent.contents
                 cells = extent.cells
             })
         index = index + 1

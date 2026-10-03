@@ -142,6 +142,10 @@ fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text
     discard smt_step(writer, depth)?
     match value {
         IntegerTerm.Linear(term) => smt_linear(writer, term)
+        IntegerTerm.Select(identity, index) => {
+            let array = smt_name(writer, "a", identity, "(Array Int Int)")
+            Result.Ok(concat("(select ", concat(array, concat(" ", concat(smt_linear(writer, index)?, ")")))))
+        }
         IntegerTerm.Apply(operator, inputs) => {
             if (operator != "+" && operator != "-" && operator != "*") || length(inputs) != 2 {
                 return Result.Err("unsupported SMT integer operation")
@@ -185,6 +189,25 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
             let first = smt_text(writer, left, depth + 1)?
             let second = smt_text(writer, right, depth + 1)?
             Result.Ok(concat("(= ", concat(first, concat(" ", concat(second, ")")))))
+        }
+        Predicate.ArrayRead(identity, index, value, valid) => {
+            if length(valid) != 1 {
+                return Result.Err("invalid heap observation guard")
+            }
+            let array = smt_name(writer, "a", identity, "(Array Int Int)")
+            let guard = smt_predicate(writer, get(valid, 0), depth + 1)?
+            let position = smt_linear(writer, index)?
+            let term = smt_integer(writer, value, depth + 1)?
+            Result.Ok(concat("(=> ", concat(guard, concat(" (= (select ", concat(array,
+                                concat(" ", concat(position, concat(") ", concat(term, "))")))))))))
+        }
+        Predicate.ArrayWrite(before, after, index, value) => {
+            let previous = smt_name(writer, "a", before, "(Array Int Int)")
+            let current = smt_name(writer, "a", after, "(Array Int Int)")
+            let position = smt_linear(writer, index)?
+            let term = smt_integer(writer, value, depth + 1)?
+            Result.Ok(concat("(= ", concat(current, concat(" (store ", concat(previous,
+                                concat(" ", concat(position, concat(" ", concat(term, "))")))))))))
         }
     }
 }

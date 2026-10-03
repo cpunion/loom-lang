@@ -23,6 +23,7 @@ enum TextValue {
 enum IntegerTerm {
     Linear(Linear)
     Apply(Text, List[IntegerTerm])
+    Select(Int, Linear)
 }
 
 enum Predicate {
@@ -35,6 +36,8 @@ enum Predicate {
     Or(List[Predicate])
     TextEqual(TextValue, TextValue)
     IntegerCompare(Text, IntegerTerm, IntegerTerm)
+    ArrayRead(Int, Linear, IntegerTerm, List[Predicate])
+    ArrayWrite(Int, Int, Linear, IntegerTerm)
 }
 
 enum Value {
@@ -58,6 +61,7 @@ record ListExtent {
     size Linear
     allocated Bool
     private_storage Bool
+    contents Int
     cells List[ListCell]
 }
 

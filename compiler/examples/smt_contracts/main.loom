@@ -53,6 +53,7 @@ fn main() {
     assert difference_of_squares(9, 5) == 56
     assert squared_length("雪") == 9
     refinement_cases()
+    heap_cases()
 }
 
 test fn combined_contracts() {

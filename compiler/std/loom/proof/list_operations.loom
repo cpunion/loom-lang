@@ -76,6 +76,9 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
             return Result.Err("List operation proof requires a tracked handle")
         }
     }
+    if name == "list_push" || name == "list_set" {
+        state = array_contents(proof, identity, state)?
+    }
     let size = list_extent(identity, state)?
     if name == "list_len" && length(inputs.values) == 1 {
         return Result.Ok(outcomes(state, Value.Number(size)))
@@ -88,8 +91,9 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
         let previous = list_state(identity, state)?
         let after = forget_modified_extents(proof, state, modified)
         let grown = with_extent(identity, add(size, constant(integer(1))), previous.allocated, after)
-        return Result.Ok(outcomes(remember_element(identity, size, get(inputs.values, 1),
-                    with_cells(identity, previous.cells, grown))?, Value.Empty))
+        let written = remember_element(identity, size, get(inputs.values, 1),
+            with_cells(identity, previous.cells, grown))?
+        return Result.Ok(outcomes(array_write(proof, previous, size, get(inputs.values, 1), written)?, Value.Empty))
     }
     if (name == "list_get" && length(inputs.values) == 2) ||
     (name == "list_set" && length(inputs.values) == 3) {
@@ -106,7 +110,7 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
         if name == "list_get" {
             return read_element_outcomes(proof, ty, identity, index, state)
         }
-        return Result.Ok(outcomes(written_element(identity, index, get(inputs.values, 2), state)?, Value.Empty))
+        return Result.Ok(outcomes(written_element(proof, identity, index, get(inputs.values, 2), state)?, Value.Empty))
     }
     Result.Err("unsupported List operation in required proof")
 }

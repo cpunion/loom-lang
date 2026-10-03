@@ -2,6 +2,104 @@ use std::{fs, process::Command};
 mod common;
 use common::success;
 
+const RESTORE: &str = r#"import std.list.get
+import std.list.set
+import std.list.length
+
+fn restored(values List[Int], observed Int, changed Int)
+requires observed >= 0 && observed < length(values)
+requires changed >= 0 && changed < length(values)
+ensures get(values, observed) == old(get(values, observed))
+{
+    let saved = get(values, changed)
+    set(values, changed, 7)
+    set(values, changed, saved)
+}
+"#;
+
+#[test]
+fn heap_versions_reject_wrong_writes_alias_interference_and_undefined_reads() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("main.loom");
+    for program in [
+        RESTORE.replace("set(values, changed, saved)", "set(values, changed, 7)"),
+        RESTORE
+            .replace("changed Int)", "changed Int, other List[Int])")
+            .replace(
+                "ensures get",
+                "requires changed < length(other)\nensures get",
+            )
+            .replace(
+                "set(values, changed, saved)",
+                "set(values, changed, saved)\n    set(other, changed, 9)",
+            ),
+        format!(
+            "{}\nfn change(values List[Int], index Int) {{\n    set(values, index, 9)\n}}\n",
+            RESTORE.replace(
+                "set(values, changed, saved)",
+                "set(values, changed, saved)\n    change(values, changed)",
+            )
+        ),
+        RESTORE.replace("requires observed >= 0 && observed < length(values)\n", ""),
+    ] {
+        fs::write(&source, &program).unwrap();
+        let output = common::loom(&["check", package.path().to_str().unwrap()]);
+        assert!(!output.status.success(), "unsound heap proof: {program}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("postcondition") || error.contains("List element proof"),
+            "unexpected failure: {error}\n{program}"
+        );
+    }
+}
+
+#[test]
+fn cached_heap_proofs_revalidate_edits_and_worker_interference() {
+    let package = tempfile::tempdir().unwrap();
+    let cache = package.path().join("cache");
+    let source = package.path().join("restore.loom");
+    let main = package.path().join("main.loom");
+    fs::write(&source, RESTORE).unwrap();
+    fs::write(&main, "fn main() {\n    restored([1], 0, 0)\n}\n").unwrap();
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    success(&check());
+    success(&check());
+    fs::write(
+        &source,
+        RESTORE.replace("set(values, changed, saved)", "set(values, changed, 7)"),
+    )
+    .unwrap();
+    let wrong = check();
+    assert!(!wrong.status.success());
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("postcondition"));
+    fs::write(&source, RESTORE).unwrap();
+    success(&check());
+    fs::write(
+        &main,
+        r#"import std.task.worker.run
+
+async fn main() {
+    discard run(fn() Int {
+            restored([1], 0, 0)
+            1
+        }).await
+}
+"#,
+    )
+    .unwrap();
+    let shared = check();
+    assert!(!shared.status.success());
+    let error = String::from_utf8_lossy(&shared.stderr);
+    assert!(error.contains("interference-safe"), "{error}");
+}
+
 #[test]
 fn solver_contracts_keep_editor_concept_navigation() {
     let temporary = tempfile::tempdir().unwrap();

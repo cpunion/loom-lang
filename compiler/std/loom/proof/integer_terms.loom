@@ -56,6 +56,11 @@ fn same_integer_term(left IntegerTerm, right IntegerTerm, budget List[Int]) Bool
             }
             _ => false
         }
+        IntegerTerm.Select(identity, index) => match right {
+            IntegerTerm.Select(other, position) => identity == other &&
+            compare(index.constant, position.constant) == 0 && same_terms(index.terms, position.terms)
+            _ => false
+        }
     }
 }
 

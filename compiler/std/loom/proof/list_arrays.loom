@@ -1,0 +1,104 @@
+// An SMT array is a logical version, not runtime storage or a deep copy. Reads
+// retain ordinary scalar symbols; select/store equations relate those symbols
+// across arbitrary indices. Unknown effects discard versions, never reuse them.
+fn array_identity(proof Verification) Int {
+    let identity = get(proof.fresh, 0)
+    set(proof.fresh, 0, identity + 1)
+    identity
+}
+
+fn with_contents(identity Int, contents Int, state State) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        push(extents, if extent.identity == identity {
+                element_contents(extent, contents, extent.cells)
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
+    }
+}
+
+fn array_observation(contents Int, index Linear, value Value, valid Predicate, state State) State {
+    match integer_term(value) {
+        Result.Ok(term) => assume(state, Predicate.ArrayRead(contents, index, term, predicates(valid)))
+        Result.Err(_) => state
+    }
+}
+
+fn array_contents(proof Verification, identity Int, state State) Result[State, Text] {
+    if !proof.query.backend.enabled {
+        return Result.Ok(state)
+    }
+    let extent = list_state(identity, state)?
+    if extent.contents >= 0 {
+        return Result.Ok(state)
+    }
+    let contents = array_identity(proof)
+    var current = with_contents(identity, contents, state)
+    var index = 0
+    while index < length(extent.cells) {
+        let cell = get(extent.cells, index)
+        current = array_observation(contents, cell.index, cell.value, cell.valid, current)
+        index = index + 1
+    }
+    Result.Ok(current)
+}
+
+fn array_read(proof Verification, identity Int, index Linear, value Value,
+    valid Predicate, state State) Result[State, Text] {
+    let current = array_contents(proof, identity, state)?
+    let contents = list_state(identity, current)?.contents
+    Result.Ok(if contents >= 0 {
+            array_observation(contents, index, value, valid, current)
+        } else {
+            current
+        })
+}
+
+fn array_write(proof Verification, previous ListExtent, index Linear, value Value, state State) Result[State, Text] {
+    if previous.contents < 0 {
+        return Result.Ok(state)
+    }
+    let contents = array_identity(proof)
+    let current = with_contents(previous.identity, contents, state)
+    Result.Ok(match integer_term(value) {
+            Result.Ok(term) => assume(current, Predicate.ArrayWrite(previous.contents, contents, index, term))
+            // No integer interpretation is inferred for Bool, Text or shared payloads.
+            Result.Err(_) => current
+        })
+}
+
+// Snapshot equations refer only to immutable scalar symbols and past heap
+// versions. Export them to the post-call scope, not entry preconditions or cells.
+fn captured_array_facts(entry State, current State) State {
+    var state = current
+    var index = 0
+    while index < length(entry.facts) {
+        let fact = get(entry.facts, index)
+        let array = match fact {
+            Predicate.ArrayRead(_, _, _, _) => true
+            Predicate.ArrayWrite(_, _, _, _) => true
+            _ => false
+        }
+        var found = false
+        var position = 0
+        while array && !found && position < length(state.facts) {
+            found = same(fact, get(state.facts, position))
+            position = position + 1
+        }
+        if array && !found {
+            state = assume(state, fact)
+        }
+        index = index + 1
+    }
+    state
+}

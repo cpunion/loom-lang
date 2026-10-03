@@ -1,6 +1,6 @@
 // Interpret already evaluated operands. Structural traversal, branch guards and
 // eager evaluation belong to the composition layer, not to individual theories.
-fn intrinsic_value(name Text, inputs List[Value], state State) Result[Value, Text] {
+fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Value, Text] {
     if name == "text_len" {
         return match get(inputs, 0) {
             Value.Text(text) => Result.Ok(Value.Number(text_length(text)))
@@ -18,7 +18,19 @@ fn intrinsic_value(name Text, inputs List[Value], state State) Result[Value, Tex
     }
     if name == "list_get" {
         let location = element_inputs(get(inputs, 0), get(inputs, 1))?
-        return known_element(location.identity, location.index, state)
+        let known = known_element(location.identity, location.index, state)
+        if ty == 1 {
+            if match known {
+                Result.Ok(_) => false,
+                Result.Err(_) => true
+            } {
+                let contents = list_state(location.identity, state)?.contents
+                if contents >= 0 {
+                    return Result.Ok(Value.Nonlinear(IntegerTerm.Select(contents, location.index)))
+                }
+            }
+        }
+        return known
     }
     Result.Err("unsupported or uncaptured intrinsic in required proof")
 }
@@ -65,7 +77,7 @@ fn execute_immutable_operation(proof Verification, expr Expr, name Text, state S
     var index = 0
     while index < length(inputs) {
         let arguments = get(inputs, index)
-        let value = intrinsic_value(name, arguments.values, arguments.state)?
+        let value = intrinsic_value(name, expr.ty, arguments.values, arguments.state)?
         // Successful execution, unlike a hypothetical contract expression, may
         // establish result bounds. No equation permits reordering arguments.
         discard add_outcome(output, Outcome {

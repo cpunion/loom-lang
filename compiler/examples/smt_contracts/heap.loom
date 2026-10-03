@@ -1,0 +1,42 @@
+import std.list.get
+import std.list.set
+import std.list.length
+
+// observed and changed may be equal. This contract holds at every admitted
+// index, not just at positions read by a finite runtime test.
+fn restored(values List[Int], observed Int, changed Int)
+requires observed >= 0 && observed < length(values)
+requires changed >= 0 && changed < length(values)
+ensures get(values, observed) == old(get(values, observed))
+{
+    let saved = get(values, changed)
+    set(values, changed, 7)
+    set(values, changed, saved)
+}
+
+fn swapped(values List[Int], first Int, second Int, observed Int)
+requires first >= 0 && first < length(values)
+requires second >= 0 && second < length(values)
+requires observed >= 0 && observed < length(values)
+ensures observed != first || get(values, observed) == old(get(values, second))
+ensures observed != second || get(values, observed) == old(get(values, first))
+ensures observed == first || observed == second ||
+get(values, observed) == old(get(values, observed))
+{
+    let left = get(values, first)
+    let right = get(values, second)
+    let alias = values
+    set(alias, first, right)
+    set(values, second, left)
+}
+
+fn heap_cases() {
+    let values = [1, 2, 3]
+    restored(values, 0, 2)
+    restored(values, 1, 1)
+    assert get(values, 0) == 1 && get(values, 1) == 2 && get(values, 2) == 3
+    swapped(values, 0, 2, 1)
+    assert get(values, 0) == 3 && get(values, 1) == 2 && get(values, 2) == 1
+    swapped(values, 1, 1, 1)
+    assert get(values, 1) == 2
+}
