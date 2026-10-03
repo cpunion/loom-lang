@@ -2916,6 +2916,35 @@ supported at compile time. Required proofs support inferred scalar invariants,
 including break/continue paths, but not general loop contracts.
 The [loops example](examples/loops/main.loom) includes same-package unit tests.
 
+## Scoped mutexes
+
+`std.sync.mutex` exports `Mutex`, `Guard`, `new()` and `lock(mutex)`. Mutex copies
+share one lock. Acquire it with `scoped`; the guard implements `MustScope` and
+`NoSuspend` and releases at the containing block exit, including returns and
+language faults. Guards cannot be copied, reconstructed from extracted fields,
+discarded or held across `.await`. No ownership or borrow syntax is introduced.
+
+```loom
+import std.sync.mutex.new
+import std.sync.mutex.lock
+
+fn main() {
+    let mutex = new()
+    if true {
+        scoped guard = lock(mutex)
+    }
+    scoped next = lock(mutex)
+}
+```
+
+Acquisition is synchronous and non-reentrant; locking the same mutex again on
+its owning thread faults instead of deadlocking. Fault cleanup releases the
+guard without poisoning the mutex. There is no fairness promise. Every relevant
+access must follow the same locking policy; holding a guard alone does not prove
+that other aliases preserve an invariant. See the [example](examples/mutex)
+and `loom test compiler/std/sync/mutex`. General parallel Loom workers remain
+unimplemented; this API does not change ordinary Task scheduling.
+
 ## Source Tasks
 
 For deadline-aware outcomes, use `std.task.deadline.at(task, deadline).await`

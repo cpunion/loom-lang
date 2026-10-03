@@ -1,0 +1,41 @@
+import std.task.outcome
+import std.task.Outcome
+
+fn early(mutex Mutex) Int {
+    scoped guard = lock(mutex)
+    7
+}
+
+test fn aliases_share_a_mutex_and_lexical_exit_releases_it() {
+    let mutex = new()
+    let alias = mutex
+    if true {
+        scoped guard = lock(mutex)
+    }
+    assert early(alias) == 7
+    scoped guard = lock(mutex)
+}
+
+async fn failing(mutex Mutex, reentrant Bool) {
+    scoped guard = lock(mutex)
+    if reentrant {
+        scoped second = lock(mutex)
+    }
+    assert false
+}
+
+test async fn faults_release_guards_without_poisoning_the_mutex() {
+    let mutex = new()
+    var attempt = 0
+    while attempt < 2 {
+        match outcome(failing(mutex, attempt == 1)).await {
+            Outcome.Faulted(_) => {
+            }
+            _ => {
+                assert false
+            }
+        }
+        scoped guard = lock(mutex)
+        attempt = attempt + 1
+    }
+}

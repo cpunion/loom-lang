@@ -437,3 +437,48 @@ fn idle_task_owner_parks_until_a_collecting_mutator_publishes_completion() {
     });
     loom_rt_collect();
 }
+
+#[test]
+fn scoped_mutex_primitives_serialize_updates_while_waiters_participate_in_gc() {
+    use crate::mutex::{loom_rt_mutex_lock, loom_rt_mutex_unlock};
+    with_handoff(crate::loom_rt_box_new(8, None), |handoff| {
+        scope(|heap| {
+            handoff.outputs[0].store(crate::loom_rt_box_new(8, None), Ordering::Release);
+            let mut workers = Vec::new();
+            for _ in 0..2 {
+                let heap = heap as usize;
+                let handoff = Arc::clone(&handoff);
+                workers.push(thread::spawn(move || unsafe {
+                    attach(heap, || {
+                        rooted(
+                            [
+                                handoff.input.load(Ordering::Acquire),
+                                handoff.outputs[0].load(Ordering::Acquire),
+                            ],
+                            |slots| {
+                                for _ in 0..16 {
+                                    let guard = loom_rt_mutex_lock(*slots.add(1));
+                                    let value = (*slots).cast::<u64>().read();
+                                    loom_rt_collect();
+                                    (*slots).cast::<u64>().write(value + 1);
+                                    assert_eq!(loom_rt_mutex_unlock(guard), 1);
+                                }
+                            },
+                        );
+                    });
+                }));
+            }
+            parked(|| {
+                for worker in workers {
+                    worker.join().unwrap();
+                }
+            });
+            assert_eq!(
+                unsafe { handoff.input.load(Ordering::Acquire).cast::<u64>().read() },
+                32
+            );
+        });
+    });
+    loom_rt_collect();
+    assert!(HEAP.with(|heap| heap.borrow().mutexes.is_empty()));
+}

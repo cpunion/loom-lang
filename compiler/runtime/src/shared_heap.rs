@@ -44,6 +44,7 @@ struct Participant<'a> {
     id: u64,
     state: Cell<State>,
     entry_roots: *mut RootFrame,
+    entry_mutexes: i64,
 }
 
 struct Memory {
@@ -117,6 +118,7 @@ impl SharedHeap {
             id,
             state: Cell::new(State::Running),
             entry_roots: ROOTS.get(),
+            entry_mutexes: super::mutex::watermark(),
         };
         // Erase only the stored raw pointer's lifetime. Its stack owner cannot
         // return before the guard removes it; nothing can send it away.
@@ -132,6 +134,7 @@ impl Drop for Participant<'_> {
         if self.state.get() != State::Running
             || ROOTS.get() != self.entry_roots
             || !super::shared_access::idle()
+            || super::mutex::acquired_since(self.entry_mutexes)
         {
             fatal("unbalanced mutator exit");
         }

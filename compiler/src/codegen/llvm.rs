@@ -891,6 +891,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::Write => ("file_write", Some(i64_type.into())),
             Primitive::WriteBytes => ("file_write_bytes", Some(i64_type.into())),
             Primitive::Close => ("file_close", Some(i64_type.into())),
+            Primitive::MutexLock => ("mutex_lock", Some(i64_type.into())),
+            Primitive::MutexUnlock => ("mutex_unlock", Some(self.context.i32_type().into())),
             Primitive::SocketListen => ("socket_listen", Some(i64_type.into())),
             Primitive::SocketConnect => ("socket_connect", Some(i64_type.into())),
             Primitive::SocketConnectStatus => ("socket_connect_status", Some(i64_type.into())),

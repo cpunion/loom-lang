@@ -101,8 +101,9 @@ fn increment(values List[Int]) {
 After both workers complete, the element may be `1` or `2`: both reads may
 observe `0`. To guarantee `2`, both callers must use the same explicit lock
 around the complete read/modify/write, or an explicit atomic update operation.
-Locking only the `set` calls is insufficient. Worker and synchronization API
-spellings are not specified by this example.
+Locking only the `set` calls is insufficient. Worker API spelling is not
+specified by this example. The source [mutex API](../../compiler/README.md#scoped-mutexes)
+uses an ordinary `scoped` guard, without an ownership or borrow annotation.
 
 Publication to a worker, successful completion/join, and synchronization
 release/acquire establish visibility of preceding writes. Unrelated workers
