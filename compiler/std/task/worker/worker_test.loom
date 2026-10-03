@@ -310,6 +310,25 @@ test async fn private_storage_retains_required_proofs_inside_workers() {
     assert run(fn() Int {
             local_loop(12)
         }).await == 12
+    assert run(rebound_count).await == 3
+}
+
+fn rebound_values(choice Bool) List[Int]
+ensures length(result) >= 0
+{
+    var values = [1]
+    if choice {
+        values = [2, 3]
+    }
+    values
+}
+
+fn rebound_count() Int
+ensures result >= 1
+{
+    let values = rebound_values(true)
+    push(values, 4)
+    length(values)
 }
 
 fn local_loop(limit Int) Int

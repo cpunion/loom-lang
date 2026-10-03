@@ -52,10 +52,18 @@ fn private_factory(program Program, function Function) Bool {
         return false
     }
     let inputs = new[Bool]()
+    var closed = true
     var index = 0
     while index < length(function.params) {
-        push(inputs, immutable_storage_type(program, get(function.params, index), 0))
+        let immutable = immutable_storage_type(program, get(function.params, index), 0)
+        push(inputs, immutable)
+        closed = closed && immutable
         index = index + 1
+    }
+    // No incoming mutable graph and no publication/opaque effects: rebindings
+    // can only select storage allocated inside this invocation.
+    if closed {
+        return true
     }
     let budget = new[Int]()
     push(budget, 256)
