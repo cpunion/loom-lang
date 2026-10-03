@@ -27,9 +27,12 @@ Writing `length(values) == length(values)` instead makes two independent reads
 and cannot prove equality under interference. The same distinction applies to
 `old` observations; a snapshot does not freeze the underlying List.
 
-`extended_copy` explicitly clones a shared `List[Int]` before appending. The
-checked source body's allocation and return paths establish private storage;
-no ownership syntax or name-specific compiler rule is involved. A clone copies
-only the outer List: contained shared values keep their aliases. Concurrent
-mutation does not promise an atomic snapshot. The worker tests also check that
-changing the original cannot resize the scalar-element copy.
+`extended_copy` and `extended_rows` explicitly clone shared Lists before
+appending. The checked source body's allocation and return paths establish
+private storage; no ownership syntax or name-specific compiler rule is involved. A clone copies
+only the outer List: even a `List[List[Int]]` has a private outer header, while
+its elements keep their shared aliases. Storing elements into that private
+header is not publication; storing a mutable graph into shared storage is.
+The example mutates an inner List through the copy and observes the original.
+Concurrent mutation does not promise an atomic snapshot. The worker tests also
+check that changing the original cannot resize the scalar-element copy.

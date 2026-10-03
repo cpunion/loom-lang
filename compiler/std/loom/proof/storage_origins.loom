@@ -1,40 +1,60 @@
-// A bounded checked-body origin analysis. True means every reachable mutable
-// leaf came from this invocation or a fresh argument, not that leaves are
-// distinct. The caller separately excludes publication and opaque effects.
-fn factory_storage(program Program, function Function, inputs List[Bool], budget List[Int], depth Int) Bool {
+// True describes direct mutable headers, not their reachable element graphs.
+// Every call is scanned for publication, including calls with scalar/Unit
+// results. A closed invocation has no incoming mutable graph; only there may
+// rebindings and dereferences select arbitrary internally allocated storage.
+fn factory_storage(program Program, function Function, inputs List[Bool], closed Bool,
+    effects List[Bool], budget List[Int], depth Int) Bool {
     if depth >= 32 || !conjunction_step(budget) || function.is_async ||
-    length(function.params) != length(inputs) || length(function.locals) > 256 {
+    function.runtime_name != "" || length(function.params) != length(inputs) || length(function.locals) > 256 {
+        set(effects, 0, false)
         return false
-    }
-    if function.runtime_name != "" {
-        return function.runtime_name == "list_new" || function.runtime_name == "list_new_capacity" ||
-        (function.runtime_name == "list_get" && length(inputs) == 2 && get(inputs, 0))
     }
     let locals = new[Bool]()
     var index = 0
     while index < length(function.locals) {
-        push(locals, index < length(inputs) && get(inputs, index) && !get(function.locals, index).mutable)
+        push(locals, index < length(inputs) && get(inputs, index) &&
+            (closed || !get(function.locals, index).mutable))
         index = index + 1
     }
     let returns = new[Bool]()
     push(returns, true)
-    let returned = storage_origin(program, function, function.body, locals, returns, budget, depth + 1)
+    let returned = storage_origin(program, function, function.body, locals, returns,
+        closed, effects, budget, depth + 1)
     get(returns, 0) && (!function.body.falls || returned)
 }
 
 fn storage_origin(program Program, function Function, value Expr, locals List[Bool],
-    returns List[Bool], budget List[Int], depth Int) Bool {
-    if depth >= 32 || !conjunction_step(budget) || length(value.arms) != 0 {
+    returns List[Bool], closed Bool, effects List[Bool], budget List[Int], depth Int) Bool {
+    if depth >= 32 || !conjunction_step(budget) || length(value.arms) != 0 ||
+    (!storage_expression(value) && value.kind != ExprKind.Call && value.kind != ExprKind.Intrinsic) {
         // Exhaustion is failure for the whole scan, even in a discarded child.
-        set(returns, 0, false)
+        set(effects, 0, false)
         return false
     }
     let inputs = new[Bool]()
     var index = 0
     while index < length(value.children) {
         push(inputs, storage_origin(program, function, get(value.children, index),
-                locals, returns, budget, depth + 1))
+                locals, returns, closed, effects, budget, depth + 1))
         index = index + 1
+    }
+    if value.kind == ExprKind.Call {
+        if value.index < 0 || value.index >= length(program.functions) {
+            set(effects, 0, false)
+            return false
+        }
+        let callee = get(program.functions, value.index)
+        if callee.is_async {
+            set(effects, 0, false)
+            return false
+        }
+        if callee.runtime_name != "" {
+            return storage_operation_origin(program, callee.runtime_name, value, inputs, closed, effects)
+        }
+        return factory_storage(program, callee, inputs, closed, effects, budget, depth + 1)
+    }
+    if value.kind == ExprKind.Intrinsic {
+        return storage_operation_origin(program, value.text, value, inputs, closed, effects)
     }
     if value.kind == ExprKind.Return {
         if length(inputs) != 0 && !get(inputs, 0) {
@@ -44,16 +64,16 @@ fn storage_origin(program Program, function Function, value Expr, locals List[Bo
     }
     if value.kind == ExprKind.Let {
         if value.index < 0 || value.index >= length(locals) || length(inputs) != 1 {
-            set(returns, 0, false)
+            set(effects, 0, false)
         } else {
-            set(locals, value.index, get(inputs, 0) && !get(function.locals, value.index).mutable)
+            set(locals, value.index, get(inputs, 0) && (closed || !get(function.locals, value.index).mutable))
         }
     }
     if immutable_storage_type(program, value.ty, 0) {
         return true
     }
     if value.kind == ExprKind.Local {
-        return value.index >= 0 && value.index < length(locals) && get(locals, value.index)
+        return value.index >= 0 && value.index < length(locals) && (closed || get(locals, value.index))
     }
     if value.kind == ExprKind.Block {
         return length(inputs) != 0 && get(inputs, length(inputs) - 1)
@@ -65,10 +85,10 @@ fn storage_origin(program Program, function Function, value Expr, locals List[Bo
     if value.kind == ExprKind.Field || value.kind == ExprKind.Coerce {
         return length(inputs) == 1 && get(inputs, 0)
     }
-    if value.kind == ExprKind.Bytes {
+    if value.kind == ExprKind.Bytes || value.kind == ExprKind.List {
         return true
     }
-    if value.kind == ExprKind.List || value.kind == ExprKind.Record {
+    if value.kind == ExprKind.Record {
         index = 0
         while index < length(inputs) {
             if !get(inputs, index) {
@@ -78,12 +98,24 @@ fn storage_origin(program Program, function Function, value Expr, locals List[Bo
         }
         return true
     }
-    if value.kind == ExprKind.Call && value.index >= 0 && value.index < length(program.functions) {
-        return factory_storage(program, get(program.functions, value.index), inputs, budget, depth + 1)
-    }
-    if value.kind == ExprKind.Intrinsic {
-        return value.text == "list_new" || value.text == "list_new_capacity" ||
-        (value.text == "list_get" && length(inputs) == 2 && get(inputs, 0))
-    }
     false
+}
+
+fn storage_operation_origin(program Program, name Text, value Expr, inputs List[Bool],
+    closed Bool, effects List[Bool]) Bool {
+    let stored = if name == "list_set" {
+        2
+    } else {
+        if name == "list_push" {
+            1
+        } else {
+            -1
+        }
+    }
+    let private_target = stored >= 0 && stored < length(inputs) && (closed || get(inputs, 0))
+    if !private_target && !storage_operation(program, name, value.ty, value.children, StorageRequirement.Local) {
+        set(effects, 0, false)
+    }
+    immutable_storage_type(program, value.ty, 0) || name == "list_new" || name == "list_new_capacity" ||
+    (closed && name == "list_get" && length(inputs) == 2)
 }

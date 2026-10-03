@@ -1,6 +1,6 @@
 // A finite checked footprint retains private storage across source helpers.
 // No names, unverified purity annotations or external implementation guesses
-// confer locality. Unknown calls, captures and mutable payload stores fail shut.
+// confer locality. Unknown calls, captures and untracked payload stores fail shut.
 fn local_storage_operation(program Program, name Text, arguments List[Expr]) Bool {
     if name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" {
         return true
@@ -44,11 +44,11 @@ fn storage_local(program Program, body Expr) Bool {
     preserves_list_state(program, body, budget, StorageRequirement.Local, 0)
 }
 
-// Returned storage may be fresh even when scalar elements were copied from a
-// shared input. Check origins separately from publication and verified values.
+// A fresh header may hold shared elements. Check its origin and publication,
+// separately from verified lengths/contents and origins of nested elements.
 fn private_factory(program Program, function Function) Bool {
     if function.runtime_name != "" || function.is_async ||
-    immutable_storage_type(program, function.result, 0) || !storage_local(program, function.body) {
+    immutable_storage_type(program, function.result, 0) {
         return false
     }
     let inputs = new[Bool]()
@@ -60,14 +60,12 @@ fn private_factory(program Program, function Function) Bool {
         closed = closed && immutable
         index = index + 1
     }
-    // No incoming mutable graph and no publication/opaque effects: rebindings
-    // can only select storage allocated inside this invocation.
-    if closed {
-        return true
-    }
     let budget = new[Int]()
     push(budget, 256)
-    factory_storage(program, function, inputs, budget, 0)
+    let effects = new[Bool]()
+    push(effects, true)
+    let returned = factory_storage(program, function, inputs, closed, effects, budget, 0)
+    returned && get(effects, 0)
 }
 
 fn storage_leaves(value Value) Int {

@@ -169,9 +169,20 @@ fn shared_factory_proofs_reject_aliases_and_publication() {
             "get([get(values, 0)], 0)",
             "[[1]]",
         ),
+        ("values List[List[Int]]", "get(clone(values), 0)", "[[1]]"),
+        (
+            "values List[List[Int]]",
+            "let copied = [1]\npush(get([values], 0), copied)\ncopied",
+            "[[1]]",
+        ),
         (
             "values List[List[Int]]",
             "let copied = [1]\npush(values, copied)\ncopied",
+            "[[1]]",
+        ),
+        (
+            "values List[List[Int]]",
+            "let copied = [1]\ndiscard publish(values, copied)\ncopied",
             "[[1]]",
         ),
     ] {
@@ -184,6 +195,13 @@ import std.list.clone
 import std.list.length
 import std.list.push
 import std.list.get
+
+fn publish(target List[List[Int]], value List[Int]) Int
+ensures result == 0
+{{
+    push(target, value)
+    0
+}}
 
 fn copied({params}) List[Int]
 ensures length(result) >= 0

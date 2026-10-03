@@ -155,6 +155,13 @@ whose every call context is private lose guards. Unknown, callback and dynamic
 contexts remain conservative. GC roots and cancellation checkpoints remain.
 Private access guards do not make source library calls atomic.
 
+Explicit shallow copies can keep a private outer List header even when their
+elements are shared mutable values. Checked allocation/return paths establish
+that origin, not a `clone` name rule. Initializing private storage does not
+publish it; publishing a mutable graph into shared storage or an opaque call
+conservatively loses privacy. Nested elements retain their own alias evidence,
+and no atomic snapshot or deep isolation is implied.
+
 ## Implementation boundary
 
 The current source slice supports async functions/methods, async main/tests,
