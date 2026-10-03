@@ -29,6 +29,15 @@ fn unsupported_operation() ProofOperation {
 }
 
 fn intrinsic_operation(name Text, ty Int, arity Int) ProofOperation {
+    if name == "proof_bound" && ty == 1 && arity == 0 {
+        return operation_shape(0, OperandFlow.Eager, false, true)
+    }
+    if (name == "proof_all" || name == "proof_scan_checks") && ty == 2 && arity == 3 {
+        return operation_shape(3, OperandFlow.Eager, true, false)
+    }
+    if name == "proof_count" && ty == 1 && arity == 2 {
+        return operation_shape(2, OperandFlow.Eager, true, true)
+    }
     if name == "entry_list" && arity == 1 {
         return operation_shape(1, OperandFlow.Eager, true, true)
     }

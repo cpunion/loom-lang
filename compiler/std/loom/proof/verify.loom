@@ -231,6 +231,7 @@ fn returned(proof Verification, state State, value Value) Result[Bool, Text] {
     var index = 0
     while index < length(function.postconditions) {
         let source = get(function.postconditions, index)
+        returned = quantified_views(proof, source, returned, false, 256)?
         let observed = if proof.shared {
             shared_observations(proof, source, proof_bool(source, true), returned)?
         } else {
@@ -398,6 +399,14 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
 }
 
 fn execute_expression(proof Verification, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+    if count_expression(expr) {
+        let current = quantified_views(proof, expr, state, false, 256)?
+        discard solver_defined(proof.query, expr, current, 256)?
+        return Result.Ok(outcomes(current, counted_value(expr, current)?))
+    }
+    if quantified_expression(expr) {
+        return execute_quantifier(proof, expr, state)
+    }
     if expr.kind == ExprKind.Defer {
         return Result.Ok(outcomes(state, Value.Empty))
     }

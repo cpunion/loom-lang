@@ -196,7 +196,7 @@ these terms handles bounded safety/range obligations before SMT, with mathematic
 endpoints and unchanged eager operand checks. Polynomial identities, safety
 bounds and verified call summaries compose with Text lengths; see the
 [polynomial example](../../compiler/examples/smt_contracts/polynomials.loom).
-Nonconstant division, quantified collection induction and universal variadic
+Nonconstant division, general collection induction and universal variadic
 proofs remain unsupported; nonlinear solver queries may still be unknown or time out.
 Constrained construction, stable scalar facts, pure-helper implication and
 supported List-append preservation now share the same optional backend and
@@ -225,7 +225,7 @@ and inequalities over the same mathematical scalar symbols, regardless of
 whether they originated as parameters, fields, callee results or length
 observations. Fraction-free positive scaling keeps relation signs and definedness
 obligations; overflow, disjunctions, Text contents and invalidated List state
-gain no invented evidence. Nonlinear terms use the SMT path; quantified proofs remain open.
+gain no invented evidence. Nonlinear terms and the bounded quantified scans below use SMT.
 Bounded inequality elimination additionally combines multiple upper/lower bounds
 using positive scaling and addition, including weighted terms and strict integer
 gaps. It refutes the negated goal without assuming hypothetical arithmetic is
@@ -279,8 +279,8 @@ and two-element sum conservation, not arbitrary-index array invariants. Indexed 
 checks and storage postconditions compose; hypothetical postcondition reads
 must prove bounds and have an established observation or modeled Int content version. Unknown reads never
 supply non-aliasing evidence. Immutable entry-element snapshots require entry
-bounds and survive writes, including through per-invocation summaries. Quantified
-contents remain open. See the [indexed example](../../compiler/examples/list_elements) and
+bounds and survive writes, including through per-invocation summaries. See the
+[indexed example](../../compiler/examples/list_elements) and
 [List contract example](../../compiler/examples/list_contracts).
 The optional solver now models `List[Int]` content versions with guarded reads
 and `select`/`store` write equations. Arbitrary valid parameter indices can prove
@@ -288,7 +288,7 @@ write-then-restore and swap/frame contracts, without deciding index equality at
 each write or enumerating concrete indices. The finite observation cache stays
 the fast path. Alias uncertainty, opaque effects, loop havoc and shared
 interference discard current versions; immutable old equations cannot restore
-them. This adds no runtime copying or quantified loop induction.
+them. This adds no runtime copying.
 See the [heap example](../../compiler/examples/smt_contracts/heap.loom).
 Whole `List[Int]` entry values now capture their logical length and content
 version through `old(values)`, including inline parameter fields, refined Lists
@@ -296,8 +296,18 @@ and finite pure helper selections. Queries can use post-state indices such as
 `result`, but must establish bounds against the entry length. Checked read-only
 calls retain versions; possible writes retain only sound partial frames. Shared
 workers require private storage for a coherent whole entry value. This is not
-an alias, runtime copy, arbitrary graph snapshot or quantified invariant. See the
+an alias, runtime copy or arbitrary graph snapshot. See the
 [snapshot example](../../compiler/examples/smt_contracts/snapshots.loom).
+Ordinary bounded pure `List[Int]` scans now derive scoped universal predicates
+and occurrence counts. Finite histogram laws compose with array stores and
+verified call summaries; loop candidates derived from quantified postconditions
+must pass entry/backedge proofs and rechecking after removal. The
+[quantified example](../../compiler/examples/smt_contracts/quantified.loom)
+proves ordering and permutation for an in-place sort, plus swap and reverse
+permutation. Wrong ordering, lost duplicates, stale entry reads and unproved
+full-range safety reject. No helper names, runtime copies or sampled tests supply
+proof evidence. General scan shapes, mutable element graphs and unprotected
+shared observations remain outside this fragment.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining
@@ -333,8 +343,8 @@ invariant terms. Resource cleanup and general heap-content proofs remain unsuppo
 
 General content-preserving mutation, strengthening existing mutable alias graphs,
 general loop/recursive proofs, arbitrary `old` snapshots and general Float reasoning
-remain open. Sorting/permutation contracts are an accepted goal, not a completed
-story. Exact supported rules and examples are in the
+remain open. The bounded sorting/permutation story above does not close these
+broader gates. Exact supported rules and examples are in the
 [contract reference](../../compiler/README.md#contract-boundary).
 
 ## Standard library, memory and async

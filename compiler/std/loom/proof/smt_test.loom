@@ -86,3 +86,14 @@ test fn array_encoding_preserves_versions_indices_and_observation_guards() {
     assert !integer_interval("==", IntegerTerm.Select(11, index), value, [])
     assert immutable_snapshot(Value.Nonlinear(IntegerTerm.Select(11, index)))
 }
+
+test fn bounded_quantifiers_keep_their_binder_inside_the_range_and_body() {
+    let query = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.Forall(-7, constant(integer(0)), constant(integer(2)),
+                    [Predicate.IntegerCompare(">=", IntegerTerm.Select(10, variable(-7)),
+                            IntegerTerm.Linear(constant(integer(0))))])
+            }])
+    assert contains(query, "(forall ((n-7 Int)) (=> (and (<= (+ 0) n-7) (< n-7 (+ 2))) ")
+    assert contains(query, "(select a10 (+ 0 (* 1 n-7)))")
+}

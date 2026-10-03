@@ -35,6 +35,22 @@ fn same_integer_term(left IntegerTerm, right IntegerTerm, budget List[Int]) Bool
     }
     set(budget, 0, get(budget, 0) - 1)
     match left {
+        IntegerTerm.Count(identity, inputs) => match right {
+            IntegerTerm.Count(other, values) => {
+                if identity != other || length(inputs) != length(values) {
+                    return false
+                }
+                var index = 0
+                while index < length(inputs) {
+                    if !same_integer_term(get(inputs, index), get(values, index), budget) {
+                        return false
+                    }
+                    index = index + 1
+                }
+                true
+            }
+            _ => false
+        }
         IntegerTerm.Linear(first) => match right {
             IntegerTerm.Linear(second) => compare(first.constant, second.constant) == 0 &&
             same_terms(first.terms, second.terms)

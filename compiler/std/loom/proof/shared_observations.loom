@@ -2,6 +2,14 @@
 // The ordinary expression algebra then proves truth *and* definedness. Never
 // execute the predicate as a body assertion: that would assume its own success.
 fn shared_observations(proof Verification, value Expr, guard Expr, state State) Result[EntrySnapshot, Text] {
+    if quantified_expression(value) {
+        let current = quantified_views(proof, value, state, false, 256)?
+        return Result.Ok(EntrySnapshot {
+                expression = value
+                state = current
+                entry = current
+            })
+    }
     match observation_value(value, guard, state) {
         Option.Some(observed) => {
             return Result.Ok(observation_reference(value, observed, state))

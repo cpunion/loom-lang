@@ -55,6 +55,7 @@ fn main() {
     refinement_cases()
     heap_cases()
     snapshot_cases()
+    quantified_cases()
 }
 
 test fn combined_contracts() {

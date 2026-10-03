@@ -8,6 +8,7 @@ record SmtWriter {
     declarations Bytes
     names List[Text]
     budget List[Int]
+    counts List[Linear]
 }
 
 fn smt_append(output Bytes, value Text) {
@@ -142,6 +143,7 @@ fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text
     discard smt_step(writer, depth)?
     match value {
         IntegerTerm.Linear(term) => smt_linear(writer, term)
+        IntegerTerm.Count(identity, inputs) => smt_count(writer, identity, inputs, depth)
         IntegerTerm.Select(identity, index) => {
             let array = smt_name(writer, "a", identity, "(Array Int Int)")
             Result.Ok(concat("(select ", concat(array, concat(" ", concat(smt_linear(writer, index)?, ")")))))
@@ -165,7 +167,27 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
             } else {
                 "false"
             })
+        Predicate.Forall(identity, start, end, conditions) => {
+            if length(conditions) != 1 {
+                return Result.Err("invalid quantified proof predicate")
+            }
+            let bound = concat("n", std.int.to_text(identity))
+            let first = smt_linear(writer, start)?
+            let last = smt_linear(writer, end)?
+            let condition = smt_predicate(writer, get(conditions, 0), depth + 1)?
+            let output = std.bytes.new()
+            smt_append(output, concat("(forall ((", concat(bound, " Int)) (=> (and (<= ")))
+            smt_append(output, concat(first, concat(" ", concat(bound, ") (< "))))
+            smt_append(output, concat(bound, concat(" ", concat(last, ")) "))))
+            smt_append(output, concat(condition, "))"))
+            Result.Ok(std.bytes.to_text(output))
+        }
         Predicate.Variable(id) => Result.Ok(smt_name(writer, "b", id, "Bool"))
+        Predicate.BagEqual(before, size, after, count) => {
+            let first = smt_bag(writer, smt_name(writer, "a", before, "(Array Int Int)"), size)?
+            let second = smt_bag(writer, smt_name(writer, "a", after, "(Array Int Int)"), count)?
+            Result.Ok(concat("(= ", concat(first, concat(" ", concat(second, ")")))))
+        }
         Predicate.IntegerCompare(relation, left, right) => {
             let operator = smt_relation(relation)?
             let first = smt_integer(writer, left, depth + 1)?
@@ -206,8 +228,22 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
             let current = smt_name(writer, "a", after, "(Array Int Int)")
             let position = smt_linear(writer, index)?
             let term = smt_integer(writer, value, depth + 1)?
-            Result.Ok(concat("(= ", concat(current, concat(" (store ", concat(previous,
-                                concat(" ", concat(position, concat(" ", concat(term, "))")))))))))
+            let stored = concat("(store ", concat(previous, concat(" ", concat(position,
+                        concat(" ", concat(term, ")"))))))
+            let equation = concat("(= ", concat(current, concat(" ", concat(stored, ")"))))
+            if length(writer.counts) == 0 {
+                return Result.Ok(equation)
+            }
+            let output = std.bytes.new()
+            smt_append(output, concat("(and ", equation))
+            var extent = 0
+            while extent < length(writer.counts) {
+                smt_append(output, " ")
+                smt_append(output, smt_bag_store(writer, previous, stored, position, term, get(writer.counts, extent))?)
+                extent = extent + 1
+            }
+            smt_append(output, ")")
+            Result.Ok(std.bytes.to_text(output))
         }
     }
 }
@@ -215,10 +251,19 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
 fn smt_query(obligations List[Obligation]) Result[Text, Text] {
     let budget = new[Int]()
     push(budget, 65536)
+    let counts = new[Linear]()
+    var scan = 0
+    while scan < length(obligations) {
+        let obligation = get(obligations, scan)
+        count_predicate_list(counts, obligation.facts, 256)
+        count_predicate_extents(counts, obligation.conclusion, 256)
+        scan = scan + 1
+    }
     let writer = SmtWriter {
         declarations = std.bytes.new()
         names = new[Text]()
         budget = budget
+        counts = counts
     }
     let body = std.bytes.new()
     smt_append(body, "(assert (not (and true")

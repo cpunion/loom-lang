@@ -1,0 +1,165 @@
+// Finite histogram algebra: an in-range store removes the old occurrence and
+// adds the new one. These are sequence laws, not trusted application lemmas.
+fn smt_bag_function(writer SmtWriter) {
+    var index = 0
+    while index < length(writer.names) {
+        if get(writer.names, index) == "loom_bag" {
+            return
+        }
+        index = index + 1
+    }
+    push(writer.names, "loom_bag")
+    smt_append(writer.declarations, "(declare-fun loom_bag ((Array Int Int) Int) (Array Int Int))\n")
+}
+
+fn smt_bag(writer SmtWriter, array Text, size Linear) Result[Text, Text] {
+    smt_bag_function(writer)
+    Result.Ok(concat("(loom_bag ", concat(array, concat(" ", concat(smt_linear(writer, size)?, ")")))))
+}
+
+fn bag_bound_scope(value Text, size Linear) Text {
+    let output = std.bytes.new()
+    var index = 0
+    var has_scope = false
+    while index < length(size.terms) {
+        let term = get(size.terms, index)
+        if term.id < 0 {
+            if !has_scope {
+                smt_append(output, "(forall (")
+                has_scope = true
+            }
+            smt_append(output, concat("(n", concat(std.int.to_text(term.id), " Int)")))
+        }
+        index = index + 1
+    }
+    if !has_scope {
+        return value
+    }
+    smt_append(output, concat(") ", concat(value, ")")))
+    std.bytes.to_text(output)
+}
+
+fn smt_count(writer SmtWriter, identity Int, inputs List[IntegerTerm], depth Int) Result[Text, Text] {
+    if length(inputs) != 2 {
+        return Result.Err("invalid histogram count operands")
+    }
+    let size = match get(inputs, 0) {
+        IntegerTerm.Linear(size) => size
+        _ => {
+            return Result.Err("histogram count needs a linear extent")
+        }
+    }
+    let array = smt_name(writer, "a", identity, "(Array Int Int)")
+    let bag = smt_bag(writer, array, size)?
+    let needle = smt_integer(writer, get(inputs, 1), depth + 1)?
+    let count = concat("(select ", concat(bag, " bv)"))
+    let limit = smt_linear(writer, size)?
+    let output = std.bytes.new()
+    smt_append(output, "(forall ((bv Int)) (and (<= 0 ")
+    smt_append(output, count)
+    smt_append(output, ") (<= ")
+    smt_append(output, count)
+    smt_append(output, " (ite (>= ")
+    smt_append(output, limit)
+    smt_append(output, " 0) ")
+    smt_append(output, limit)
+    smt_append(output, " 0))))")
+    smt_append(writer.declarations, concat("(assert ", concat(bag_bound_scope(std.bytes.to_text(output), size), ")\n")))
+    Result.Ok(concat("(select ", concat(bag, concat(" ", concat(needle, ")")))))
+}
+
+fn count_extent(output List[Linear], size Linear) {
+    var index = 0
+    while index < length(output) {
+        let prior = get(output, index)
+        if compare(prior.constant, size.constant) == 0 && same_terms(prior.terms, size.terms) {
+            return
+        }
+        index = index + 1
+    }
+    push(output, size)
+}
+
+fn count_term_extents(output List[Linear], term IntegerTerm, depth Int) {
+    if depth <= 0 {
+        return
+    }
+    match term {
+        IntegerTerm.Count(_, inputs) => {
+            if length(inputs) == 2 {
+                match get(inputs, 0) {
+                    IntegerTerm.Linear(size) => {
+                        count_extent(output, size)
+                    }
+                    _ => {
+                    }
+                }
+                count_term_extents(output, get(inputs, 1), depth - 1)
+            }
+        }
+        IntegerTerm.Apply(_, inputs) => {
+            var index = 0
+            while index < length(inputs) {
+                count_term_extents(output, get(inputs, index), depth - 1)
+                index = index + 1
+            }
+        }
+        _ => {
+        }
+    }
+}
+
+fn count_predicate_extents(output List[Linear], value Predicate, depth Int) {
+    if depth <= 0 {
+        return
+    }
+    match value {
+        Predicate.BagEqual(_, first, _, second) => {
+            count_extent(output, first)
+            count_extent(output, second)
+        }
+        Predicate.IntegerCompare(_, first, second) => {
+            count_term_extents(output, first, depth - 1)
+            count_term_extents(output, second, depth - 1)
+        }
+        Predicate.ArrayWrite(_, _, _, term) => {
+            count_term_extents(output, term, depth - 1)
+        }
+        Predicate.ArrayRead(_, _, term, guards) => {
+            count_term_extents(output, term, depth - 1)
+            count_predicate_extents(output, get(guards, 0), depth - 1)
+        }
+        Predicate.Forall(_, _, _, conditions) => {
+            count_predicate_extents(output, get(conditions, 0), depth - 1)
+        }
+        Predicate.And(values) => count_predicate_list(output, values, depth - 1)
+        Predicate.Or(values) => count_predicate_list(output, values, depth - 1)
+        Predicate.Equal(values) => count_predicate_list(output, values, depth - 1)
+        Predicate.Not(values) => count_predicate_list(output, values, depth - 1)
+        _ => {
+        }
+    }
+}
+
+fn count_predicate_list(output List[Linear], values List[Predicate], depth Int) {
+    var index = 0
+    while index < length(values) {
+        count_predicate_extents(output, get(values, index), depth)
+        index = index + 1
+    }
+}
+
+fn smt_bag_store(writer SmtWriter, previous Text, stored Text, position Text, value Text, size Linear) Result[Text, Text] {
+    let bag = smt_bag(writer, previous, size)?
+    let prior_value = concat("(select ", concat(previous, concat(" ", concat(position, ")"))))
+    let removed = concat("(store ", concat(bag, concat(" ", concat(prior_value,
+                    concat(" (- (select ", concat(bag, concat(" ", concat(prior_value, ") 1))"))))))))
+    let changed = concat("(store ", concat(removed, concat(" ", concat(value,
+                    concat(" (+ (select ", concat(removed, concat(" ", concat(value, ") 1))"))))))))
+    let limit = smt_linear(writer, size)?
+    let condition = concat("(and (<= 0 ", concat(position, concat(") (< ", concat(position,
+                    concat(" ", concat(limit, "))"))))))
+    let update = concat("(= ", concat(smt_bag(writer, stored, size)?,
+            concat(" (ite ", concat(condition, concat(" ", concat(changed, concat(" ", concat(bag, "))"))))))))
+    Result.Ok(bag_bound_scope(update, size))
+}

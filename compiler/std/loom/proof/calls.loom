@@ -190,7 +190,19 @@ fn established_checks(proof Verification, checks List[Evaluation], state State, 
         if !bounded_contract(check.guard) || !bounded_contract(check.value) {
             return Result.Err("body helper proof expansion budget exhausted")
         }
-        if check.required || !total_scalar(check.value) {
+        if check.universal {
+            var path = 0
+            while path < length(paths) {
+                let previous = get(paths, path)
+                let current = quantified_views(proof, check.value, previous.state, false, 256)?
+                discard condition_or_queue(proof.query, guarded_value(check.guard, check.value), current)?
+                set(paths, path, Outcome {
+                        state = current
+                        value = previous.value
+                    })
+                path = path + 1
+            }
+        } else if check.required || !total_scalar(check.value) {
             let value = if check.required {
                 check.value
             } else {
@@ -345,6 +357,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
             new[Int]()
         }
         origins = new[ObservationOrigin]()
+        binders = proof.fresh
     }
     discard summary_conditions(entry, function, function.preconditions, bindings)?
     let paths = established_checks(proof, entry.checks, state, depth)?
@@ -403,6 +416,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
                 new[Int]()
             }
             origins = new[ObservationOrigin]()
+            binders = proof.fresh
         }
         discard summary_conditions(context, function, function.postconditions, current_bindings)?
         let path = proof_expr(call, ExprKind.Local, function.result, "",
@@ -419,6 +433,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
             checks = new[Evaluation]()
             observations = context.observations
             origins = context.origins
+            binders = context.binders
         }
         var check_index = 0
         while check_index < length(context.checks) {
@@ -428,7 +443,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
                 guard.entry, guard.state)?
             after = observed.state
             before = observed.entry
-            discard evaluated(snapshots, guard.expression, observed.expression, check.required)?
+            discard evaluated(snapshots, guard.expression, observed.expression, check.required, check.universal)?
             check_index = check_index + 1
         }
         let captured = capture_entry(proof, value, before, after)?
@@ -476,6 +491,7 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
             new[Int]()
         }
         origins = new[ObservationOrigin]()
+        binders = proof.fresh
     }
     discard expansion_step(context, 0)?
     // A checked fresh factory needs no invented value contract. Its result is

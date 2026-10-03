@@ -20,6 +20,7 @@ record Evaluation {
     guard Expr
     value Expr
     required Bool
+    universal Bool
 }
 
 record ObservationOrigin {
@@ -35,6 +36,7 @@ record Expansion {
     checks List[Evaluation]
     observations List[Int]
     origins List[ObservationOrigin]
+    binders List[Int]
 }
 
 fn scalar_type(ty Int) Bool {
@@ -163,13 +165,18 @@ fn guarded_value(guard Expr, value Expr) Expr {
 }
 
 fn evaluated(context Expansion, guard Expr, value Expr, required Bool) Result[Bool, Text] {
+    evaluated(context, guard, value, required, false)
+}
+
+fn evaluated(context Expansion, guard Expr, value Expr, required Bool, universal Bool) Result[Bool, Text] {
     if length(context.checks) >= 256 {
         return Result.Err("helper evaluation budget exhausted")
     }
     push(context.checks, Evaluation {
             guard = guard
             value = value
-            required = required
+        required = required
+        universal = universal
         })
     Result.Ok(true)
 }
@@ -230,6 +237,9 @@ fn expanded_block(context Expansion, value Expr, guard Expr, bindings List[Expan
     if value.kind != ExprKind.Block || length(value.children) == 0 {
         return Result.Err("helper needs a scalar body")
     }
+    if scan_block(value) {
+        return expanded_scan(context, value, guard, bindings, locals, self, calls, depth + 1)
+    }
     // Keep the common straight-line path free of path lists; control-flow helpers
     // use the same expression expansion and guarded evaluation obligations.
     var scan = 0
@@ -269,6 +279,12 @@ fn expanded_block(context Expansion, value Expr, guard Expr, bindings List[Expan
 
 fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int) Result[Expr, Text] {
     discard expansion_step(context, depth)?
+    if quantified_expression(value) {
+        return expanded_quantifier(context, value, guard, bindings, locals, self, calls, depth + 1)
+    }
+    if bound_expression(value) {
+        return Result.Ok(value)
+    }
     if value.kind == ExprKind.Block {
         return expanded_block(context, value, guard, bindings, locals, self, calls, depth + 1, false)
     }
@@ -409,7 +425,7 @@ fn known_evaluation(premise Expr, goal Evaluation, source List[Evaluation]) Bool
     var index = 0
     while index < length(source) {
         let known = get(source, index)
-        if (!goal.required || known.required) && exact_expression(goal.value, known.value) &&
+        if !known.universal && (!goal.required || known.required) && exact_expression(goal.value, known.value) &&
         (is_bool(known.guard, true) || exact_expression(goal.guard, known.guard) || implies(premise, guarded_value(goal.guard, known.guard))) {
             return true
         }
@@ -433,6 +449,8 @@ fn evaluation_proved(query ProofQuery, premise Expr, guard Expr, value Expr, req
 fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengths Bool, backend ProofBackend) Result[Bool, Text] {
     let budget = new[Int]()
     push(budget, 1024)
+    let binders = new[Int]()
+    push(binders, 0)
     let source = Expansion {
         program = program
         list_lengths = list_lengths
@@ -441,6 +459,7 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
         checks = new[Evaluation]()
         observations = new[Int]()
         origins = new[ObservationOrigin]()
+        binders = binders
     }
     let left = normalized_predicate(expanded(source, premise, proof_bool(premise, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
     let target = Expansion {
@@ -451,6 +470,7 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
         checks = new[Evaluation]()
         observations = new[Int]()
         origins = new[ObservationOrigin]()
+        binders = binders
     }
     let right = normalized_predicate(expanded(target, conclusion, proof_bool(conclusion, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
     // Parameter substitution can share a small DAG whose unfolded tree is huge.
@@ -462,7 +482,7 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
     var index = 0
     while index < length(source.checks) {
         let check = get(source.checks, index)
-        if check.required {
+        if check.required && !check.universal {
             facts = proof_and(facts, normalized_predicate(guarded_value(check.guard, check.value))?)
         }
         index = index + 1
@@ -560,6 +580,13 @@ fn evaluated_bounds(value Expr) Expr {
 fn contract_predicates(program Program, locals List[Local], inputs List[Expr], entry Bool, budget List[Int], observations List[Int], origins List[ObservationOrigin]) Result[List[Expr], Text] {
     let output = new[Expr]()
     let bindings = new[ExpansionBinding]()
+    let binders = if length(observations) != 0 {
+        observations
+    } else {
+        let fresh = new[Int]()
+        push(fresh, 0)
+        fresh
+    }
     var index = 0
     while index < length(locals) && length(inputs) > 0 {
         let reference = proof_expr(get(inputs, 0), ExprKind.Local, get(locals, index).ty, "", index, new[Expr]())
@@ -580,6 +607,7 @@ fn contract_predicates(program Program, locals List[Local], inputs List[Expr], e
             checks = new[Evaluation]()
             observations = observations
             origins = origins
+            binders = binders
         }
         let predicate = expanded(context, input, proof_bool(input, true), bindings, locals, false, 0, 0)?
         var check_index = 0
@@ -588,7 +616,9 @@ fn contract_predicates(program Program, locals List[Local], inputs List[Expr], e
             if !bounded_contract(check.guard) || !bounded_contract(check.value) {
                 return Result.Err("contract helper proof expansion budget exhausted")
             }
-            if check.required {
+            if entry && check.universal {
+                // A false scan may stop before later checks execute.
+            } else if check.required {
                 discard contract_clause(output, guarded_value(check.guard, check.value), input)?
             } else {
                 if !total_scalar(check.value) {

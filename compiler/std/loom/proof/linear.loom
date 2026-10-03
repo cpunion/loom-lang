@@ -113,6 +113,19 @@ fn same_predicates(a List[Predicate], b List[Predicate]) Bool {
 
 fn same(a Predicate, b Predicate) Bool {
     match a {
+        Predicate.BagEqual(before, size, after, count) => match b {
+            Predicate.BagEqual(first, extent, second, other) => before == first && after == second &&
+            compare(size.constant, extent.constant) == 0 && same_terms(size.terms, extent.terms) &&
+            compare(count.constant, other.constant) == 0 && same_terms(count.terms, other.terms)
+            _ => false
+        }
+        Predicate.Forall(identity, start, end, conditions) => match b {
+            Predicate.Forall(other, first, last, values) => identity == other &&
+            compare(start.constant, first.constant) == 0 && same_terms(start.terms, first.terms) &&
+            compare(end.constant, last.constant) == 0 && same_terms(end.terms, last.terms) &&
+            same_predicates(conditions, values)
+            _ => false
+        }
         Predicate.IntegerCompare(relation, left, right) => match b {
             Predicate.IntegerCompare(other, first, second) => {
                 let budget = new[Int]()

@@ -2063,9 +2063,9 @@ Signed interval transfer composes integer `+`, `-` and `*` before SMT, using
 mathematical endpoints and a bounded traversal. It discharges known scalar ranges
 and overflow safety without discarding eager operand checks; loose ranges remain
 unproved. The CLI also enables Z3's bounded polynomial normalization before search,
-without extending the solver timeout. This adds no quantified loop inference,
-nonconstant division or universal pack
-proof. Nonlinear solving is incomplete: unknown or timeout still blocks a proof.
+without extending the solver timeout. Nonconstant division and universal pack
+proofs remain unsupported. Nonlinear solving is incomplete: unknown or timeout
+still blocks a proof.
 
 Constrained construction, scalar flow facts, pure-helper implication and supported
 List-append preservation use this same backend after their fast rules fail.
@@ -2105,8 +2105,8 @@ direction without rounding or machine overflow. This algebra does not prove
 equal contents from equal lengths or preserve stale heap observations. Each
 source arithmetic operation must still be proved defined; cancellation cannot
 hide an overflowing intermediate. Rank, coefficient-size or work exhaustion
-leaves this fast path unresolved. Nonlinear terms use SMT; quantified reasoning
-remains unsupported.
+leaves this fast path unresolved. Nonlinear terms and the bounded quantified
+fragment below use SMT, not the affine fast path.
 
 Linear inequalities also compose by bounded variable elimination: for example,
 `a + b <= limit` and `b >= reserve` establish `a <= limit - reserve` when
@@ -2190,9 +2190,9 @@ Pure helpers and supported List length refinements compose with generic function
 and inline fields. Extent-changing loops freshen affected lengths at the inductive head;
 all retained invariants still require entry/backedge proofs. See the
 [List contract example](examples/list_contracts), which proves length preservation
-during an actual sorting loop, **not** sortedness or permutation. Quantified
-collection invariants remain unsupported. These
-proof states add no native object metadata.
+during an actual sorting loop. The separate
+[quantified example](examples/smt_contracts/quantified.loom) also proves ordering
+and permutation. These proof states add no native object metadata.
 
 Aggregate summaries compose through nested calls, field projections and
 whole-value updates. Unconditional proved equalities such as
@@ -2276,8 +2276,7 @@ cache remains; evicting a cell does not remove its immutable version equation.
 Possibly overlapping alias writes, opaque effects, loop havoc and shared
 interference invalidate current versions. Old versions never become current
 again merely because their facts survive. Bounds and eager fault obligations
-remain independent. No runtime snapshots or solver are emitted. Quantified loop
-invariants remain unsupported. See the
+remain independent. No runtime snapshots or solver are emitted. See the
 [heap contract example](examples/smt_contracts/heap.loom).
 
 `old(values)` also captures a `List[Int]`'s complete logical entry length and
@@ -2294,6 +2293,28 @@ input cannot establish one coherent entry version. No implicit locking, freezing
 or ownership syntax is introduced. Mutable element graphs, other element domains
 and whole aggregates containing shared storage remain unsupported. See the
 [entry List example](examples/smt_contracts/snapshots.loom).
+
+Bounded pure scans can express whole-`List[Int]` predicates without special
+helper names or a new source quantifier syntax. The current fragment recognizes
+a stable exclusive upper bound, an `Int` cursor incremented by one, and an
+early-false Boolean test followed by `true`. A complete equality scan with a
+separate zero-based accumulator derives occurrence counts. Equal lengths and
+equal counts for every input element normalize to finite histogram equality;
+an in-range store removes the previous occurrence and adds the replacement.
+These sequence laws prove arbitrary-index swaps and permutation through calls
+and loops, including duplicates and equal indices.
+
+Loop inference proposes quantified prefix, suffix and comparison-boundary
+relations from the declared postconditions. Every candidate must hold initially
+and on every backedge, and survivors are rechecked after removal. The
+[ordinary sorting example](examples/smt_contracts/quantified.loom) proves both
+ordering and permutation without trusting the algorithm. Bound symbols remain
+scoped through nested scans, helper substitution, choices and `old` snapshots.
+Sufficient full-range safety is proved separately: an early-false scan does not
+establish checks for elements it never visited. Shared observations still require
+private storage. Unsupported scan shapes, other mutable element domains and
+exhausted inference reject required proofs; this is not general heap induction
+or a termination proof. Proof operations do not enter native IR or the runtime.
 
 Length-preserving loops can infer bounds/equalities for observed Int, Bool and
 Text elements, and scalar field relations in immutable inline elements. Source
@@ -2381,8 +2402,9 @@ provides a fact only after that assertion succeeds; the compiler never inserts
 an assertion to rescue a failed postcondition proof. Postcondition arithmetic
 must itself be defined within `Int` bounds.
 
-Pure-helper expansion still excludes loops, shared-storage mutation, cleanup and
-returns inside operands; verified callee summaries use the separate rules above.
+Pure-helper expansion supports the bounded scans above, but still excludes
+general loops, shared-storage mutation, cleanup and returns inside operands;
+verified callee summaries use the separate rules above.
 Recursive proof dependencies, dynamic calls without a usable declared contract,
 indirect calls and nonconstant division remain outside
 this proof fragment. Required Float proofs remain unsupported, while pure Float entry

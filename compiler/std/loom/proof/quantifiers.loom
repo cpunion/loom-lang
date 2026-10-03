@@ -1,0 +1,91 @@
+fn quantified_scope(expr Expr, state State) Result[State, Text] {
+    let start = list_value_index(pure(get(expr.children, 0), state)?)?
+    let end = list_value_index(pure(get(expr.children, 1), state)?)?
+    let bound = variable(expr.index)
+    Result.Ok(assume(assume(state,
+                Predicate.Compare(">=", add(bound, scale(start, integer(-1))))),
+            Predicate.Compare("<", add(bound, scale(end, integer(-1))))))
+}
+
+fn quantified_predicate(expr Expr, state State) Result[Predicate, Text] {
+    let start = list_value_index(pure(get(expr.children, 0), state)?)?
+    let end = list_value_index(pure(get(expr.children, 1), state)?)?
+    if index_relation(">=", start, end, state) {
+        return Result.Ok(Predicate.Constant(true))
+    }
+    let condition = boolean(pure(get(expr.children, 2), quantified_scope(expr, state)?)?)?
+    Result.Ok(Predicate.Forall(expr.index, start, end, predicates(condition)))
+}
+
+fn quantified_defined(expr Expr, state State) Result[Bool, Text] {
+    discard defined(get(expr.children, 0), state)?
+    discard defined(get(expr.children, 1), state)?
+    let start = list_value_index(pure(get(expr.children, 0), state)?)?
+    let end = list_value_index(pure(get(expr.children, 1), state)?)?
+    if index_relation(">=", start, end, state) {
+        return Result.Ok(true)
+    }
+    defined(get(expr.children, 2), difference_facts(quantified_scope(expr, state)?))
+}
+
+fn solver_quantified_defined(query ProofQuery, expr Expr, state State, depth Int) Result[Bool, Text] {
+    discard solver_defined(query, get(expr.children, 0), state, depth - 1)?
+    discard solver_defined(query, get(expr.children, 1), state, depth - 1)?
+    let start = list_value_index(pure(get(expr.children, 0), state)?)?
+    let end = list_value_index(pure(get(expr.children, 1), state)?)?
+    let inner = proof_query(query.backend)
+    discard solver_defined(inner, get(expr.children, 2), quantified_scope(expr, state)?, depth - 1)?
+    var index = 0
+    while index < length(inner.obligations) {
+        let obligation = get(inner.obligations, index)
+        var premise = Predicate.Constant(true)
+        var fact = 0
+        while fact < length(obligation.facts) {
+            premise = Predicate.And(predicates(premise, get(obligation.facts, fact)))
+            fact = fact + 1
+        }
+        let condition = Predicate.Or(predicates(not(premise), obligation.conclusion))
+        solver_fact(query, Predicate.Forall(expr.index, start, end, predicates(condition)), state)
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// A quantified expression observes one logical current version. The generated
+// predicate never executes a hypothetical read or adds its own bounds facts.
+fn quantified_views(proof Verification, expr Expr, state State, inside Bool, depth Int) Result[State, Text] {
+    if depth <= 0 {
+        return Result.Err("quantified observation depth exhausted")
+    }
+    var current = state
+    let nested = inside || quantified_expression(expr)
+    if count_expression(expr) || (inside && list_read_expression(expr) && expr.ty == 1) {
+        match pure(get(expr.children, 0), current)? {
+            Value.List(identity) => {
+                if proof.shared && !list_state(identity, current)?.private_storage {
+                    return Result.Err("quantified List observation is not proved interference-safe")
+                }
+                current = array_contents(proof, identity, current)?
+            }
+            Value.EntryList(_, _) => {
+            }
+            _ => {
+                return Result.Err("quantified read requires a tracked Int List")
+            }
+        }
+    }
+    var index = 0
+    while index < length(expr.children) {
+        current = quantified_views(proof, get(expr.children, index), current, nested, depth - 1)?
+        index = index + 1
+    }
+    Result.Ok(current)
+}
+
+fn execute_quantifier(proof Verification, expr Expr, state State) Result[List[Outcome], Text] {
+    let current = quantified_views(proof, expr, state, false, 256)?
+    // A normal early-false result does not establish checks for later elements.
+    // Require the stronger sufficient safety proof before using the abstraction.
+    discard solver_defined(proof.query, expr, current, 256)?
+    Result.Ok(outcomes(current, Value.Boolean(quantified_predicate(expr, current)?)))
+}

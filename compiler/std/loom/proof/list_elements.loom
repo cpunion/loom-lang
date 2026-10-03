@@ -298,6 +298,7 @@ fn established_entry(proof Verification, state State) Result[List[Outcome], Text
                 guard = proof_bool(condition, true)
                 value = condition
                 required = true
+                universal = false
             })
         index = index + 1
     }

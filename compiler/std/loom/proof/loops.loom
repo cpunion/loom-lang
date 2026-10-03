@@ -149,7 +149,7 @@ fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] 
             }
             boolean(binary(relation, value, initial)?)
         }
-        LoopCandidate.Guard(expr) => boolean(pure(expr, state)?)
+        LoopCandidate.Guard(expr) => Result.Ok(bag_fact(boolean(pure(expr, state)?)?, state.facts))
         LoopCandidate.ExtentLocal(identity, local) => boolean(binary("==",
                 Value.Number(list_extent(identity, state)?), get(state.locals, local))?)
         LoopCandidate.EntryExtent(index, path, relation, initial) => {
@@ -228,6 +228,7 @@ fn loop_candidate_guard(proof Verification, guard Expr) Expr {
         checks = new[Evaluation]()
         observations = new[Int]()
         origins = new[ObservationOrigin]()
+        binders = proof.fresh
     }
     match expanded(context, guard, proof_bool(guard, true), bindings,
         proof.function.locals, false, 0, 0) {
@@ -390,8 +391,10 @@ fn loop_assumptions(head State, candidates List[LoopCandidate]) Result[State, Te
 fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], depth Int) Result[List[Outcome], Text] {
     let guard = get(expr.children, 0)
     let body = get(expr.children, 1)
-    var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, entry)?
-    var storage = loop_extents(proof, expr, entry, writes)?
+    let observed = loop_query_views(proof, proof.function.postconditions, entry)
+    var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, observed)?
+    loop_quantified_candidates(proof, candidates, writes, guard, observed)
+    var storage = loop_extents(proof, expr, observed, writes)?
     if length(storage.extents) != 0 && !elements_preserving(proof.program, expr) {
         if extent_preserving(proof.program, expr) {
             storage = loop_element_head(proof, storage)?
@@ -403,6 +406,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
         }
     }
     var head = loop_head(proof, writes, storage)
+    head = loop_query_views(proof, proof.function.postconditions, head)
     candidates = available_loop_candidates(candidates, head)
     while true {
         discard loop_step(proof)?
@@ -437,7 +441,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             var edge = 0
             while edge < length(backedges) && preserved {
                 let state = get(backedges, edge).state
-                preserved = loop_candidate_preserved(candidate, state)
+                preserved = quantified_candidate_preserved(proof, candidate, state)
                 edge = edge + 1
             }
             if preserved {

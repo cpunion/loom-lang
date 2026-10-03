@@ -24,6 +24,7 @@ enum IntegerTerm {
     Linear(Linear)
     Apply(Text, List[IntegerTerm])
     Select(Int, Linear)
+    Count(Int, List[IntegerTerm])
 }
 
 enum Predicate {
@@ -38,6 +39,8 @@ enum Predicate {
     IntegerCompare(Text, IntegerTerm, IntegerTerm)
     ArrayRead(Int, Linear, IntegerTerm, List[Predicate])
     ArrayWrite(Int, Int, Linear, IntegerTerm)
+    Forall(Int, Linear, Linear, List[Predicate])
+    BagEqual(Int, Linear, Int, Linear)
 }
 
 enum Value {
@@ -182,7 +185,7 @@ fn append_facts(output List[Predicate], fact Predicate) {
                         scale(text_length(right), integer(-1)))))
         }
         _ => {
-            push(output, fact)
+            push(output, bag_fact(fact, output))
         }
     }
 }
