@@ -214,19 +214,56 @@ ensures result == value
 fn local_values() List[Int]
 ensures length(result) == 3 && get(result, 1) == 7
 {
-    let values = [1, 2]
+    let values = local_seed()
     let alias = values
     push(alias, 3)
     set(values, 1, 7)
     values
 }
 
+fn local_seed() List[Int]
+ensures length(result) == 2 && get(result, 1) == 2
+{
+    [1, 2]
+}
+
+fn scalar_step(value Int) Int
+ensures result == value
+{
+    value
+}
+
 fn local_count() Int
 ensures result == 3
 {
     let values = [1, 2]
-    push(values, 3)
+    push(values, scalar_step(3))
     length(values)
+}
+
+fn shared_count(values List[Int]) Int
+requires length(values) >= 0
+ensures result >= 0 && length(values) >= 0 && old(length(values)) >= 0
+{
+    length(values)
+}
+
+fn shared_handle(values List[Int]) List[Int]
+ensures length(result) >= 0
+{
+    values
+}
+
+test async fn shared_contracts_use_independent_current_and_entry_observations() {
+    let values = [1, 2]
+    let count, alias = (run(fn() Int {
+                shared_count(values)
+            }), run(fn() List[Int] {
+                shared_handle(values)
+            })).await
+    assert count == 2 && length(alias) == 2
+    push(alias, 3)
+    assert length(values) == 3
 }
 
 test async fn private_storage_retains_required_proofs_inside_workers() {

@@ -34,4 +34,7 @@ async fn main() {
     let a, b = (first, second).await
     assert a == 144 && b == 233
     assert get(values, 0) == 2
+    assert run(fn() Int {
+            observed_count(values)
+        }).await == 1
 }

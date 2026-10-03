@@ -2981,21 +2981,28 @@ synchronous I/O parks the mutator but can delay cancellation until the OS call
 returns. Scoped resources and owner-local Tasks/native tokens cannot cross the
 worker boundary; acquire and close resources within the callback.
 
-Shared builds revalidate mandatory contracts. Scalar snapshots and observations
-of fresh, unpublished Lists remain facts; independently shared observations do
-not. A factory can prove the length and indexed contents of its private result.
-Publication through stored mutable graphs or opaque calls conservatively loses
-privacy, including across loop iterations. Shared input/entry predicates remain
-unsupported; a lock alone does not prove that all aliases obey it.
+Shared builds revalidate mandatory contracts. Each shared entry, `old` and
+current List observation is independent; scalar snapshots and observations of
+fresh, unpublished Lists remain stable. Length nonnegativity is provable, but
+two reads are not assumed equal and an earlier length check cannot justify a
+later shared indexed access. Short circuits and hypothetical arithmetic still
+need safety proofs. Private factory contracts compose through finite source
+helpers. Publication through mutable graphs or opaque calls conservatively loses
+privacy, including across loop iterations. A lock alone does not prove that all
+aliases obey it; general synchronized heap reasoning remains unsupported.
 
 Within worker-enabled builds, checked storage escape analysis removes access
 guards for invocation-local List/Bytes/captured storage, including aliases and
 fresh returned buffers. Containers, captures, branches, loops and cleanup all
-contribute escape edges; unknown calls retain guards. Identity-only primitive
-forwarders use the same direct operations at private call sites. This does not
-remove moving-GC roots or cancellation checkpoints, infer ownership, or make
-compound operations atomic. Broader interprocedural escape summaries and shared
-heap proofs remain open. Builds with no workers retain their existing lowering.
+contribute escape edges. Direct-call summaries compose publication, argument
+aliases and returned storage to a fixed point, including recursion. A helper
+parameter is private only when every incoming direct-call context is private;
+mixed contexts keep one guarded body, without specialization clones. Callback,
+dynamic and external entry parameters remain conservative. Unknown calls retain
+guards; identity-only primitive forwarders use the same direct operations at
+private call sites. This does not remove moving-GC roots or cancellation
+checkpoints, infer ownership, or make compound operations atomic. Builds with
+no workers retain their existing lowering.
 
 ## Source Tasks
 

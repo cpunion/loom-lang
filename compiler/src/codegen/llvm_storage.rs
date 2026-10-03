@@ -1,11 +1,133 @@
 //! Conservative, flow-insensitive escape analysis of checked storage. Aliases,
-//! containers and captures share a component; unknown calls publish that whole
-//! component. Returning local storage does not publish it during this invocation.
+//! containers and captures share a component. Direct calls compose finite alias,
+//! publication and result summaries; unknown calls publish their arguments.
+//! Returning local storage does not publish it during this invocation.
 //! GC roots and cancellation checkpoints are independent of this analysis.
 
 use super::*;
 
 pub(super) type Forwarders = HashMap<usize, Primitive>;
+
+#[derive(Default, PartialEq, Eq)]
+struct Summary {
+    aliases: Vec<(usize, usize)>,
+    published: BTreeSet<usize>,
+    result_params: BTreeSet<usize>,
+    result_shared: bool,
+}
+
+type Summaries = HashMap<usize, Summary>;
+
+#[derive(Default)]
+pub(super) struct StoragePlan {
+    pub functions: HashMap<usize, PrivateStorage>,
+    pub forwarders: Forwarders,
+}
+
+impl StoragePlan {
+    pub fn analyze(
+        program: &checked::Program,
+        reachable: &BTreeSet<usize>,
+        roots: &[usize],
+        witnesses: &BTreeSet<usize>,
+    ) -> Self {
+        // Least fixed point: facts only grow. Recursion contributes exactly the
+        // aliases/publications reachable in its checked bodies, not a purity
+        // promise or a sampled depth. Unknown/native/dynamic calls stay opaque.
+        let mut summaries: Summaries = reachable
+            .iter()
+            .map(|id| (*id, Summary::default()))
+            .collect();
+        loop {
+            let mut changed = false;
+            for id in reachable {
+                let source = &program.functions[*id];
+                let mut analysis = Analysis::new(program, source, &summaries, &[]);
+                analysis.function(source);
+                let summary = analysis.summary(source);
+                if summaries[id] != summary {
+                    summaries.insert(*id, summary);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // A single body is emitted, so a parameter is private only if *every*
+        // incoming context is private. References, witnesses and exported entry
+        // points can receive arbitrary storage; they never inherit local facts.
+        let mut shared_params: HashMap<usize, Vec<bool>> = reachable
+            .iter()
+            .map(|id| (*id, vec![false; program.functions[*id].params.len()]))
+            .collect();
+        let mut unknown = roots.iter().copied().collect::<BTreeSet<_>>();
+        for id in reachable {
+            let source = &program.functions[*id];
+            let mut values = Vec::new();
+            for requirement in &source.requires {
+                gc::expressions(requirement, &mut values);
+            }
+            gc::block_expressions(&source.body, &mut values);
+            for value in values {
+                match value.kind {
+                    checked::ExprKind::FunctionRef(target)
+                    | checked::ExprKind::Closure {
+                        function: target, ..
+                    } => {
+                        unknown.insert(target);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for id in witnesses {
+            unknown.extend(program.witnesses[*id].methods.iter().flatten());
+        }
+        for id in unknown {
+            if let Some(params) = shared_params.get_mut(&id) {
+                params.fill(true);
+            }
+        }
+        loop {
+            let mut changed = false;
+            for id in reachable {
+                let source = &program.functions[*id];
+                let mut analysis = Analysis::new(program, source, &summaries, &shared_params[id]);
+                analysis.function(source);
+                for (target, args) in std::mem::take(&mut analysis.calls) {
+                    if let Some(params) = shared_params.get_mut(&target) {
+                        for (index, node) in args.into_iter().enumerate() {
+                            if let Some(node) = node {
+                                let root = analysis.root(node);
+                                if analysis.escaped[root] && !params[index] {
+                                    params[index] = true;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        Self {
+            forwarders: forwarders(program, reachable),
+            functions: reachable
+                .iter()
+                .map(|id| {
+                    let source = &program.functions[*id];
+                    let mut analysis =
+                        Analysis::new(program, source, &summaries, &shared_params[id]);
+                    analysis.function(source);
+                    (*id, analysis.private())
+                })
+                .collect(),
+        }
+    }
+}
 
 // Only identity forwarding with no guards or extra work can become the same
 // primitive at a private call site. Source names confer no special behavior.
@@ -100,48 +222,83 @@ impl PrivateStorage {
         self.expressions
             .contains(&(value as *const checked::Expr as usize))
     }
+}
 
-    pub fn analyze(
-        program: &checked::Program,
+struct Analysis<'a> {
+    program: &'a checked::Program,
+    summaries: &'a Summaries,
+    parents: Vec<usize>,
+    escaped: Vec<bool>,
+    values: HashMap<usize, usize>,
+    calls: Vec<(usize, Vec<Option<usize>>)>,
+    returned: Option<usize>,
+}
+
+impl Analysis<'_> {
+    fn new<'a>(
+        program: &'a checked::Program,
         source: &checked::Function,
-        forwarders: &Forwarders,
-    ) -> Self {
+        summaries: &'a Summaries,
+        shared_params: &[bool],
+    ) -> Analysis<'a> {
         let mut analysis = Analysis {
             program,
-            forwarders,
+            summaries,
             parents: Vec::new(),
             escaped: Vec::new(),
             values: HashMap::new(),
+            calls: Vec::new(),
+            returned: None,
         };
-        // Local nodes exist even for scalars, but only mutable-containing values
-        // create edges. Every possible assignment and branch contributes.
         for index in 0..source.locals.len() {
-            analysis.node(index < source.params.len());
+            analysis.node(shared_params.get(index).copied().unwrap_or(false));
         }
+        analysis
+    }
+
+    fn function(&mut self, source: &checked::Function) {
         for value in &source.requires {
-            analysis.expr(value);
+            self.expr(value);
         }
-        analysis.block(&source.body);
-        let mut result = Self::default();
-        for (value, node) in std::mem::take(&mut analysis.values) {
-            let root = analysis.root(node);
-            if !analysis.escaped[root] {
+        let value = self.block(&source.body);
+        self.returned = self.join(self.returned, value);
+    }
+
+    fn summary(&mut self, source: &checked::Function) -> Summary {
+        let mut result = Summary::default();
+        let returned = self.returned.map(|node| self.root(node));
+        result.result_shared = returned.is_some_and(|root| self.escaped[root]);
+        for (index, ty) in source.params.iter().enumerate() {
+            if !storage(self.program, *ty) {
+                continue;
+            }
+            let root = self.root(index);
+            if self.escaped[root] {
+                result.published.insert(index);
+            }
+            if Some(root) == returned {
+                result.result_params.insert(index);
+            }
+            for (other, ty) in source.params.iter().enumerate().take(index) {
+                if storage(self.program, *ty) && self.root(other) == root {
+                    result.aliases.push((other, index));
+                }
+            }
+        }
+        result
+    }
+
+    fn private(&mut self) -> PrivateStorage {
+        let mut result = PrivateStorage::default();
+        for (value, node) in std::mem::take(&mut self.values) {
+            let root = self.root(node);
+            if !self.escaped[root] {
                 result.expressions.insert(value);
             }
         }
         result
     }
-}
 
-struct Analysis<'a> {
-    program: &'a checked::Program,
-    forwarders: &'a Forwarders,
-    parents: Vec<usize>,
-    escaped: Vec<bool>,
-    values: HashMap<usize, usize>,
-}
-
-impl Analysis<'_> {
     fn node(&mut self, escaped: bool) -> usize {
         let id = self.parents.len();
         self.parents.push(id);
@@ -212,11 +369,24 @@ impl Analysis<'_> {
             } => self.expr(inner),
             E::Binary(_, left, right) => self.values([left.as_ref(), right.as_ref()]),
             E::Call(target, args) => {
-                if let Some(operation) = self.forwarders.get(target) {
-                    self.primitive(*operation, args)
+                let args: Vec<_> = args.iter().map(|arg| self.expr(arg)).collect();
+                self.calls.push((*target, args.clone()));
+                if let Some(summary) = self.summaries.get(target) {
+                    for (left, right) in &summary.aliases {
+                        self.join(args[*left], args[*right]);
+                    }
+                    for index in &summary.published {
+                        self.publish(args[*index]);
+                    }
+                    let mut result = Some(self.node(summary.result_shared));
+                    for index in &summary.result_params {
+                        result = self.join(result, args[*index]);
+                    }
+                    result
                 } else {
-                    let args = self.values(args);
-                    self.publish(args);
+                    for arg in args {
+                        self.publish(arg);
+                    }
                     Some(self.node(true))
                 }
             }
@@ -286,8 +456,11 @@ impl Analysis<'_> {
                     let value = self.expr(value);
                     self.join(Some(*local), value);
                 }
-                S::Return(Some(value))
-                | S::Assert {
+                S::Return(Some(value)) => {
+                    let value = self.expr(value);
+                    self.returned = self.join(self.returned, value);
+                }
+                S::Assert {
                     condition: value, ..
                 }
                 | S::Discard(value)
@@ -383,7 +556,10 @@ mod tests {
                 },
                 span: Default::default(),
             };
-            let private = PrivateStorage::analyze(&program, &source, &Forwarders::new());
+            let summaries = Summaries::new();
+            let mut analysis = Analysis::new(&program, &source, &summaries, &[]);
+            analysis.function(&source);
+            let private = analysis.private();
             let S::Discard(read) = &source.body.statements[2].kind else {
                 unreachable!()
             };

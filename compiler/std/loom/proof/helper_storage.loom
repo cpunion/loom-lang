@@ -1,0 +1,78 @@
+// A finite checked footprint retains private storage across source helpers.
+// No names, unverified purity annotations or external implementation guesses
+// confer locality. Unknown calls, captures and mutable payload stores fail shut.
+fn local_storage_operation(program Program, name Text, arguments List[Expr]) Bool {
+    if name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" {
+        return true
+    }
+    let stored = if name == "list_set" {
+        2
+    } else {
+        if name == "list_push" {
+            1
+        } else {
+            -1
+        }
+    }
+    stored >= 0 && stored < length(arguments) && immutable_storage_type(program, get(arguments, stored).ty, 0)
+}
+
+fn immutable_storage_type(program Program, ty Int, depth Int) Bool {
+    if scalar_type(ty) || ty == 0 {
+        return true
+    }
+    if depth >= 16 || ty < 0 || ty >= length(program.types) {
+        return false
+    }
+    let shape = get(program.types, ty)
+    if shape.kind != TypeKind.Refined && shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        return false
+    }
+    var index = 0
+    while index < length(shape.fields) {
+        if !immutable_storage_type(program, get(shape.fields, index).ty, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn storage_local(program Program, body Expr) Bool {
+    let budget = new[Int]()
+    push(budget, 256)
+    preserves_list_state(program, body, budget, StorageRequirement.Local, 0)
+}
+
+// With no incoming mutable graph and no publication/opaque source, every
+// returned mutable leaf is fresh. This says nothing about its values: those
+// still come only from the callee's independently verified postconditions.
+fn private_factory(program Program, function Function) Bool {
+    if function.runtime_name != "" || function.is_async {
+        return false
+    }
+    var index = 0
+    while index < length(function.params) {
+        if !immutable_storage_type(program, get(function.params, index), 0) {
+            return false
+        }
+        index = index + 1
+    }
+    storage_local(program, function.body)
+}
+
+fn fresh_storage(value Value, state State) State {
+    match value {
+        Value.List(identity) => with_extent(identity, variable(identity), true, state)
+        Value.Record(fields) => {
+            var current = state
+            var index = 0
+            while index < length(fields) {
+                current = fresh_storage(get(fields, index), current)
+                index = index + 1
+            }
+            current
+        }
+        _ => state
+    }
+}

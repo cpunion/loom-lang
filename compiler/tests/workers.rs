@@ -56,6 +56,10 @@ fn workers_reject_resource_transfer_and_stale_shared_proofs() {
         "async fn main() { let mutex = new()\nscoped result = run(fn() Guard { lock(mutex) }).await }",
         "fn unchanged(values List[Int]) Int ensures result == std.list.length(values) { std.list.length(values) }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
         "fn unchanged(values List[Int]) List[Int] requires length(values) == 1 ensures length(result) == 1 { values }\nasync fn main() { discard run(fn() List[Int] { unchanged([1]) }).await }",
+        "fn unchanged(values List[Int]) Int ensures length(values) == length(values) { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
+        "fn unchanged(values List[Int]) Int ensures result == old(length(values)) { length(values) }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
+        "fn unchanged(values List[Int]) Int requires length(values) >= 1 ensures length(values) == 0 || get(values, 0) == result { get(values, 0) }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
+        "fn unchanged(values List[Int]) Int requires length(values) < 9223372036854775807 ensures length(values) + 1 >= 1 { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
         "fn local() Int ensures result == 1 { let original = [1]\nlet nested = [original]\nstd.list.push(std.list.get(nested, 0), 2)\nlength(original) }\nasync fn main() { discard run(local).await }",
     ] {
         std::fs::write(package.path().join("main.loom"), format!(
@@ -93,6 +97,112 @@ fn ordinary_list_programs_keep_direct_lowering_without_worker_runtime() {
     assert!(!ir.contains("loom_rt_shared_access"));
     assert!(!ir.contains("loom_rt_task_run_shared"));
     success(&common::run_tasks(&binary));
+}
+
+#[test]
+fn direct_helper_summaries_keep_private_calls_fast_and_shared_calls_guarded() {
+    let package = tempfile::tempdir().unwrap();
+    std::fs::write(
+        package.path().join("main.loom"),
+        r#"
+import std.list.get
+import std.list.set
+import std.task.worker.run
+
+fn create(value Int) List[Int] {
+    [value]
+}
+
+fn alias(values List[Int]) List[Int] {
+    values
+}
+
+fn private_step(values List[Int], count Int) {
+    if count > 0 {
+        set(values, 0, get(values, 0) + 1)
+        private_step(values, count - 1)
+    }
+}
+
+fn shared_step(values List[Int]) {
+    set(values, 0, get(values, 0) + 1)
+}
+
+fn publish(target List[List[Int]], values List[Int]) {
+    set(target, 0, values)
+}
+
+async fn main() {
+    let worker = run(fn() Int {
+            let values = alias(create(10))
+            private_step(values, 2)
+            get(values, 0)
+        })
+    let values = [0]
+    // Both contexts use one shared_step body, not exponentially many clones.
+    shared_step(create(20))
+    let shared = run(fn() {
+            shared_step(values)
+        })
+    assert worker.await == 12
+    shared.await
+    assert get(values, 0) == 1
+    let target = [[0]]
+    let published = run(fn() {
+            let local = create(30)
+            // A later publication keeps even earlier accesses guarded.
+            shared_step(local)
+            publish(target, local)
+        })
+    published.await
+    assert get(get(target, 0), 0) == 31
+}
+"#,
+    )
+    .unwrap();
+    let binary = common::executable(package.path(), "helpers");
+    let ir = package.path().join("helpers.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                package.path().to_str().unwrap(),
+                "--output",
+                binary.to_str().unwrap(),
+                "--emit-ir",
+                ir.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        success(&common::run_tasks(&binary));
+        if level == "0" {
+            let text = std::fs::read_to_string(&ir).unwrap();
+            let bodies: Vec<_> = text
+                .split("\ndefine ")
+                .filter(|body| body.contains("list.element"))
+                .collect();
+            let recursive = bodies
+                .iter()
+                .find(|body| {
+                    let name = body.split('@').nth(1).unwrap().split('(').next().unwrap();
+                    body.contains(&format!("call void @{name}("))
+                })
+                .expect("missing private recursive helper");
+            assert!(
+                !recursive.contains("call void @loom_rt_shared_access"),
+                "private recursive helper retained locks: {recursive}"
+            );
+            assert!(recursive.contains("@loom_rt_worker_checkpoint"));
+            assert!(
+                bodies
+                    .iter()
+                    .any(|body| { body.contains("call void @loom_rt_shared_access_begin") }),
+                "mixed-context helper lost its locks"
+            );
+        }
+    }
 }
 
 #[test]

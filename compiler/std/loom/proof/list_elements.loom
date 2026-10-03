@@ -66,12 +66,12 @@ fn forget_elements(state State) State {
 
 // A structurally read-only call cannot invalidate observations captured for
 // its own old clauses. Preserve them without replacing fresh result handles.
-fn preserved_elements(entry State, current State) State {
+fn preserved_elements(entry State, current State, shared Bool) State {
     var state = current
     var index = 0
     while index < length(entry.extents) {
         let extent = get(entry.extents, index)
-        if length(extent.cells) != 0 {
+        if length(extent.cells) != 0 && (!shared || extent.private_storage) {
             state = with_cells(extent.identity, extent.cells, state)
         }
         index = index + 1
@@ -248,7 +248,7 @@ fn established_entry(proof Verification, state State) Result[List[Outcome], Text
         reads = reads || contains_list_read(get(conditions, index))
         index = index + 1
     }
-    if !reads {
+    if !reads && !proof.shared {
         var current = state
         index = 0
         while index < length(conditions) {

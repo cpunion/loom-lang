@@ -146,11 +146,14 @@ or per-access locks without need.
 The [worker guide](../../compiler/README.md#shared-workers) records runnable
 examples and current conservative boundaries. In particular, worker-enabled
 builds do not reuse sequential heap-observation certificates. Scalar snapshots
-and private List construction/results have proof support; shared input/entry
-predicates still need broader interference reasoning. Escape analysis removes
-guards from proven invocation-local storage while retaining GC roots and
-cancellation checkpoints. Unknown calls remain conservative. Private access
-guards do not make source library calls atomic.
+and private List construction/results have proof support through finite helper
+contracts. Shared entry, old and current observations are independent; length
+nonnegativity survives interference, stale equality/index guards do not. General
+synchronized heap reasoning remains open. Escape analysis composes direct-call
+publication, aliases and returns, including recursion; only helper parameters
+whose every call context is private lose guards. Unknown, callback and dynamic
+contexts remain conservative. GC roots and cancellation checkpoints remain.
+Private access guards do not make source library calls atomic.
 
 ## Implementation boundary
 
