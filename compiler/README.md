@@ -2991,8 +2991,13 @@ Checked clauses retain these identities across cache reuse; each invocation
 imports a fresh scope. Reusing a scalar snapshot does not freeze its source.
 Short circuits and hypothetical arithmetic still
 need safety proofs. Private factory contracts compose through finite source
-helpers. Publication through mutable graphs or opaque calls conservatively loses
-privacy, including across loop iterations. A lock alone does not prove that all
+helpers. Checked allocation/return origins also recognize explicit scalar-element
+copies from shared inputs, including source `std.list.clone` and inline wrappers.
+Without postconditions, a factory supplies arbitrary typed storage, not guessed
+lengths or contents. Shared elements stay shared; copying is not an atomic
+snapshot under concurrent mutation. Multiple returned mutable fields may alias
+and are not assumed disjoint. Publication through mutable graphs or opaque calls
+conservatively loses privacy, including across loop iterations. A lock alone does not prove that all
 aliases obey it; general synchronized heap reasoning remains unsupported.
 
 Within worker-enabled builds, checked storage escape analysis removes access

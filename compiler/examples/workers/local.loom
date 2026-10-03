@@ -4,6 +4,7 @@ import std.bytes.length
 import std.list.new
 import std.list.push
 import std.list.length
+import std.list.clone
 
 // Storage created inside one invocation needs neither implicit copying nor
 // shared-access locks. Its ordinary GC roots and cancellation points remain.
@@ -58,4 +59,14 @@ fn observed_snapshot(values List[Int]) Int
 ensures same_count(std.list.length(values)) && same_count(old(std.list.length(values)))
 {
     std.list.length(values)
+}
+
+// Explicit copying isolates this outer List, not any shared elements it holds.
+// No value postcondition is invented for clone; the checked body proves origin.
+fn extended_copy(values List[Int]) Int
+ensures result >= 1
+{
+    let copied = clone(values)
+    std.list.push(copied, 7)
+    std.list.length(copied)
 }

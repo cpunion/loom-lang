@@ -26,3 +26,10 @@ bindings are evaluated once, so the helper can reuse that scalar snapshot.
 Writing `length(values) == length(values)` instead makes two independent reads
 and cannot prove equality under interference. The same distinction applies to
 `old` observations; a snapshot does not freeze the underlying List.
+
+`extended_copy` explicitly clones a shared `List[Int]` before appending. The
+checked source body's allocation and return paths establish private storage;
+no ownership syntax or name-specific compiler rule is involved. A clone copies
+only the outer List: contained shared values keep their aliases. Concurrent
+mutation does not promise an atomic snapshot. The worker tests also check that
+changing the original cannot resize the scalar-element copy.

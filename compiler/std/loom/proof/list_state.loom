@@ -26,8 +26,12 @@ fn extent_bounds(size Linear, state State) State {
 }
 
 fn with_extent(identity Int, size Linear, allocated Bool, state State) State {
+    with_extent(identity, size, allocated, allocated, state)
+}
+
+fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool, state State) State {
     let extents = new[ListExtent]()
-    var private_storage = allocated
+    var private_storage = initially_private
     var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)

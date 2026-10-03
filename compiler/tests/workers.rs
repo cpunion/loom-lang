@@ -151,6 +151,103 @@ async fn main() {
 }
 
 #[test]
+fn shared_factory_proofs_reject_aliases_and_publication() {
+    for (params, factory, argument) in [
+        ("values List[Int]", "values", "[1]"),
+        (
+            "values List[Int]",
+            "if length(values) > 0 { return values }\nclone(values)",
+            "[1]",
+        ),
+        (
+            "values List[Int]",
+            "var copied = clone(values)\ncopied = values\ncopied",
+            "[1]",
+        ),
+        (
+            "values List[List[Int]]",
+            "get([get(values, 0)], 0)",
+            "[[1]]",
+        ),
+        (
+            "values List[List[Int]]",
+            "let copied = [1]\npush(values, copied)\ncopied",
+            "[[1]]",
+        ),
+    ] {
+        let package = tempfile::tempdir().unwrap();
+        std::fs::write(
+            package.path().join("factory.loom"),
+            format!(
+                r#"
+import std.list.clone
+import std.list.length
+import std.list.push
+import std.list.get
+
+fn copied({params}) List[Int]
+ensures length(result) >= 0
+{{
+    {factory}
+}}
+
+fn extended({params}) Int
+ensures result >= 1
+{{
+    let output = copied(values)
+    push(output, 7)
+    length(output)
+}}
+
+"#
+            ),
+        )
+        .unwrap();
+        let main = package.path().join("main.loom");
+        let cache = package.path().join("cache");
+        let check = || {
+            common::command(&[
+                "check",
+                package.path().to_str().unwrap(),
+                "--frontend-cache",
+                cache.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+        };
+        std::fs::write(
+            &main,
+            format!("fn main() {{ discard extended({argument}) }}\n"),
+        )
+        .unwrap();
+        success(&check());
+        std::fs::write(
+            main,
+            format!(
+                r#"
+import std.task.worker.run
+
+async fn main() {{
+    let values = {argument}
+    discard run(fn() Int {{
+            extended(values)
+        }}).await
+}}
+"#
+            ),
+        )
+        .unwrap();
+        let output = check();
+        assert!(!output.status.success(), "accepted factory: {factory}");
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            message.contains("interference-safe") || message.contains("required postcondition"),
+            "factory {factory}: {message}"
+        );
+    }
+}
+
+#[test]
 fn ordinary_list_programs_keep_direct_lowering_without_worker_runtime() {
     let temporary = tempfile::tempdir().unwrap();
     let binary = common::executable(temporary.path(), "local");

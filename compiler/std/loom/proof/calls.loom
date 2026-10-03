@@ -349,6 +349,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
     discard summary_conditions(entry, function, function.preconditions, bindings)?
     let paths = established_checks(proof, entry.checks, state, depth)?
     let local_storage = !proof.shared || storage_local(proof.program, function.body)
+    let private_result = private_factory(proof.program, function)
     let stable = local_storage && (length(state.extents) == 0 || extent_preserving(proof.program, function.body))
     let output = new[Outcome]()
     var index = 0
@@ -372,7 +373,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
             after = forget_elements(after)
         }
         let result_value = record_parameter_value(proof, function.result, 0)
-        if proof.shared && private_factory(proof.program, function) {
+        if private_result {
             after = fresh_storage(result_value, after)
         }
         let result_values = new[Value]()
@@ -477,7 +478,9 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         origins = new[ObservationOrigin]()
     }
     discard expansion_step(context, 0)?
-    if length(function.postconditions) != 0 || function.result == 0 {
+    // A checked fresh factory needs no invented value contract. Its result is
+    // arbitrary typed storage; the body footprint supplies only private origin.
+    if length(function.postconditions) != 0 || function.result == 0 || private_factory(proof.program, function) {
         return applied_summary(proof, call, function, state, bindings, boundary, depth)
     }
     // Arguments already ran once. Only snapshot references and a finite pure

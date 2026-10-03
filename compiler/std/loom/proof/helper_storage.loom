@@ -44,31 +44,54 @@ fn storage_local(program Program, body Expr) Bool {
     preserves_list_state(program, body, budget, StorageRequirement.Local, 0)
 }
 
-// With no incoming mutable graph and no publication/opaque source, every
-// returned mutable leaf is fresh. This says nothing about its values: those
-// still come only from the callee's independently verified postconditions.
+// Returned storage may be fresh even when scalar elements were copied from a
+// shared input. Check origins separately from publication and verified values.
 fn private_factory(program Program, function Function) Bool {
-    if function.runtime_name != "" || function.is_async {
+    if function.runtime_name != "" || function.is_async ||
+    immutable_storage_type(program, function.result, 0) || !storage_local(program, function.body) {
         return false
     }
+    let inputs = new[Bool]()
     var index = 0
     while index < length(function.params) {
-        if !immutable_storage_type(program, get(function.params, index), 0) {
-            return false
-        }
+        push(inputs, immutable_storage_type(program, get(function.params, index), 0))
         index = index + 1
     }
-    storage_local(program, function.body)
+    let budget = new[Int]()
+    push(budget, 256)
+    factory_storage(program, function, inputs, budget, 0)
+}
+
+fn storage_leaves(value Value) Int {
+    match value {
+        Value.List(_) => 1
+        Value.Record(fields) => {
+            var count = 0
+            var index = 0
+            while index < length(fields) && count < 2 {
+                count = count + storage_leaves(get(fields, index))
+                index = index + 1
+            }
+            count
+        }
+        _ => 0
+    }
 }
 
 fn fresh_storage(value Value, state State) State {
+    // A summary has independent symbolic fields, not allocation identities.
+    // Multiple returned leaves may alias; do not infer their disjointness.
+    fresh_storage(value, state, storage_leaves(value) <= 1)
+}
+
+fn fresh_storage(value Value, state State, distinct Bool) State {
     match value {
-        Value.List(identity) => with_extent(identity, variable(identity), true, state)
+        Value.List(identity) => with_extent(identity, variable(identity), distinct, true, state)
         Value.Record(fields) => {
             var current = state
             var index = 0
             while index < length(fields) {
-                current = fresh_storage(get(fields, index), current)
+                current = fresh_storage(get(fields, index), current, distinct)
                 index = index + 1
             }
             current
