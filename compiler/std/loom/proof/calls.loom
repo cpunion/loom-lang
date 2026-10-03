@@ -340,7 +340,8 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
     }
     discard summary_conditions(entry, function, function.preconditions, bindings)?
     let paths = established_checks(proof, entry.checks, state, depth)?
-    let stable = !proof.shared && (length(state.extents) == 0 || extent_preserving(proof.program, function.body))
+    let local_storage = !proof.shared || storage_local(proof.program, function.body)
+    let stable = local_storage && (length(state.extents) == 0 || extent_preserving(proof.program, function.body))
     let output = new[Outcome]()
     var index = 0
     while index < length(paths) {
@@ -349,14 +350,23 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         // Preconditions describe entry. Keep their scalar snapshots, never
         // re-evaluate them as facts about storage after an opaque call.
         var after = if stable {
-            before
+            interference(proof, before)
         } else {
-            forget_extents(proof, before)
+            if local_storage {
+                let modified = new[Int]()
+                push(modified, -1)
+                forget_modified_extents(proof, interference(proof, before), modified)
+            } else {
+                forget_extents(proof, before)
+            }
         }
         if stable && length(before.extents) != 0 && !stable_contents {
             after = forget_elements(after)
         }
         let result_value = record_parameter_value(proof, function.result, 0)
+        if proof.shared && private_factory(proof.program, function) {
+            after = fresh_storage(result_value, after)
+        }
         let result_values = new[Value]()
         push(result_values, result_value)
         after = bounded(result_value, call_scope(after, result_values))
@@ -406,11 +416,11 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         }
         let captured = capture_entry(proof, value, before, after)?
         let current = if stable_contents {
-            preserved_elements(captured.entry, captured.state)
+            preserved_elements(captured.entry, captured.state, proof.shared)
         } else {
             if stable && length(state.extents) != 0 {
                 preserved_call_elements(proof.program, function, boundary,
-                    captured.entry, captured.state)
+                    captured.entry, captured.state, proof.shared)
             } else {
                 captured.state
             }

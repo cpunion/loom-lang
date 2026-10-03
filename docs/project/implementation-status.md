@@ -414,13 +414,17 @@ Only explicit workers request parallel execution. No-worker executables retain
 their direct lowering; worker-enabled builds conservatively instrument accesses
 and roots. Checked escape analysis now removes guards for invocation-local
 List/Bytes/frame accesses, including aliases and fresh return buffers. Container
-and capture edges, all assignments and cleanup participate; unknown calls stay
-conservative. GC roots and cancellation checkpoints remain.
+and capture edges, all assignments and cleanup participate. Direct-call alias,
+publication and return summaries reach a fixed point, including recursion;
+helper parameters lose guards only when all their call contexts are private.
+Mixed, callback, dynamic and external-entry contexts stay conservative, without
+cloning helper bodies. GC roots and cancellation checkpoints remain.
 Required proofs are revalidated for interference: scalar snapshots and private
-List observations remain stable; factories may prove private result length and
-indexed contents. Stored mutable graphs and opaque calls lose privacy, and loop
-backedges cannot restore it. Shared input/entry predicates and broader
-interprocedural escape summaries remain open. Source library
+List observations remain stable; finite private factory summaries compose.
+Shared entry, old and current observations are independent: nonnegative lengths
+are provable, but repeated reads, stale index guards and hypothetical overflow
+gain no evidence. Stored mutable graphs and opaque calls lose privacy, and loop
+backedges cannot restore it. General synchronized heap reasoning remains open. Source library
 compound operations still require caller synchronization when racing mutations
 would violate the desired application semantics.
 See [Tasks and I/O](../../compiler/README.md#source-tasks).

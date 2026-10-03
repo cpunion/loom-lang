@@ -84,7 +84,7 @@ lexical cleanup and real stackless async I/O. These do not close the gates below
 | --- | --- |
 | Constraints and proofs | Broaden sound contract composition, entry-state reasoning and mutation preservation; close the sorting/permutation and constrained shared-data stories without replacing proof with tests. |
 | Compile-time programming | Complete accepted pack/type/function combinations and useful reflection while retaining explicit requirements, selected branches, visibility and tracked inputs. |
-| Source `std` and async | Complete application I/O beyond verified TLS streams and shared workers; broaden socket policies, shared-state proof precision and interprocedural worker escape summaries. |
+| Source `std` and async | Complete application I/O beyond verified TLS streams and shared workers; broaden socket policies and synchronized shared-state proof precision. |
 | Programming feedback | Broaden checked editor operations and incremental coverage; reduce real edited-source latency and memory, not only unchanged-cache timings. |
 | Effect reasoning | Validate transformations against actual data/control/resource conflicts, including aliasing, faults and cleanup; unknown overlap must retain ordering. |
 

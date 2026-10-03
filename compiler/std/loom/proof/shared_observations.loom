@@ -1,0 +1,55 @@
+// Materialize each hypothetical shared read as an independent scalar snapshot.
+// The ordinary expression algebra then proves truth *and* definedness. Never
+// execute the predicate as a body assertion: that would assume its own success.
+fn shared_observations(proof Verification, value Expr, guard Expr, state State) Result[EntrySnapshot, Text] {
+    let children = new[Expr]()
+    var current = state
+    var index = 0
+    let flow = proof_operation(value).flow
+    while index < length(value.children) {
+        let next = operand_guard(flow, index, children, guard)
+        let observed = shared_observations(proof, get(value.children, index), next, current)?
+        push(children, observed.expression)
+        current = observed.state
+        index = index + 1
+    }
+    let expression = proof_expr(value, value.kind, value.ty, value.text, value.index, children)
+    if list_length_expression(expression) || list_read_expression(expression) {
+        let identity = match pure(get(children, 0), current)? {
+            Value.List(identity) => identity
+            _ => {
+                return Result.Err("shared contract observation requires a tracked List")
+            }
+        }
+        if !list_state(identity, current)?.private_storage {
+            current = interference(proof, current)
+            let observed = if list_read_expression(expression) {
+                match entry_element(proof, expression, guard, current) {
+                    Result.Ok(outcome) => {
+                        current = outcome.state
+                        outcome.value
+                    }
+                    Result.Err(_) => {
+                        return Result.Err("shared contract observation is not proved interference-safe: indexed access may be invalidated")
+                    }
+                }
+            } else {
+                pure(expression, current)?
+            }
+            let local = length(current.locals)
+            let values = new[Value]()
+            push(values, observed)
+            current = bounded(observed, call_scope(current, values))
+            return Result.Ok(EntrySnapshot {
+                    expression = proof_expr(value, ExprKind.Local, value.ty, "", local, new[Expr]())
+                    state = current
+                    entry = current
+                })
+        }
+    }
+    Result.Ok(EntrySnapshot {
+            expression = expression
+            state = current
+            entry = current
+        })
+}

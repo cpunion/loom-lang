@@ -179,10 +179,10 @@ fn emit_checked(
     } else {
         gc::allocating_functions(program, &reachable, library)
     };
-    let storage_forwarders = if shared {
-        storage::forwarders(program, &reachable)
+    let storage_plan = if shared {
+        storage::StoragePlan::analyze(program, &reachable, &roots, &live_witnesses)
     } else {
-        storage::Forwarders::new()
+        storage::StoragePlan::default()
     };
     let cleanup_plans = reachable
         .iter()
@@ -242,11 +242,9 @@ fn emit_checked(
         builder.position_at_end(entry);
         let source = &program.functions[id];
         let plans = &cleanup_plans[&id];
-        let private_storage = if shared {
-            storage::PrivateStorage::analyze(program, source, &storage_forwarders)
-        } else {
-            storage::PrivateStorage::default()
-        };
+        let private_storage = storage_plan.functions.get(&id);
+        let empty_storage = storage::PrivateStorage::default();
+        let private_storage = private_storage.unwrap_or(&empty_storage);
         let callback_locals = plans
             .iter()
             .flat_map(|plan| &plan.locals)
@@ -313,8 +311,8 @@ fn emit_checked(
             cleanups: HashMap::new(),
             runtime_fault,
             shared,
-            private_storage: &private_storage,
-            storage_forwarders: &storage_forwarders,
+            private_storage,
+            storage_forwarders: &storage_plan.forwarders,
         };
         emitter.prepare_cleanups(id, plans)?;
         emitter.worker_checkpoint()?;

@@ -13,18 +13,37 @@ fn private_buffers() Int {
     let bytes = std.bytes.new()
     var index = 0
     while index < 32 {
-        std.list.push(alias, index)
-        std.bytes.push(bytes, index)
+        buffer_step(alias, bytes, index)
         index = index + 1
     }
     std.list.length(values) + std.bytes.length(bytes) + values[7]
 }
 
+fn buffer_step(values List[Int], bytes Bytes, value Int) {
+    std.list.push(values, value)
+    std.bytes.push(bytes, value)
+}
+
+fn private_seed() List[Int]
+ensures std.list.length(result) == 2 && result[1] == 2
+{
+    [1, 2]
+}
+
 fn private_result() List[Int]
 ensures std.list.length(result) == 3 && result[1] == 7
 {
-    let values = [1, 2]
+    let values = private_seed()
     std.list.push(values, 3)
     std.list.set(values, 1, 7)
     values
+}
+
+// Entry, old and current lengths are independent reads of shared storage.
+// Nonnegativity survives interference; equality between these reads does not.
+fn observed_count(values List[Int]) Int
+requires std.list.length(values) >= 0
+ensures result >= 0 && std.list.length(values) >= 0 && old(std.list.length(values)) >= 0
+{
+    std.list.length(values)
 }

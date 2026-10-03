@@ -704,7 +704,7 @@ pub(super) fn root_function<'ctx>(
     })
 }
 
-fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>) {
+pub(super) fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>) {
     walk_expression(value, &mut |value| values.push(value), &mut |_| {});
 }
 

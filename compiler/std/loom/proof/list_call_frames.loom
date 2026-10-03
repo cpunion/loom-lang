@@ -160,7 +160,7 @@ fn framed_elements(entry State, writes List[ElementWrite]) State {
 }
 
 fn preserved_call_elements(program Program, function Function, boundary Int,
-    entry State, current State) State {
+    entry State, current State, shared Bool) State {
     let inputs = new[Value]()
     var index = 0
     while index < length(function.params) {
@@ -174,5 +174,5 @@ fn preserved_call_elements(program Program, function Function, boundary Int,
         // Optional precision must never turn an unknown effect into a frame rule.
         return current
     }
-    preserved_elements(framed_elements(entry, writes), current)
+    preserved_elements(framed_elements(entry, writes), current, shared)
 }

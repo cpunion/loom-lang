@@ -7,8 +7,14 @@ fn local_compute(seed Int) Int {
     var index = 0
     while index < 1000000 {
         let slot = index % 4
-        set(alias, slot, (get(values, slot) * 17 + 23) % 1000003)
+        local_step(alias, slot)
         index = index + 1
     }
     get(values, 0) + get(values, 1) + get(values, 2) + get(values, 3)
+}
+
+// Keep the hot operation extracted: direct helper calls should not turn local
+// storage into a shared graph or require cloning this function per call site.
+fn local_step(values List[Int], slot Int) {
+    set(values, slot, (get(values, slot) * 17 + 23) % 1000003)
 }

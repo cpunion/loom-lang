@@ -223,7 +223,21 @@ fn forget_modified_extents(proof Verification, state State, modified List[Int]) 
 
 // Only checked, finite extent-preserving operations retain caller heap facts.
 // Abstract summaries, recursion and unknown operations supply no frame rule.
-fn preserves_list_state(program Program, value Expr, budget List[Int], contents Bool, depth Int) Bool {
+enum StorageRequirement {
+    Extent
+    Elements
+    Local
+}
+
+fn storage_operation(program Program, name Text, ty Int, arguments List[Expr], requirement StorageRequirement) Bool {
+    let modeled = intrinsic_operation(name, ty, length(arguments)).arity >= 0
+    if requirement == StorageRequirement.Local {
+        return modeled || local_storage_operation(program, name, arguments)
+    }
+    modeled || name == "list_new" || (requirement == StorageRequirement.Extent && name == "list_set")
+}
+
+fn preserves_list_state(program Program, value Expr, budget List[Int], requirement StorageRequirement, depth Int) Bool {
     if depth >= 32 || !conjunction_step(budget) {
         return false
     }
@@ -236,14 +250,15 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], contents 
             return false
         }
         let function = get(program.functions, value.index)
+        if function.is_async {
+            return false
+        }
         if function.runtime_name != "" {
-            if intrinsic_operation(function.runtime_name, function.result, length(function.params)).arity < 0 &&
-            function.runtime_name != "list_new" &&
-            (contents || function.runtime_name != "list_set") {
+            if !storage_operation(program, function.runtime_name, function.result, value.children, requirement) {
                 return false
             }
         } else {
-            if !preserves_list_state(program, function.body, budget, contents, depth + 1) {
+            if !preserves_list_state(program, function.body, budget, requirement, depth + 1) {
                 return false
             }
         }
@@ -254,8 +269,7 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], contents 
         kind != ExprKind.Assert && kind != ExprKind.Discard &&
         kind != ExprKind.Defer && kind != ExprKind.Cleanup &&
         kind != ExprKind.Break && kind != ExprKind.Continue &&
-        !(kind == ExprKind.Intrinsic && (value.text == "list_new" ||
-                (!contents && value.text == "list_set"))) {
+        !(kind == ExprKind.Intrinsic && storage_operation(program, value.text, value.ty, value.children, requirement)) {
             return false
         }
     }
@@ -264,7 +278,7 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], contents 
     }
     var index = 0
     while index < length(value.children) {
-        if !preserves_list_state(program, get(value.children, index), budget, contents, depth + 1) {
+        if !preserves_list_state(program, get(value.children, index), budget, requirement, depth + 1) {
             return false
         }
         index = index + 1
@@ -275,11 +289,11 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], contents 
 fn extent_preserving(program Program, value Expr) Bool {
     let budget = new[Int]()
     push(budget, 256)
-    preserves_list_state(program, value, budget, false, 0)
+    preserves_list_state(program, value, budget, StorageRequirement.Extent, 0)
 }
 
 fn elements_preserving(program Program, value Expr) Bool {
     let budget = new[Int]()
     push(budget, 256)
-    preserves_list_state(program, value, budget, true, 0)
+    preserves_list_state(program, value, budget, StorageRequirement.Elements, 0)
 }

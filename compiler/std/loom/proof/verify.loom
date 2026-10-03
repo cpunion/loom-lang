@@ -10,6 +10,7 @@ import std.list.push
 import std.list.length
 import std.result.Result
 import std.option.Option
+import std.text.concat
 
 record Verification {
     function Function
@@ -229,10 +230,18 @@ fn returned(proof Verification, state State, value Value) Result[Bool, Text] {
     var propagated = false
     var index = 0
     while index < length(function.postconditions) {
-        let condition = get(function.postconditions, index)
-        if proof.shared && !private_observations(condition, returned) {
-            return Result.Err("required shared-state proof is not interference-safe: observed result storage may be shared")
+        let source = get(function.postconditions, index)
+        let observed = if proof.shared {
+            shared_observations(proof, source, proof_bool(source, true), returned)?
+        } else {
+            EntrySnapshot {
+                expression = source
+                state = returned
+                entry = returned
+            }
         }
+        let condition = observed.expression
+        returned = observed.state
         match required_condition(condition, returned) {
             Result.Ok(_) => {
             }
@@ -624,20 +633,6 @@ pub fn verify_with_helpers(program Program, function Function, backend ProofBack
 // Scalar snapshots remain ordinary values; pure scalar contracts are unchanged.
 pub fn verify_shared(program Program, function Function, backend ProofBackend) Result[Bool, Text] {
     let expanded = expanded_contracts(program, function)?
-    var index = 0
-    while index < length(expanded.preconditions) {
-        if mutable_observation(get(expanded.preconditions, index)) {
-            return Result.Err("required shared-state proof needs independent scalar snapshots; mutable contract observations are not proved interference-safe")
-        }
-        index = index + 1
-    }
-    index = 0
-    while index < length(expanded.postconditions) {
-        if !result_observations(get(expanded.postconditions, index), expanded.result_local) {
-            return Result.Err("required shared-state proof is not interference-safe: mutable observations must describe private result storage")
-        }
-        index = index + 1
-    }
     let ordinary = verification(expanded, program, backend)
     let proof = Verification {
         function = ordinary.function
@@ -648,82 +643,8 @@ pub fn verify_shared(program Program, function Function, backend ProofBackend) R
         query = ordinary.query
         shared = true
     }
-    verify_body(proof)
-}
-
-fn mutable_observation(value Expr) Bool {
-    if value.kind == ExprKind.Intrinsic && proof_operation(value).heap {
-        return true
+    match verify_body(proof) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(message) => Result.Err(concat("required shared-state proof is not interference-safe: ", message))
     }
-    var index = 0
-    while index < length(value.children) {
-        if mutable_observation(get(value.children, index)) {
-            return true
-        }
-        index = index + 1
-    }
-    false
-}
-
-fn result_path(value Expr, local Int) Bool {
-    if value.kind == ExprKind.Local {
-        return value.index == local
-    }
-    (value.kind == ExprKind.Field || value.kind == ExprKind.Coerce) &&
-    length(value.children) == 1 && result_path(get(value.children, 0), local)
-}
-
-// Shared entry/current input observations remain unsupported. A returned fresh
-// graph may be observed only after its unescaped provenance is established.
-fn result_observations(value Expr, local Int) Bool {
-    if value.kind == ExprKind.Intrinsic && proof_operation(value).heap {
-        if (value.text != "list_len" && value.text != "list_get") ||
-        length(value.children) == 0 || !result_path(get(value.children, 0), local) {
-            return false
-        }
-    }
-    var index = 0
-    while index < length(value.children) {
-        if !result_observations(get(value.children, index), local) {
-            return false
-        }
-        index = index + 1
-    }
-    true
-}
-
-fn private_observations(value Expr, state State) Bool {
-    if value.kind == ExprKind.Intrinsic && proof_operation(value).heap {
-        if length(value.children) == 0 {
-            return false
-        }
-        match pure(get(value.children, 0), state) {
-            Result.Ok(receiver) => match receiver {
-                Value.List(identity) => match list_state(identity, state) {
-                    Result.Ok(extent) => {
-                        if !extent.private_storage {
-                            return false
-                        }
-                    }
-                    Result.Err(_) => {
-                        return false
-                    }
-                }
-                _ => {
-                    return false
-                }
-            }
-            _ => {
-                return false
-            }
-        }
-    }
-    var index = 0
-    while index < length(value.children) {
-        if !private_observations(get(value.children, index), state) {
-            return false
-        }
-        index = index + 1
-    }
-    true
 }
