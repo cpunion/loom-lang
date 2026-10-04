@@ -174,7 +174,10 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
         return Result.Ok(record_parameter_value(proof, get(shape.fields, 0).ty, 0))
     }
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
-        return Result.Err("required proof currently needs scalar parameters or inline aggregates")
+        // Unmodeled typed inputs carry no evidence, just like unsupported
+        // leaves of record parameters. Reading them still fails closed; their
+        // mere presence must not block a proof about independent scalar data.
+        return Result.Ok(Value.Empty)
     }
     Result.Ok(record_parameter_value(proof, ty, 0))
 }

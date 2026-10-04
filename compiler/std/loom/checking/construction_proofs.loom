@@ -13,30 +13,20 @@ fn construction_proof(context Context, node Node, source Node, target Int) Resul
     // Argument effects have already happened when the callee is entered.
     // Prove over arbitrary typed invocation snapshots, not by replaying those
     // effects or assuming repeated heap observations are equal.
+    let bindings = new[Int]()
     let params = new[Int]()
     let locals = new[Local]()
     let arguments = new[Expr]()
     var index = 0
     while index < length(input.children) {
         let argument = get(input.children, index)
-        if closed_inline_value(argument, 0) {
-            push(arguments, argument)
-        } else {
-            let snapshot = length(params)
-            push(params, argument.ty)
-            push(locals, Local {
-                    name = "input"
-                    ty = argument.ty
-                    mutable = false
-                    is_scoped = false
-                })
-            push(arguments, expression(ExprKind.Local, argument.ty, source, "", snapshot, new[Expr](), true))
-        }
+        push(arguments, construction_input(context, argument, bindings, params, locals, 0))
         index = index + 1
     }
+    let premises = construction_premises(context, bindings, params, locals)
     construction_body_proof(stage, node,
         expression(input.kind, input.ty, source, input.text, input.index, arguments, input.falls),
-        params, locals, new[Expr](), target)
+        params, locals, premises, target)
 }
 
 fn construction_body_proof(stage Context, node Node, body Expr, params List[Int],
@@ -115,14 +105,69 @@ fn construction_fact(context Context, value Expr, bindings List[Int],
     }
 }
 
-fn flow_construction_proof(context Context, node Node, value Expr,
-    target Int) Result[Bool, Failure] {
-    let stage = staging(context, node)?
-    let env = helper_environment(stage.env)
-    let bindings = new[Int]()
-    let params = new[Int]()
-    let locals = new[Local]()
-    let body = construction_fact(context, value, bindings, params, locals)
+// Keep immutable scalar evidence and record shape. Everything else is an
+// independent typed snapshot: proof preparation must not replay effects or
+// identify separate observations of mutable storage.
+fn construction_input(context Context, value Expr, bindings List[Int],
+    params List[Int], locals List[Local], depth Int) Expr {
+    if closed_inline_value(value, 0) {
+        return value
+    }
+    if fact_size(context, value, 0) > 0 {
+        return construction_fact(context, value, bindings, params, locals)
+    }
+    if depth < 64 && value.kind == ExprKind.Record {
+        let fields = new[Expr]()
+        var index = 0
+        while index < length(value.children) {
+            let field = get(value.children, index)
+            let input = construction_input(context, get(field.children, 0), bindings, params, locals, depth + 1)
+            push(fields, Expr {
+                    kind = field.kind
+                    ty = field.ty
+                    span = field.span
+                    text = field.text
+                    index = field.index
+                    children = expressions(input)
+                    arms = field.arms
+                    falls = field.falls
+                })
+            index = index + 1
+        }
+        return Expr {
+            kind = value.kind
+            ty = value.ty
+            span = value.span
+            text = value.text
+            index = value.index
+            children = fields
+            arms = value.arms
+            falls = value.falls
+        }
+    }
+    let snapshot = length(params)
+    push(bindings, -1)
+    push(params, value.ty)
+    push(locals, Local {
+            name = "input"
+            ty = value.ty
+            mutable = false
+            is_scoped = false
+        })
+    Expr {
+        kind = ExprKind.Local
+        ty = value.ty
+        span = value.span
+        text = ""
+        index = snapshot
+        children = new[Expr]()
+        arms = new[Arm]()
+        falls = true
+    }
+}
+
+fn construction_premises(context Context, bindings List[Int],
+    params List[Int], locals List[Local]) List[Expr] {
     let premises = new[Expr]()
     var head = context.fact_head
     while head >= 0 && length(premises) < 256 {
@@ -131,6 +176,18 @@ fn flow_construction_proof(context Context, node Node, value Expr,
         push(premises, construction_fact(context, fact.predicate, bindings, params, locals))
         head = fact.previous
     }
+    premises
+}
+
+fn flow_construction_proof(context Context, node Node, value Expr,
+    target Int) Result[Bool, Failure] {
+    let stage = staging(context, node)?
+    let env = helper_environment(stage.env)
+    let bindings = new[Int]()
+    let params = new[Int]()
+    let locals = new[Local]()
+    let body = construction_input(context, value, bindings, params, locals, 0)
+    let premises = construction_premises(context, bindings, params, locals)
     let scope = predicate_context(env, target, locals, 0, true)?
     construction_body_proof(scope, node, body, params, locals, premises, target)
 }
@@ -138,6 +195,9 @@ fn flow_construction_proof(context Context, node Node, value Expr,
 fn proved_construction(context Context, node Node, source Node, value Expr, target Int) Result[Bool, Failure] {
     if context.env.expanding_helpers || context.env.stage_depth >= 32 {
         return Result.Ok(false)
+    }
+    if value.kind == ExprKind.Record {
+        return flow_construction_proof(context, node, value, target)
     }
     if value.kind != ExprKind.Call {
         if context.fact_head >= 0 && fact_reference(context, value) >= 0 &&
