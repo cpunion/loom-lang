@@ -2288,8 +2288,8 @@ Every query must prove bounds against the captured length, never a grown current
 length. Length-only queries need no solver; arbitrary content queries use the
 optional array backend. Verified read-only calls retain their entry version;
 possible writes never restore it from a partial frame. Each invocation owns its
-snapshot. Shared workers may snapshot private storage, but an unprotected shared
-input cannot establish one coherent entry version. No implicit locking, freezing
+snapshot. Shared workers may snapshot private or validated read-only storage, but
+an unprotected shared input cannot establish one coherent entry version. No implicit locking, freezing
 or ownership syntax is introduced. Mutable element graphs, other element domains
 and whole aggregates containing shared storage remain unsupported. See the
 [entry List example](examples/smt_contracts/snapshots.loom).
@@ -2423,13 +2423,13 @@ Bounded List predicates also establish sequential entry observations, including
 nested fields and `old(values[0])`. They use the same guarded-read machinery as
 preconditions, not duplicate runtime checks. Unknown alias writes invalidate
 these observations; length-only facts imply no element contents. Shared workers
-still need separate interference-safe evidence.
+require separately validated storage guarantees.
 Int/Bool predicates use the existing bounded
 fragment. If direct facts are insufficient, acyclic pure predicate helpers expand
 in a private checked closure, retaining their guarded preconditions and successful
 checked calculations. This does not add runtime calls or change construction
-checks. Unsupported conjuncts, helper loops/recursion and Float arithmetic supply
-no evidence. See the [input invariant example](examples/invariant_contracts).
+checks. Unsupported conjuncts, general helper loops/recursion and Float arithmetic
+supply no evidence. See the [input invariant example](examples/invariant_contracts).
 
 The current proof fragment supports scalar linear arithmetic, comparisons,
 Boolean facts, local assignments, branches/returns, and the scalar loops above. It reasons from
@@ -3068,9 +3068,15 @@ synchronous I/O parks the mutator but can delay cancellation until the OS call
 returns. Scoped resources and owner-local Tasks/native tokens cannot cross the
 worker boundary; acquire and close resources within the callback.
 
-Shared builds revalidate mandatory contracts. Each shared entry, `old` and
-current List observation is independent; scalar snapshots and observations of
-fresh, unpublished Lists remain stable. Length nonnegativity is provable, but
+Shared builds revalidate mandatory contracts. Each mutable shared entry, `old`
+and current List observation is independent; scalar snapshots and observations of
+fresh, unpublished Lists remain stable. Validated content-constrained List inputs
+also retain their entry values: construction requires non-publishing fresh storage,
+and the checked write/escape policy permits no mutation. This evidence follows
+refined fields inside records/tuples, not arbitrary read-only function bodies or
+length-only constraints. It does not imply private or disjoint storage and does
+not remove runtime worker guards. The [constrained worker example](examples/workers/constrained.loom)
+proves shared entry, length and bounded sorted-input properties. Length nonnegativity is provable, but
 two reads are not assumed equal and an earlier length check cannot justify a
 later shared indexed access. Pure helper arguments and local bindings preserve
 their once-only evaluation, including inline fields and guarded branches.

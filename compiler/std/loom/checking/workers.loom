@@ -39,11 +39,23 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     if !shared {
         return Result.Ok(true)
     }
+    let protected = new[Int]()
+    index = 6
+    while env.has_refinements && index < length(env.types) {
+        if constrained_list(env, index) && get(env.type_states, index).list_writes == 0 {
+            push(protected, index)
+        }
+        index = index + 1
+    }
     index = 0
     while index < length(program.functions) {
         let function = get(program.functions, index)
         if length(function.postconditions) != 0 {
-            match verify_shared(program, function, get(env.inputs, 0).build.proof_backend) {
+            let types = match expanded_input_types(env, function) {
+                Result.Ok(types) => types
+                Result.Err(_) => env.types
+            }
+            match verify_shared(proof_types(program, types), function, get(env.inputs, 0).build.proof_backend, protected) {
                 Result.Ok(_) => {
                 }
                 Result.Err(message) => {

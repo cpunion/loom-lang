@@ -21,6 +21,10 @@ fn list_extent(identity Int, state State) Result[Linear, Text] {
     Result.Ok(list_state(identity, state)?.size)
 }
 
+fn stable_storage(extent ListExtent) Bool {
+    extent.private_storage || extent.read_only
+}
+
 fn extent_bounds(size Linear, state State) State {
     assume(bounded(Value.Number(size), state), Predicate.Compare(">=", size))
 }
@@ -32,6 +36,7 @@ fn with_extent(identity Int, size Linear, allocated Bool, state State) State {
 fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool, state State) State {
     let extents = new[ListExtent]()
     var private_storage = initially_private
+    var read_only = false
     var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
@@ -39,6 +44,7 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
             push(extents, extent)
         } else {
             private_storage = extent.private_storage
+            read_only = extent.read_only
         }
         index = index + 1
     }
@@ -47,6 +53,7 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
             size = size
             allocated = allocated
             private_storage = private_storage
+            read_only = read_only
             contents = -1
             cells = new[ListCell]()
         })
@@ -103,6 +110,7 @@ fn published_storage(state State) State {
                 size = extent.size
                 allocated = extent.allocated
                 private_storage = false
+                read_only = extent.read_only
                 contents = extent.contents
                 cells = extent.cells
             })
@@ -141,7 +149,7 @@ fn interference(proof Verification, state State) State {
     var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
-        if !extent.private_storage {
+        if !stable_storage(extent) {
             match fresh_result(proof, 1) {
                 Value.Number(size) => {
                     current = with_extent(extent.identity, size, extent.allocated, current)

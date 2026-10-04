@@ -71,17 +71,22 @@ fn expanded_invariant_parts(program std.loom.typed.Program, base Int, predicate 
 // Only a failed required proof pays for this private helper closure. Never put
 // its call indices in shared type metadata or the runtime reachability queue.
 fn expanded_input_types(context Context, function Function) Result[List[Type], Failure] {
+    expanded_input_types(context.env, function)
+}
+
+fn expanded_input_types(env Environment, function Function) Result[List[Type], Failure] {
     let selected = new[Int]()
     let seen = new[Int]()
     var index = 0
     while index < length(function.params) {
-        input_invariant_types(context.env, get(function.params, index), seen, selected, 0)
+        input_invariant_types(env, get(function.params, index), seen, selected, 0)
         index = index + 1
     }
     if length(selected) == 0 {
-        return Result.Ok(context.env.types)
+        return Result.Ok(env.types)
     }
-    let stage = staging(context, symbol(context.env, context.signature.symbol).node)?
+    let first = get(env.types, get(selected, 0))
+    let stage = staging(predicate_scope(env, first.symbol, get(first.fields, 0).ty), predicate_node(env, first.symbol))?
     let predicates = new[Expr]()
     index = 0
     while index < length(selected) {

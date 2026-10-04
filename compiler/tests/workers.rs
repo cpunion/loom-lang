@@ -71,6 +71,38 @@ fn workers_reject_resource_transfer_and_stale_shared_proofs() {
         "fn unchanged(values List[Int]) Int requires length(values) >= 1 ensures length(values) == 0 || get(values, 0) == result { get(values, 0) }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
         "fn unchanged(values List[Int]) Int requires length(values) < 9223372036854775807 ensures length(values) + 1 >= 1 { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
         "fn local() Int ensures result == 1 { let original = [1]\nlet nested = [original]\nstd.list.push(std.list.get(nested, 0), 2)\nlength(original) }\nasync fn main() { discard run(local).await }",
+        r#"
+type Nonempty = List[Int] where length(self) > 0
+
+fn unchanged(values Nonempty) Int
+ensures result == old(length(values))
+{
+    length(values)
+}
+
+async fn main() {
+    let values = Nonempty([1])
+    discard run(fn() Int {
+            unchanged(values)
+        }).await
+}
+"#,
+        r#"
+type Pair = List[Int] where length(self) == 1
+
+fn unchanged(values Pair) Int
+ensures result == old(values[0])
+{
+    values[0]
+}
+
+async fn main() {
+    let values = Pair([1])
+    discard run(fn() Int {
+            unchanged(values)
+        }).await
+}
+"#,
     ] {
         std::fs::write(package.path().join("main.loom"), format!(
             "import std.task.worker.run\nimport std.sync.mutex.new\nimport std.sync.mutex.lock\nimport std.sync.mutex.Guard\nimport std.list.length\nimport std.list.push\nimport std.list.get\n{body}\n"
@@ -143,6 +175,54 @@ async fn main() {
         )
         .unwrap();
         let output = check();
+        assert_eq!(output.status.success(), accepted, "{output:?}");
+        if !accepted {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("interference-safe"));
+        }
+    }
+    let package = tempfile::tempdir().unwrap();
+    let cache = package.path().join("cache");
+    for (predicate, accepted) in [
+        ("length(values) > 0 && values[0] > 0", true),
+        ("length(values) > 0", false),
+    ] {
+        std::fs::write(
+            package.path().join("main.loom"),
+            format!(
+                r#"
+import std.list.length
+import std.task.worker.run
+
+fn valid(values List[Int]) Bool {{
+    {predicate}
+}}
+
+type Protected = List[Int] where valid(self)
+
+fn first(values Protected) Int
+ensures result == old(values[0])
+{{
+    values[0]
+}}
+
+async fn main() {{
+    let values = Protected([1])
+    assert run(fn() Int {{
+            first(values)
+        }}).await == 1
+}}
+"#
+            ),
+        )
+        .unwrap();
+        let output = common::command(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
         assert_eq!(output.status.success(), accepted, "{output:?}");
         if !accepted {
             assert!(String::from_utf8_lossy(&output.stderr).contains("interference-safe"));

@@ -74,7 +74,7 @@ fn quantified_views(proof Verification, expr Expr, state State, inside Bool, dep
     if count_expression(expr) || (inside && list_read_expression(expr) && expr.ty == 1) {
         match pure(get(expr.children, 0), current)? {
             Value.List(identity) => {
-                if proof.shared && !list_state(identity, current)?.private_storage {
+                if proof.shared && !stable_storage(list_state(identity, current)?) {
                     return Result.Err("quantified List observation is not proved interference-safe")
                 }
                 current = array_contents(proof, identity, current)?

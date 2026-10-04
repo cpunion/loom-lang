@@ -31,6 +31,7 @@ fn element_contents(extent ListExtent, contents Int, cells List[ListCell]) ListE
         size = extent.size
         allocated = extent.allocated
         private_storage = extent.private_storage
+        read_only = extent.read_only
         contents = contents
         cells = cells
     }
@@ -89,10 +90,10 @@ fn preserved_elements(entry State, current State, shared Bool) State {
     var index = 0
     while index < length(entry.extents) {
         let extent = get(entry.extents, index)
-        if !shared || extent.private_storage {
+        if !shared || stable_storage(extent) {
             match list_state(extent.identity, state) {
                 Result.Ok(current) => {
-                    if !shared || current.private_storage {
+                    if !shared || stable_storage(current) {
                         if length(extent.cells) != 0 {
                             state = with_cells(extent.identity, extent.cells, state)
                         }

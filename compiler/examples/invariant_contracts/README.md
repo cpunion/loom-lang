@@ -19,13 +19,15 @@ calculations, guarded by the branches that actually executed at construction.
 These proof-only helpers do not become new runtime roots.
 
 Unsupported conjuncts supply no evidence; disjunction alternatives are never
-assumed individually. Helper loops/recursion and required Float
+assumed individually. General helper loops/recursion and required Float
 arithmetic remain outside this fragment. Unknown required proofs reject.
 
 `lists.loom` extends entry evidence to bounded, guarded List predicates, nested
 fields and `old(values[0])`, without repeating `requires`. Unknown alias writes
-invalidate content observations. Shared-worker interference still needs separate
-evidence; a length-only invariant does not establish element values.
+invalidate content observations. Shared-worker interference needs separately
+validated storage evidence; a length-only invariant does not establish element
+values. The [worker example](../workers/constrained.loom) also consumes bounded
+sorted-input predicates, without treating arbitrary loops as proved.
 
 The native program retains the original construction checks. Entry invariant
 facts are compile-time evidence, not additional runtime checks or a new ABI.

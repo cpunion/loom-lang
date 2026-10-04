@@ -563,6 +563,10 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
 }
 
 fn verify_body(proof Verification) Result[Bool, Text] {
+    verify_body(proof, new[Int]())
+}
+
+fn verify_body(proof Verification, protected List[Int]) Result[Bool, Text] {
     let function = proof.function
     if length(function.postconditions) == 0 {
         return Result.Ok(true)
@@ -590,6 +594,9 @@ fn verify_body(proof Verification) Result[Bool, Text] {
     while index < length(function.params) {
         let ty = get(function.params, index)
         if ty >= 6 {
+            if length(protected) != 0 {
+                state = protected_input(proof.program.types, protected, ty, get(state.locals, index), state, 0)
+            }
             state = invariant_facts(proof.program.types, ty, get(state.locals, index), state, 0)
         }
         index = index + 1
@@ -666,8 +673,14 @@ pub fn verify_with_helpers(program Program, function Function, backend ProofBack
 // Independent shared observations cannot reuse a previously read extent/cell.
 // Scalar snapshots remain ordinary values; pure scalar contracts are unchanged.
 pub fn verify_shared(program Program, function Function, backend ProofBackend) Result[Bool, Text] {
+    verify_shared(program, function, backend, new[Int]())
+}
+
+// protected contains exact type IDs whose construction/escape/write policy has
+// been validated for this checked snapshot, not source-provided purity promises.
+pub fn verify_shared(program Program, function Function, backend ProofBackend, protected List[Int]) Result[Bool, Text] {
     let proof = contract_verification(program, function, backend, true)?
-    match verify_body(proof) {
+    match verify_body(proof, protected) {
         Result.Ok(value) => Result.Ok(value)
         Result.Err(message) => Result.Err(concat("required shared-state proof is not interference-safe: ", message))
     }
