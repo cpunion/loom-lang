@@ -1,0 +1,43 @@
+// Each source function declaration owns one signature. Concrete instances and
+// pack expansions retain their separate, existing instance/symbol identities.
+fn append_signature(env Environment, current Signature) Int {
+    let ids = get(env.inputs, 0).signature_ids
+    while length(ids) <= current.symbol {
+        push(ids, -1)
+    }
+    let id = length(env.signatures)
+    push(env.signatures, current)
+    set(ids, current.symbol, id)
+    id
+}
+
+fn source_signature_id(env Environment, owner Int) Int {
+    let ids = get(env.inputs, 0).signature_ids
+    if owner >= length(ids) {
+        return -1
+    }
+    get(ids, owner)
+}
+
+fn call_signature_options(env Environment, available List[Int], arguments Int, parameters Int) List[Int] {
+    let options = new[Int]()
+    var index = 0
+    while index < length(available) {
+        let id = source_signature_id(env, get(available, index))
+        if id >= 0 {
+            let signature = get(env.signatures, id)
+            if length(signature.params) == arguments && (parameters == 0 || parameters == signature.parameters) {
+                // Retain signature-table order and duplicate candidates.
+                var position = length(options)
+                push(options, id)
+                while position > 0 && get(options, position - 1) > id {
+                    set(options, position, get(options, position - 1))
+                    position = position - 1
+                }
+                set(options, position, id)
+            }
+        }
+        index = index + 1
+    }
+    options
+}

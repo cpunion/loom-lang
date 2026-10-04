@@ -711,9 +711,7 @@ fn pack_signature(env Environment, owner Int, arity Int) Result[Int, Failure] {
     let selected = if item.owner >= 0 {
         register_signature(env, current)?
     } else {
-        let id = length(env.signatures)
-        push(env.signatures, current)
-        id
+        append_signature(env, current)
     }
     push(env.packs, PackInstance {
             source = owner

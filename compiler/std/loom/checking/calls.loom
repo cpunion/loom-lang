@@ -468,20 +468,8 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     if package(node.value) != "" && find_data(context.env, context.signature.symbol, node, package(node.value))? >= 0 {
         return variant(context, node, types, inputs, expected)
     }
-    let options = new[Int]()
+    let options = call_signature_options(context.env, available, length(inputs.nodes), length(types))
     var index = 0
-    while index < length(context.env.signatures) {
-        let signature = get(context.env.signatures, index)
-        var candidate = 0
-        while candidate < length(available) {
-            if get(available, candidate) == signature.symbol && length(signature.params) == length(inputs.nodes) && (length(types) == 0 || length(types) == signature.parameters) {
-                push(options, index)
-            }
-            candidate = candidate + 1
-        }
-        index = index + 1
-    }
-    index = 0
     while length(context.env.packs) != 0 && index < length(available) {
         let owner = get(available, index)
         let declaration = symbol(context.env, owner).node
