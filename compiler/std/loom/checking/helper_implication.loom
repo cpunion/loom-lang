@@ -6,34 +6,68 @@ import std.list.length
 import std.result.Result
 
 fn predicate_calls(value Expr, depth Int) Bool {
-    if depth >= 64 { return false }
-    if value.kind == ExprKind.Call { return true }
+    if depth >= 64 {
+        return false
+    }
+    if value.kind == ExprKind.Call {
+        return true
+    }
     var index = 0
     while index < length(value.children) {
-        if predicate_calls(get(value.children, index), depth + 1) { return true }
+        if predicate_calls(get(value.children, index), depth + 1) {
+            return true
+        }
         index = index + 1
     }
     false
 }
+
+// Optional helper preparation must not recursively depend on its own query.
+// Ordinary typing and mandatory contracts still check in this private queue.
+fn helper_environment(env Environment) Environment {
+    Environment {
+        inputs = env.inputs
+        static_aliases = env.static_aliases
+        packs = env.packs
+        closures = env.closures
+        source = env.source
+        types = env.types
+        type_states = env.type_states
+        expand_data = true
+        has_refinements = env.has_refinements
+        expanding_helpers = true
+        signatures = env.signatures
+        pending = env.pending
+        stage_depth = env.stage_depth
+        computations = env.computations
+        validations = env.validations
+        concepts = env.concepts
+        implementations = env.implementations
+        interfaces = env.interfaces
+        associations = env.associations
+        association_depth = env.association_depth
+        family_applications = env.family_applications
+        promise_path = env.promise_path
+        promise_depth = env.promise_depth
+        dynamic_interfaces = env.dynamic_interfaces
+        witnesses = env.witnesses
+        uses = env.uses
+    }
+}
+
 fn prepared_implication(context Context, node Node, source Int, target Int, base Int) Result[Bool, Failure] {
     let stage = staging(predicate_scope(context.env, source, base), node)?
-    // Preparation must not recursively depend on the optional proof it is
-    // trying to obtain. Ordinary checking and mandatory proofs still run.
-    let env = Environment { inputs = stage.env.inputs static_aliases = stage.env.static_aliases packs = stage.env.packs closures = stage.env.closures source = stage.env.source types = stage.env.types type_states = stage.env.type_states expand_data = true
-        has_refinements = stage.env.has_refinements expanding_helpers = true signatures = stage.env.signatures
-        pending = stage.env.pending stage_depth = stage.env.stage_depth computations = stage.env.computations validations = stage.env.validations
-        concepts = stage.env.concepts implementations = stage.env.implementations interfaces = stage.env.interfaces
-        associations = stage.env.associations association_depth = stage.env.association_depth
-        family_applications = stage.env.family_applications promise_path = stage.env.promise_path promise_depth = stage.env.promise_depth
-        dynamic_interfaces = stage.env.dynamic_interfaces
-        witnesses = stage.env.witnesses uses = stage.env.uses }
+    let env = helper_environment(stage.env)
     let left_scope = predicate_context(env, source, stage.locals, 0, true)
     let left = expr(left_scope, predicate_node(env, source), 2)?
     let right = expr(predicate_context(env, target, stage.locals, 0, true), predicate_node(env, target), 2)?
     Result.Ok(implies_with_helpers(prepared(left_scope)?, left, right, get(env.inputs, 0).build.proof_backend))
 }
+
 fn helpers_imply(context Context, node Node, source Int, target Int, base Int) Bool {
-    if context.env.expanding_helpers { return false }
+    if context.env.expanding_helpers {
+        return false
+    }
     match prepared_implication(context, node, source, target, base) {
         Result.Ok(proved) => proved
         Result.Err(_) => false

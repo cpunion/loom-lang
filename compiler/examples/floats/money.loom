@@ -6,7 +6,11 @@ import std.list.get
 import std.list.set
 
 // Both range comparisons reject NaN, and the upper bound excludes infinity.
-type Money = Float where self >= 0.0 && self <= 1000000.0
+fn valid_money(value Float) Bool {
+    value >= 0.0 && value <= 1000000.0
+}
+
+type Money = Float where valid_money(self)
 
 fn checked_money(value Float) Result[Money, ConstraintError] {
     Money(value)

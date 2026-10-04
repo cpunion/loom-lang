@@ -1,0 +1,90 @@
+test fn helper_constraints_consume_actual_immutable_flow_bindings() {
+    let program = accepted_result("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+fn nonnegative(value Float) Bool {
+    value >= 0.0
+}
+
+type Positive = Int where positive(self)
+type Nonnegative = Float where nonnegative(self)
+
+pub fn required(ignored Int, value Int) Positive
+requires value > 0
+{
+    discard ignored
+    let copy = value
+    Positive(copy)
+}
+
+pub fn compared(value Int, minimum Int) Positive
+requires minimum >= 0 && value > minimum
+{
+    Positive(value)
+}
+
+pub fn branch(value Float) Nonnegative {
+    if value > 0.0 {
+        let copy = value
+        Nonnegative(copy)
+    } else {
+        Nonnegative(0.0)
+    }
+}
+""")
+    // No pure predicate is a runtime root or an inserted boundary check.
+    assert length(program.functions) == 3
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert dynamic_count(function.body, ExprKind.Call) == 0
+        index = index + 1
+    }
+}
+
+test fn helper_flow_does_not_assume_requirements_or_hypothetical_safety() {
+    rejects_result("""
+fn admitted(value Int) Bool
+requires value > 0
+{
+    true
+}
+
+type Approved = Int where admitted(self)
+
+pub fn insufficient(value Int) Approved
+requires value >= 0
+{
+    Approved(value)
+}
+""")
+    rejects_result("""
+fn positive(value Int) Bool {
+    let ignored = value + 1
+    value > 0
+}
+
+type Positive = Int where positive(self)
+
+pub fn overflow(value Int) Positive
+requires value > 0
+{
+    Positive(value)
+}
+""")
+    rejects_result("""
+fn nonnegative(value Float) Bool {
+    value >= 0.0
+}
+
+type Nonnegative = Float where nonnegative(self)
+
+pub fn unordered(value Float) Nonnegative
+requires !(value < 0.0)
+{
+    Nonnegative(value)
+}
+""")
+}

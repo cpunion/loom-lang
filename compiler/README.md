@@ -1964,7 +1964,10 @@ general Float postcondition solving remains unsupported.
 
 Construction also consumes already established facts about an immutable scalar
 local or parameter, from `requires`, a successful `assert`, or the current
-`if`/`while` branch:
+`if`/`while` branch. For a pure helper predicate, it transfers only those stable
+scalar facts into a private proof scope and checks the helper's requirements and
+evaluation safety. Unknown results retain checked construction; caller effects
+are not replayed, and proof-only helpers do not become native roots:
 
 ```loom
 type Positive = Int where self > 0

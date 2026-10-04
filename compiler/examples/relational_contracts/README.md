@@ -28,4 +28,6 @@ scans at most 256 established facts and uses at most 32 numeric identities;
 equalities require both directions and strict integer bounds differ by one.
 Unsupported or exhausted required proofs
 reject compilation; optional refinement proofs retain their runtime checks.
-Shared contents and required Float algebra remain unsupported.
+This integer difference theory does not model shared contents or Float
+arithmetic. [IEEE comparison proofs](../floats/contracts.loom) use a separate
+value domain, not integer/real algebra.
