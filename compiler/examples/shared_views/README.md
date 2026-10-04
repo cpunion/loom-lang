@@ -31,3 +31,5 @@ This is not an isolated snapshot or a read-only List. A view retains its source
 List, and removed elements stay alive while a retaining view is alive. Task and
 MustScope elements cannot acquire shared ownership through a view. A fixed length
 does not establish content constraints such as positivity or sortedness.
+Concurrent compound accesses still need the same explicit mutex around source
+and view operations; see the [shared-worker rules](../../README.md#shared-workers).
