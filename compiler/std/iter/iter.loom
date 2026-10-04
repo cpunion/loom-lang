@@ -1,4 +1,5 @@
 import std.option.Option
+import std.result.Result
 import std.list.new
 import std.list.push
 import std.list.view.View
@@ -202,6 +203,23 @@ pub fn fold[I Iterator, A](source I, initial A, combine fn(A, I.Item) A) A {
         }
     }
     accumulator
+}
+
+// Stop at the first callback error without pulling another item. The failing
+// item is consumed; its effects remain visible and the suffix can be resumed.
+pub fn try_fold[I Iterator, A, E](source I, initial A, combine fn(A, I.Item) Result[A, E]) Result[A, E] {
+    var accumulator = initial
+    while true {
+        match source.next() {
+            Option.Some(value) => {
+                accumulator = combine(accumulator, value)?
+            }
+            Option.None => {
+                return Result.Ok(accumulator)
+            }
+        }
+    }
+    Result.Ok(accumulator)
 }
 
 pub fn any[I Iterator](source I, predicate fn(I.Item) Bool) Bool {

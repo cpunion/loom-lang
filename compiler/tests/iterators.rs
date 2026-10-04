@@ -10,7 +10,22 @@ fn source_iterators_keep_pull_order_sharing_and_fault_cleanup() {
     }
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "iterators");
+    let tests = common::executable(temporary.path(), "iterator-tests");
     for level in ["0", "2"] {
+        success(
+            &common::command(&["test", "compiler/std/iter", "--no-run"])
+                .arg("--output")
+                .arg(&tests)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(
+            &Command::new(&tests)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
         success(
             &common::command(&["build", package])
                 .arg("--output")
