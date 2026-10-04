@@ -1,0 +1,51 @@
+fn float_proof_value(value Result[Value, Text]) Value {
+    match value {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            Value.Empty
+        }
+    }
+}
+
+test fn ieee_terms_keep_signed_zero_nan_and_operand_order() {
+    let positive_zero = FloatValue.Literal("0")
+    let negative_zero = match float_proof_value(float_unary("-", positive_zero)) {
+        Value.Float(value) => value
+        _ => {
+            assert false
+            positive_zero
+        }
+    }
+    assert !same_float(positive_zero, negative_zero, [256])
+    assert match float_proof_value(float_binary("==", positive_zero, negative_zero)) {
+        Value.Boolean(value) => holds(value, [])
+        _ => false
+    }
+    let nan = match float_proof_value(float_binary("/", positive_zero, positive_zero)) {
+        Value.Float(value) => value
+        _ => {
+            assert false
+            positive_zero
+        }
+    }
+    assert match float_proof_value(float_binary("==", nan, nan)) {
+        Value.Boolean(value) => !holds(value, [])
+        _ => false
+    }
+    let value = FloatValue.Variable(1)
+    assert !same_float(FloatValue.Apply("+", [value, positive_zero]),
+        FloatValue.Apply("+", [positive_zero, value]), [256])
+    let less = Predicate.FloatCompare("<", value, positive_zero)
+    assert !same(not(less), Predicate.FloatCompare("<=", positive_zero, value))
+    assert holds(Predicate.FloatCompare("<=", value, positive_zero), [less])
+    assert !holds(Predicate.FloatCompare("<", value, positive_zero),
+        [Predicate.FloatCompare("<=", value, positive_zero)])
+    assert match smt_query([Obligation {
+                facts = []
+                conclusion = less
+            }]) {
+        Result.Err(_) => true
+        _ => false
+    }
+}

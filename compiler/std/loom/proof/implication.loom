@@ -8,11 +8,11 @@ import std.list.length
 import std.result.Result
 
 fn implication_form(expr Expr, budget List[Int], depth Int) Bool {
-    if depth >= 64 || get(budget, 0) == 0 || (expr.ty != 1 && expr.ty != 2 && expr.ty != 3) {
+    if depth >= 64 || get(budget, 0) == 0 || !scalar_type(expr.ty) {
         return false
     }
     set(budget, 0, get(budget, 0) - 1)
-    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text {
+    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text {
         return true
     }
     if expr.kind == ExprKind.Local {

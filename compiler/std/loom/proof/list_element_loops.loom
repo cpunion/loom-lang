@@ -7,6 +7,7 @@ fn fresh_loop_element(proof Verification, value Value) Value {
         Value.Nonlinear(_) => fresh_result(proof, 1)
         Value.Boolean(_) => fresh_result(proof, 2)
         Value.Text(_) => fresh_result(proof, 3)
+        Value.Float(_) => fresh_result(proof, 5)
         Value.Record(fields) => {
             let output = new[Value]()
             var index = 0

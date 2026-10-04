@@ -365,7 +365,11 @@ fn scalar_facts_imply(premises List[Expr], conclusion Expr, backend ProofBackend
                 if ty == 2 {
                     Value.Boolean(Predicate.Variable(index))
                 } else {
-                    Value.Empty
+                    if ty == 5 {
+                        Value.Float(FloatValue.Variable(index))
+                    } else {
+                        Value.Empty
+                    }
                 }
             })
         index = index + 1

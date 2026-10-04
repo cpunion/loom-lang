@@ -1,7 +1,7 @@
 // Type construction has established these predicates. Reuse the ordinary entry
 // read machinery, not a runtime assertion or a promise of private storage.
 fn invariant_entry_supported(value Expr, depth Int) Bool {
-    if depth >= 32 || value.ty == 5 || proof_operation(value).arity < 0 ||
+    if depth >= 32 || proof_operation(value).arity < 0 ||
     (value.kind == ExprKind.Local && value.index != 0) {
         return false
     }

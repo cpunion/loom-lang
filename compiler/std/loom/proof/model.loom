@@ -20,6 +20,12 @@ enum TextValue {
     Joined(List[TextValue])
 }
 
+enum FloatValue {
+    Literal(Text)
+    Variable(Int)
+    Apply(Text, List[FloatValue])
+}
+
 enum IntegerTerm {
     Linear(Linear)
     Apply(Text, List[IntegerTerm])
@@ -37,6 +43,7 @@ enum Predicate {
     Or(List[Predicate])
     TextEqual(TextValue, TextValue)
     IntegerCompare(Text, IntegerTerm, IntegerTerm)
+    FloatCompare(Text, FloatValue, FloatValue)
     ArrayRead(Int, Linear, IntegerTerm, List[Predicate])
     ArrayWrite(Int, Int, Linear, IntegerTerm)
     Forall(Int, Linear, Linear, List[Predicate])
@@ -50,6 +57,7 @@ enum Value {
     Record(List[Value])
     Empty
     Text(TextValue)
+    Float(FloatValue)
     List(Int)
     EntryList(Linear, Int)
 }

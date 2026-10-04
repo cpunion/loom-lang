@@ -100,6 +100,12 @@ patterns, List indexing and new-value record updates use ordinary typed
 operations. Record updates do not mutate the base or inherit its refinement
 without validation. See the [implemented subset](../../compiler/README.md#implemented-subset).
 
+Required Float contracts now reuse exact IEEE comparisons from constrained
+values, typed reads, verified returns and guarded entry observations. Literal
+operations use binary64 evaluation; symbolic arithmetic remains ordered and
+opaque. NaN, signed zero and rounding do not inherit integer/real algebra.
+General Float solving remains unsupported; unknown obligations reject.
+
 Concepts require explicit conformances. Static/default/generic methods,
 associated bounds/defaults/families and exact dyn bindings are implemented.
 Dynamic calls use statically established evidence and sparse used slots, not

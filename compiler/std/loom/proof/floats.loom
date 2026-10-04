@@ -1,0 +1,179 @@
+import std.float.parse
+import std.float.to_text
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+import std.list.set
+import std.result.Result
+
+// Canonical round-tripping spelling preserves signed zero. Symbolic identity
+// means the same computation, not IEEE equality: even x == x may be false.
+fn float_literal(text Text) Result[FloatValue, Text] {
+    match parse(text) {
+        Result.Ok(value) => Result.Ok(FloatValue.Literal(to_text(value)))
+        Result.Err(_) => Result.Err("invalid Float proof literal")
+    }
+}
+
+fn same_float(left FloatValue, right FloatValue, budget List[Int]) Bool {
+    if get(budget, 0) <= 0 {
+        return false
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    match left {
+        FloatValue.Literal(text) => match right {
+            FloatValue.Literal(other) => text == other
+            _ => false
+        }
+        FloatValue.Variable(id) => match right {
+            FloatValue.Variable(other) => id == other
+            _ => false
+        }
+        FloatValue.Apply(operator, values) => match right {
+            FloatValue.Apply(other, operands) => {
+                if operator != other || length(values) != length(operands) {
+                    return false
+                }
+                var index = 0
+                while index < length(values) {
+                    if !same_float(get(values, index), get(operands, index), budget) {
+                        return false
+                    }
+                    index = index + 1
+                }
+                true
+            }
+            _ => false
+        }
+    }
+}
+
+fn float_constant(value FloatValue) Result[Float, Text] {
+    match value {
+        FloatValue.Literal(text) => match parse(text) {
+            Result.Ok(number) => Result.Ok(number)
+            Result.Err(_) => Result.Err("invalid Float proof constant")
+        }
+        _ => Result.Err("symbolic Float proof value")
+    }
+}
+
+fn float_operands(value FloatValue) List[FloatValue] {
+    let values = new[FloatValue]()
+    push(values, value)
+    values
+}
+
+fn float_unary(operator Text, value FloatValue) Result[Value, Text] {
+    if operator != "-" {
+        return Result.Err("unsupported Float proof unary operation")
+    }
+    match float_constant(value) {
+        Result.Ok(number) => Result.Ok(Value.Float(FloatValue.Literal(to_text(-number))))
+        Result.Err(_) => Result.Ok(Value.Float(FloatValue.Apply(operator, float_operands(value))))
+    }
+}
+
+fn float_constant_operation(operator Text, a Float, b Float) Result[Value, Text] {
+    if operator == "==" {
+        return Result.Ok(Value.Boolean(Predicate.Constant(a == b)))
+    }
+    if operator == "!=" {
+        return Result.Ok(Value.Boolean(Predicate.Constant(a != b)))
+    }
+    if operator == "<" {
+        return Result.Ok(Value.Boolean(Predicate.Constant(a < b)))
+    }
+    if operator == "<=" {
+        return Result.Ok(Value.Boolean(Predicate.Constant(a <= b)))
+    }
+    if operator == ">" {
+        return Result.Ok(Value.Boolean(Predicate.Constant(a > b)))
+    }
+    if operator == ">=" {
+        return Result.Ok(Value.Boolean(Predicate.Constant(a >= b)))
+    }
+    if operator == "+" {
+        return Result.Ok(Value.Float(FloatValue.Literal(to_text(a + b))))
+    }
+    if operator == "-" {
+        return Result.Ok(Value.Float(FloatValue.Literal(to_text(a - b))))
+    }
+    if operator == "*" {
+        return Result.Ok(Value.Float(FloatValue.Literal(to_text(a * b))))
+    }
+    if operator == "/" {
+        return Result.Ok(Value.Float(FloatValue.Literal(to_text(a / b))))
+    }
+    Result.Ok(Value.Float(FloatValue.Literal(to_text(a % b))))
+}
+
+// Operations are opaque ordered IEEE computations, never affine real terms.
+// Literal evaluation uses the same binary64 operations as emitted Loom code.
+fn float_binary(operator Text, left FloatValue, right FloatValue) Result[Value, Text] {
+    let comparison = operator == "==" || operator == "!=" || operator == "<" ||
+    operator == "<=" || operator == ">" || operator == ">="
+    let arithmetic = operator == "+" || operator == "-" || operator == "*" ||
+    operator == "/" || operator == "%"
+    if !comparison && !arithmetic {
+        return Result.Err("unsupported Float proof operation")
+    }
+    match float_constant(left) {
+        Result.Ok(a) => match float_constant(right) {
+            Result.Ok(b) => {
+                return float_constant_operation(operator, a, b)
+            }
+            Result.Err(_) => {
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    if arithmetic {
+        let values = float_operands(left)
+        push(values, right)
+        return Result.Ok(Value.Float(FloatValue.Apply(operator, values)))
+    }
+    let fact = if operator == ">" || operator == ">=" {
+        Predicate.FloatCompare(flip(operator), right, left)
+    } else {
+        Predicate.FloatCompare(if operator == "!=" {
+                "=="
+            } else {
+                operator
+            }, left, right)
+    }
+    // != is the complement of ==, including NaN. Ordered comparisons do not
+    // have complementary inverses: !(x < y) does not imply x >= y.
+    Result.Ok(Value.Boolean(if operator == "!=" {
+                not(fact)
+            } else {
+                fact
+            }))
+}
+
+// A true strict ordered comparison excludes NaN and implies its non-strict
+// form. No reflexivity, cancellation, reassociation or ordered negation rule.
+fn float_holds(relation Text, left FloatValue, right FloatValue, facts List[Predicate]) Bool {
+    if relation != "<=" {
+        return false
+    }
+    var index = 0
+    while index < length(facts) {
+        match get(facts, index) {
+            Predicate.FloatCompare(known, first, second) => {
+                if (known == "<" && same(Predicate.FloatCompare("<", left, right),
+                        Predicate.FloatCompare("<", first, second))) ||
+                (known == "==" && same(Predicate.FloatCompare("==", left, right),
+                        Predicate.FloatCompare("==", first, second))) {
+                    return true
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    false
+}

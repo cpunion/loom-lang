@@ -9,7 +9,7 @@ test fn contract_helpers_expand_scalar_arguments_locals_and_guarded_calls() {
     discard accepted(concat(range, "pub fn keep(value Int, low Int, high Int) Int requires between(value, low, high) ensures between(result, low, high) { value }\npub fn nested(value Int) Int requires bounded(value) ensures between(result, 1, 100) { value }"))
     discard accepted("fn either(left Bool, right Bool) Bool { left || right }\npub fn zero(value Int) Int requires value == 0 ensures result == 0 || either(false, 10 / result > 0) { value }")
     discard accepted("fn touched(value Int) Bool { let unused = value + 1\ntrue }\npub fn bounded(value Int) Int requires value < 9223372036854775807 ensures touched(result) { value }")
-    // Runtime Float predicates need no unsupported symbolic Float proof.
+    // Entry-only Float predicates remain ordinary checked runtime code.
     discard accepted("fn positive(value Float) Bool { value > 0.0 }\nfn keep(value Float) Float requires positive(value) { value }\nfn main() { assert keep(1.0) == 1.0 }")
 }
 
@@ -22,7 +22,17 @@ test fn helper_contracts_do_not_assume_requirements_or_skip_eager_arithmetic() {
     rejects("fn touched(value Int) Bool { let unused = value + 1\ntrue }\nfn bad(value Int) Int ensures touched(result) { value }")
     rejects("fn always(value Int) Bool { true }\nfn bad(value Int) Int ensures always(result + 1) { value }")
     rejects("fn wrong(value Int) Bool ensures result { false }\nfn caller(value Int) Int requires wrong(value) { value }")
-    rejects("fn positive(value Float) Bool { value > 0.0 }\nfn bad(value Float) Float requires positive(value) ensures positive(result) { value }")
+    discard accepted("""
+        fn positive(value Float) Bool {
+            value > 0.0
+        }
+        fn keep(value Float) Float
+        requires positive(value)
+        ensures positive(result)
+        {
+            value
+        }
+        """)
 }
 
 test fn helper_proofs_remain_mandatory_for_templates_and_unsupported_bodies() {
@@ -42,7 +52,9 @@ test fn contract_helpers_use_the_defining_packages_private_bindings() {
     let files = source_files("import rules.checked\nfn admitted(value Int) Bool { false }\nfn main() { assert checked(7) == 7 }")
     push(files, source_file("rules", "fn admitted(value Int) Bool requires value > 0 { true }\npub fn checked(value Int) Int requires value > 0 ensures admitted(result) { value }", false))
     match checked(files) {
-        Result.Ok(program) => { assert length(program.functions) == 2 }
+        Result.Ok(program) => {
+            assert length(program.functions) == 2
+        }
         Result.Err(failed) => {
             show_failure(fixture_project(files), failed)
             assert false

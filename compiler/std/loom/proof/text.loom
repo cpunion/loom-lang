@@ -37,13 +37,13 @@ fn text_bounds(value Value, state State) State {
 
 // Optional refinement queries have one canonical self. Their checked, bounded
 // syntax determines its domain; never treat immutable Text as an Int value.
-fn text_self(value Expr) Bool {
-    if value.kind == ExprKind.Local && value.ty == 3 {
+fn scalar_self(value Expr, ty Int) Bool {
+    if value.kind == ExprKind.Local && value.ty == ty {
         return true
     }
     var index = 0
     while index < length(value.children) {
-        if text_self(get(value.children, index)) {
+        if scalar_self(get(value.children, index), ty) {
             return true
         }
         index = index + 1
@@ -53,10 +53,14 @@ fn text_self(value Expr) Bool {
 
 fn implication_initial(premise Expr, conclusion Expr) State {
     let locals = new[Value]()
-    push(locals, if text_self(premise) || text_self(conclusion) {
+    push(locals, if scalar_self(premise, 3) || scalar_self(conclusion, 3) {
             Value.Text(TextValue.Variable(0))
         } else {
-            Value.Number(variable(0))
+            if scalar_self(premise, 5) || scalar_self(conclusion, 5) {
+                Value.Float(FloatValue.Variable(0))
+            } else {
+                Value.Number(variable(0))
+            }
         })
     bounded(get(locals, 0), State {
             locals = locals
