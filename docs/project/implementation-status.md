@@ -113,6 +113,9 @@ Dynamic calls use statically established evidence and sparse used slots, not
 dynamic associated families and zero-allocation witness upcasts do not.
 Named/captured callbacks retain typed environments; closures cannot conceal
 live Task or scoped-resource obligations.
+Generic instances retain nominal type domains and prerequisites of supplied
+concrete conformance evidence, including test-scope inputs. Unrelated test-only
+implementations remain undiscoverable from production code.
 
 Compile-time execution uses a bounded evaluator over the checked model, with
 pure functions, loops, recursion and fresh shared graphs. Type values remain
@@ -406,9 +409,11 @@ folds preserve callback effects and stop before pulling a remaining suffix.
 Callbacks retain pull order, faults and lexical cleanup.
 [`std.file.lines`](../../compiler/std/file/lines/README.md) provides incremental
 synchronous UTF-8 file lines with explicit error items and scoped closure,
-including direct generic consumers. Collection hash/order laws remain caller
-obligations; streaming JSON, resource-containing iterator adapters, async streams
-and application-grade networking are not complete.
+including direct generic consumers. Resource factory overloads of map/filter/take
+compose owned scoped pipelines without copying a live borrow; nested disposal
+uses the existing compiler rules. Collection hash/order laws remain caller
+obligations; streaming JSON, borrow-retaining adapters, async streams and
+application-grade networking are not complete.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;
 large-object storage is separate and stress tests relocate all sizes. Ordinary

@@ -1,0 +1,64 @@
+import std.iter.Filtered
+import std.iter.filter
+import std.iter.take
+import std.iter.try_fold
+import std.file.lines.Lines
+import std.file.lines.read
+import std.file.FileError
+import std.result.Result
+import std.list.new
+import std.list.push
+import std.list.length
+import std.io.write_text
+import std.io.write_error
+import std.process.arguments
+import std.process.exit_code
+import std.text.concat
+
+fn nonempty_lines(path Text) Result[Filtered[Lines], FileError] {
+    filter(read, path, fn(line Result[Text, FileError]) Bool {
+            match line {
+                Result.Ok(text) => text != ""
+                Result.Err(_) => true
+            }
+        })
+}
+
+// The factory creates one owned pipeline. Errors are retained by the filter,
+// then propagated by try_fold; only the first two nonempty lines are retained.
+fn first_lines(path Text) Result[List[Text], FileError] {
+    scoped source = take(nonempty_lines, path, 2)?
+    try_fold(source, new[Text](), fn(values List[Text], line Result[Text, FileError]) Result[List[Text], FileError] {
+            push(values, line?)
+            Result.Ok(values)
+        })
+}
+
+fn main() {
+    let args = arguments()
+    if length(args) != 2 {
+        discard write_error("usage: file_pipeline FILE\n")
+        exit_code(2)
+        return
+    }
+    match first_lines(args[1]) {
+        Result.Ok(lines) => {
+            var index = 0
+            while index < length(lines) {
+                match write_text(concat(lines[index], "\n")) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(_) => {
+                        exit_code(1)
+                        return
+                    }
+                }
+                index = index + 1
+            }
+        }
+        Result.Err(_) => {
+            discard write_error("cannot read UTF-8 lines\n")
+            exit_code(1)
+        }
+    }
+}

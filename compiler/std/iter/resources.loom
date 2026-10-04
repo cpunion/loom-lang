@@ -1,0 +1,58 @@
+import std.resource.Dispose
+import std.resource.MustScope
+
+// Factory overloads create a new owner, rather than copying an existing scoped
+// borrow into a returned adapter. Children are disposed by ordinary scoped rules.
+pub fn map[A, I Iterator + Dispose + MustScope, T, E](create fn(A) Result[I, E], input A, transform fn(I.Item) T) Result[Mapped[I, T], E] {
+    Result.Ok(Mapped {
+            source = create(input)?
+            transform = transform
+        })
+}
+
+pub fn filter[A, I Iterator + Dispose + MustScope, E](create fn(A) Result[I, E], input A, predicate fn(I.Item) Bool) Result[Filtered[I], E] {
+    Result.Ok(Filtered {
+            source = create(input)?
+            predicate = predicate
+        })
+}
+
+pub fn take[A, I Iterator + Dispose + MustScope, E](create fn(A) Result[I, E], input A, count Int) Result[Limited[I], E]
+requires count >= 0
+{
+    Result.Ok(Limited {
+            state = LimitState[I] {
+                source = create(input)?
+                remaining = [count]
+            }
+        })
+}
+
+impl[I Iterator + Dispose + MustScope, T] MustScope for Mapped[I, T] {
+}
+
+impl[I Iterator + Dispose + MustScope] MustScope for Filtered[I] {
+}
+
+impl[I Iterator + Dispose + MustScope] MustScope for Limited[I] {
+}
+
+impl[I Iterator + Dispose + MustScope, T] Dispose for Mapped[I, T] {
+    fn dispose(self Mapped[I, T]) {
+    }
+}
+
+impl[I Iterator + Dispose + MustScope] Dispose for Filtered[I] {
+    fn dispose(self Filtered[I]) {
+    }
+}
+
+impl[I Iterator + Dispose + MustScope] Dispose for Limited[I] {
+    fn dispose(self Limited[I]) {
+    }
+}
+
+impl[I Iterator + Dispose + MustScope] Dispose for LimitState[I] {
+    fn dispose(self LimitState[I]) {
+    }
+}

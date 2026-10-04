@@ -629,7 +629,8 @@ record FunctionScope {
     params List[Int]
 }
 
-fn function_scope(env Environment, current Signature, arguments List[Int], constants List[StaticValue], emit Bool) Result[FunctionScope, Failure] {
+fn function_scope(env Environment, declared Signature, arguments List[Int], constants List[StaticValue], emit Bool) Result[FunctionScope, Failure] {
+    let current = scoped_type_domains(env, declared, arguments)?
     let item = symbol(env, current.symbol)
     var context = Context { lexical = new_lexical() env = env signature = current arguments = arguments
         constants = constants locals = new[Local]() bindings = new[Binding]() head = -1

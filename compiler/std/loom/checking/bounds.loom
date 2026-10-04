@@ -8,8 +8,12 @@ import std.result.Result
 
 // Type interning stores structure, not scope-dependent conformance permission.
 fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement], node Node, depth Int) Result[Bool, Failure] {
-    if length(env.concepts) == 0 { return Result.Ok(true) }
-    if depth > 64 { return Result.Err(failure(env, owner, node, "type requirement expansion must be finite")) }
+    if length(env.concepts) == 0 {
+        return Result.Ok(true)
+    }
+    if depth > 64 {
+        return Result.Err(failure(env, owner, node, "type requirement expansion must be finite"))
+    }
     let shape = get(env.types, ty)
     var index = 0
     while index < length(shape.arguments) {
@@ -38,22 +42,29 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
     }
     Result.Ok(true)
 }
+
 fn context_type(context Context, node Node) Result[Int, Failure] {
     let resolved = meta_type_node(context, node)?
     let ty = resolve_bound(context.env, context.signature.symbol, resolved, context.arguments, context.signature.requirements, 0)?
     discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?
     Result.Ok(ty)
 }
+
 fn constructed_type(context Context, declaration Int, arguments List[Int], node Node) Result[Int, Failure] {
     let ty = data_type(context.env, declaration, arguments, 0)?
     discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?
     Result.Ok(ty)
 }
+
 fn declaration_types(env Environment) Result[Bool, Failure] {
-    if length(env.concepts) == 0 { return Result.Ok(true) }
+    if length(env.concepts) == 0 {
+        return Result.Ok(true)
+    }
     var pending = 0
     while pending < length(env.types) {
-        if get(env.type_states, pending).phase == 0 { discard expand_type(env, pending, 0)? }
+        if get(env.type_states, pending).phase == 0 {
+            discard expand_type(env, pending, 0)?
+        }
         pending = pending + 1
     }
     var owner = 0
@@ -118,7 +129,10 @@ fn implementation_types(env Environment, index Int) Result[Bool, Failure] {
     discard well_formed(env, header.symbol, header.ty, obligations, node, 0)?
     // Self implements this concept, but its associated promises cannot be
     // assumed while proving those same bindings.
-    push(obligations, Requirement { ty = header.ty capability = header.capability })
+    push(obligations, Requirement {
+            ty = header.ty
+            capability = header.capability
+        })
     let members = get(env.concepts, concept_index(env, header.capability)).associated
     var member = 0
     while member < length(members) {
@@ -127,8 +141,10 @@ fn implementation_types(env Environment, index Int) Result[Bool, Failure] {
         let supplied = argument_tail(all, length(arguments))
         let evidence = new[Requirement]()
         var given = 0
-        while given < length(obligations) { push(evidence, get(obligations, given))
-            given = given + 1 }
+        while given < length(obligations) {
+            push(evidence, get(obligations, given))
+            given = given + 1
+        }
         discard inherit_member_requirements(env, declaration, supplied, evidence)?
         let ty = associated_type(env, header.symbol, declaration, header.ty, supplied, node, 0)?
         discard well_formed(env, header.symbol, ty, evidence, node, 0)?
@@ -137,6 +153,7 @@ fn implementation_types(env Environment, index Int) Result[Bool, Failure] {
     }
     Result.Ok(true)
 }
+
 fn member_requirements(env Environment, owner Int, ty Int, bounds List[Int], obligations List[Requirement], node Node) Result[Bool, Failure] {
     var bound = 0
     while bound < length(bounds) {
@@ -147,6 +164,7 @@ fn member_requirements(env Environment, owner Int, ty Int, bounds List[Int], obl
     }
     Result.Ok(true)
 }
+
 fn associated_bounds(env Environment, owner Int, capability Int, bindings List[Int], obligations List[Requirement], node Node) Result[Bool, Failure] {
     let declaration = get(env.concepts, concept_index(env, capability))
     var member = 0

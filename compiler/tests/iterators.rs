@@ -104,3 +104,48 @@ fn scoped_file_lines_keep_boundaries_errors_and_cleanup() {
     success(&output);
     assert_eq!(output.stdout, b"4\n");
 }
+
+#[test]
+fn scoped_factory_pipelines_stop_early_and_do_not_erase_errors() {
+    let package = "compiler/examples/file_pipeline";
+    for mode in ["check", "test"] {
+        success(&common::loom(&[mode, package]));
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::executable(temporary.path(), "file-pipeline");
+    let input = temporary.path().join("input.txt");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        for (contents, expected) in [
+            (
+                &b"\nfirst\r\n\nsecond\n\xff\n"[..],
+                Ok(&b"first\nsecond\n"[..]),
+            ),
+            (&b"\nfirst\n\xff\n"[..], Err(())),
+        ] {
+            std::fs::write(&input, contents).unwrap();
+            let output = Command::new(&executable)
+                .arg(&input)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap();
+            match expected {
+                Ok(text) => {
+                    success(&output);
+                    assert_eq!(output.stdout, text);
+                }
+                Err(()) => {
+                    assert_eq!(output.status.code(), Some(1));
+                    assert_eq!(output.stderr, b"cannot read UTF-8 lines\n");
+                }
+            }
+        }
+    }
+}
