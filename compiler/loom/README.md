@@ -326,6 +326,11 @@ read-only. `is_current` compares module origins, package/import edges, file
 metadata, text and AST, not the disk: reload first to detect filesystem changes.
 These are result-local indices, not persistent identities or an incremental cache.
 
+Independent inspection and receiver completion rebind source trees without
+modifying the caller's bindings, even after an analysis generated closures or
+pack instances. `checking.check_query` returns `CheckedQuery.bindings` alongside
+its checked tables; generated symbol IDs belong to that query snapshot.
+
 For repeated edits, `std.loom.checking.definition_cache()` creates private,
 in-memory validation evidence. Pass it to
 `check_project_cached(project, tests, inputs, cache)` to obtain fresh `bindings`

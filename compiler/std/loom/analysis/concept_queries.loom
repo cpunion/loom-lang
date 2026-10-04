@@ -1,7 +1,7 @@
 import std.loom.checking.ConceptReference
 import std.loom.checking.concept_references
 
-fn inspect_concept_references(view SemanticView, report Inspection, target Query, file Int, references List[ConceptReference]) {
+fn inspect_concept_references(view CheckedQuery, report Inspection, target Query, file Int, references List[ConceptReference]) {
     var index = 0
     while index < length(references) {
         let reference = get(references, index)
@@ -22,7 +22,7 @@ fn inspect_concept_references(view SemanticView, report Inspection, target Query
 // A successful analysis lazily records erased concept bindings once. Readers
 // replay the analysis's observed input snapshots, never fresh filesystem data.
 // Ordinary body queries and ordinary compilation do not run this extra check.
-fn inspect_concept_at(analysis Analysis, view SemanticView, file Int, offset Int) Option[Inspection] {
+fn inspect_concept_at(analysis Analysis, view CheckedQuery, file Int, offset Int) Option[Inspection] {
     if length(analysis.concepts) != 0 || file < 0 || file >= length(view.bindings.files) {
         return Option.None
     }

@@ -1,0 +1,68 @@
+import std.loom.checking.check_query
+
+test fn repeated_queries_own_generated_bindings_without_mutating_callers() {
+    let text = """
+        concept Packed {
+            fn count(self Self) Int {
+                7
+            }
+        }
+        impl[Ts...] Packed for (Ts...) {
+        }
+        fn consume[P Packed](value P) Int {
+            value.count()
+        }
+        record Box {
+            value Int
+        }
+        fn main() {
+            let box = Box { value = 7 }
+            let read = fn() Int {
+                box.value
+            }
+            assert consume((7, "pack")) == 7
+            assert read() == 7
+            assert box.value == 7
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let before = length(bindings.symbols)
+    let analysis = accepted(input(text))
+    let analyzed_before = length(analysis.bindings.symbols)
+    assert analyzed_before > before
+    let field = query_offset(text, "value Int")
+    var attempt = 0
+    while attempt < 2 {
+        only_definition(independent_found(bindings, text, "value == 7"), field, field + 5)
+        only_definition(independent_found(analysis.bindings, text, "value == 7"), field, field + 5)
+        only_definition(independent_found(bindings, text, "value\n    }"), field, field + 5)
+        let completed = match complete_at(analysis.bindings, 0, query_offset(text, "box.value ==") + 9) {
+            Option.Some(value) => value
+            Option.None => {
+                assert false
+                return
+            }
+        }
+        assert completion_found(completed, "value").detail == "value Int"
+        let methods = match complete_at(analysis.bindings, 0, query_offset(text, "value.count()") + 11) {
+            Option.Some(value) => value
+            Option.None => {
+                assert false
+                return
+            }
+        }
+        assert completion_found(methods, "count").kind == CompletionKind.Method
+        assert length(bindings.symbols) == before
+        assert length(analysis.bindings.symbols) == analyzed_before
+        attempt = attempt + 1
+    }
+    let checked = match check_query(bindings, 0, query_offset(text, "box.value ==")) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(checked.bindings.symbols) > before
+    assert length(bindings.symbols) == before
+}

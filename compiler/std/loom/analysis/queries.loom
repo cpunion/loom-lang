@@ -11,14 +11,8 @@ import std.loom.checking.check_query
 import std.loom.binding.Program
 import std.loom.checking.type_name
 
-// Query tables have no executable roots and cannot be encoded as a Program.
-record SemanticView {
-    bindings std.loom.binding.Program
-    data CheckedQuery
-}
-
-fn query_type_name(analysis SemanticView, ty Int) Text {
-    std.loom.checking.type_name(analysis.bindings, analysis.data.types, analysis.data.interfaces, ty)
+fn query_type_name(analysis CheckedQuery, ty Int) Text {
+    std.loom.checking.type_name(analysis.bindings, analysis.types, analysis.interfaces, ty)
 }
 
 pub record Location {
@@ -185,7 +179,7 @@ fn add_location(report Inspection, file Int, span Span) {
         })
 }
 
-fn declaration(analysis SemanticView, report Inspection, file Int, node Node) {
+fn declaration(analysis CheckedQuery, report Inspection, file Int, node Node) {
     var index = 0
     while index < length(node.children) {
         let marker = get(node.children, index)
@@ -214,7 +208,7 @@ fn declaration(analysis SemanticView, report Inspection, file Int, node Node) {
     }
 }
 
-fn symbol_location(analysis SemanticView, report Inspection, id Int) {
+fn symbol_location(analysis CheckedQuery, report Inspection, id Int) {
     let symbol = get(analysis.bindings.symbols, id)
     declaration(analysis, report, symbol.file, symbol.node)
 }
@@ -317,11 +311,11 @@ fn local_binding(source Node, value Expr, local Int, spans List[Span]) {
     }
 }
 
-fn local_location(analysis SemanticView, report Inspection, function Function, local Int) {
+fn local_location(analysis CheckedQuery, report Inspection, function Function, local Int) {
     let symbol = get(analysis.bindings.symbols, function.symbol)
     var index = 0
     var parameter = if symbol.node.value == "" && length(function.params) != 0 &&
-    get(analysis.data.types, get(function.params, 0)).kind == TypeKind.Frame {
+    get(analysis.types, get(function.params, 0)).kind == TypeKind.Frame {
         1
     } else {
         0
@@ -333,7 +327,7 @@ fn local_location(analysis SemanticView, report Inspection, function Function, l
             while child < length(group.children) {
                 let node = get(group.children, child)
                 let environment = has(node, NodeKind.Comptime) && parameter < length(function.params) &&
-                get(function.locals, parameter).name == node.value && get(analysis.data.types, get(function.params, parameter)).kind == TypeKind.Frame
+                get(function.locals, parameter).name == node.value && get(analysis.types, get(function.params, parameter)).kind == TypeKind.Frame
                 if !has(node, NodeKind.Comptime) || environment {
                     if parameter == local {
                         declaration(analysis, report, symbol.file, node)
@@ -361,8 +355,8 @@ fn local_location(analysis SemanticView, report Inspection, function Function, l
     }
     if symbol.node.value == "" && symbol.owner >= 0 {
         index = 0
-        while index < length(analysis.data.functions) {
-            let parent = get(analysis.data.functions, index)
+        while index < length(analysis.functions) {
+            let parent = get(analysis.functions, index)
             if parent.symbol == symbol.owner {
                 capture_location(analysis, report, parent, function, get(function.locals, local).name, parent.body)
             }
@@ -373,12 +367,12 @@ fn local_location(analysis SemanticView, report Inspection, function Function, l
 
 // Follow the checked capture initializer back to its actual enclosing binding.
 // A same-spelled declaration elsewhere is not definition evidence.
-fn capture_location(analysis SemanticView, report Inspection, parent Function, function Function, name Text, value Expr) {
+fn capture_location(analysis CheckedQuery, report Inspection, parent Function, function Function, name Text, value Expr) {
     if value.kind == ExprKind.FunctionRef && value.index >= 0 && length(value.children) == 1 {
-        let callee = get(analysis.data.functions, value.index)
+        let callee = get(analysis.functions, value.index)
         if callee.symbol == function.symbol && get(callee.arguments, 0) == get(function.arguments, 0) {
             let environment = get(value.children, 0)
-            let fields = get(analysis.data.types, environment.ty).fields
+            let fields = get(analysis.types, environment.ty).fields
             var index = 0
             while index < length(environment.children) {
                 let field = get(environment.children, index)
@@ -409,8 +403,8 @@ fn capture_location(analysis SemanticView, report Inspection, parent Function, f
     }
 }
 
-fn source_local_type(analysis SemanticView, ty Int) Int {
-    let shape = get(analysis.data.types, ty)
+fn source_local_type(analysis CheckedQuery, ty Int) Int {
+    let shape = get(analysis.types, ty)
     if shape.kind == TypeKind.Frame && shape.symbol == -1 && length(shape.arguments) == 1 {
         get(shape.arguments, 0)
     } else {
@@ -418,12 +412,12 @@ fn source_local_type(analysis SemanticView, ty Int) Int {
     }
 }
 
-fn signature_name(analysis SemanticView, params List[Int], output Int) Text {
+fn signature_name(analysis CheckedQuery, params List[Int], output Int) Text {
     var label = "fn("
     var index = 0
     var count = 0
     while index < length(params) {
-        if get(analysis.data.types, get(params, index)).kind != TypeKind.Frame {
+        if get(analysis.types, get(params, index)).kind != TypeKind.Frame {
             if count > 0 {
                 label = concat(label, ", ")
             }
@@ -439,8 +433,8 @@ fn signature_name(analysis SemanticView, params List[Int], output Int) Text {
     label
 }
 
-fn field_location(analysis SemanticView, report Inspection, ty Int, field Int) {
-    let shape = get(analysis.data.types, ty)
+fn field_location(analysis CheckedQuery, report Inspection, ty Int, field Int) {
+    let shape = get(analysis.types, ty)
     if shape.kind != TypeKind.Record {
         return
     }
@@ -460,18 +454,18 @@ fn field_location(analysis SemanticView, report Inspection, ty Int, field Int) {
     }
 }
 
-fn dyn_location(analysis SemanticView, report Inspection, value Expr) {
+fn dyn_location(analysis CheckedQuery, report Inspection, value Expr) {
     if value.index < 0 || length(value.children) == 0 {
         return
     }
-    let receiver = get(analysis.data.types, get(value.children, 0).ty)
+    let receiver = get(analysis.types, get(value.children, 0).ty)
     if receiver.kind != TypeKind.Dyn {
         return
     }
-    let interface = get(analysis.data.interfaces, receiver.symbol)
+    let interface = get(analysis.interfaces, receiver.symbol)
     let method = get(interface.methods, value.index)
     let output = if method.is_async {
-        get(get(analysis.data.types, method.result).arguments, 0)
+        get(get(analysis.types, method.result).arguments, 0)
     } else {
         method.result
     }
@@ -509,7 +503,7 @@ fn dyn_location(analysis SemanticView, report Inspection, value Expr) {
     }
 }
 
-fn path_depth(analysis SemanticView, value Expr) Int {
+fn path_depth(analysis CheckedQuery, value Expr) Int {
     if value.kind == ExprKind.Local {
         return 0
     }
@@ -528,7 +522,7 @@ fn path_depth(analysis SemanticView, value Expr) Int {
     -1
 }
 
-fn inspect_expression(analysis SemanticView, report Inspection, function Function, target Query, value Expr, parent_type Int) {
+fn inspect_expression(analysis CheckedQuery, report Inspection, function Function, target Query, value Expr, parent_type Int) {
     if !same_span(value.span, target.node.span) {
         return
     }
@@ -538,7 +532,7 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
         if value.index < 0 || get(function.locals, value.index).name != target.token.value {
             return
         }
-        let shape = get(analysis.data.types, get(function.locals, value.index).ty)
+        let shape = get(analysis.types, get(function.locals, value.index).ty)
         if shape.kind == TypeKind.Frame && shape.symbol >= 0 {
             return
         }
@@ -570,7 +564,7 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
     if final && (path || kind == NodeKind.MethodCall) {
         if value.kind == ExprKind.Call || value.kind == ExprKind.FunctionRef || value.kind == ExprKind.TaskCall {
             if value.index >= 0 {
-                let callee = get(analysis.data.functions, value.index)
+                let callee = get(analysis.functions, value.index)
                 add_type(report, if callee.is_async {
                         concat("async ", signature_name(analysis, callee.params, callee.result))
                     } else {
@@ -587,11 +581,11 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
     }
     if (kind == NodeKind.Construct && final && value.kind == ExprKind.Record) ||
     (path && final && value.kind == ExprKind.Variant) ||
-    (kind == NodeKind.Call && final && value.kind == ExprKind.Coerce && get(analysis.data.types, value.ty).kind == TypeKind.Refined) {
+    (kind == NodeKind.Call && final && value.kind == ExprKind.Coerce && get(analysis.types, value.ty).kind == TypeKind.Refined) {
         add_type(report, query_type_name(analysis, value.ty))
         if value.kind == ExprKind.Variant {
             // The final segment is a variant, not the nominal type name.
-            symbol_location(analysis, report, get(analysis.data.types, value.ty).symbol)
+            symbol_location(analysis, report, get(analysis.types, value.ty).symbol)
         } else {
             nominal_body_location(analysis, report, function, target, value.ty, target.node.value)
         }
@@ -606,7 +600,7 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
     }
 }
 
-fn inspect_tree(analysis SemanticView, report Inspection, function Function, target Query, value Expr, parent_type Int) {
+fn inspect_tree(analysis CheckedQuery, report Inspection, function Function, target Query, value Expr, parent_type Int) {
     if !inside(value.span, target.token.span.start) {
         return
     }
@@ -622,7 +616,7 @@ fn inspect_tree(analysis SemanticView, report Inspection, function Function, tar
     // Result variants reuse the call span. Only that block's result is source
     // evidence; its synthetic children are not references written by the user.
     if target.node.kind == NodeKind.Call && value.kind == ExprKind.Block && same_span(value.span, target.node.span) {
-        if target.segment + 1 == target.segments && get(analysis.data.types, value.ty).kind != TypeKind.Frame {
+        if target.segment + 1 == target.segments && get(analysis.types, value.ty).kind != TypeKind.Frame {
             add_type(report, query_type_name(analysis, value.ty))
         }
         return
@@ -670,17 +664,15 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
         }
         index = index + 1
     }
-    let view = SemanticView {
+    let view = CheckedQuery {
         bindings = analysis.bindings
-        data = CheckedQuery {
-            types = analysis.program.types
-            interfaces = analysis.program.interfaces
-            functions = analysis.program.functions
-            concepts = if length(analysis.concepts) == 0 {
-                new[std.loom.checking.ConceptReference]()
-            } else {
-                get(analysis.concepts, 0)
-            }
+        types = analysis.program.types
+        interfaces = analysis.program.interfaces
+        functions = analysis.program.functions
+        concepts = if length(analysis.concepts) == 0 {
+            new[std.loom.checking.ConceptReference]()
+        } else {
+            get(analysis.concepts, 0)
         }
     }
     match inspect_view(view, file, offset) {
@@ -698,15 +690,12 @@ pub fn inspect_independent(bindings std.loom.binding.Program, file Int, offset I
 
 pub fn inspect_independent(bindings std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) Option[Inspection] {
     match check_query(bindings, file, offset, inputs) {
-        Result.Ok(data) => inspect_view(SemanticView {
-                bindings = bindings
-                data = data
-            }, file, offset)
+        Result.Ok(data) => inspect_view(data, file, offset)
         Result.Err(_) => Option.None
     }
 }
 
-fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] {
+fn inspect_view(analysis CheckedQuery, file Int, offset Int) Option[Inspection] {
     if file < 0 || file >= length(analysis.bindings.files) {
         return Option.None
     }
@@ -734,13 +723,13 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
         types = new[Text]()
         definitions = new[Location]()
     }
-    inspect_concept_references(analysis, report, target, file, analysis.data.concepts)
+    inspect_concept_references(analysis, report, target, file, analysis.concepts)
     if length(report.definitions) > 0 {
         return Option.Some(report)
     }
     var index = 0
-    while index < length(analysis.data.types) {
-        let shape = get(analysis.data.types, index)
+    while index < length(analysis.types) {
+        let shape = get(analysis.types, index)
         if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
             let declaration = get(analysis.bindings.symbols, shape.symbol)
             if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
@@ -757,8 +746,8 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
         index = index + 1
     }
     index = 0
-    while index < length(analysis.data.functions) {
-        let function = get(analysis.data.functions, index)
+    while index < length(analysis.functions) {
+        let function = get(analysis.functions, index)
         let declaration = get(analysis.bindings.symbols, function.symbol)
         if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
             let types_before = length(report.types)
@@ -794,7 +783,7 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
 // Parameters and direct match payloads need not have an expression at their
 // declaration. A candidate's spelling only narrows the search; the checked
 // local ID must lead back to this exact source token before publishing evidence.
-fn inspect_binding_declaration(analysis SemanticView, report Inspection, function Function, target Query, file Int) {
+fn inspect_binding_declaration(analysis CheckedQuery, report Inspection, function Function, target Query, file Int) {
     let kind = target.node.kind
     if kind != NodeKind.Name && kind != NodeKind.Parameter && kind != NodeKind.Pattern &&
     kind != NodeKind.Let && kind != NodeKind.Var && kind != NodeKind.Scoped {
@@ -813,7 +802,7 @@ fn inspect_binding_declaration(analysis SemanticView, report Inspection, functio
             var location = 0
             while location < length(candidate.definitions) {
                 let defined = get(candidate.definitions, location)
-                let shape = get(analysis.data.types, local.ty)
+                let shape = get(analysis.types, local.ty)
                 if defined.file == file && same_span(defined.span, target.token.span) &&
                 !(shape.kind == TypeKind.Frame && shape.symbol >= 0) {
                     add_type(report, query_type_name(analysis, source_local_type(analysis, local.ty)))
