@@ -1932,6 +1932,10 @@ fields as typed snapshots. An unobserved shared sibling does not prevent a
 proof about known immutable fields; each real initializer still executes once,
 in source order. The same snapshots and stable flow facts compose with verified
 factory contracts. Unsupported evidence retains the checked boundary.
+Contracted factories may carry unobserved values of any permitted input type;
+there is no opaque-parameter type whitelist. Unmodeled enum values contribute
+no tag or payload facts, and an unrelated Float supplies no finiteness or
+reflexive-equality assumption.
 Closed literals with `Float`, Text, tuple or enum fields can also
 return directly when compile-time evaluation establishes its predicate; a false
 constant is a diagnostic. Unknown inputs, calls, and failed optional evaluation

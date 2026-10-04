@@ -218,6 +218,8 @@ Partial record construction proves known immutable fields independently of
 unobserved shared siblings. Nested structure and stable scalar flow facts are
 retained; unknown calls and mutable observations become independent proof-only
 snapshots, without replaying or reordering executable initializers.
+Verified factory contracts accept unmodeled inputs without an opaque-type
+whitelist; such inputs contribute no tag, payload or finiteness assumptions.
 The [shared view example](../../compiler/examples/shared_views) uses `Pair[T]`
 with Int, Text and Bool elements. Generic List element constraints remain limited
 by the immutable-inline element rule. Cyclic invariant construction rejects
