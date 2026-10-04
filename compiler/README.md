@@ -680,7 +680,9 @@ timings; local variables remain conservatively rooted for the function.
   [`std.file.lines`](std/file/lines/README.md) adds incremental UTF-8 line reading
   with `scoped` closure, explicit error items and the ordinary Iterator protocol.
   The [line-counting example](examples/file_lines/README.md) does not retain the
-  whole file. Resource-containing iterator adapters and async streams remain open.
+  whole file. Factory overloads of map/filter/take compose new scoped resources;
+  the [file pipeline](examples/file_pipeline/README.md) stops at a selected prefix.
+  Borrow-retaining iterator adapters and async streams remain open.
 - Source `std.io.read_bytes()` reads stdin to EOF; `write_bytes(Bytes)` writes
   stdout, and `write_error(Bytes)` writes stderr. These preserve arbitrary bytes,
   report byte counts/errors, and never close standard streams. `read_text()` still

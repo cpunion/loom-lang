@@ -1,0 +1,119 @@
+import std.loom.project.Project
+
+fn nested_domain_definitions() Text {
+    """
+concept Value {
+    fn value(self Self) Int
+}
+
+concept Extra {
+}
+
+record Leaf {
+    value Int
+}
+
+record Checked[T Value] {
+    value T
+}
+
+record Wrapped[T] {
+    inner T
+}
+
+pub fn wrap[T](value T) Wrapped[T] {
+    Wrapped {
+        inner = value
+    }
+}
+
+fn unrelated[T](value T) Bool {
+    comptime if Leaf implements Extra {
+        true
+    } else {
+        false
+    }
+}
+"""
+}
+
+fn nested_domain_tests() Text {
+    """
+impl Value for Leaf {
+    fn value(self Leaf) Int {
+        self.value
+    }
+}
+
+impl Extra for Leaf {
+}
+
+test fn nested_values() {
+    let value = Checked {
+        value = Leaf {
+            value = 7
+        }
+    }
+    let wrapped = wrap(value)
+    assert wrapped.inner.value.value() == 7
+    assert !unrelated(value)
+}
+"""
+}
+
+fn nested_domain_project(production Text) Project {
+    let files = source_files(production)
+    let testing = source_file("app", nested_domain_tests(), false)
+    push(files, TestFile {
+            package = testing.package
+            path = "app_test.loom"
+            text = testing.text
+            tree = testing.tree
+            test_only = true
+            trusted_std = false
+        })
+    fixture_project(files)
+}
+
+test fn nested_supplied_type_domains_cross_generic_calls_without_global_discovery() {
+    match bind(nested_domain_project(nested_domain_definitions()), true) {
+        Result.Ok(bound) => {
+            match check(bound) {
+                Result.Ok(_) => {
+                }
+                Result.Err(_) => {
+                    assert false
+                }
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
+test fn supplied_domains_do_not_admit_unchecked_types_in_production() {
+    let production = concat(nested_domain_definitions(), """
+pub fn hidden() Wrapped[Checked[Leaf]] {
+    wrap(Checked {
+            value = Leaf {
+                value = 8
+            }
+        })
+}
+""")
+    match bind(nested_domain_project(production), true) {
+        Result.Ok(bound) => {
+            match check(bound) {
+                Result.Err(_) => {
+                }
+                Result.Ok(_) => {
+                    assert false
+                }
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

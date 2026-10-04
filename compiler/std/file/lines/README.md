@@ -47,7 +47,10 @@ may borrow the scoped reader; `collect` retains all yielded values, including
 errors. `try_fold` lets a callback propagate each line's Result immediately;
 the [application](../../../examples/file_lines/README.md) uses it to count lines
 without retaining their contents.
-Returning a resource-containing map/filter/take adapter around that borrow is
-not supported. This is synchronous file iteration, not an async stream protocol.
+Returning a map/filter/take adapter around that existing borrow is not supported.
+The factory overloads instead create a new owner, such as `take(read, path, 2)`;
+enter its Result payload through `scoped`. This is synchronous file iteration,
+not an async stream protocol. See the
+[owned pipeline example](../../../examples/file_pipeline/README.md).
 
 See the [line-counting application](../../../examples/file_lines/README.md).

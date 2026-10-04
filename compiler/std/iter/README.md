@@ -46,5 +46,22 @@ No new loop syntax, coroutine protocol or runtime primitive is involved.
 
 [`std.file.lines`](../file/lines/README.md) supplies a scoped synchronous file
 source with fallible Text items. Direct consumers, including `try_fold`, borrow
-it inside its scope; adapters that return a wrapper around the resource borrow
-are not yet supported.
+it inside its scope. An existing scoped source cannot be copied into a returned
+adapter. For a new resource pipeline, use the factory overloads:
+
+```loom
+// create has type fn(Input) Result[Source, Error]. Source must explicitly
+// implement Iterator, Dispose and MustScope. Each factory runs once.
+scoped limited = take(create, input, 2)?
+scoped selected = filter(create, input, predicate)?
+scoped transformed = map(create, input, transform)?
+```
+
+These reuse the ordinary adapter types and lazy pull behavior. The whole
+pipeline enters `scoped`; nested resources close on every lexical exit or fault.
+A factory error propagates without creating an owner. `take` opens the source
+even for a zero count, but does not pull it. Its nonnegative-count precondition
+is checked before the factory runs. Successful wrappers retain MustScope for
+further factory composition, while ordinary non-resource adapters stay ordinary.
+See the [file pipeline](../../examples/file_pipeline/README.md).
+Borrow-retaining adapters and an async stream protocol remain unsupported.

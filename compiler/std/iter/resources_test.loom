@@ -1,0 +1,106 @@
+import std.task.outcome
+import std.task.Outcome
+
+record ScopedCounter {
+    position List[Int]
+    trace List[Int]
+}
+
+impl MustScope for ScopedCounter {
+}
+
+impl Dispose for ScopedCounter {
+    fn dispose(self ScopedCounter) {
+        push(self.trace, 99)
+    }
+}
+
+impl Iterator for ScopedCounter {
+    type Item = Int
+
+    fn next(self ScopedCounter) Option[Int] {
+        let value = self.position[0]
+        if value == 5 {
+            return Option.None
+        }
+        self.position[0] = value + 1
+        push(self.trace, value)
+        Option.Some(value)
+    }
+}
+
+fn open_counter(trace List[Int]) Result[ScopedCounter, Text] {
+    push(trace, -1)
+    Result.Ok(ScopedCounter {
+            position = [0]
+            trace = trace
+        })
+}
+
+fn selected_counter(trace List[Int]) Result[Filtered[ScopedCounter], Text] {
+    filter(open_counter, trace, fn(value Int) Bool {
+            value % 2 == 0
+        })
+}
+
+fn rendered_counter(trace List[Int]) Result[Mapped[Filtered[ScopedCounter], Text], Text] {
+    map(selected_counter, trace, std.int.to_text)
+}
+
+fn counter_pipeline(trace List[Int]) Result[Int, Text] {
+    scoped source = take(rendered_counter, trace, 2)?
+    assert std.list.length(trace) == 1 && trace[0] == -1
+    let values = collect(source)
+    assert std.list.length(values) == 2 && values[0] == "0" && values[1] == "2"
+    assert std.list.length(trace) == 4 && trace[1] == 0 && trace[2] == 1 && trace[3] == 2
+    assert absent(source.next()) && std.list.length(trace) == 4
+    Result.Ok(0)
+}
+
+test fn resource_factories_compose_lazy_adapters_and_close_once() {
+    let trace = new[Int]()
+    assert match counter_pipeline(trace) {
+        Result.Ok(value) => value == 0
+        Result.Err(_) => false
+    }
+    assert std.list.length(trace) == 5 && trace[4] == 99
+}
+
+fn failed_counter(trace List[Int]) Result[ScopedCounter, Text] {
+    push(trace, -2)
+    Result.Err("cannot open")
+}
+
+test fn resource_factory_errors_do_not_create_or_dispose_an_owner() {
+    let trace = new[Int]()
+    match take(failed_counter, trace, 2) {
+        Result.Ok(value) => {
+            scoped source = value
+            assert false
+        }
+        Result.Err(error) => {
+            assert error == "cannot open"
+        }
+    }
+    assert std.list.length(trace) == 1 && trace[0] == -2
+}
+
+async fn faulting_counter(trace List[Int]) Result[Int, Text] {
+    scoped source = map(open_counter, trace, fn(value Int) Int {
+            assert value != 1
+            value
+        })?
+    Result.Ok(fold(source, 0, fn(total Int, value Int) Int {
+                total + value
+            }))
+}
+
+test async fn a_pipeline_callback_fault_disposes_the_original_resource_once() {
+    let trace = new[Int]()
+    assert match outcome(faulting_counter(trace)).await {
+        Outcome.Faulted(_) => true
+        _ => false
+    }
+    assert std.list.length(trace) == 4
+    assert trace[0] == -1 && trace[1] == 0 && trace[2] == 1 && trace[3] == 99
+}

@@ -1,0 +1,24 @@
+import std.file.write_text
+import std.fs.remove_file
+
+fn sample_file() Result[Bool, FileError] {
+    let path = "loom-file-pipeline-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    discard std.file.write_text(path, """
+first
+
+second
+third
+""")?
+    let values = first_lines(path)?
+    Result.Ok(length(values) == 2 && values[0] == "first" && values[1] == "second")
+}
+
+test fn scoped_pipeline_returns_only_the_selected_prefix() {
+    assert match sample_file() {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
