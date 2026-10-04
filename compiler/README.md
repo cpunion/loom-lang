@@ -676,6 +676,10 @@ timings; local variables remain conservatively rooted for the function.
   arbitrary binary contents and use the same source-owned read/write loops
   and explicit closure as text I/O. Both write APIs create or truncate a file;
   neither promises atomic publication or crash durability.
+  [`std.file.lines`](std/file/lines/README.md) adds incremental UTF-8 line reading
+  with `scoped` closure, explicit error items and the ordinary Iterator protocol.
+  The [line-counting example](examples/file_lines/README.md) does not retain the
+  whole file. Resource-containing iterator adapters and async streams remain open.
 - Source `std.io.read_bytes()` reads stdin to EOF; `write_bytes(Bytes)` writes
   stdout, and `write_error(Bytes)` writes stderr. These preserve arbitrary bytes,
   report byte counts/errors, and never close standard streams. `read_text()` still

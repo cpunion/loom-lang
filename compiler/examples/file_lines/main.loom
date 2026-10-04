@@ -1,0 +1,54 @@
+import std.file.lines.read
+import std.file.lines.next
+import std.file.FileError
+import std.option.Option
+import std.result.Result
+import std.int.to_text
+import std.io.write_text
+import std.io.write_error
+import std.list.length
+import std.process.arguments
+import std.process.exit_code
+import std.text.concat
+
+// Counts incrementally: no List of lines or whole-file Text is retained.
+fn count_lines(path Text) Result[Int, FileError] {
+    scoped reader = read(path)?
+    var count = 0
+    while true {
+        match next(reader) {
+            Option.Some(item) => {
+                discard item?
+                count = count + 1
+            }
+            Option.None => {
+                return Result.Ok(count)
+            }
+        }
+    }
+    Result.Ok(count)
+}
+
+fn main() {
+    let args = arguments()
+    if length(args) != 2 {
+        discard write_error("usage: file_lines FILE\n")
+        exit_code(2)
+        return
+    }
+    match count_lines(args[1]) {
+        Result.Ok(count) => {
+            match write_text(concat(to_text(count), "\n")) {
+                Result.Ok(_) => {
+                }
+                Result.Err(_) => {
+                    exit_code(1)
+                }
+            }
+        }
+        Result.Err(_) => {
+            discard write_error("cannot read UTF-8 lines\n")
+            exit_code(1)
+        }
+    }
+}

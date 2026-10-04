@@ -1,0 +1,199 @@
+import std.file.write_text
+import std.file.write_bytes
+import std.fs.remove_file
+import std.iter.collect
+import std.list.length
+import std.text.length
+import std.text.contains
+import std.text.to_bytes
+import std.bytes.set
+import std.task.Outcome
+import std.task.outcome
+
+fn text_line(value Option[Result[Text, FileError]]) Text {
+    match value {
+        Option.Some(Result.Ok(text)) => text
+        _ => {
+            assert false
+            ""
+        }
+    }
+}
+
+fn exhausted(value Option[Result[Text, FileError]]) Bool {
+    match value {
+        Option.None => true
+        _ => false
+    }
+}
+
+fn check_line_endings() Result[Bool, FileError] {
+    let path = "loom-lines-endings-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    discard write_text(path, "\nalpha\r\n世界\nlast\r")?
+    {
+        scoped reader = read(path)?
+        let items = collect(reader)
+        assert std.list.length(items) == 4
+        assert text_line(Option.Some(items[0])) == ""
+        assert text_line(Option.Some(items[1])) == "alpha"
+        assert text_line(Option.Some(items[2])) == "世界"
+        assert text_line(Option.Some(items[3])) == "last\r"
+        assert exhausted(reader.next()) && exhausted(reader.next())
+    }
+    discard write_text(path, "\r\r\n\n")?
+    {
+        scoped reader = read(path)?
+        assert text_line(reader.next()) == "\r"
+        assert text_line(reader.next()) == ""
+        assert exhausted(reader.next())
+    }
+    discard write_text(path, "")?
+    {
+        scoped reader = read(path)?
+        assert exhausted(reader.next())
+        discard close(reader)?
+        discard close(reader)?
+    }
+    Result.Ok(true)
+}
+
+fn check_chunk_boundaries() Result[Bool, FileError] {
+    let path = "loom-lines-chunks-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    let bytes = std.bytes.new()
+    var index = 0
+    while index < 8191 {
+        std.bytes.push(bytes, 97)
+        index = index + 1
+    }
+    let suffix = to_bytes("中\r\nnext\n")
+    index = 0
+    while index < std.bytes.length(suffix) {
+        std.bytes.push(bytes, std.bytes.get(suffix, index))
+        index = index + 1
+    }
+    discard write_bytes(path, bytes)?
+    {
+        scoped reader = read(path)?
+        let first = text_line(reader.next())
+        assert std.text.length(first) == 8194 && contains(first, "中")
+        assert text_line(reader.next()) == "next"
+        assert std.text.length(first) == 8194 && contains(first, "中")
+        assert exhausted(reader.next())
+    }
+    // A CR at the end of one chunk still pairs with LF in the next chunk.
+    std.bytes.set(bytes, 8191, 13)
+    std.bytes.set(bytes, 8192, 10)
+    discard write_bytes(path, bytes)?
+    {
+        scoped reader = read(path)?
+        assert std.text.length(text_line(reader.next())) == 8191
+    }
+    Result.Ok(true)
+}
+
+fn check_errors_and_cleanup() Result[Bool, FileError] {
+    let path = "loom-lines-errors-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    match read("\0invalid") {
+        Result.Ok(value) => {
+            scoped reader = value
+            assert false
+        }
+        Result.Err(error) => {
+            assert error == FileError.Open
+        }
+    }
+    let bytes = to_bytes("good\n")
+    std.bytes.push(bytes, 255)
+    std.bytes.push(bytes, 10)
+    discard write_bytes(path, bytes)?
+    {
+        scoped reader = read(path)?
+        assert text_line(reader.next()) == "good"
+        assert match reader.next() {
+            Option.Some(Result.Err(error)) => error == FileError.Utf8
+            _ => false
+        }
+        assert exhausted(reader.next())
+        assert get(reader.file.state.handle, 0) == -1
+    }
+    let observed = new[LineState]()
+    {
+        scoped reader = read(path)?
+        std.list.push(observed, reader.file.state)
+        assert text_line(reader.next()) == "good"
+        assert get(reader.file.state.handle, 0) >= 0
+    }
+    assert get(get(observed, 0).handle, 0) == -1
+    {
+        scoped reader = read(path)?
+        discard close(reader)?
+        discard close(reader)?
+        assert exhausted(reader.next())
+    }
+    {
+        scoped reader = read(path)?
+        discard close(get(reader.file.state.handle, 0))
+        assert match reader.next() {
+            Option.Some(Result.Err(error)) => error == FileError.Read
+            _ => false
+        }
+        assert exhausted(reader.next())
+    }
+    Result.Ok(true)
+}
+
+test fn line_endings_empty_files_and_explicit_close() {
+    assert match check_line_endings() {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
+
+test fn chunk_boundaries_preserve_utf8_crlf_and_isolated_text() {
+    assert match check_chunk_boundaries() {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
+
+test fn errors_are_not_eof_and_early_exit_closes_the_resource() {
+    assert match check_errors_and_cleanup() {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
+
+async fn fail_after_read(path Text, observed List[LineState]) Result[Int, FileError] {
+    scoped reader = read(path)?
+    std.list.push(observed, reader.file.state)
+    discard next(reader)
+    assert false
+    Result.Ok(0)
+}
+
+test async fn faults_close_the_scoped_file() {
+    let path = "loom-lines-fault-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    assert match write_text(path, "first\nsecond\n") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let observed = new[LineState]()
+    assert match outcome(fail_after_read(path, observed)).await {
+        Outcome.Faulted(_) => true
+        _ => false
+    }
+    assert std.list.length(observed) == 1
+    assert get(get(observed, 0).handle, 0) == -1
+}

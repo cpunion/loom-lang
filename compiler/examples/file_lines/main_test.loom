@@ -1,0 +1,17 @@
+import std.file.write_text
+import std.fs.remove_file
+
+test fn count_includes_empty_and_unterminated_lines() {
+    let path = "loom-lines-example-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    assert match write_text(path, "first\r\n\nlast") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match count_lines(path) {
+        Result.Ok(count) => count == 3
+        Result.Err(_) => false
+    }
+}

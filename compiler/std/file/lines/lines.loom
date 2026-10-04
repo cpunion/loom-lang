@@ -1,0 +1,183 @@
+import std.option.Option
+import std.resource.MustScope
+import std.resource.Dispose
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+import std.bytes.get
+import std.bytes.push
+import std.bytes.new
+import std.bytes.length
+import std.bytes.decode_utf8
+import std.file.FileError
+import std.result.Result
+import std.iter.Iterator
+
+intrinsic fn open(path Text) Int
+
+intrinsic fn read(handle Int, buffer Bytes, limit Int) Int
+
+intrinsic fn close(handle Int) Int
+
+pub record Lines {
+    file LineFile
+}
+
+// The private resource payload prevents a projection being used to create
+// another owner. Cursor/buffer state remains inaccessible outside this package.
+record LineFile {
+    state LineState
+}
+
+record LineState {
+    handle List[Int]
+    chunk List[Bytes]
+    cursor List[Int]
+    ended List[Bool]
+    pending List[Option[FileError]]
+}
+
+fn line_cell[T](value T) List[T] {
+    let cell = std.list.new[T]()
+    std.list.push(cell, value)
+    cell
+}
+
+// Open once; pull/decode one line at a time. The caller must enter scoped.
+pub fn read(path Text) Result[Lines, FileError] {
+    let pending Option[FileError] = Option.None
+    let handle = open(path)
+    if handle < 0 {
+        return Result.Err(FileError.Open)
+    }
+    Result.Ok(Lines {
+            file = LineFile {
+                state = LineState {
+                    handle = line_cell(handle)
+                    chunk = line_cell(std.bytes.new())
+                    cursor = line_cell(0)
+                    ended = line_cell(false)
+                    pending = line_cell(pending)
+                }
+            }
+        })
+}
+
+fn close_lines(state LineState) Int {
+    let handle = get(state.handle, 0)
+    if handle < 0 {
+        return 0
+    }
+    set(state.handle, 0, -1)
+    set(state.ended, 0, true)
+    close(handle)
+}
+
+// Explicit close reports failure; scoped cleanup remains the fallback.
+pub fn close(value Lines) Result[Int, FileError] {
+    let status = close_lines(value.file.state)
+    if status < 0 {
+        return Result.Err(FileError.Close)
+    }
+    Result.Ok(status)
+}
+
+fn line_failure(state LineState, error FileError) Option[Result[Text, FileError]] {
+    discard close_lines(state)
+    set(state.pending, 0, Option.None)
+    Option.Some(Result.Err(error))
+}
+
+fn decoded_line(state LineState, bytes Bytes) Option[Result[Text, FileError]] {
+    match std.bytes.decode_utf8(bytes) {
+        Result.Ok(value) => Option.Some(Result.Ok(value))
+        Result.Err(_) => line_failure(state, FileError.Utf8)
+    }
+}
+
+fn pending_line(state LineState) Option[Result[Text, FileError]] {
+    match get(state.pending, 0) {
+        Option.Some(error) => {
+            set(state.pending, 0, Option.None)
+            Option.Some(Result.Err(error))
+        }
+        Option.None => Option.None
+    }
+}
+
+// LF ends a line; a preceding CR is removed. A bare CR is ordinary content.
+// Final unterminated content is returned, but no extra item follows a final LF.
+// Errors are yielded once, never confused with EOF. Each Text is an isolated copy.
+pub fn next(value Lines) Option[Result[Text, FileError]] {
+    let state = value.file.state
+    if get(state.ended, 0) {
+        return pending_line(state)
+    }
+    let output = std.bytes.new()
+    var carriage = false
+    while true {
+        let chunk = get(state.chunk, 0)
+        let cursor = get(state.cursor, 0)
+        if cursor == std.bytes.length(chunk) {
+            let buffer = std.bytes.new()
+            let count = read(get(state.handle, 0), buffer, 8192)
+            if count < 0 {
+                return line_failure(state, FileError.Read)
+            }
+            if count == 0 {
+                if close_lines(state) < 0 {
+                    set(state.pending, 0, Option.Some(FileError.Close))
+                }
+                if carriage {
+                    std.bytes.push(output, 13)
+                }
+                if std.bytes.length(output) != 0 {
+                    return decoded_line(state, output)
+                }
+                return pending_line(state)
+            }
+            set(state.chunk, 0, buffer)
+            set(state.cursor, 0, 0)
+        } else {
+            let byte = std.bytes.get(chunk, cursor)
+            set(state.cursor, 0, cursor + 1)
+            if byte == 10 {
+                return decoded_line(state, output)
+            }
+            if carriage {
+                std.bytes.push(output, 13)
+            }
+            carriage = byte == 13
+            if !carriage {
+                std.bytes.push(output, byte)
+            }
+        }
+    }
+    Option.None
+}
+
+impl MustScope for Lines {
+}
+
+impl Dispose for Lines {
+    fn dispose(self Lines) {
+    }
+}
+
+impl MustScope for LineFile {
+}
+
+impl Dispose for LineFile {
+    fn dispose(self LineFile) {
+        discard close_lines(self.state)
+    }
+}
+
+impl Iterator for Lines {
+    type Item = Result[Text, FileError]
+
+    fn next(self Lines) Option[Result[Text, FileError]] {
+        next(self)
+    }
+}

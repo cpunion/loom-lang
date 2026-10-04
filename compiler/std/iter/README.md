@@ -36,3 +36,8 @@ exhaustion behavior; user iterators may resume later. `take` stays exhausted aft
 either its allowance or its source ends. These are ordinary source-library
 policies, not compiler assumptions about purity, termination or permanent EOF.
 No new loop syntax, coroutine protocol or runtime primitive is involved.
+
+[`std.file.lines`](../file/lines/README.md) supplies a scoped synchronous file
+source with fallible Text items. Direct consumers can borrow it inside its
+scope; adapters that return a wrapper around the resource borrow are not yet
+supported.
