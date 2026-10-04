@@ -1,3 +1,5 @@
+import std.loom.proof.InputGuarantee
+
 fn worker_expression(value Expr) Bool {
     if value.kind == ExprKind.Suspend && value.text == "async_worker" {
         return true
@@ -39,11 +41,14 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     if !shared {
         return Result.Ok(true)
     }
-    let protected = new[Int]()
+    let protected = new[InputGuarantee]()
     index = 6
     while env.has_refinements && index < length(env.types) {
-        if constrained_list(env, index) && get(env.type_states, index).list_writes == 0 {
-            push(protected, index)
+        if constrained_list(env, index) {
+            push(protected, InputGuarantee {
+                    ty = index
+                    writes = get(env.type_states, index).list_writes
+                })
         }
         index = index + 1
     }

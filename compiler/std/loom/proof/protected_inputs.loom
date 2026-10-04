@@ -1,17 +1,24 @@
-// Only the source checker's validated, no-write constrained types provide this
-// evidence. A read-only function body or handle spelling supplies none.
-fn protected_type(types List[Int], ty Int) Bool {
+// The source checker validates continuing predicates and permitted writes.
+// Read-only bodies and handle spelling alone supply neither guarantee.
+pub record InputGuarantee {
+    ty Int
+    // 0: no writes; 1: element replacement; 2: replacement and proved append.
+    writes Int
+}
+
+fn input_guarantee(types List[InputGuarantee], ty Int) Option[InputGuarantee] {
     var index = 0
     while index < length(types) {
-        if get(types, index) == ty {
-            return true
+        let guarantee = get(types, index)
+        if guarantee.ty == ty {
+            return Option.Some(guarantee)
         }
         index = index + 1
     }
-    false
+    Option.None
 }
 
-fn protected_extent(identity Int, state State) State {
+fn protected_extent(identity Int, guarantee InputGuarantee, state State) State {
     let extents = new[ListExtent]()
     var index = 0
     while index < length(state.extents) {
@@ -21,7 +28,13 @@ fn protected_extent(identity Int, state State) State {
                 size = extent.size
                 allocated = extent.allocated
                 private_storage = extent.private_storage
-                read_only = extent.read_only || extent.identity == identity
+                read_only = extent.read_only || (extent.identity == identity && guarantee.writes == 0)
+                fixed_extent = extent.fixed_extent || (extent.identity == identity && guarantee.writes <= 1)
+                invariant_type = if extent.identity == identity {
+                    guarantee.ty
+                } else {
+                    extent.invariant_type
+                }
                 contents = extent.contents
                 cells = extent.cells
             })
@@ -35,20 +48,22 @@ fn protected_extent(identity Int, state State) State {
     }
 }
 
-fn protected_input(types List[Type], protected List[Int], ty Int, value Value, state State, depth Int) State {
+fn protected_input(types List[Type], protected List[InputGuarantee], ty Int, value Value, state State, depth Int) State {
     if ty < 6 || ty >= length(types) || depth >= 16 {
         return state
     }
     let shape = get(types, ty)
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         let current = protected_input(types, protected, get(shape.fields, 0).ty, value, state, depth + 1)
-        if protected_type(protected, ty) {
-            match value {
+        match input_guarantee(protected, ty) {
+            Option.Some(guarantee) => match value {
                 Value.List(identity) => {
-                    return protected_extent(identity, current)
+                    return protected_extent(identity, guarantee, current)
                 }
                 _ => {
                 }
+            }
+            Option.None => {
             }
         }
         return current
@@ -105,4 +120,30 @@ fn invariant_reads_stable(value Expr, state State) Bool {
         index = index + 1
     }
     true
+}
+
+// Length snapshots keep the continuing predicate for that sampled extent, not
+// an equality with current storage or hypothetical entry/path assumptions.
+fn captured_input_invariants(proof Verification, before State, after State) State {
+    var scope = State {
+        locals = after.locals
+        facts = after.facts
+        extents = before.extents
+        observations = after.observations
+    }
+    var index = 0
+    while index < length(before.extents) {
+        let extent = get(before.extents, index)
+        if extent.invariant_type >= 6 {
+            scope = invariant_facts(proof.program.types, extent.invariant_type,
+                Value.List(extent.identity), scope, 0)
+        }
+        index = index + 1
+    }
+    State {
+        locals = after.locals
+        facts = scope.facts
+        extents = after.extents
+        observations = after.observations
+    }
 }

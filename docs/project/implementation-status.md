@@ -473,8 +473,12 @@ List observations remain stable; finite private factory summaries compose.
 Validated content-constrained inputs also retain their storage observations,
 including refined record/tuple fields, bounded sorted predicates and `old`.
 The existing construction/write/escape analysis supplies this evidence. It
-neither promises private/disjoint storage nor changes runtime worker guards;
-length-only refinements and arbitrary read-only bodies supply none.
+neither promises private/disjoint storage nor changes runtime worker guards.
+Validated replacement-only refinements retain length snapshots, not elements;
+append-capable refinements re-establish their shape predicate for each independent
+length observation, including `old`. Arbitrary read-only bodies supply no storage
+guarantee. The [shared shape example](../../compiler/examples/workers/shapes.loom)
+exercises both policies and nested refined fields.
 Checked source allocation/return origins recognize explicit shallow copies
 from shared inputs, including `std.list.clone` through inline wrappers. No value
 contract or deep copy is inferred; multiple returned mutable leaves may alias.

@@ -50,7 +50,10 @@ test fn protected_storage_is_stable_without_inventing_private_or_disjoint_origin
         extents = []
         observations = []
     }
-    let state = protected_extent(10, list_bounds(Value.Record([Value.List(10), Value.List(11)]), entry))
+    let state = protected_extent(10, InputGuarantee {
+            ty = -1
+            writes = 0
+        }, list_bounds(Value.Record([Value.List(10), Value.List(11)]), entry))
     let protected = get(state.extents, 0)
     let unrelated = get(state.extents, 1)
     assert protected.read_only && stable_storage(protected)
@@ -59,4 +62,15 @@ test fn protected_storage_is_stable_without_inventing_private_or_disjoint_origin
     let published = published_storage(state)
     assert stable_storage(get(published.extents, 0))
     assert !stable_storage(get(published.extents, 1))
+    let fixed = protected_extent(11, InputGuarantee {
+            ty = -1
+            writes = 1
+        }, published)
+    let replaced = get(fixed.extents, 1)
+    assert replaced.fixed_extent && !replaced.read_only && !stable_storage(replaced)
+    let growing = protected_extent(11, InputGuarantee {
+            ty = -1
+            writes = 2
+        }, published)
+    assert !get(growing.extents, 1).fixed_extent
 }
