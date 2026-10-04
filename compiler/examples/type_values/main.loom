@@ -54,6 +54,7 @@ fn is_integer(comptime choice Choice) Bool {
 
 fn exercise() {
     constructed_types()
+    symbolic_types()
     static_nominal_scope()
     function_signatures()
     selected_field_types()

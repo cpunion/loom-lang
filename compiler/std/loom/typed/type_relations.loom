@@ -1,0 +1,129 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+
+// A type parameter has stable symbolic identity, not a guessed concrete shape.
+pub fn concrete_type(types List[Type], ty Int) Bool {
+    var current = ty
+    var depth = 0
+    while current > 5 {
+        let shape = get(types, current)
+        if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
+            return false
+        }
+        let count = length(shape.arguments)
+        if count == 0 {
+            return true
+        }
+        if depth >= 64 {
+            return false
+        }
+        if count > 1 {
+            return concrete_in(types, current, new[Int](), depth)
+        }
+        current = get(shape.arguments, 0)
+        depth = depth + 1
+    }
+    true
+}
+
+fn concrete_in(types List[Type], ty Int, seen List[Int], depth Int) Bool {
+    if ty <= 5 {
+        return true
+    }
+    if depth >= 64 {
+        return false
+    }
+    let shape = get(types, ty)
+    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
+        return false
+    }
+    var index = 0
+    while index < length(seen) {
+        if get(seen, index) == ty {
+            return true
+        }
+        index = index + 1
+    }
+    push(seen, ty)
+    index = 0
+    while index < length(shape.arguments) {
+        if !concrete_in(types, get(shape.arguments, index), seen, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+record TypeComparison {
+    left Int
+    right Int
+    relation Int
+}
+
+// 1: equal, 0: distinct, -1: depends on unresolved parameters/projections.
+// Structural rules apply to arbitrary nesting; nominal identities stay nominal.
+pub fn type_relation(types List[Type], left Int, right Int) Int {
+    if left == right {
+        return 1
+    }
+    relation_in(types, left, right, new[TypeComparison](), 0)
+}
+
+fn relation_in(types List[Type], left Int, right Int, seen List[TypeComparison], depth Int) Int {
+    if left == right {
+        return 1
+    }
+    if depth >= 64 {
+        return -1
+    }
+    let a = get(types, left)
+    let b = get(types, right)
+    if a.kind == TypeKind.Parameter || a.kind == TypeKind.Associated ||
+    b.kind == TypeKind.Parameter || b.kind == TypeKind.Associated {
+        return -1
+    }
+    if a.kind != b.kind {
+        return 0
+    }
+    if a.symbol != b.symbol {
+        // Dyn symbols identify bound interface instances, not just concepts.
+        return if a.kind == TypeKind.Dyn && (!concrete_type(types, left) || !concrete_type(types, right)) {
+            -1
+        } else {
+            0
+        }
+    }
+    if length(a.arguments) != length(b.arguments) {
+        return 0
+    }
+    var index = 0
+    while index < length(seen) {
+        let found = get(seen, index)
+        if found.left == left && found.right == right {
+            return found.relation
+        }
+        index = index + 1
+    }
+    var relation = 1
+    index = 0
+    while index < length(a.arguments) {
+        let current = relation_in(types, get(a.arguments, index), get(b.arguments, index), seen, depth + 1)
+        if current == 0 {
+            relation = 0
+            break
+        }
+        if current < 0 {
+            relation = -1
+        }
+        index = index + 1
+    }
+    push(seen, TypeComparison {
+            left = left,
+            right = right,
+            relation = relation
+        })
+    relation
+}

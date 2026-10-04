@@ -764,11 +764,25 @@ fn answer() (Int, Text) {
     let pair Pair = (41, "answer")
     pair
 }
+fn tagged[T](value T) (T, Text) {
+    let Tagged = comptime { tuple([T, Text]) }
+    let tagged Tagged = (value, "tagged")
+    tagged
+}
+fn identity[T](value T) T {
+    value
+}
+fn apply[T](value T) T {
+    let Callback = comptime { function([T], Option.Some(T)) }
+    let callback Callback = identity[T]
+    callback(value)
+}
 fn main() {
     let Callback = comptime { function([Int], Option.Some(Int)) }
     let callback Callback = increment
     let pair = answer()
     assert callback(pair.0) == 42 && pair.1 == "answer"
+    assert tagged(true).0 && apply(pair.0) == 41
 }
 "#;
     fs::write(&path, source).unwrap();

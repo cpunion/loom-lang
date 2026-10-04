@@ -47,10 +47,11 @@ fn guard_condition(context Context, node Node, condition Node, depth Int) Result
         }
         let left = context_type(context, child(condition, 0))?
         let right = context_type(context, child(condition, 1))?
-        if left != right && (!concrete(context.env, left) || !concrete(context.env, right)) {
+        let relation = std.loom.typed.type_relation(context.env.types, left, right)
+        if relation < 0 {
             return Result.Ok(GuardDecision.Pending)
         }
-        return Result.Ok(GuardDecision.Known(if condition.value == "==" { left == right } else { left != right }, context))
+        return Result.Ok(GuardDecision.Known(if condition.value == "==" { relation == 1 } else { relation == 0 }, context))
     }
     let type_dependent = abstract_context(context) && depends_on_type(context, condition)
     if type_dependent || unknown_static(context, condition) {

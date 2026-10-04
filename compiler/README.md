@@ -2845,6 +2845,26 @@ constraints, visibility and runtime resource obligations keep their ordinary
 rules. Type lists and constructor calls cannot escape into native values.
 See [construction.loom](examples/type_values/construction.loom).
 
+Pure construction can also preserve a generic parameter's symbolic identity:
+
+```loom
+import std.meta.tuple
+
+pub fn tagged[T](value T) (T, Text) {
+    let Tagged = comptime { tuple([T, Text]) }
+    let tagged Tagged = (value, "tagged")
+    tagged
+}
+```
+
+The public signature still declares its result and required concepts. A computed
+alias grants no additional methods, constraints or resource permissions. Type
+comparison composes over structure: `(T, Text)` differs from `(Int, Bool)`, but
+`T == Int` remains unknown until specialization. Unknown comparisons cannot select
+a branch or discharge a proof. Shape-changing computations that cannot produce
+an abstract type still reject rather than infer a public requirement from one
+concrete call. See [symbolic.loom](examples/type_values/symbolic.loom).
+
 ### Type reflection
 
 `std.reflect.describe[T]()` resolves the declared type at its lexical call site

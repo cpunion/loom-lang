@@ -1,5 +1,7 @@
 import std.loom.typed.structural_type
 import std.loom.typed.type_depth
+import std.loom.typed.concrete_type
+import std.loom.typed.type_relation
 import std.loom.eval.evaluate_types
 
 fn meta_intrinsic(env Environment, owner Int) Bool {

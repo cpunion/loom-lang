@@ -96,6 +96,31 @@ test fn calls_have_frames_preconditions_and_return_flow() {
 }
 
 fn shape(kind TypeKind) Type { Type { kind = kind symbol = -1 arguments = new[Int]() fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() } }
+
+test fn symbolic_type_equality_never_guesses_a_branch() {
+    let program = empty()
+    var index = 0
+    while index < 6 {
+        push(program.types, shape(TypeKind.Int))
+        index = index + 1
+    }
+    push(program.types, shape(TypeKind.Meta))
+    push(program.types, shape(TypeKind.Parameter))
+    let formal = node(ExprKind.TypeValue, 6, "", 7, new[Expr]())
+    let concrete = node(ExprKind.TypeValue, 6, "", 1, new[Expr]())
+    assert accepted(program, binary("==", 2, formal, formal), 0).number == 1
+    assert accepted(program, binary("==", 2, formal, concrete), 0).ty == -1
+    assert accepted(program, binary("!=", 2, formal, concrete), 0).ty == -1
+    let condition = binary("==", 2, formal, concrete)
+    let branches = two(condition, literal(1))
+    push(branches, literal(2))
+    discard rejected(program, node(ExprKind.If, 1, "", -1, branches), 0)
+    assert match scalar(condition, unknown()) {
+        Result.Ok(value) => value.ty == -1
+        Result.Err(_) => false
+    }
+}
+
 test fn fresh_lists_preserve_aliases_and_records_preserve_field_order() {
     let program = empty()
     var index = 0
