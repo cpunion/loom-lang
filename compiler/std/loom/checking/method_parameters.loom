@@ -35,6 +35,15 @@ fn method_declaration(env Environment, owner Int) Int {
         if method >= 0 && get(env.signatures, method).symbol == owner { return get(env.signatures, get(declarations, index)).symbol }
         index = index + 1
     }
+    // Erased proof headers deliberately have no implementation slot.
+    var pack = 0
+    while pack < length(env.packs) {
+        let erased = get(env.packs, pack)
+        if erased.arity == -2 && get(env.signatures, erased.signature).symbol == owner {
+            return erased.declaration
+        }
+        pack = pack + 1
+    }
     -1
 }
 fn source_signature(env Environment, owner Int, arguments List[Int], obligations List[Requirement]) Result[Signature, Failure] {
@@ -81,7 +90,10 @@ fn register_signature(env Environment, current Signature) Result[Int, Failure] {
         let declaration = symbol(env, other.symbol)
         if item.owner == declaration.owner && item.name == declaration.name && get(env.source.files, item.file).package == get(env.source.files, declaration.file).package &&
             current.parameters == other.parameters && same(current.params, other.params) {
-            return Result.Err(failure(env, current.symbol, item.node, "duplicate overload signature"))
+            let proof = pack_instance(env, index)
+            if proof < 0 || get(env.packs, proof).arity != -2 {
+                return Result.Err(failure(env, current.symbol, item.node, "duplicate overload signature"))
+            }
         }
         index = index + 1
     }

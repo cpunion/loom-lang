@@ -6,9 +6,10 @@ import std.loom.typed.TypeKind
 // An arity of -1 registers a source declaration, without a signature or proof.
 record PackInstance {
     source Int
-    // A method template's original concept declaration; ordinary packs use
-    // their own source. This is not a runtime slot or an arity specialization.
+    // A method's concept declaration; erased proofs use the erased header.
+    // Ordinary packs use their own source. This is not a runtime slot.
     declaration Int
+    // -1 = source family; -2 = erased proof, never a callable specialization.
     arity Int
     signature Int
     // -2 = method header expansion; 0 = unvisited, 1 = checking,
@@ -298,19 +299,89 @@ fn pack_has_postcondition(env Environment, pack PackInstance) Bool {
     (pack.declaration >= 0 && has(symbol(env, pack.declaration).node, NodeKind.Ensures))
 }
 
-// Check required family proofs even if no caller selects an arity. With the
-// source dependency check above, arity zero is an erased proof environment,
-// not evidence that a body which inspects the sequence works for other sizes.
+// Check required family proofs even if no caller selects an arity. Erased
+// headers never enter overload matching, concept slots or runtime scheduling.
 fn check_pack_contracts(env Environment) Result[Bool, Failure] {
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity < 0 && pack_has_postcondition(env, pack) {
-            discard check_pack_arity(env, selected_pack_signature(env, pack.source, 0)?)?
+        if pack.arity == -1 && pack_has_postcondition(env, pack) {
+            discard check_pack_arity(env, erased_pack_signature(env, pack.source)?)?
         }
         index = index + 1
     }
     Result.Ok(true)
+}
+
+fn erased_pack_signature(env Environment, owner Int) Result[Int, Failure] {
+    var index = 0
+    while index < length(env.packs) {
+        let previous = get(env.packs, index)
+        if previous.source == owner && previous.arity == -2 {
+            return Result.Ok(previous.signature)
+        }
+        index = index + 1
+    }
+    discard validate_pack_contract(env, owner)?
+    let item = symbol(env, owner)
+    let declaration = method_pack_source(env, owner)
+    let inherited = if declaration >= 0 && declaration != owner {
+        get(env.signatures, erased_pack_signature(env, declaration)?).symbol
+    } else {
+        -1
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(item.node.children) {
+        let member = child(item.node, index)
+        if member.kind == NodeKind.TypeParameters || member.kind == NodeKind.Parameters {
+            let members = new[Node]()
+            var selected = 0
+            while selected < length(member.children) {
+                let input = child(member, selected)
+                if input.kind != NodeKind.TypePack &&
+                !(input.kind == NodeKind.Parameter && has_type_expansion(child(input, 0))) {
+                    push(members, input)
+                }
+                selected = selected + 1
+            }
+            push(children, pack_node(member, member.kind, member.value, members))
+        } else {
+            push(children, member)
+        }
+        index = index + 1
+    }
+    let source = length(env.source.symbols)
+    push(env.source.symbols, Symbol {
+            file = item.file
+            node = pack_node(item.node, NodeKind.Function, item.node.value, children)
+            name = item.name
+            public = false
+            test_only = item.test_only
+            owner = if item.owner >= 0 {
+                item.owner
+            } else {
+                owner
+            }
+        })
+    let arguments = abstract_arguments(env, function_parameter_count(env, source))
+    let obligations = requirements(env, source, arguments)?
+    if inherited >= 0 {
+        discard inherit_member_requirements(env, inherited,
+            argument_tail(arguments, method_parameter_prefix(env, source)), obligations)?
+    }
+    // No overload registration or concept slot: this header is proof-only.
+    let signature = append_signature(env, source_signature(env, source, arguments,
+            function_requirements(env, source, obligations)?)?)
+    push(env.packs, PackInstance {
+            source = owner
+            declaration = inherited
+            arity = -2
+            signature = signature
+            state = 0
+            depth = 0
+        })
+    Result.Ok(signature)
 }
 
 fn pack_pattern_binds(node Node, name Text) Bool {
@@ -878,8 +949,8 @@ fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
         // An implementation inherits its declaration's clauses even when it
         // does not repeat ensures. Its own body must meet the erasure rule.
         discard validate_pack_contract(env, pack.source)?
-        if pack.arity != 0 {
-            discard check_pack_arity(env, selected_pack_signature(env, pack.source, 0)?)?
+        if pack.arity >= 0 {
+            discard check_pack_arity(env, erased_pack_signature(env, pack.source)?)?
         }
     }
     if pack.state != 0 {

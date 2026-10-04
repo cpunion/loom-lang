@@ -142,3 +142,43 @@ test fn variadic_contracts_revalidate_after_definition_cache_restore() {
         Result.Ok(_) => false
     }
 }
+
+test fn erased_method_proofs_do_not_add_overloads_or_dynamic_slots() {
+    let program = accepted("""
+        concept Keeping {
+            fn keep(self Self, value Int) Int {
+                value
+            }
+            fn keep[Ts...](self Self, value Int, ignored Ts...) Int
+            ensures result == value {
+                value
+            }
+        }
+        impl Keeping for Bool {}
+        fn main() {
+            let source dyn Keeping = true
+            assert source.keep(7, false) == 7
+        }
+        """)
+    let methods = get(get(program.witnesses, 0).methods, 0)
+    assert methods == -1
+    assert length(get(program.witnesses, 0).methods) == 2
+    discard accepted("""
+        concept Keeping {
+            fn keep[Ts...](self Self, value Int, ignored Ts...) Int
+            ensures result == value {
+                value
+            }
+            fn keep[Ts...](self Self, value Int, ignored List[Ts]...) Int
+            ensures result == value {
+                value
+            }
+        }
+        impl Keeping for Bool {}
+        fn main() {
+            let source dyn Keeping = true
+            assert source.keep[Int](7, 8) == 7
+            assert source.keep[Bool](9, [false]) == 9
+        }
+        """)
+}

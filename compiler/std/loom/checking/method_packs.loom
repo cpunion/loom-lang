@@ -5,7 +5,7 @@ fn method_pack_source(env Environment, source Int) Int {
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.source == source && pack.arity < 0 {
+        if pack.source == source && pack.arity == -1 {
             return pack.declaration
         }
         index = index + 1
@@ -17,7 +17,7 @@ fn method_pack_binding(env Environment, implementation Int, declaration Int) Int
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity < 0 && pack.declaration == declaration && symbol(env, pack.source).owner == implementation {
+        if pack.arity == -1 && pack.declaration == declaration && symbol(env, pack.source).owner == implementation {
             return pack.source
         }
         index = index + 1
@@ -134,7 +134,7 @@ fn validate_method_pack_declarations(env Environment, capability Int) Result[Boo
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity < 0 && symbol(env, pack.source).owner == capability {
+        if pack.arity == -1 && symbol(env, pack.source).owner == capability {
             let node = symbol(env, pack.source).node
             let parameters = group(node, NodeKind.Parameters)
             if length(parameters) == 0 || child(get(parameters, 0), 0).value != "Self" ||
@@ -169,7 +169,7 @@ fn validate_method_pack_implementation(env Environment, header Implementation) R
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity < 0 && symbol(env, pack.source).owner == header.symbol {
+        if pack.arity == -1 && symbol(env, pack.source).owner == header.symbol {
             let item = symbol(env, pack.source)
             if has(item.node, NodeKind.Requires) {
                 return Result.Err(failure(env, pack.source, item.node, "an implementation cannot add an undeclared precondition"))
@@ -180,7 +180,7 @@ fn validate_method_pack_implementation(env Environment, header Implementation) R
             var candidate = 0
             while candidate < length(env.packs) {
                 let source = get(env.packs, candidate)
-                if source.arity < 0 && symbol(env, source.source).owner == header.capability &&
+                if source.arity == -1 && symbol(env, source.source).owner == header.capability &&
                 symbol(env, source.source).name == item.name &&
                 method_parameter_count(env, source.source) == method_parameter_count(env, pack.source) &&
                 method_bounds_match(env, source.source, pack.source)? {
@@ -232,7 +232,7 @@ fn validate_method_pack_implementation(env Environment, header Implementation) R
     index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity < 0 && symbol(env, pack.source).owner == header.capability &&
+        if pack.arity == -1 && symbol(env, pack.source).owner == header.capability &&
         method_pack_binding(env, header.symbol, pack.source) < 0 && !has(symbol(env, pack.source).node, NodeKind.Block) {
             return Result.Err(failure(env, header.symbol, symbol(env, header.symbol).node, "implementation is missing a required variadic concept method"))
         }
@@ -326,7 +326,7 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
     while index < count {
         let pack = get(context.env.packs, index)
         let item = symbol(context.env, pack.source)
-        if pack.arity < 0 && prototype(context.env, pack.source) && item.name == member &&
+        if pack.arity == -1 && prototype(context.env, pack.source) && item.name == member &&
         ((selected >= 0 && selected == item.owner) || (selected < 0 && visible_concept(context, item.owner))) {
             let admitted = if shape.kind == TypeKind.Dyn {
                 get(context.env.interfaces, shape.symbol).symbol == item.owner
@@ -402,7 +402,7 @@ fn dynamic_method_pack_headers(env Environment, capability Int) Result[Bool, Fai
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity < 0 && symbol(env, pack.source).owner == capability {
+        if pack.arity == -1 && symbol(env, pack.source).owner == capability {
             let arguments = abstract_arguments(env, function_parameter_count(env, pack.source))
             let schema = method_pack_header(header_environment(env), pack.source, arguments, requirements(env, pack.source, arguments)?, true)?
             var member = 1
