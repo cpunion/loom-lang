@@ -331,6 +331,13 @@ including nested fields and `old(values[0])`, without duplicate preconditions or
 runtime checks. Unknown alias writes invalidate them; disjunction alternatives
 and length-only refinements supply no invented element facts. Shared interference
 requires separately validated storage evidence.
+Successful typed observations, conversions, verified returns and loop-local
+replacement values also reuse supported scalar/inline/Text invariants. This
+allows contracts over `List[Positive]` elements without duplicate assertions.
+Guarded `old` and hypothetical current reads retain their access-validity
+premises; an impossible element type in an inactive branch supplies no false
+proof. Shared observations remain independent, as in the
+[typed worker example](../../compiler/examples/workers/typed.loom).
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining

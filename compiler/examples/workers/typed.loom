@@ -1,0 +1,65 @@
+fn typed_positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where typed_positive(self)
+
+type NonemptyAmounts = List[Positive] where length(self) > 0
+
+record TypedAmount {
+    value Positive
+    label Text
+}
+
+fn typed_scalar(values List[Positive]) Int
+ensures result > 0
+{
+    values[0]
+}
+
+fn typed_inline(values List[TypedAmount]) Int
+ensures result > 0
+{
+    values[0].value
+}
+
+fn typed_produced(values List[Positive]) Positive
+ensures result >= 0
+{
+    values[0]
+}
+
+fn typed_forwarded(values List[Positive]) Int
+ensures result > 0
+{
+    typed_produced(values)
+}
+
+fn typed_entry(values NonemptyAmounts) Int
+ensures old(values[0]) > 0 && values[0] > 0
+{
+    0
+}
+
+async fn shared_typed_values() {
+    let numbers = [Positive(3)]
+    let amounts = [TypedAmount {
+            value = Positive(4)
+            label = "typed"
+        }]
+    let nonempty = NonemptyAmounts([Positive(5)])
+    let writer = run(fn() Int {
+            numbers[0] = Positive(7)
+            nonempty[0] = Positive(8)
+            typed_forwarded(numbers)
+        })
+    let reader = run(fn() Int {
+            typed_inline(amounts)
+        })
+    let observed, field, entry = (writer, reader, run(fn() Int {
+                typed_entry(nonempty)
+            })).await
+    assert observed == 7 && field == 4 && entry == 0
+    assert numbers[0] == 7 && nonempty[0] == 8
+    assert typed_scalar(numbers) == 7
+}

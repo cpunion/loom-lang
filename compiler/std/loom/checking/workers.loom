@@ -56,7 +56,7 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     while index < length(program.functions) {
         let function = get(program.functions, index)
         if length(function.postconditions) != 0 {
-            let types = match expanded_input_types(env, function) {
+            let types = match expanded_invariant_types(env, function) {
                 Result.Ok(types) => types
                 Result.Err(_) => env.types
             }

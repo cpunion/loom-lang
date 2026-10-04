@@ -28,7 +28,7 @@ fn read_element_outcomes(proof Verification, ty Int, identity Int, index Linear,
             match known_element(identity, index, state) {
                 Result.Ok(value) => {
                     discard add_outcome(output, Outcome {
-                            state = bounded(value, state)
+                            state = typed_value_state(proof, ty, value, state)
                             value = value
                         })?
                     return Result.Ok(output)
@@ -45,7 +45,7 @@ fn read_element_outcomes(proof Verification, ty Int, identity Int, index Linear,
                 let guard = observation_guard(cell.valid, state)
                 if !loop_holds(not(guard), state) {
                     discard add_outcome(output, Outcome {
-                            state = bounded(cell.value, difference_facts(assume(state, guard)))
+                            state = typed_value_state(proof, ty, cell.value, difference_facts(assume(state, guard)))
                             value = cell.value
                         })?
                     state = difference_facts(assume(state, not(guard)))
@@ -57,7 +57,7 @@ fn read_element_outcomes(proof Verification, ty Int, identity Int, index Linear,
     let value = record_parameter_value(proof, ty, 0)
     discard add_outcome(output, Outcome {
             state = remember_element(identity, index, value,
-                array_read(proof, identity, index, value, Predicate.Constant(true), bounded(value, state))?)?
+                array_read(proof, identity, index, value, Predicate.Constant(true), typed_value_state(proof, ty, value, state))?)?
             value = value
         })?
     Result.Ok(output)

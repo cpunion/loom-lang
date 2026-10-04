@@ -53,3 +53,10 @@ element values. `Growing` permits proved appends: each length remains positive,
 but entry and current lengths need not match. These guarantees also follow
 refined record fields; they add no locking, runtime checks or private-storage
 assumptions.
+
+`typed.loom` reads immutable constrained values from mutable shared Lists. Each
+`Positive` value retains its own predicate, including nested fields and verified
+helper returns, without assuming that separate reads return the same value.
+Guarded `old` and current element observations also use these typed guarantees;
+their access bounds must still be proved. No assertion or runtime postcondition
+is inserted to establish the contracts.

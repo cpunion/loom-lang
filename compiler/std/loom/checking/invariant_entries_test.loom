@@ -80,3 +80,129 @@ ensures result > 0
 }
 """, false)
 }
+
+test fn typed_reads_keep_scalar_inline_and_guarded_entry_invariants() {
+    list_length_contract("""
+import std.list.length
+
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where positive(self)
+
+record Amount {
+    value Positive
+    tag Bool
+}
+
+fn scalar(ignored Int, values List[Positive]) Int
+ensures result > 0
+{
+    values[0]
+}
+
+fn aggregate(values List[Amount]) Int
+ensures result > 0
+{
+    values[0].value
+}
+
+fn entry(values List[Positive]) Int
+requires length(values) > 0
+ensures old(values[0]) > 0
+{
+    0
+}
+
+fn maybe_entry(values List[Positive]) Int
+ensures old(length(values)) == 0 || old(values[0]) > 0
+{
+    0
+}
+
+fn produced(values List[Positive]) Positive
+ensures result >= 0
+{
+    values[0]
+}
+
+fn composed(values List[Positive]) Int
+ensures result > 0
+{
+    produced(values)
+}
+
+fn repeated(values List[Positive], count Int) Int
+ensures result > 0
+{
+    var value = values[0]
+    var index = 0
+    while index < count {
+        value = values[0]
+        index = index + 1
+    }
+    value
+}
+
+record Flag {
+    enabled Bool
+}
+
+type Enabled = Flag where self.enabled
+
+fn enabled(values List[Enabled]) Bool
+ensures result
+{
+    values[0].enabled
+}
+
+type Ready = Text where self == "ready"
+
+fn ready(values List[Ready]) Text
+ensures result == "ready"
+{
+    values[0]
+}
+""", true)
+}
+
+test fn typed_reads_do_not_invent_contents_definedness_or_disjuncts() {
+    list_length_contract("""
+fn unproved(values List[Int]) Int
+ensures result > 0
+{
+    values[0]
+}
+""", false)
+    list_length_contract("""
+type Positive = Int where self > 0
+
+fn unproved(values List[Positive]) Int
+ensures result + 1 > 1
+{
+    values[0]
+}
+""", false)
+    list_length_contract("""
+type Selected = Int where self > 0 || self == -1
+
+fn unproved(values List[Selected]) Int
+ensures result > 0
+{
+    values[0]
+}
+""", false)
+    list_length_contract("""
+import std.list.length
+
+type Impossible = Int where self > 0 && self < 0
+
+fn unproved(values List[Impossible]) Int
+ensures old(length(values)) == 0 || old(values[0]) > 0
+ensures result == 1
+{
+    0
+}
+""", false)
+}
