@@ -2419,6 +2419,14 @@ ensures result > 0
 The same applies to inline
 record invariants and refined leaves inside records/tuples. Facts belong to the
 actual symbolic value, not the spelling or slot of `self` in the template.
+Successful typed List reads, checked conversions, verified call returns and
+loop-local replacement values retain the same supported invariants. Thus a
+`List[Positive]` read can prove a positive result without a wrapper or duplicate
+assertion. This extends to immutable inline fields and Text refinements. `old`
+and hypothetical current reads retain their access-validity premises; an inactive
+branch cannot introduce unconditional facts. The
+[typed worker example](examples/workers/typed.loom) exercises these guarantees
+under mutation without assuming equal old/current values.
 Bounded List predicates also establish sequential entry observations, including
 nested fields and `old(values[0])`. They use the same guarded-read machinery as
 preconditions, not duplicate runtime checks. Unknown alias writes invalidate

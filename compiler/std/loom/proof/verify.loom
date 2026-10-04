@@ -176,10 +176,11 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     Result.Ok(record_parameter_value(proof, ty, 0))
 }
 
-fn postcondition_holds(condition Expr, state State, depth Int) Result[Bool, Text] {
+fn postcondition_holds(condition Expr, entry State, depth Int) Result[Bool, Text] {
     if depth <= 0 {
         return Result.Err("proof predicate depth budget exhausted")
     }
+    let state = conditional_facts(entry)
     if holds(Predicate.Constant(false), state.facts) {
         return Result.Ok(true)
     }
@@ -232,8 +233,8 @@ fn returned(proof Verification, state State, value Value) Result[Bool, Text] {
     while index < length(function.postconditions) {
         let source = get(function.postconditions, index)
         returned = quantified_views(proof, source, returned, false, 256)?
-        let observed = if proof.shared {
-            shared_observations(proof, source, proof_bool(source, true), returned)?
+        let observed = if proof.shared || contains_list_read(source) {
+            contract_observations(proof, source, proof_bool(source, true), returned)?
         } else {
             EntrySnapshot {
                 expression = source
@@ -436,7 +437,19 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
         return operation(proof, expr, state, depth)
     }
     if expr.kind == ExprKind.Coerce {
-        return execute(proof, get(expr.children, 0), state, depth - 1)
+        let values = execute(proof, get(expr.children, 0), state, depth - 1)?
+        if expr.ty >= 6 {
+            var index = 0
+            while index < length(values) {
+                let value = get(values, index)
+                set(values, index, Outcome {
+                        state = invariant_facts(proof.program.types, expr.ty, value.value, value.state, 0)
+                        value = value.value
+                    })
+                index = index + 1
+            }
+        }
+        return Result.Ok(values)
     }
     if expr.kind == ExprKind.Record {
         return record_outcomes(proof, expr, state, depth - 1)

@@ -11,7 +11,7 @@ import std.list.set
 import std.list.length
 import std.result.Result
 
-fn input_invariant_types(env Environment, ty Int, seen List[Int], selected List[Int], depth Int) {
+fn value_invariant_types(env Environment, ty Int, seen List[Int], selected List[Int], depth Int) {
     if ty < 6 || ty >= length(env.types) || depth >= 16 {
         return
     }
@@ -35,19 +35,50 @@ fn input_invariant_types(env Environment, ty Int, seen List[Int], selected List[
             }
         }
     } else {
+        if shape.kind == TypeKind.List {
+            index = 0
+            while index < length(shape.arguments) {
+                value_invariant_types(env, get(shape.arguments, index), seen, selected, depth + 1)
+                index = index + 1
+            }
+        }
         if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
             return
         }
     }
     index = 0
     while index < length(shape.fields) {
-        input_invariant_types(env, get(shape.fields, index).ty, seen, selected, depth + 1)
+        value_invariant_types(env, get(shape.fields, index).ty, seen, selected, depth + 1)
+        index = index + 1
+    }
+}
+
+fn expression_invariant_types(env Environment, value Expr, seen List[Int], selected List[Int], depth Int) {
+    if depth >= 256 {
+        return
+    }
+    value_invariant_types(env, value.ty, seen, selected, 0)
+    var index = 0
+    while index < length(value.children) {
+        expression_invariant_types(env, get(value.children, index), seen, selected, depth + 1)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var item = 0
+        while item < length(arm.body) {
+            expression_invariant_types(env, get(arm.body, item), seen, selected, depth + 1)
+            item = item + 1
+        }
         index = index + 1
     }
 }
 
 fn expanded_invariant_parts(program std.loom.typed.Program, base Int, predicate Expr, output List[Expr], depth Int) {
-    if depth >= 32 || length(output) >= 256 { return }
+    if depth >= 32 || length(output) >= 256 {
+        return
+    }
     match invariant_predicates(program, base, predicate) {
         Result.Ok(predicates) => {
             var index = 0
@@ -70,16 +101,28 @@ fn expanded_invariant_parts(program std.loom.typed.Program, base Int, predicate 
 
 // Only a failed required proof pays for this private helper closure. Never put
 // its call indices in shared type metadata or the runtime reachability queue.
-fn expanded_input_types(context Context, function Function) Result[List[Type], Failure] {
-    expanded_input_types(context.env, function)
+fn expanded_invariant_types(context Context, function Function) Result[List[Type], Failure] {
+    expanded_invariant_types(context.env, function)
 }
 
-fn expanded_input_types(env Environment, function Function) Result[List[Type], Failure] {
+fn expanded_invariant_types(env Environment, function Function) Result[List[Type], Failure] {
     let selected = new[Int]()
     let seen = new[Int]()
     var index = 0
     while index < length(function.params) {
-        input_invariant_types(env, get(function.params, index), seen, selected, 0)
+        value_invariant_types(env, get(function.params, index), seen, selected, 0)
+        index = index + 1
+    }
+    value_invariant_types(env, function.result, seen, selected, 0)
+    index = 0
+    while index < length(function.locals) {
+        value_invariant_types(env, get(function.locals, index).ty, seen, selected, 0)
+        index = index + 1
+    }
+    expression_invariant_types(env, function.body, seen, selected, 0)
+    index = 0
+    while index < length(function.postconditions) {
+        expression_invariant_types(env, get(function.postconditions, index), seen, selected, 0)
         index = index + 1
     }
     if length(selected) == 0 {

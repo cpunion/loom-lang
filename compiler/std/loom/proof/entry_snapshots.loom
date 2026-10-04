@@ -243,8 +243,18 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
         // must not copy those same facts into every private snapshot scope.
         var after_scope = call_scope(state, values)
         after_scope = captured_array_facts(before, after_scope)
-        after_scope = if proof.shared && entry_length_expression(value) {
+        if proof.shared && (entry_length_expression(value) || entry_element_expression(value)) {
             after_scope = captured_input_invariants(proof, before, after_scope)
+        }
+        if entry_element_expression(value) {
+            let location = element_location(read, before)?
+            let valid = Predicate.And(predicates(
+                    Predicate.Compare(">=", location.index),
+                    Predicate.Compare("<", add(location.index,
+                            scale(list_extent(location.identity, before)?, integer(-1))))))
+            after_scope = guarded_value_invariants(proof, value.ty, observed, valid, after_scope)
+        }
+        after_scope = if proof.shared && entry_length_expression(value) {
             match observed {
                 Value.Number(size) => extent_bounds(size, after_scope)
                 _ => after_scope

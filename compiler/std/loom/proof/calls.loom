@@ -391,7 +391,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         }
         let result_values = new[Value]()
         push(result_values, result_value)
-        after = bounded(result_value, call_scope(after, result_values))
+        after = typed_value_state(proof, function.result, result_value, call_scope(after, result_values))
         let reference = proof_expr(call, ExprKind.Local, function.result, "",
             boundary + length(function.params), new[Expr]())
         let current_bindings = new[ExpansionBinding]()

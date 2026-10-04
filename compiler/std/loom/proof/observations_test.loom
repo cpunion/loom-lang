@@ -1,3 +1,24 @@
+test fn conditional_facts_require_a_proved_alternative() {
+    let state = State {
+        locals = new[Value]()
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
+        observations = new[Observation]()
+    }
+    let first = Predicate.Variable(0)
+    let second = Predicate.Variable(1)
+    let last = Predicate.Variable(2)
+    let pending = assume(assume(state, Predicate.Or(predicates(not(first), second))),
+        Predicate.Or(predicates(not(second), last)))
+    let unknown = conditional_facts(pending)
+    assert !holds(second, unknown.facts) && !holds(last, unknown.facts)
+    let selected = conditional_facts(assume(pending, first))
+    assert holds(second, selected.facts) && holds(last, selected.facts)
+    let reversed = conditional_facts(assume(assume(state,
+                Predicate.Or(predicates(second, first))), not(first)))
+    assert holds(second, reversed.facts)
+}
+
 test fn observations_keep_evaluation_identity_and_guard_boundaries() {
     let source = local(0)
     let children = new[Expr]()
