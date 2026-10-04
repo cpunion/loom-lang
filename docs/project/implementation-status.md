@@ -81,7 +81,10 @@ receiver/initializer identities, including updates, explicit destructuring,
 contracts and type-constraint templates. Distinct field owners and locals stay
 unchanged; unaccounted labels or structural accesses in any module package block
 the edit. Concept rename uses a lazy checker trace for bounds, `impl`, `dyn`,
-associated-type qualifiers, `implements` guards and explicit method calls.
+associated-type qualifiers, selected type values, `implements` guards and explicit
+method calls. Associated-type navigation follows the checked concept member,
+including generic families and `Self` projections. Fresh source rebinding excludes
+instances appended by earlier checks; ordinary compilation does not collect this trace.
 Each package must account for its own references, including tests; unvisited
 branches refuse edits. The trace stays outside executable IR and build caches.
 External-consumer API migration and broader recovery/query support remain open.

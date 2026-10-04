@@ -1,5 +1,5 @@
 // Optional source bindings, captured before template checking and lowering erase
-// concept names. These IDs belong only to the supplied binding snapshot.
+// concept and associated-member names. IDs belong to the binding snapshot.
 pub record ConceptReference {
     file Int
     node Node
@@ -9,8 +9,7 @@ pub record ConceptReference {
 
 fn referenced_concept(env Environment, owner Int, node Node, path Text, skip Int) Result[Int, Failure] {
     let selected = concept_named(env, owner, node, path)?
-    let inputs = get(env.inputs, 0)
-    if selected < 0 || !inputs.concept_queries {
+    if selected < 0 || !get(env.inputs, 0).concept_queries {
         return Result.Ok(selected)
     }
     var segment = skip
@@ -21,13 +20,22 @@ fn referenced_concept(env Environment, owner Int, node Node, path Text, skip Int
         }
         index = index + 1
     }
+    record_concept_reference(env, owner, node, selected, segment)
+    Result.Ok(selected)
+}
+
+fn record_concept_reference(env Environment, owner Int, node Node, selected Int, segment Int) {
+    let inputs = get(env.inputs, 0)
+    if selected < 0 || !inputs.concept_queries {
+        return
+    }
     let file = symbol(env, owner).file
-    index = 0
+    var index = 0
     while index < length(inputs.concept_references) {
         let previous = get(inputs.concept_references, index)
         if previous.file == file && previous.node.span.start == node.span.start && previous.node.span.end == node.span.end &&
         previous.segment == segment && previous.symbol == selected {
-            return Result.Ok(selected)
+            return
         }
         index = index + 1
     }
@@ -37,23 +45,13 @@ fn referenced_concept(env Environment, owner Int, node Node, path Text, skip Int
             segment = segment
             symbol = selected
         })
-    Result.Ok(selected)
 }
 
 // Fresh checking observes abstract templates as well as concrete instances.
 // Cached executable bodies cannot supply erased source-binding evidence.
 pub fn concept_references(source std.loom.binding.Program, inputs BuildInputs) Result[List[ConceptReference], Failure] {
     discard expanded_source(source)?
-    let detached = std.loom.binding.Program {
-        files = source.files
-        modules = source.modules
-        packages = source.packages
-        symbols = std.list.clone(source.symbols)
-        root = source.root
-        tests = source.tests
-        scopes = source.scopes
-        file_scopes = source.file_scopes
-    }
+    let detached = query_source(source)?
     let env = prepare_with_inputs(detached, inputs, true)?
     discard checked_program(env, new[Bool](), new[Bool](), ints(0))?
     Result.Ok(get(env.inputs, 0).concept_references)

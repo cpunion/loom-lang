@@ -333,5 +333,15 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
         index = index + 1
     }
     discard member_domain(env, owner, found, supplied, obligations, node)?
-    associated_type(env, owner, found, receiver, supplied, node, depth + 1)
+    let ty = associated_type(env, owner, found, receiver, supplied, node, depth + 1)?
+    if get(env.inputs, 0).concept_queries {
+        var segment = 0
+        index = 0
+        while index < length(node.value) {
+            if std.text.byte(node.value, index) == 46 { segment = segment + 1 }
+            index = index + 1
+        }
+        record_concept_reference(env, owner, node, found, segment)
+    }
+    Result.Ok(ty)
 }

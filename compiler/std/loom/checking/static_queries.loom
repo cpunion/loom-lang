@@ -72,15 +72,16 @@ fn static_reference(context Context, node Node, constant Int) {
 // nothing; queries use fresh tables and never replay cached executable bodies.
 pub fn static_parameter_info(source std.loom.binding.Program, owner Int, parameter Int, inputs BuildInputs) Result[StaticParameterInfo, Failure] {
     discard expanded_source(source)?
-    let detached = std.loom.binding.Program {
-        files = source.files
-        modules = source.modules
-        packages = source.packages
-        symbols = std.list.clone(source.symbols)
-        root = source.root
-        tests = source.tests
-        scopes = source.scopes
-        file_scopes = source.file_scopes
+    let detached = query_source(source)?
+    if owner >= length(detached.symbols) {
+        let requested = get(source.symbols, owner)
+        return Result.Err(Failure {
+                source = requested.file
+                diagnostic = Diagnostic {
+                    span = requested.node.span
+                    message = "query requires an original source declaration"
+                }
+            })
     }
     let env = prepare_with_inputs(detached, inputs)?
     let item = symbol(env, owner)

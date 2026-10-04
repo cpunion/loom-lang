@@ -54,7 +54,10 @@ import demo.library.Read
 import demo.library.optional
 
 fn project[T Read](value T) T.demo.library.Read.Item {
-    demo.library.Read.read(value)
+    let Receiver = comptime { T }
+    let Item = comptime { Receiver.demo.library.Read.Item }
+    let selected Item = demo.library.Read.read(value)
+    selected
 }
 fn main() {
     let value dyn demo.library.Read[Item = Int] = 7
@@ -119,20 +122,30 @@ fn main() {
     const definitions = await client.rpc.sendRequest('textDocument/definition', selected);
     assert.equal(definitions.length, 1, JSON.stringify(definitions));
     assert.equal(definitions[0].uri, URI.file(library).toString());
-    for (const fragment of ['Read\n', 'Read](value', 'Read.Item', 'Read.read(value)', 'Read.read(5)']) {
+    for (const fragment of ['Read\n', 'Read](value', 'Read.Item', 'Read.Item }', 'Read.read(value)', 'Read.read(5)']) {
       assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', at(app, source, fragment)), definitions);
     }
+    const members = await client.rpc.sendRequest('textDocument/definition', at(app, source, 'Item }'));
+    assert.equal(members.length, 1, JSON.stringify(members));
+    assert.equal(members[0].uri, URI.file(library).toString());
+    const libraryDocument = TextDocument.create(URI.file(library).toString(), 'loom', 1, original);
+    const memberStart = original.indexOf('Item\n');
+    assert.deepEqual(members[0].range, {
+      start: libraryDocument.positionAt(memberStart), end: libraryDocument.positionAt(memberStart + 4),
+    });
+    assert.deepEqual(members, await client.rpc.sendRequest('textDocument/definition', at(library, original, 'Item\n}')));
     const references = await client.rpc.sendRequest('textDocument/references', {
       ...selected, context: { includeDeclaration: true },
     });
-    assert.equal(references.length, 18, JSON.stringify(references));
+    assert.equal(references.length, 19, JSON.stringify(references));
     const edit = await rename();
-    assert.equal(Object.values(edit.changes).flat().length, 18, JSON.stringify(edit));
+    assert.equal(Object.values(edit.changes).flat().length, 19, JSON.stringify(edit));
     assert.deepEqual(Object.keys(edit.changes).sort(), ['library/main.loom', 'library/main_test.loom', 'app/main.loom', 'app/main_test.loom']
       .map(name => URI.file(path.join(folder, name)).toString()).sort());
     const changed = TextDocument.applyEdits(TextDocument.create(URI.file(app).toString(), 'loom', 1, source), edit.changes[URI.file(app).toString()]);
     assert.ok(changed.includes('let Read = 8') && changed.includes('Read.read()'));
     assert.ok(changed.includes('// é😀 Read') && changed.includes('"Read"'));
+    assert.ok(changed.includes('comptime { Receiver.demo.library.Reader.Item }'));
     assert.deepEqual(await client.rpc.sendRequest('textDocument/rename', {
       ...at(library, original, 'Read {'), newName: 'Reader',
     }), edit);
@@ -142,7 +155,7 @@ fn main() {
     const testFile = path.join(folder, 'library/main_test.loom');
     const testOverlay = `${sources.get('library/main_test.loom')}test fn unsaved() {\n    assert Read.read(10) == 10\n}\n`;
     await client.open(testFile, testOverlay);
-    assert.equal(Object.values((await rename()).changes).flat().length, 19);
+    assert.equal(Object.values((await rename()).changes).flat().length, 20);
     await client.change(testFile, sources.get('library/main_test.loom'), 2);
 
     // Unvisited branches cannot supply binding evidence, even if editing them

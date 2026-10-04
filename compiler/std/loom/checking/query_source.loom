@@ -1,0 +1,13 @@
+import std.loom.binding.bind
+import std.loom.project.Project
+
+// Rechecking starts from the bound source trees, not a previous check's
+// appended closures/pack instances. Original declaration IDs retain their order.
+fn query_source(source std.loom.binding.Program) Result[std.loom.binding.Program, Failure] {
+    std.loom.binding.bind(Project {
+            files = source.files
+            modules = source.modules
+            packages = source.packages
+            root = source.root
+        }, source.tests)
+}
