@@ -91,7 +91,7 @@ fn main() {
 fn view_contracts_reject_unproved_shapes_and_keep_range_faults() {
     let temporary = tempfile::tempdir().unwrap();
     let source = temporary.path().join("main.loom");
-    for text in [
+    for (index, text) in [
         r#"
 import std.list.view.View
 import std.list.view.capture
@@ -106,6 +106,7 @@ pub fn wrong(source List[Int]) Pair {
         r#"
 import std.list.view.capture
 import std.list.view.length
+import std.list.length
 
 pub fn wrong(source List[Int], start Int, end Int) Int
 ensures result == std.list.length(source)
@@ -113,13 +114,19 @@ ensures result == std.list.length(source)
     length(capture(source, start, end))
 }
 "#,
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         fs::write(&source, text).unwrap();
-        assert!(
-            !loom(&["check", temporary.path().to_str().unwrap()])
-                .status
-                .success()
-        );
+        let output = loom(&["check", temporary.path().to_str().unwrap()]);
+        assert!(!output.status.success());
+        if index == 1 {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("required postcondition is not proved")
+            );
+        }
     }
     fs::write(
         &source,
