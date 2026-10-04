@@ -58,9 +58,21 @@ test fn signature_index_retains_each_declaration_after_late_pack_expansion() {
         Result.Err(_) => false
     }
     assert length(env.signatures) > before
+    let overloads = new[Int]()
     var index = 0
     while index < length(env.signatures) {
-        assert source_signature_id(env, get(env.signatures, index).symbol) == index
+        let owner = get(env.signatures, index).symbol
+        assert source_signature_id(env, owner) == index
+        if symbol(env, owner).name == "select" {
+            push(overloads, owner)
+        }
         index = index + 1
     }
+    assert length(overloads) == 2
+    let available = [get(overloads, 1), get(overloads, 0), get(overloads, 1)]
+    let options = call_signature_options(env, available, 1, 0)
+    assert length(options) == 3
+    assert get(options, 0) == source_signature_id(env, get(overloads, 0))
+    assert get(options, 1) == source_signature_id(env, get(overloads, 1))
+    assert get(options, 2) == get(options, 1)
 }
