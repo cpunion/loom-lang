@@ -470,14 +470,21 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     let options = new[Int]()
     var index = 0
-    while index < length(context.env.signatures) {
-        let signature = get(context.env.signatures, index)
-        var candidate = 0
-        while candidate < length(available) {
-            if get(available, candidate) == signature.symbol && length(signature.params) == length(inputs.nodes) && (length(types) == 0 || length(types) == signature.parameters) {
-                push(options, index)
+    while index < length(available) {
+        let id = source_signature_id(context.env, get(available, index))
+        if id >= 0 {
+            let signature = get(context.env.signatures, id)
+            if length(signature.params) == length(inputs.nodes) && (length(types) == 0 || length(types) == signature.parameters) {
+                // Preserve the previous signature-table order, including
+                // duplicate candidates, without scanning unrelated signatures.
+                var position = length(options)
+                push(options, id)
+                while position > 0 && get(options, position - 1) > id {
+                    set(options, position, get(options, position - 1))
+                    position = position - 1
+                }
+                set(options, position, id)
             }
-            candidate = candidate + 1
         }
         index = index + 1
     }

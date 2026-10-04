@@ -1,0 +1,66 @@
+test fn signature_index_retains_each_declaration_after_late_pack_expansion() {
+    let files = source_files("""
+        concept Inspect {
+            fn value(self Self) Int
+        }
+        impl Inspect for Int {
+            fn value(self Int) Int {
+                self
+            }
+        }
+        fn select(value Int) Int {
+            value
+        }
+        fn select(value Bool) Bool {
+            value
+        }
+        fn identity[T](value T) T {
+            value
+        }
+        fn configured(comptime enabled Bool, value Int) Int {
+            comptime if enabled {
+                value
+            } else {
+                value + 1
+            }
+        }
+        fn packed[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn main() {
+            assert select(7) == 7
+            assert select(true)
+            assert identity(8) == 8
+            assert configured(true, 9) == 9
+            assert configured(false, 9) == 10
+            assert Inspect.value(11) == 11
+            assert packed(12, "pack").0 == 12
+            assert packed() == ()
+        }
+        """)
+    let bound = match bind(fixture_project(files), false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let env = match prepare(bound) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let before = length(env.signatures)
+    assert match checked_program(env, new[Bool](), new[Bool](), ints(0)) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert length(env.signatures) > before
+    var index = 0
+    while index < length(env.signatures) {
+        assert source_signature_id(env, get(env.signatures, index).symbol) == index
+        index = index + 1
+    }
+}

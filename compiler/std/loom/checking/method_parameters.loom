@@ -85,9 +85,7 @@ fn register_signature(env Environment, current Signature) Result[Int, Failure] {
         }
         index = index + 1
     }
-    let id = length(env.signatures)
-    push(env.signatures, current)
-    Result.Ok(id)
+    Result.Ok(append_signature(env, current))
 }
 
 record MethodMatch {

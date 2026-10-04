@@ -1,0 +1,20 @@
+// Each source function declaration owns one signature. Concrete instances and
+// pack expansions retain their separate, existing instance/symbol identities.
+fn append_signature(env Environment, current Signature) Int {
+    let ids = get(env.inputs, 0).signature_ids
+    while length(ids) <= current.symbol {
+        push(ids, -1)
+    }
+    let id = length(env.signatures)
+    push(env.signatures, current)
+    set(ids, current.symbol, id)
+    id
+}
+
+fn source_signature_id(env Environment, owner Int) Int {
+    let ids = get(env.inputs, 0).signature_ids
+    if owner >= length(ids) {
+        return -1
+    }
+    get(ids, owner)
+}
