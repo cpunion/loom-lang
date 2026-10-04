@@ -1,0 +1,151 @@
+fn generic_refinement_source() Text {
+    concat("""
+    import std.result.Result
+    import std.result.ConstraintError
+
+    record State[T] {
+        value T
+        count Int
+    }
+
+    type Nonnegative[T] = State[T] where self.count >= 0
+    """, "\n")
+}
+
+test fn generic_refinements_infer_and_preserve_nominal_arguments() {
+    let program = accepted_result(concat(generic_refinement_source(), """
+        pub fn literal() Nonnegative[Int] {
+            Nonnegative(State { value = 7 count = 1 })
+        }
+
+        pub fn checked(value State[List[Int]]) Result[Nonnegative[List[Int]], ConstraintError] {
+            Nonnegative(value)
+        }
+
+        pub fn copy(value Nonnegative[Text]) Nonnegative[Text] {
+            Nonnegative(value)
+        }
+
+        pub fn explicit(value State[Bool]) Result[Nonnegative[Bool], ConstraintError] {
+            Nonnegative[Bool](value)
+        }
+        """))
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 3).body, ExprKind.If) == 1
+    let result_type = get(program.types, get(program.functions, 0).result)
+    assert result_type.kind == TypeKind.Refined && get(result_type.arguments, 0) == 1
+    rejects_result(concat(generic_refinement_source(), """
+        pub fn wrong(value State[Text]) Result[Nonnegative[Int], ConstraintError] {
+            Nonnegative[Int](value)
+        }
+        """))
+    rejects_result(concat(generic_refinement_source(), """
+        pub fn invalid() Nonnegative[Bool] {
+            Nonnegative(State { value = true count = -1 })
+        }
+        """))
+}
+
+test fn generic_predicates_and_phantom_arguments_keep_explicit_bounds() {
+    let source = """
+        import std.result.Result
+        import std.result.ConstraintError
+
+        concept Allowed {
+        }
+
+        impl Allowed for Int {
+        }
+
+        record State[T Allowed] {
+            value T
+            count Int
+        }
+
+        fn valid[T Allowed](value State[T]) Bool {
+            value.count >= 0
+        }
+
+        type Nonnegative[T Allowed] = State[T] where valid[T](self)
+        type Tagged[T] = Int where self >= 0
+
+        pub fn literal() Nonnegative[Int] {
+            Nonnegative(State { value = 7 count = 1 })
+        }
+
+        pub fn check(value State[Int]) Result[Nonnegative[Int], ConstraintError] {
+            Nonnegative(value)
+        }
+
+        pub fn tagged() Tagged[Text] {
+            Tagged(1)
+        }
+
+        pub fn other() Tagged[Bool] {
+            Tagged[Bool](2)
+        }
+        """
+    discard accepted_result(source)
+    rejects_result(concat(concat(source, "\n"), """
+        pub fn hidden[T](value State[T]) {
+            discard value
+        }
+        """))
+    rejects_result("""
+        type Tagged[T] = Int where self >= 0
+
+        fn missing() {
+            discard Tagged(1)
+        }
+        """)
+    rejects_result("""
+        type Tagged[T] = Int where self >= 0
+
+        pub fn different(value Tagged[Bool]) Tagged[Text] {
+            value
+        }
+        """)
+}
+
+test fn generic_refinements_reject_mutable_observation_and_resource_instantiations() {
+    resource_reject_reason("""
+        import std.resource.MustScope
+
+        record Handle {
+        }
+
+        impl MustScope for Handle {
+        }
+
+        record State[T] {
+            value T
+            count Int
+        }
+
+        type Nonnegative[T] = State[T] where self.count >= 0
+
+        pub fn invalid(value Nonnegative[Handle]) {
+            discard value
+        }
+        """, "refinements cannot contain scoped resources or one-shot Tasks")
+    rejects_result(concat(generic_refinement_source(), """
+        pub fn task(value Nonnegative[Task[Int]]) {
+            discard value
+        }
+        """))
+    resource_reject_reason("""
+        record State[T] {
+            values List[Int]
+            value T
+        }
+
+        fn head(values List[Int]) Int {
+            values[0]
+        }
+
+        type Invalid[T] = State[T] where head(self.values) > 0
+        """, "type constraints may observe immutable fields, not shared mutable contents")
+    rejects_result("type Invalid[T] = List[T] where true")
+}

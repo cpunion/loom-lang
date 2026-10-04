@@ -209,6 +209,15 @@ value predicate uses checked Result construction, including immutable Text
 refinements with byte equality. Safe weakening and supported
 implications avoid redundant checks while retaining input evaluation and faults.
 Predicates may call pure functions, but cannot rely on external mutable state.
+Generic refinements retain their type arguments and explicit concept bounds in
+predicate typing, helper analysis, construction and proof expansion. Constructors
+infer arguments from the base or an expected refinement, or accept explicit
+arguments. Each new instance checks resource and mutable-observation restrictions;
+shared generic siblings are allowed, not observations of their mutable contents.
+The [shared view example](../../compiler/examples/shared_views) uses `Pair[T]`
+with Int, Text and Bool elements. Generic List element constraints remain limited
+by the immutable-inline element rule. Cyclic invariant construction rejects
+before recursive expansion exhausts the compiler stack.
 
 Every declared `ensures` requires a static proof. The CLI submits remaining
 supported obligations to a compile-time Z3 process after the fast rules fail.

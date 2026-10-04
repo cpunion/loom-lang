@@ -55,20 +55,20 @@ fn helper_environment(env Environment) Environment {
     }
 }
 
-fn prepared_implication(context Context, node Node, source Int, target Int, base Int) Result[Bool, Failure] {
-    let stage = staging(predicate_scope(context.env, source, base), node)?
+fn prepared_implication(context Context, node Node, source Int, target Int) Result[Bool, Failure] {
+    let stage = staging(predicate_scope(context.env, source)?, node)?
     let env = helper_environment(stage.env)
-    let left_scope = predicate_context(env, source, stage.locals, 0, true)
-    let left = expr(left_scope, predicate_node(env, source), 2)?
-    let right = expr(predicate_context(env, target, stage.locals, 0, true), predicate_node(env, target), 2)?
+    let left_scope = predicate_context(env, source, stage.locals, 0, true)?
+    let left = refinement_expression(left_scope, source)?
+    let right = refinement_expression(predicate_context(env, target, stage.locals, 0, true)?, target)?
     Result.Ok(implies_with_helpers(prepared(left_scope)?, left, right, get(env.inputs, 0).build.proof_backend))
 }
 
-fn helpers_imply(context Context, node Node, source Int, target Int, base Int) Bool {
+fn helpers_imply(context Context, node Node, source Int, target Int) Bool {
     if context.env.expanding_helpers {
         return false
     }
-    match prepared_implication(context, node, source, target, base) {
+    match prepared_implication(context, node, source, target) {
         Result.Ok(proved) => proved
         Result.Err(_) => false
     }

@@ -399,7 +399,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
             return Result.Err(error(context, node, "a type value is not a generic type constructor"))
         }
         if get(context.env.types, selected).kind == TypeKind.Refined {
-            return constrained(context, node, declaration, meta_arguments(context, node, selected), inputs)
+            return constrained(context, node, declaration, meta_arguments(context, node, selected), inputs, selected)
         }
         return Result.Err(error(context, node, "use a record or enum constructor for the selected type"))
     }
@@ -414,7 +414,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                 return Result.Err(error(context, node, "a type value is not a generic type constructor"))
             }
             if get(context.env.types, selected).kind == TypeKind.Refined {
-                return constrained(context, node, declaration, meta_arguments(context, node, selected), inputs)
+                return constrained(context, node, declaration, meta_arguments(context, node, selected), inputs, selected)
             }
             return Result.Err(error(context, node, "use a record or enum constructor for the selected type"))
         }
@@ -463,7 +463,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
             }
             index = index + 1
         }
-        return constrained(context, node, declaration, types, inputs)
+        return constrained(context, node, declaration, types, inputs, expected)
     }
     if package(node.value) != "" && find_data(context.env, context.signature.symbol, node, package(node.value))? >= 0 {
         return variant(context, node, types, inputs, expected)
@@ -796,7 +796,7 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
         if primitive == "async_worker" && concrete(context.env, logical_output) {
             let marker = resource_concept(context.env, "NoSuspend")
             if task_value(context.env, logical_output) || must_scope(context, logical_output)? ||
-                (marker >= 0 && no_suspend(context, logical_output, marker)?) {
+            (marker >= 0 && no_suspend(context, logical_output, marker)?) {
                 return Result.Err(error(context, node, "a worker cannot return a scoped resource, NoSuspend value or one-shot Task"))
             }
         }

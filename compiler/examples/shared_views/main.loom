@@ -10,14 +10,14 @@ import std.result.Result
 import std.result.ConstraintError
 import std.time.sleep_ms
 
-type Pair = View[Int] where length(self) == 2
+type Pair[T] = View[T] where length(self) == 2
 
-fn checked_pair(source List[Int]) Result[Pair, ConstraintError] {
+fn checked_pair[T](source List[T]) Result[Pair[T], ConstraintError] {
     Pair(capture(source))
 }
 
 // The explicit-range contract proves construction; no checked Result is needed.
-fn exact_pair(source List[Int]) Pair {
+fn exact_pair[T](source List[T]) Pair[T] {
     Pair(capture(source, 0, 2))
 }
 
@@ -46,6 +46,31 @@ fn pop[T](source List[T]) T {
             pop(source)
         }
     }
+}
+
+fn generic_pairs() Bool {
+    let source = ["first", "second"]
+    let pair = exact_pair(source)
+    set(pair, 1, "retained")
+    assert pop(source) == "retained"
+    push(source, "replacement")
+    assert get(pair, 1) == "retained" && length(pair) == 2
+    let booleans = match checked_pair([true, false]) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return false
+        }
+    }
+    assert get(booleans, 0) && !get(booleans, 1)
+    match checked_pair(["only one"]) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+    true
 }
 
 fn shared_identity() Bool {
@@ -118,6 +143,10 @@ async fn suspended() {
 }
 
 async fn main() {
+    assert generic_pairs()
+    assert comptime {
+        generic_pairs()
+    }
     assert shared_identity()
     assert comptime {
         shared_identity()

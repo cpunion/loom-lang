@@ -684,6 +684,89 @@ fn main() {
 }
 
 #[test]
+fn generic_refinements_reuse_current_predicates_arguments_and_helper_proofs() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+import std.result.Result
+import std.result.ConstraintError
+
+record State[T] {
+    value T
+    count Int
+}
+
+fn valid[T](value State[T]) Bool {
+    value.count >= 0
+}
+
+type Valid[T] = State[T] where valid(self)
+
+fn checked[T](value State[T]) Result[Valid[T], ConstraintError] {
+    Valid(value)
+}
+
+fn count[T](value Valid[T]) Int
+ensures result >= 0
+{
+    value.count
+}
+
+fn main() {
+    assert count(Valid(State {
+        value = 7
+        count = 0
+    })) == 0
+    let text = match checked(State {
+        value = "ready"
+        count = 1
+    }) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert count(text) == 1 && text.value == "ready"
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    checked(&cached("run", &package, &cache, &[]), true);
+    fs::write(
+        &path,
+        format!("fn unrelated(value List[Bool]) List[Bool] {{ value }}\n{source}"),
+    )
+    .unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
+    success(&fresh);
+    // Int and Text instances may be interned in a different order while
+    // rekeying. Both native executions must retain their distinct predicates.
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(
+        trace.contains("bodies reused ") && !trace.contains("bodies reused 0"),
+        "{trace}"
+    );
+    success(&common::loom(&["run", package.to_str().unwrap()]));
+    checked(&cached("run", &package, &cache, &[]), true);
+
+    fs::write(&path, source.replace("value.count >= 0", "value.count > 0")).unwrap();
+    let rejected = cached("emit-checked", &package, &cache, &[]);
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("this constant does not satisfy the type constraint")
+    );
+    fs::write(&path, source).unwrap();
+    checked(&cached("run", &package, &cache, &[]), true);
+}
+
+#[test]
 fn staged_instances_persist_with_current_types_targets_and_constant_values() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

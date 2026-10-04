@@ -82,6 +82,7 @@ record Association {
 }
 
 record TypeState {
+    // 0: header; 1: expanding layout; 2: ready; 3: checking a predicate.
     phase Int
     task_width Int
     // 0: read-only; 1: element replacement; 2: replacement and proved append.

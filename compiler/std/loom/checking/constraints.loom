@@ -73,7 +73,10 @@ fn predicate_node(env Environment, owner Int) Node {
     child(declaration, type_part(declaration) + 1)
 }
 
-fn predicate_context(env Environment, owner Int, locals List[Local], self_local Int, emit Bool) Context {
+fn predicate_context(env Environment, ty Int, locals List[Local], self_local Int, emit Bool) Result[Context, Failure] {
+    let shape = get(env.types, ty)
+    let owner = shape.symbol
+    let obligations = requirements(env, owner, shape.arguments)?
     let bindings = new[Binding]()
     push(bindings, Binding {
             name = "self"
@@ -81,60 +84,80 @@ fn predicate_context(env Environment, owner Int, locals List[Local], self_local 
             constant = -1
             previous = -1
         })
-    Context {
-        lexical = new_lexical()
-        env = env
-        signature = Signature {
-            symbol = owner
-            parameters = 0
-            params = ints(get(locals, self_local).ty)
-            compile_time = new[Int]()
-            result = 2
-            requirements = new[Requirement]()
-        }
-        arguments = new[Int]()
-        constants = new[StaticValue]()
-        locals = locals
-        bindings = bindings
-        head = 0
-        cleanups = new[Cleanup]()
-        cleanup_head = -1
-        loop_boundary = -2
-        facts = new[Fact]()
-        fact_head = -1
-        emit = emit
-    }
+    Result.Ok(Context {
+            lexical = new_lexical()
+            env = env
+            signature = Signature {
+                symbol = owner
+                parameters = length(shape.arguments)
+                params = ints(base_type(env, ty))
+                compile_time = new[Int]()
+                result = 2
+                requirements = obligations
+            }
+            arguments = shape.arguments
+            constants = new[StaticValue]()
+            locals = locals
+            bindings = bindings
+            head = 0
+            cleanups = new[Cleanup]()
+            cleanup_head = -1
+            loop_boundary = -2
+            facts = new[Fact]()
+            fact_head = -1
+            emit = emit
+        })
 }
 
-fn predicate_scope(env Environment, owner Int, base Int) Context {
+fn predicate_scope(env Environment, ty Int) Result[Context, Failure] {
     let locals = new[Local]()
     push(locals, Local {
             name = "self"
-            ty = base
+            ty = base_type(env, ty)
             mutable = false
             is_scoped = false
         })
-    predicate_context(env, owner, locals, 0, false)
+    predicate_context(env, ty, locals, 0, false)
 }
 
-fn refinement(env Environment, owner Int, base Int) Result[Expr, Failure] {
+fn refinement_expression(scope Context, ty Int) Result[Expr, Failure] {
+    let state = get(scope.env.type_states, ty)
+    // Phase 3 is a checked predicate in progress, not an incomplete layout.
+    // A constructor cannot use the same invariant to establish itself. Restore
+    // the ordinary state on both success and failure; no visiting state escapes.
+    set(scope.env.type_states, ty, TypeState {
+            phase = 3
+            task_width = state.task_width
+            list_writes = state.list_writes
+        })
+    let checked = expr(scope, predicate_node(scope.env, get(scope.env.types, ty).symbol), 2)
+    set(scope.env.type_states, ty, state)
+    checked
+}
+
+fn refinement(env Environment, ty Int) Result[Expr, Failure] {
+    let owner = get(env.types, ty).symbol
     let predicate = predicate_node(env, owner)
     if !predicate_form(predicate, true) {
         return Result.Err(failure(env, owner, predicate, "constraints require expressions over self and pure function calls"))
     }
     // Templates are fully typed, but hold no executable call indices.
-    expr(predicate_scope(env, owner, base), predicate, 2)
+    refinement_expression(predicate_scope(env, ty)?, ty)
 }
 
-fn validate_refinement(env Environment, owner Int, base Int) Result[Int, Failure] {
+fn validate_refinement(env Environment, ty Int) Result[Int, Failure] {
+    let owner = get(env.types, ty).symbol
+    let base = base_type(env, ty)
     let predicate = predicate_node(env, owner)
-    let stage = staging(predicate_scope(env, owner, base), predicate)?
-    let value = expr(stage, predicate, 2)?
+    let stage = staging(predicate_scope(env, ty)?, predicate)?
+    let value = refinement_expression(stage, ty)?
     if must_scope(stage, base)? || task_value(env, base) ||
-    marker_type(env, owner, new[Requirement](), base, resource_concept(env, "NoSuspend"), new[Int]())? {
+    marker_type(env, owner, stage.signature.requirements, base, resource_concept(env, "NoSuspend"), new[Int]())? {
         return Result.Err(failure(env, owner, predicate, "refinements cannot contain scoped resources or one-shot Tasks"))
     }
-    let program = prepared(stage)?
+    // This is analysis, not CTFE or runtime emission. Retain actual abstract
+    // helper bodies; unresolved concept summaries remain Deferred and impure.
+    let program = prepared_in(stage, !concrete(env, ty))?
     discard list_constraint_expression(env, program.functions, owner, value)?
     var writes = 0
     if !inline_constraint_base(env, base, 0) {
@@ -161,6 +184,27 @@ fn validate_refinement(env Environment, owner Int, base Int) Result[Int, Failure
     Result.Ok(writes)
 }
 
+fn initialize_refinement(env Environment, ty Int) Result[Bool, Failure] {
+    let shape = get(env.types, ty)
+    let predicate = refinement(env, ty)?
+    set(env.types, ty, Type {
+            kind = shape.kind
+            symbol = shape.symbol
+            arguments = shape.arguments
+            fields = shape.fields
+            variants = shape.variants
+            constraint = expressions(predicate)
+        })
+    let writes = validate_refinement(env, ty)?
+    let state = get(env.type_states, ty)
+    set(env.type_states, ty, TypeState {
+            phase = state.phase
+            task_width = state.task_width
+            list_writes = writes
+        })
+    Result.Ok(true)
+}
+
 fn refinements(env Environment) Result[Bool, Failure] {
     // Make every proof-eligible template available before typing predicates
     // with constructors/calls, then validate closures only after all templates.
@@ -171,7 +215,7 @@ fn refinements(env Environment) Result[Bool, Failure] {
         while index < length(env.types) {
             let ty = get(env.types, index)
             if ty.kind == TypeKind.Refined && predicate_form(predicate_node(env, ty.symbol), false) == (pass == 0) {
-                let predicate = refinement(env, ty.symbol, get(ty.fields, 0).ty)?
+                let predicate = refinement(env, index)?
                 set(env.types, index, Type {
                         kind = ty.kind
                         symbol = ty.symbol
@@ -189,7 +233,7 @@ fn refinements(env Environment) Result[Bool, Failure] {
     while index < length(env.types) {
         let ty = get(env.types, index)
         if ty.kind == TypeKind.Refined {
-            let writes = validate_refinement(env, ty.symbol, get(ty.fields, 0).ty)?
+            let writes = validate_refinement(env, index)?
             let state = get(env.type_states, index)
             set(env.type_states, index, TypeState {
                     phase = state.phase
@@ -211,10 +255,11 @@ fn folded(value Expr, self_value Value) Value {
     }
 }
 
-fn folded_predicate(env Environment, owner Int, known Value) Result[Value, Failure] {
+fn folded_predicate(env Environment, ty Int, known Value) Result[Value, Failure] {
+    let owner = get(env.types, ty).symbol
     let predicate = predicate_node(env, owner)
-    let stage = staging(predicate_scope(env, owner, known.ty), predicate)?
-    let value = expr(stage, predicate, 2)?
+    let stage = staging(predicate_scope(env, ty)?, predicate)?
+    let value = refinement_expression(stage, ty)?
     let literal = if known.ty == 3 {
         expression(ExprKind.Text, 3, predicate, known.text, -1, new[Expr](), true)
     } else {
@@ -235,10 +280,11 @@ fn folded_predicate(env Environment, owner Int, known Value) Result[Value, Failu
 // A closed record expression may contain Float leaves. Evaluate the checked
 // construction and predicate together so their IEEE behavior is identical to
 // ordinary compile-time execution. Failure to evaluate is not proof.
-fn folded_record_predicate(env Environment, owner Int, base Int, value Expr) Result[Value, Failure] {
+fn folded_record_predicate(env Environment, ty Int, value Expr) Result[Value, Failure] {
+    let owner = get(env.types, ty).symbol
     let predicate = predicate_node(env, owner)
-    let stage = staging(predicate_scope(env, owner, base), predicate)?
-    let condition = expr(stage, predicate, 2)?
+    let stage = staging(predicate_scope(env, ty)?, predicate)?
+    let condition = refinement_expression(stage, ty)?
     let bind = expression(ExprKind.Let, 0, predicate, "", 0, expressions(value), value.falls)
     let initialized = expression(ExprKind.Block, 2, predicate, "", -1, pair(bind, condition), value.falls)
     match evaluate_in(stage, prepared(stage)?, initialized, length(stage.locals)) {
@@ -382,18 +428,30 @@ fn proven_record(context Context, node Node, base Int, value Expr, predicate Exp
     }
 }
 
-fn constrained(context Context, node Node, declaration Int, types List[Node], inputs CallInputs) Result[Expr, Failure] {
-    if length(types) != 0 || length(inputs.nodes) != 1 {
-        return Result.Err(error(context, node, "a constrained constructor takes one value and no type arguments"))
+fn constrained(context Context, node Node, declaration Int, types List[Node], inputs CallInputs, expected Int) Result[Expr, Failure] {
+    if length(inputs.nodes) != 1 {
+        return Result.Err(error(context, node, "a constrained constructor takes one value"))
     }
-    let target = data_type(context.env, declaration, new[Int](), 0)?
-    let base = base_type(context.env, target)
+    let count = length(group(symbol(context.env, declaration).node, NodeKind.TypeParameters))
+    let arguments = data_arguments(context, node, declaration, types, expected, count)?
+    let pattern = base_type(context.env, template(context, declaration, count)?)
     let hint = if get(inputs.nodes, 0).kind == NodeKind.List {
-        base
+        hint(context, pattern, arguments, node)?
     } else {
         -1
     }
     let input = input_value(context, inputs, 0, hint, false)?
+    if !complete(arguments) {
+        discard infer(context.env, pattern, input.ty, arguments)
+    }
+    if !complete(arguments) {
+        return Result.Err(error(context, node, "cannot infer constrained type arguments"))
+    }
+    let target = constructed_type(context, declaration, arguments, node)?
+    if get(context.env.type_states, target).phase == 3 {
+        return Result.Err(error(context, node, "recursive type constraint construction; check for a dependency cycle"))
+    }
+    let base = base_type(context.env, target)
     if input.ty == target {
         return Result.Ok(input)
     }
@@ -406,7 +464,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
         ""
     }
     if boundary != "" && closed_list_value(value) {
-        let checked = folded_record_predicate(context.env, declaration, base, value)?
+        let checked = folded_record_predicate(context.env, target, value)?
         if checked.ty == 2 {
             if checked.number == 0 {
                 return Result.Err(error(context, node, "this constant does not satisfy the type constraint"))
@@ -425,11 +483,11 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     if length(destination.constraint) == 1 && proven_record(context, node, base, value, get(destination.constraint, 0)) {
         return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
     }
-    if length(destination.constraint) == 1 && proved_construction(context, node, get(inputs.nodes, 0), value, declaration, base)? {
+    if length(destination.constraint) == 1 && proved_construction(context, node, get(inputs.nodes, 0), value, target)? {
         return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
     }
     if get(context.env.types, base).kind == TypeKind.Record && closed_inline_value(value, 0) {
-        let checked = folded_record_predicate(context.env, declaration, base, value)?
+        let checked = folded_record_predicate(context.env, target, value)?
         if checked.ty == 2 {
             if checked.number == 0 {
                 return Result.Err(error(context, node, "this constant does not satisfy the type constraint"))
@@ -439,7 +497,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     }
     let known = folded(value, unknown())
     if known.ty == base {
-        let checked = folded_predicate(context.env, declaration, known)?
+        let checked = folded_predicate(context.env, target, known)?
         if checked.ty == 2 {
             if checked.number == 0 {
                 return Result.Err(error(context, node, "this constant does not satisfy the type constraint"))
@@ -449,7 +507,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     }
     if (base == 1 || base == 3 || base == 5) && source.kind == TypeKind.Refined && length(source.constraint) == 1 && length(destination.constraint) == 1 &&
     (predicate_calls(get(source.constraint, 0), 0) || predicate_calls(get(destination.constraint, 0), 0)) &&
-    helpers_imply(context, node, source.symbol, declaration, base) {
+    helpers_imply(context, node, input.ty, target) {
         return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
     }
     let shape = result_shape(context, node)?
@@ -500,8 +558,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
         witnesses = context.env.witnesses
         uses = context.env.uses
     }
-    let predicate = expr(predicate_context(env, declaration, context.locals, local, context.emit),
-        predicate_node(context.env, declaration), 2)?
+    let predicate = refinement_expression(predicate_context(env, target, context.locals, local, context.emit)?, target)?
     let branches = expressions(predicate_at(predicate, node))
     push(branches, expression(ExprKind.Block, output, node, "", -1, expressions(accepted), true))
     push(branches, expression(ExprKind.Block, output, node, "", -1, expressions(rejected), true))

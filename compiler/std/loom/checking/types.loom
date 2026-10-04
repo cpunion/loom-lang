@@ -267,7 +267,7 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     if kind == TypeKind.Refined {
         let base = resolve_bound(env, declaration, child(item.node, type_part(item.node)), arguments, obligations, depth + 1)?
         let base_kind = get(env.types, base).kind
-        if length(arguments) != 0 || (base != 1 && base != 3 && base != 5 && base_kind != TypeKind.Record && base_kind != TypeKind.List) {
+        if base != 1 && base != 3 && base != 5 && base_kind != TypeKind.Record && base_kind != TypeKind.List {
             return Result.Err(failure(env, declaration, item.node,
                 "constraints require Int, Float, Text, a record or a List base"))
         }
@@ -279,6 +279,15 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     }
     set(env.types, id, Type { kind = kind symbol = declaration arguments = arguments fields = fields variants = variants constraint = constraints })
     set(env.type_states, id, TypeState { phase = 2 task_width = -1 list_writes = 0 })
+    if kind == TypeKind.Refined && length(arguments) != 0 {
+        let template = data_type(env, declaration, abstract_arguments(env, length(arguments)), depth + 1)?
+        // Header discovery precedes predicate checking. Later specializations
+        // must re-type and validate the predicate with their actual arguments,
+        // rather than copying abstract types or private helper call indices.
+        if length(get(env.types, template).constraint) != 0 {
+            discard initialize_refinement(env, id)?
+        }
+    }
     Result.Ok(true)
 }
 fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node) Result[Int, Failure] {
