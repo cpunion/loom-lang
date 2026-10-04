@@ -18,3 +18,26 @@ fn source_signature_id(env Environment, owner Int) Int {
     }
     get(ids, owner)
 }
+
+fn call_signature_options(env Environment, available List[Int], arguments Int, parameters Int) List[Int] {
+    let options = new[Int]()
+    var index = 0
+    while index < length(available) {
+        let id = source_signature_id(env, get(available, index))
+        if id >= 0 {
+            let signature = get(env.signatures, id)
+            if length(signature.params) == arguments && (parameters == 0 || parameters == signature.parameters) {
+                // Retain signature-table order and duplicate candidates.
+                var position = length(options)
+                push(options, id)
+                while position > 0 && get(options, position - 1) > id {
+                    set(options, position, get(options, position - 1))
+                    position = position - 1
+                }
+                set(options, position, id)
+            }
+        }
+        index = index + 1
+    }
+    options
+}
