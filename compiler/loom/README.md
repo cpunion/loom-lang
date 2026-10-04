@@ -158,7 +158,9 @@ The compiler and ordinary Loom programs use the same source implementation:
 `NodeKind.TypePack` retains the declared name and bounds. Selected function arities
 elaborate into ordinary generic parameters and typed bodies. Tuple operands use
 ordinary values and projections; no expansion opcode reaches LLVM. Unselected
-variadic bodies are not checked instances, and variadic postconditions reject.
+variadic bodies are not checked instances. Pack-independent postconditions are
+proved by dependency erasure even without a caller; proofs reading pack inputs
+or types still reject pending universal induction.
 
 Import, for example, `std.loom.parser.parse` and `std.loom.ast.NodeKind` in
 any package. Parsing supplied text returns a file node or the first diagnostic;

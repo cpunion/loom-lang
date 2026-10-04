@@ -177,9 +177,13 @@ expansions and conservatively rejects unknown intersections, without sampling.
 Private cache recipes retain the original member and both arities. The
 [impl example](../../compiler/examples/data_packs/implementations.loom) exercises
 native/dyn calls, declared contracts, shared values, CTFE and async payloads.
-Multiple packs in one parameter list
-and universal variadic postcondition proofs remain unsupported. Compile-time
-execution is not proof by sampling.
+Pack-independent postconditions use dependency erasure and ordinary abstract
+proofs, including uncalled families and inherited method contracts; the
+[contract example](../../compiler/examples/variadics/contracts.loom) exercises
+constrained construction, CTFE and dyn dispatch. Bodies, return types or clauses
+reading a type pack or pack-bearing input still reject. Multiple packs in one
+parameter list and sequence-dependent universal proofs remain unsupported.
+Compile-time execution is not proof by sampling.
 
 Independent nominal declarations do not share a global type-count budget.
 Recursive type expansion stays depth-bounded; associated-evidence search has
@@ -225,8 +229,8 @@ these terms handles bounded safety/range obligations before SMT, with mathematic
 endpoints and unchanged eager operand checks. Polynomial identities, safety
 bounds and verified call summaries compose with Text lengths; see the
 [polynomial example](../../compiler/examples/smt_contracts/polynomials.loom).
-Nonconstant division, general collection induction and universal variadic
-proofs remain unsupported; nonlinear solver queries may still be unknown or time out.
+Nonconstant division, general collection induction and sequence-dependent
+variadic proofs remain unsupported; nonlinear solver queries may still be unknown or time out.
 Constrained construction, stable scalar facts, pure-helper implication and
 supported List-append preservation now share the same optional backend and
 batched safety/truth obligations. Unknown or failed implication retains the

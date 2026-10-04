@@ -1,0 +1,144 @@
+test fn variadic_contracts_use_parametric_erasure_and_ordinary_algebra() {
+    discard accepted("""
+        record Context[Ts...] {
+            values (Ts...)
+        }
+        fn identity(value Int) Int
+        ensures result == value {
+            value
+        }
+        fn keep[Ts...](value Int, ignored Ts...) Int
+        requires value >= 0
+        ensures result == value && result >= 0 {
+            identity(value)
+        }
+        fn structural[Ts...](ignored Context[Ts...], value Int) (Int, Bool)
+        ensures result.0 == value && result.1 {
+            (value, true)
+        }
+        fn callback[Ts...](ignored fn(Ts...) Int, value Int) Int
+        ensures result == value {
+            value
+        }
+        fn one(value Bool) Int {
+            1
+        }
+        fn main() {
+            assert keep(0) == 0 && keep(3, true, "text", [4]) == 3
+            assert structural(Context { values = (1, true) }, 7).0 == 7
+            assert callback(one, 9) == 9
+            assert comptime { keep(11, false) } == 11
+        }
+        """)
+}
+
+test fn variadic_contracts_reject_false_uncalled_and_pack_dependent_proofs() {
+    let uncalled = """
+        fn uncalled[Ts...](ignored Ts...) Int
+        ensures result > 0 {
+            0
+        }
+        """
+    assert match checked(source_files(uncalled)) {
+        Result.Err(failed) => failed.diagnostic.message == "required postcondition is not proved by the bounded scalar prover"
+        Result.Ok(_) => false
+    }
+    rejects("""
+        fn counted[Ts...](items Ts...) Int
+        ensures result == 0 {
+            var total = 0
+            comptime for item in items {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn main() {
+            assert counted() == 0
+        }
+        """)
+    rejects("""
+        fn wrong[Ts...](items (Ts...)) Int
+        ensures result == items.0 {
+            1
+        }
+        """)
+    rejects("""
+        fn wrong[Ts...](value Int, items Ts...) (Ts...)
+        ensures value >= 0 {
+            items
+        }
+        """)
+    rejects("""
+        fn keep[Ts...](value Int, ignored Ts...) Int
+        ensures result == value {
+            value
+        }
+        async fn item() Int {
+            1
+        }
+        async fn main() {
+            discard keep(1, item())
+        }
+        """)
+}
+
+test fn variadic_method_contracts_check_defaults_and_inherited_implementations() {
+    let definitions = """
+        concept Keeping {
+            fn keep[Ts...](self Self, value Int, ignored Ts...) Int
+            ensures result == value
+
+            fn default_keep[Ts...](self Self, value Int, ignored (Ts...)) Int
+            ensures result == value {
+                value
+            }
+        }
+        impl Keeping for Bool {
+            fn keep[Us...](self Bool, renamed Int, unused Us...) Int {
+                renamed
+            }
+        }
+        """
+    discard accepted(concat(definitions, """
+        fn main() {
+            let value dyn Keeping = true
+            assert value.keep(3) == 3
+            assert value.keep(4, true, "text") == 4
+            assert value.default_keep(5, (false, 1)) == 5
+        }
+        """))
+    rejects(std.text.join(std.text.split(definitions, "renamed\n"), "0\n"))
+    rejects(std.text.join(std.text.split(definitions, "renamed\n"), "discard unused\n        renamed\n"))
+}
+
+test fn variadic_contracts_revalidate_after_definition_cache_restore() {
+    let source = """
+        fn keep[Ts...](value Int, ignored Ts...) Int
+        ensures result == value {
+            value
+        }
+        pub fn answer() Int {
+            keep(4, true) + keep(5)
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat("fn unrelated() {}\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let invalid = std.text.join(std.text.split(source, "value\n"), "0\n")
+    assert invalid != source
+    assert match cached_source(cache, invalid) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

@@ -621,6 +621,10 @@ impl Gather for Bool {}
 fn bundle[Ts...](items Ts...) (Ts...) {
     items
 }
+fn keep[Ts...](value Int, ignored Ts...) Int
+ensures result == value {
+    value
+}
 fn mapped[Ts...](items (Ts...)) (Ts...) {
     comptime map item in items {
         item
@@ -641,7 +645,7 @@ fn main() {
     let boxed dyn Gather = true
     assert boxed.gather(0, pair...).1
     assert boxed.gather(0, "cached").0 == "cached"
-    assert pair.0 + count(triple...) + count(1) == 7
+    assert keep(pair.0, triple...) + count(triple...) + count(1) == 7
 }
 "#;
     fs::write(&path, source).unwrap();
@@ -654,7 +658,7 @@ fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    assert!(trace.contains(", bodies reused 8"), "{trace}");
+    assert!(trace.contains(", bodies reused 9"), "{trace}");
     // Fresh arity validation may intern abstract placeholders before the cached
     // path recreates concrete types. Those private IDs need not be byte-equal;
     // both native paths must execute every remapped call/layout correctly.
@@ -663,6 +667,12 @@ fn main() {
     let executed = cached("run", &package, &cache, &[]);
     checked(&executed, true);
     assert_eq!(executed.stdout, fresh.stdout);
+    fs::write(&path, source.replace("    value\n}", "    0\n}")).unwrap();
+    let invalid = cached("check", &package, &cache, &[]);
+    assert!(!invalid.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr).contains("required postcondition is not proved")
+    );
     fs::write(
         &path,
         source.replace("bundle(3, true)", "bundle(3, true, 9)"),

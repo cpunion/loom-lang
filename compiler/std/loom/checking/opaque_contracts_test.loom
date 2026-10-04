@@ -55,6 +55,25 @@ test fn contracted_inputs_expose_only_modeled_facts() {
         """)
 }
 
+test fn opaque_callbacks_contribute_no_result_or_effect_facts() {
+    discard accepted("""
+        fn keep(callback fn() Int, number Int) Int
+        ensures result == number {
+            number
+        }
+        fn forward(callback fn() Int, number Int) Int
+        ensures result == number {
+            keep(callback, number)
+        }
+        """)
+    rejects("""
+        fn guessed(callback fn() Int) Int
+        ensures result == 1 {
+            callback()
+        }
+        """)
+}
+
 test fn opaque_and_generic_nominal_receivers_use_declared_method_contracts() {
     discard accepted(concat(abstract_contract_declarations(), """
             impl Keep for Text {
