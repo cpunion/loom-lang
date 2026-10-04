@@ -42,7 +42,11 @@ fn meta_signature(env Environment, current Signature, node Node) Result[RuntimeS
 // CTFE can append only structural entries, never unexpanded nominal types.
 fn complete_structural_types(env Environment) {
     while length(env.type_states) < length(env.types) {
-        push(env.type_states, TypeState { phase = 2, task_width = -1, list_writes = 0 })
+        push(env.type_states, TypeState {
+                phase = 2,
+                task_width = -1,
+                list_writes = 0
+            })
     }
 }
 
