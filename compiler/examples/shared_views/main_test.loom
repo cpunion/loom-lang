@@ -12,3 +12,13 @@ test fn retained_ranges_agree_at_compile_time_and_runtime() {
 test async fn fixed_length_constraint_survives_suspension_and_source_resize() {
     suspended().await
 }
+
+test async fn range_contract_survives_shared_worker_interference() {
+    let source = [1, 2]
+    let count = std.task.worker.run(fn() Int {
+            retained_length(source, 0, 2)
+        }).await
+    assert count == 2
+}
+
+import std.task.worker.run

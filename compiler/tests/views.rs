@@ -86,3 +86,68 @@ fn main() {
         );
     }
 }
+
+#[test]
+fn view_contracts_reject_unproved_shapes_and_keep_range_faults() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("main.loom");
+    for (index, text) in [
+        r#"
+import std.list.view.View
+import std.list.view.capture
+import std.list.view.length
+
+type Pair = View[Int] where length(self) == 2
+
+pub fn wrong(source List[Int]) Pair {
+    Pair(capture(source, 0, 1))
+}
+"#,
+        r#"
+import std.list.view.capture
+import std.list.view.length
+import std.list.length
+
+pub fn wrong(source List[Int], start Int, end Int) Int
+ensures result == std.list.length(source)
+{
+    length(capture(source, start, end))
+}
+"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fs::write(&source, text).unwrap();
+        let output = loom(&["check", temporary.path().to_str().unwrap()]);
+        assert!(!output.status.success());
+        if index == 1 {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("required postcondition is not proved")
+            );
+        }
+    }
+    fs::write(
+        &source,
+        r#"
+import std.list.view.capture
+
+fn main() {
+    discard capture([1], 0, 2)
+}
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(temporary.path(), "invalid-range");
+    success(
+        &common::command(&["build", temporary.path().to_str().unwrap()])
+            .arg("--output")
+            .arg(&executable)
+            .output()
+            .unwrap(),
+    );
+    let output = Command::new(executable).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("list view range out of bounds"));
+}

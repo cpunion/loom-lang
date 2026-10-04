@@ -20,7 +20,9 @@ record State[T] {
 
 // Bounds are checked once. Removing a source element preserves it for every
 // view that captured it; a subsequent append introduces a new identity.
-pub fn capture[T](source List[T], start Int, end Int) View[T] {
+pub fn capture[T](source List[T], start Int, end Int) View[T]
+ensures start >= 0 && end >= start && length(result) == end - start
+{
     let removed = new[List[T]]()
     list_retain_range(source, removed, start, end)
     View {

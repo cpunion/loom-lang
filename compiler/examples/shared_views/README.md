@@ -10,6 +10,12 @@ target/loom run compiler/examples/shared_views
 fixed, half-open range. Omitting the bounds captures the whole current List.
 `length`, `get` and `set` operate on the view. Copies share those identities.
 
+The explicit-range overload proves `length(result) == end - start` on normal
+return, together with valid scalar bounds. `exact_pair` uses this contract to
+construct a length-two refinement directly, without a `Result` or a second
+predicate check. `retained_length` composes that guarantee across source edits.
+Invalid ranges still fault at the original capture boundary.
+
 Updates remain visible through the source and overlapping views. When an element
 is removed from the source, existing views retain it together; appending creates
 a new element, not a replacement in old views. Growth and moving GC do not change
