@@ -4,6 +4,13 @@ import std.result.Result
 
 enum GuardDecision { Pending Known(Bool, Context) }
 
+fn guard_type_operand(context Context, node Node) Result[Int, Failure] {
+    if unknown_static(context, node) {
+        return Result.Ok(-1)
+    }
+    context_type(context, node)
+}
+
 fn guard_condition(context Context, node Node, condition Node, depth Int) Result[GuardDecision, Failure] {
     if depth >= 256 { return Result.Err(error(context, condition, "compile-time condition depth exhausted")) }
     if condition.kind == NodeKind.Unary && condition.value == "!" {
@@ -30,8 +37,9 @@ fn guard_condition(context Context, node Node, condition Node, depth Int) Result
         if !type_operand(context, child(condition, 0)) {
             return Result.Err(error(context, condition, "implements requires an unshadowed type operand"))
         }
-        let ty = context_type(context, child(condition, 0))?
         let capability = required_concept(context.env, context.signature.symbol, child(condition, 1))?
+        let ty = guard_type_operand(context, child(condition, 0))?
+        if ty < 0 { return Result.Ok(GuardDecision.Pending) }
         let yes = satisfies(context, ty, capability)?
         if !yes && !concrete(context.env, ty) { return Result.Ok(GuardDecision.Pending) }
         let checked = if yes { with_evidence(context, ty, capability) } else { context }
@@ -45,8 +53,9 @@ fn guard_condition(context Context, node Node, condition Node, depth Int) Result
         if !type_operand(context, child(condition, 0)) || !type_operand(context, child(condition, 1)) {
             return Result.Err(error(context, condition, "comptime type comparison requires two unshadowed types"))
         }
-        let left = context_type(context, child(condition, 0))?
-        let right = context_type(context, child(condition, 1))?
+        let left = guard_type_operand(context, child(condition, 0))?
+        let right = guard_type_operand(context, child(condition, 1))?
+        if left < 0 || right < 0 { return Result.Ok(GuardDecision.Pending) }
         let relation = std.loom.typed.type_relation(context.env.types, left, right)
         if relation < 0 {
             return Result.Ok(GuardDecision.Pending)

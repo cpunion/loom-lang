@@ -155,6 +155,12 @@ fn meta_type_node(context Context, node Node) Result[Node, Failure] {
         let end = first_dot(node.value)
         let selected = meta_binding(context, slice(node.value, 0, end))
         if selected >= 0 {
+            if length(get(context.env.inputs, 0).static_queries) != 0 {
+                let binding = get(context.bindings, lookup(context, slice(node.value, 0, end)))
+                if binding.constant >= 0 {
+                    static_reference(context, node, binding.constant)
+                }
+            }
             if end == length(node.value) && length(node.children) != 0 {
                 return Result.Err(error(context, node, "a type value is not a generic type constructor"))
             }

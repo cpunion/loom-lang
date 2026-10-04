@@ -169,6 +169,17 @@ fn enum_value_operand(context Context, node Node) Bool {
     if node.kind != NodeKind.Name || package(node.value) == "" {
         return false
     }
+    let selected = meta_binding(context, package(node.value))
+    if selected >= 0 {
+        let shape = get(context.env.types, selected)
+        var variant = 0
+        while shape.kind == TypeKind.Enum && variant < length(shape.variants) {
+            if get(shape.variants, variant).name == name(node.value) {
+                return true
+            }
+            variant = variant + 1
+        }
+    }
     let here = symbol(context.env, context.signature.symbol)
     let options = candidates(context.env.source, here.file, here.test_only, package(node.value))
     var index = 0
@@ -187,6 +198,18 @@ fn enum_value_operand(context Context, node Node) Bool {
         index = index + 1
     }
     false
+}
+
+fn type_binding_operand(context Context, name Text) Bool {
+    let found = lookup(context, name)
+    if found < 0 {
+        return false
+    }
+    if meta_binding(context, name) >= 0 {
+        return true
+    }
+    let binding = get(context.bindings, found)
+    binding.constant >= 0 && get(context.env.types, static_type(context, binding.constant)).kind == TypeKind.Meta
 }
 
 fn type_operand(context Context, node Node) Bool {
@@ -209,8 +232,9 @@ fn type_operand(context Context, node Node) Bool {
         }
         return true
     }
-    if (node.kind != NodeKind.Name && node.kind != NodeKind.Type && node.kind != NodeKind.Tuple && node.kind != NodeKind.TupleType && node.kind != NodeKind.DynType) ||
-        lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 { return false }
+    if node.kind != NodeKind.Name && node.kind != NodeKind.Type && node.kind != NodeKind.Tuple && node.kind != NodeKind.TupleType && node.kind != NodeKind.DynType { return false }
+    let first = slice(node.value, 0, first_dot(node.value))
+    if lookup(context, first) >= 0 && !type_binding_operand(context, first) { return false }
     var index = 0
     while index < length(node.children) {
         if !type_operand(context, child(node, index)) { return false }
@@ -233,7 +257,8 @@ fn type_application(context Context, node Node) Bool {
     if node.kind != NodeKind.Apply { return false }
     if enum_value_operand(context, node) { return false }
     let path = child(node, 0).value
-    lookup(context, slice(path, 0, first_dot(path))) < 0
+    let first = slice(path, 0, first_dot(path))
+    lookup(context, first) < 0 || type_binding_operand(context, first)
 }
 fn selected(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
     match guard_condition(context, node, child(source, 0), 0)? {

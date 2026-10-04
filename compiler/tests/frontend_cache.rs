@@ -762,6 +762,13 @@ concept Family {
 impl Family for Bool {
     type Item[T] = (T, Text)
 }
+fn selected_item(comptime receiver type) type {
+    comptime if receiver implements Family {
+        receiver.Item[Int]
+    } else {
+        Text
+    }
+}
 fn labelled[S Family, T](source S, value S.Item[T]) (S.Item[T], Text) {
     discard source
     let Selected = comptime { S }
@@ -797,6 +804,12 @@ fn main() {
     assert callback(pair.0) == 42 && pair.1 == "answer"
     assert tagged(true).0 && apply(pair.0) == 41
     assert labelled[Bool, Int](true, pair).0.0 == 41
+    let Item = comptime { selected_item(Bool) }
+    let item Item = (7, "selected")
+    comptime if Item == (Int, Text) {
+        assert item.0 == 7
+    }
+    assert comptime { selected_item(Int) == Text }
 }
 "#;
     fs::write(&path, source).unwrap();

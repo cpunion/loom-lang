@@ -88,6 +88,18 @@ fn static_computed(comptime count Int) Int {
     comptime { count + 1 }
 }
 
+fn static_type(comptime selected type) Bool {
+    comptime if selected == Int {
+        comptime if List[selected] == List[Int] {
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
 fn static_generic[T](comptime sample T) T {
     sample
 }
@@ -149,6 +161,7 @@ fn main() {
     assert unused(3) == 7
     assert static_added(1, 2) == 3
     assert static_computed(4) == 5
+    assert static_type(Int) && !static_type(Bool)
     assert static_generic(7) == 7
     assert static_generic(true)
     assert static_unused(9) == 1
@@ -188,6 +201,7 @@ fn main() {
       ['input Int', 'input', 3],
       ['computed = input', 'computed', 2],
       ['sample T', 'sample', 2],
+      ['selected == Int', 'selected', 3],
     ]) {
       const document = TextDocument.create(uri, 'loom', version, source);
       const start = source.indexOf(fragment) + (fragment.startsWith('-') ? 1 : 0);
@@ -215,6 +229,7 @@ fn main() {
       ['flag Bool', 'flag Bool', ['Bool']],
       ['sample\n', 'sample T', ['Int', 'Bool']],
       ['unused_static Int', 'unused_static Int', ['Int']],
+      ['selected == Int', 'selected type', ['type']],
     ]) {
       const params = { textDocument: { uri }, position: document.positionAt(source.indexOf(fragment)) };
       const definitions = await client.rpc.sendRequest('textDocument/definition', params);
