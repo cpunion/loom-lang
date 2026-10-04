@@ -24,7 +24,7 @@ test fn float_static_keys_round_trip_values_without_runtime_slots() {
     }
 }
 
-test fn static_float_values_do_not_grant_runtime_captures_or_float_proofs() {
+test fn static_float_values_do_not_grant_runtime_captures_or_unknown_proofs() {
     rejects("""
         fn fixed(comptime value Float) Float {
             value
@@ -39,6 +39,16 @@ test fn static_float_values_do_not_grant_runtime_captures_or_float_proofs() {
         }
         fn main() {
             discard invalid(1.0)
+        }
+        """)
+    discard accepted("""
+        fn fixed() Float
+        ensures result >= 0.0
+        {
+            1.0
+        }
+        fn main() {
+            discard fixed()
         }
         """)
     rejects("""

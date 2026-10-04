@@ -113,6 +113,17 @@ fn same_predicates(a List[Predicate], b List[Predicate]) Bool {
 
 fn same(a Predicate, b Predicate) Bool {
     match a {
+        Predicate.FloatCompare(relation, left, right) => match b {
+            Predicate.FloatCompare(other, first, second) => {
+                let budget = new[Int]()
+                push(budget, 256)
+                relation == other && ((same_float(left, first, budget) &&
+                        same_float(right, second, budget)) ||
+                    (relation == "==" && same_float(left, second, budget) &&
+                        same_float(right, first, budget)))
+            }
+            _ => false
+        }
         Predicate.BagEqual(before, size, after, count) => match b {
             Predicate.BagEqual(first, extent, second, other) => before == first && after == second &&
             compare(size.constant, extent.constant) == 0 && same_terms(size.terms, extent.terms) &&
@@ -404,6 +415,7 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
     }
     match predicate {
         Predicate.Constant(value) => value
+        Predicate.FloatCompare(relation, left, right) => float_holds(relation, left, right, facts)
         Predicate.Compare(relation, value) => affine_holds(relation, value, facts) || inequality_holds(relation, value, facts)
         Predicate.TextEqual(left, right) => text_equal(left, right, facts)
         Predicate.Not(values) => match get(values, 0) {

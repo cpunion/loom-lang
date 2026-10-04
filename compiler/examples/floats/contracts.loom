@@ -1,0 +1,53 @@
+import std.list.length
+
+record Payment {
+    amount Money
+}
+
+fn amount(value Money) Float
+ensures result >= 0.0 && result <= 1000000.0
+{
+    value
+}
+
+fn payment(value Float) Money
+requires value >= 0.0 && value <= 1000000.0
+ensures result >= 0.0 && result <= 1000000.0
+{
+    Money(value)
+}
+
+fn first_payment(values List[Payment]) Float
+ensures result >= 0.0 && result <= 1000000.0
+{
+    values[0].amount
+}
+
+fn entry_payment(values List[Payment]) Float
+ensures old(length(values)) == 0 || old(values[0].amount) >= 0.0
+{
+    0.0
+}
+
+fn nonnegative(value Float) Float
+ensures result >= 0.0
+{
+    if value > 0.0 {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn contract_values() {
+    let payments = [Payment {
+            amount = Money(10.0)
+        }]
+    assert amount(Money(10.0)) == 10.0
+    assert payment(10.0) == 10.0
+    assert first_payment(payments) == 10.0
+    assert entry_payment(payments) == 0.0
+    assert nonnegative(0.0 / 0.0) == 0.0
+    assert nonnegative(-1.0) == 0.0
+    assert nonnegative(1.0) == 1.0
+}

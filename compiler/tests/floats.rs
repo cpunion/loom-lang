@@ -7,7 +7,24 @@ fn floats_use_native_aggregates_and_scalar_programs_need_no_loom_runtime() {
     let source = tempfile::tempdir().unwrap();
     fs::write(
         source.path().join("main.loom"),
-        "type Money = Float where self >= 0.0\nfn widen(value Money) Float { value }\nfn remainder(a Float, b Float) Float { a % b }\nfn main() { assert remainder(5.5, 2.0) == 1.5\nassert widen(Money(10.0)) == 10.0 }",
+        r#"
+type Money = Float where self >= 0.0
+
+fn widen(value Money) Float
+ensures result >= 0.0
+{
+    value
+}
+
+fn remainder(a Float, b Float) Float {
+    a % b
+}
+
+fn main() {
+    assert remainder(5.5, 2.0) == 1.5
+    assert widen(Money(10.0)) == 10.0
+}
+"#,
     )
     .unwrap();
     let executable = common::executable(source.path(), "scalar");
@@ -29,26 +46,29 @@ fn floats_use_native_aggregates_and_scalar_programs_need_no_loom_runtime() {
     let ir = fs::read_to_string(ir).unwrap();
     assert!(ir.contains("frem double"));
     assert!(!ir.contains("loom_rt_"));
+    assert!(!ir.contains("fcmp oge double"));
 
     let example = common::root().join("compiler/examples/floats");
     let executable = common::executable(source.path(), "aggregates");
-    success(
-        &common::command(&[
-            "build",
-            example.to_str().unwrap(),
-            "--output",
-            executable.to_str().unwrap(),
-        ])
-        .env("LOOM_OPT_LEVEL", "0")
-        .output()
-        .unwrap(),
-    );
-    success(
-        &Command::new(executable)
-            .env("LOOM_GC_STRESS", "1")
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                example.to_str().unwrap(),
+                "--output",
+                executable.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
             .output()
             .unwrap(),
-    );
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
 }
 
 #[test]

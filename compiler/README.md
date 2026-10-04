@@ -1958,8 +1958,9 @@ fn widen(value Bounded) NonNegative { NonNegative(value) }
 The latter rule matches typed expressions exactly, permits regrouping/reordering
 conjuncts, and does not apply integer algebra to IEEE values. It cannot extract
 a condition hidden behind `||`. Unproved narrowing and exhausted or unsupported
-proofs retain ordinary checked `Result` construction. General
-Float postcondition reasoning remains unsupported.
+proofs retain ordinary checked `Result` construction. IEEE comparisons also use
+the bounded value/contract rules in the [contract boundary](#contract-boundary);
+general Float postcondition solving remains unsupported.
 
 Construction also consumes already established facts about an immutable scalar
 local or parameter, from `requires`, a successful `assert`, or the current
@@ -2451,8 +2452,15 @@ general loops, shared-storage mutation, cleanup and returns inside operands;
 verified callee summaries use the separate rules above.
 Recursive proof dependencies, dynamic calls without a usable declared contract,
 indirect calls and nonconstant division remain outside
-this proof fragment. Required Float proofs remain unsupported, while pure Float entry
-predicates can run normally. Solver work is bounded; exhaustion is a diagnostic,
+this proof fragment. IEEE Float proofs reuse exact comparisons over immutable
+values, including constrained inputs/elements, verified returns and guarded
+entry observations. Constant expressions use binary64 evaluation; symbolic
+arithmetic retains its operand order and structure. A true strict comparison
+implies its non-strict form. NaN prevents reflexivity and ordered-comparison
+negation; no cancellation, reassociation or real-number arithmetic is inferred.
+Unresolved Float obligations reject rather than enter the integer SMT theory.
+See the [Float trial](examples/floats/contracts.loom).
+Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not
 proofs of termination or absence of runtime faults.
 
@@ -2728,8 +2736,8 @@ Evaluation is not proof: helper calls in function contracts undergo symbolic
 expansion, and declared postconditions still require the prover.
 Float compile-time operations and numeric codecs use the same IEEE behavior as
 native code, including NaN, infinity, signed zero and subnormals. Float/refined
-results may appear inside shared aggregates. Required Float proofs remain
-unsupported and reject; successful evaluation is not an algebraic proof.
+results may appear inside shared aggregates. The bounded Float proof rules above
+preserve IEEE semantics; successful evaluation is not a general algebraic proof.
 
 ### Typed expression macros
 

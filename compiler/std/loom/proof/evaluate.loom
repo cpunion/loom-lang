@@ -16,6 +16,7 @@ fn boolean(value Value) Result[Predicate, Text] {
 
 fn unary(operator Text, value Value) Result[Value, Text] {
     match value {
+        Value.Float(term) => float_unary(operator, term)
         Value.Nonlinear(term) => {
             if operator == "-" {
                 return integer_operation("-", IntegerTerm.Linear(constant(integer(0))), term)
@@ -107,6 +108,10 @@ fn binary(operator Text, a Value, b Value) Result[Value, Text] {
         return integer_operation(operator, integer_term(a)?, integer_term(b)?)
     }
     match a {
+        Value.Float(left) => match b {
+            Value.Float(right) => float_binary(operator, left, right)
+            _ => Result.Err("proof operands differ")
+        }
         Value.Number(left) => match b {
             Value.Number(right) => numeric(operator, left, right)
             _ => Result.Err("proof operands differ")
@@ -161,8 +166,8 @@ fn pure(expr Expr, state State) Result[Value, Text] {
             }
         }
     }
-    if expr.ty == 5 {
-        return Result.Err("Float expressions are not supported in required proofs")
+    if expr.kind == ExprKind.Float {
+        return Result.Ok(Value.Float(float_literal(expr.text)?))
     }
     if expr.kind == ExprKind.Integer {
         return Result.Ok(Value.Number(constant(decimal(expr.text))))
@@ -304,6 +309,10 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
     (expr.kind == ExprKind.Binary && (expr.text == "+" || expr.text == "-" || expr.text == "*" || expr.text == "/" || expr.text == "%")) {
         let value = pure(expr, state)?
         match value {
+            Value.Float(_) => {
+                // IEEE arithmetic is total, including overflow and division
+                // by zero. It has no Int overflow obligation.
+            }
             Value.Nonlinear(term) => {
                 if !holds(integer_limit(">=", term, -9223372036854775808), state.facts) ||
                 !holds(integer_limit("<=", term, 9223372036854775807), state.facts) {

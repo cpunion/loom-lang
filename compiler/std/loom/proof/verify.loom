@@ -95,7 +95,7 @@ fn record_outcomes(proof Verification, expr Expr, state State, depth Int) Result
 }
 
 fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
-    if ty == 1 || ty == 2 || ty == 3 {
+    if ty == 1 || ty == 2 || ty == 3 || ty == 5 {
         return fresh_result(proof, ty)
     }
     if depth >= 16 || ty < 0 || ty >= length(proof.program.types) {
@@ -138,7 +138,7 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
         return Result.Ok(Value.Boolean(Predicate.Variable(id)))
     }
     if ty == 5 {
-        return Result.Err("Float parameters are not supported in required proofs")
+        return Result.Ok(Value.Float(FloatValue.Variable(id)))
     }
     if ty == 3 {
         return Result.Ok(Value.Text(TextValue.Variable(id)))
@@ -165,6 +165,9 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
         return Result.Ok(Value.Number(variable(id)))
+    }
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 5 {
+        return Result.Ok(Value.Float(FloatValue.Variable(id)))
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
     get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Record {

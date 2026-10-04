@@ -17,7 +17,7 @@ fn entry_scope(entry State, current State) State {
 // matches an entry read. Only immutable terms may guard an entry observation.
 fn entry_guard_expression(value Expr) Bool {
     let shape = proof_operation(value)
-    if shape.arity < 0 || shape.heap || shape.flow == OperandFlow.Choice || value.ty == 5 {
+    if shape.arity < 0 || shape.heap || shape.flow == OperandFlow.Choice {
         return false
     }
     var index = 0

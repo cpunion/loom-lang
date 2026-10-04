@@ -1,0 +1,111 @@
+test fn ieee_contracts_reuse_typed_values_helpers_branches_and_entry_reads() {
+    list_length_contract("""
+import std.list.length
+
+fn admitted(value Float) Bool {
+    value > 0.0
+}
+
+type Positive = Float where admitted(self)
+
+record Amount {
+    value Positive
+}
+
+fn widen(value Positive) Float
+ensures result > 0.0
+{
+    value
+}
+
+fn first(values List[Positive]) Positive
+ensures result >= 0.0
+{
+    values[0]
+}
+
+fn forward(values List[Positive]) Float
+ensures result > 0.0
+{
+    first(values)
+}
+
+fn field(values List[Amount]) Float
+ensures result > 0.0
+{
+    values[0].value
+}
+
+fn entry(values List[Positive]) Float
+ensures old(length(values)) == 0 || old(values[0]) > 0.0
+{
+    0.0
+}
+
+fn branch(value Float) Float
+ensures result >= 0.0
+{
+    if value > 0.0 {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn ordered_sum(a Float, b Float) Float
+requires a + b > 0.0
+ensures result > 0.0
+{
+    a + b
+}
+
+fn main() {
+    assert widen(Positive(1.0)) == 1.0
+    assert forward([Positive(2.0)]) == 2.0
+    assert field([Amount { value = Positive(3.0) }]) == 3.0
+    assert entry([Positive(4.0)]) == 0.0
+    assert branch(0.0 / 0.0) == 0.0
+    assert ordered_sum(1.0, 2.0) == 3.0
+}
+""", true)
+}
+
+test fn ieee_unknowns_and_real_number_identities_are_not_proofs() {
+    rejects("""
+fn reflexive(value Float) Bool
+ensures result
+{
+    value == value
+}
+""")
+    rejects("""
+fn unordered(value Float) Bool
+requires !(value < 0.0)
+ensures result
+{
+    value >= 0.0
+}
+""")
+    rejects("""
+fn cancelled(value Float) Float
+ensures result == 0.0
+{
+    value - value
+}
+""")
+    rejects("""
+fn reassociated(a Float, b Float, c Float) Float
+requires (a + b) + c > 0.0
+ensures result > 0.0
+{
+    a + (b + c)
+}
+""")
+    rejects("""
+fn unconstrained(values List[Float]) Float
+ensures result > 0.0
+{
+    values[0]
+}
+""")
+}

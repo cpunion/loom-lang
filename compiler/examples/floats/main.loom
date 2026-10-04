@@ -23,6 +23,7 @@ fn identity[T](value T) T {
 fn exercise() {
     compile_time_values()
     money_boundaries()
+    contract_values()
     let point = Point {
         x = 1.25
         y = 2.5

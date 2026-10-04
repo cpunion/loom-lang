@@ -147,6 +147,7 @@ fn immutable_snapshot(value Value) Bool {
         Value.EntryList(_, _) => true
         Value.Boolean(_) => true
         Value.Text(_) => true
+        Value.Float(_) => true
         Value.Record(fields) => {
             var index = 0
             while index < length(fields) {
