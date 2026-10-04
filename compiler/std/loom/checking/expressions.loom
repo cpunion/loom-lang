@@ -52,6 +52,7 @@ fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
     let first = slice(node.value, 0, end)
     let local = lookup(context, first)
     if local >= 0 && end < length(node.value) && meta_binding(context, first) >= 0 {
+        if meta_named(context, node) { return meta_literal(context, node, context_type(context, node)?) }
         return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected)
     }
     if local < 0 {

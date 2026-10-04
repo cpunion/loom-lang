@@ -2865,6 +2865,13 @@ a branch or discharge a proof. Shape-changing computations that cannot produce
 an abstract type still reject rather than infer a public requirement from one
 concrete call. See [symbolic.loom](examples/type_values/symbolic.loom).
 
+Declared associated types are type values too: `S.Item[T]`, qualified
+`S.Concept.Item[T]`, and `Self.Item[T]` in methods. An immutable selected receiver
+type supports the same projections. Resolution retains the ordinary declared
+bounds, concept disambiguation and lexical visibility; a runtime value that
+shadows the receiver name is not a type. Enum members such as `Selected.None`
+remain value constructors. See [projections.loom](examples/type_values/projections.loom).
+
 ### Type reflection
 
 `std.reflect.describe[T]()` resolves the declared type at its lexical call site

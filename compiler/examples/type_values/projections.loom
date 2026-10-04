@@ -1,0 +1,57 @@
+import std.meta.tuple
+
+concept ProjectionSource {
+    type Item[T]
+
+    fn receiver_is_bool(self Self) Bool {
+        discard self
+        comptime {
+            Self == Bool
+        }
+    }
+
+    fn labelled[T](self Self, value Self.Item[T]) (Self.Item[T], Text) {
+        discard self
+        let Labelled = comptime {
+            tuple([Self.Item[T], Text])
+        }
+        let labelled Labelled = (value, "method")
+        labelled
+    }
+}
+
+impl ProjectionSource for Bool {
+    type Item[T] = (T, Text)
+}
+
+pub fn label_item[S ProjectionSource, T](source S, value S.Item[T]) (S.Item[T], Text) {
+    discard source
+    let Selected = comptime {
+        S
+    }
+    let Labelled = comptime {
+        tuple([Selected.ProjectionSource.Item[T], Text])
+    }
+    let labelled Labelled = (value, "function")
+    labelled
+}
+
+fn projected_types() {
+    assert true.receiver_is_bool()
+    let labelled = label_item[Bool, Int](true, (7, "seven"))
+    assert labelled.0.0 == 7 && labelled.1 == "function"
+    let method = false.labelled[Text](("value", "text"))
+    assert method.0.0 == "value" && method.1 == "method"
+    let Selected = comptime {
+        Maybe[Int]
+    }
+    let absent = Selected.None
+    assert match absent {
+        Selected.None => true
+        Selected.Some(_) => false
+    }
+}
+
+test fn projected_types_are_not_enum_variants_or_runtime_field_reads() {
+    projected_types()
+}

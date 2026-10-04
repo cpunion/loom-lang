@@ -756,6 +756,19 @@ fn computed_structural_types_restore_current_identities_after_an_edit() {
 import std.meta.tuple
 import std.meta.function
 import std.option.Option
+concept Family {
+    type Item[T]
+}
+impl Family for Bool {
+    type Item[T] = (T, Text)
+}
+fn labelled[S Family, T](source S, value S.Item[T]) (S.Item[T], Text) {
+    discard source
+    let Selected = comptime { S }
+    let Labelled = comptime { tuple([Selected.Family.Item[T], Text]) }
+    let labelled Labelled = (value, "labelled")
+    labelled
+}
 fn increment(value Int) Int {
     value + 1
 }
@@ -783,6 +796,7 @@ fn main() {
     let pair = answer()
     assert callback(pair.0) == 42 && pair.1 == "answer"
     assert tagged(true).0 && apply(pair.0) == 41
+    assert labelled[Bool, Int](true, pair).0.0 == 41
 }
 "#;
     fs::write(&path, source).unwrap();

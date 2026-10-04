@@ -38,7 +38,8 @@ fn meta_named(context Context, node Node) Bool {
         return false
     }
     let path = source.value
-    if lookup(context, slice(path, 0, first_dot(path))) >= 0 {
+    let first = slice(path, 0, first_dot(path))
+    if lookup(context, first) >= 0 && meta_binding(context, first) < 0 {
         return false
     }
     if package(path) != "" {
@@ -58,9 +59,15 @@ fn meta_named(context Context, node Node) Bool {
             Result.Err(_) => {
             }
         }
+        if first == "Self" || parameter_name(context, first) || meta_binding(context, first) >= 0 {
+            return match context_type(context, node) {
+                Result.Ok(_) => true
+                Result.Err(_) => false
+            }
+        }
     }
     if path == "Int" || path == "Float" || path == "Bool" || path == "Text" || path == "Bytes" ||
-    path == "List" || path == "Task" || path == "type" || parameter_name(context, path) {
+    path == "List" || path == "Task" || path == "type" || path == "Self" || parameter_name(context, path) {
         return true
     }
     match find_data(context.env, context.signature.symbol, source, path) {
