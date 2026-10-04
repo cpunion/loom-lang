@@ -386,13 +386,9 @@ fn scalar_facts_imply(premises List[Expr], conclusion Expr, backend ProofBackend
     }
     index = 0
     while index < length(known) {
-        match pure(get(known, index), state) {
-            Result.Ok(value) => match value {
-                Value.Boolean(predicate) => {
-                    state = assume(state, predicate)
-                }
-                _ => {
-                }
+        match established_scalar_condition(get(known, index), state, 256) {
+            Result.Ok(next) => {
+                state = next
             }
             // An unsupported extra fact must not hide sufficient evidence.
             Result.Err(_) => {

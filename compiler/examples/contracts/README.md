@@ -20,6 +20,13 @@ eager argument snapshots, conditional operand writes and short-circuit writes.
 The same rules prove `local_widen` without a second construction check. These
 are proof-time substitutions, not runtime storage or implicit copies.
 
+`established_facts.loom` retains a supported positive entry fact even alongside
+an unmodeled quotient. The quotient and its runtime faults are not removed.
+Only established conjunction terms can be retained independently; a disjunction
+does not establish either operand. Required goals still need truth and safety.
+The same rule proves type weakening and target helper requirements without
+requiring a model of every stronger-source constraint.
+
 `forward` proves its own result contract from `good`'s verified contract. The
 ordinary call still executes at runtime; proof analysis does not replace it.
 Direct scalar calls without a postcondition can instead use the bounded pure

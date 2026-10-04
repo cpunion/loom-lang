@@ -26,6 +26,16 @@ ensures proof_only(result)
 {
     value
 }
+
+type Positive = Int where proof_only(self)
+
+fn after_division(value Int, divisor Int) Positive
+requires value > 0
+{
+    let quotient = value / divisor
+    discard quotient
+    Positive(value)
+}
 "#;
     let artifact = common::executable(directory.path(), "contracts");
     let ir_path = directory.path().join("contracts.ll");
@@ -39,12 +49,15 @@ ensures proof_only(result)
                 .output()
                 .unwrap(),
         );
-        for valid in [true, false] {
+        for (value, divisor, failure) in [
+            (7, 1, None),
+            (0, 1, Some("precondition failed")),
+            (7, 0, Some("division by zero")),
+        ] {
             fs::write(
                 &source,
                 format!(
-                    "{definitions}\nfn main() {{ assert good({}) == 7 }}",
-                    if valid { 7 } else { 0 }
+                    "{definitions}\nfn main() {{\n    assert good({value}) == 7\n    assert after_division({value}, {divisor}) == 7\n}}"
                 ),
             )
             .unwrap();
@@ -67,11 +80,11 @@ ensures proof_only(result)
                 "ensures-only helper entered runtime reachability"
             );
             let output = Command::new(&artifact).output().unwrap();
-            if valid {
-                success(&output);
-            } else {
+            if let Some(failure) = failure {
                 assert_eq!(output.status.code(), Some(1));
-                assert!(String::from_utf8_lossy(&output.stderr).contains("precondition failed"));
+                assert!(String::from_utf8_lossy(&output.stderr).contains(failure));
+            } else {
+                success(&output);
             }
         }
     }

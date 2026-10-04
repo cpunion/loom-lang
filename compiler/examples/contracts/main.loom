@@ -66,6 +66,7 @@ ensures result == old(value.count)
 
 fn main() {
     mutable_helpers()
+    exercise_established_facts()
     assert good(7) == 7
     assert forward(7) == 7
     assert comptime {
