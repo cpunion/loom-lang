@@ -30,6 +30,29 @@ fn shared_snapshot(value SharedSnapshot) Result[NamedCount, ConstraintError] {
     NamedCount(value)
 }
 
+fn tracked_values(values List[Int], trace List[Int]) List[Int] {
+    push(trace, 1)
+    values
+}
+
+fn tracked_bytes(bytes Bytes, trace List[Int]) Bytes {
+    push(trace, 2)
+    bytes
+}
+
+fn direct_shared_snapshot(values List[Int], bytes Bytes, trace List[Int], count Int) NamedCount
+requires count > 0
+{
+    NamedCount(SharedSnapshot {
+            details = SharedDetails {
+                values = tracked_values(values, trace)
+                count = count
+            }
+            name = "sample"
+            bytes = tracked_bytes(bytes, trace)
+        })
+}
+
 fn observed_count(value NamedCount) Int
 ensures result > 0
 {
@@ -47,6 +70,10 @@ fn shared_invariant_scope() Bool {
     let list = [1]
     let bytes = std.bytes.new()
     std.bytes.push(bytes, 100)
+    let trace List[Int] = []
+    let direct = direct_shared_snapshot(list, bytes, trace, 3)
+    assert length(trace) == 2 && trace[0] == 1 && trace[1] == 2
+    assert direct.details.count == 3
     let source = SharedSnapshot {
         details = SharedDetails {
             count = 3
@@ -66,6 +93,8 @@ fn shared_invariant_scope() Bool {
     assert list[0] == 9 && list[1] == 10 && bytes[0] == 65
     list[0] = -7
     push(list, 11)
+    assert direct.details.values[0] == -7 && length(direct.details.values) == 3
+    assert direct.bytes[0] == 65 && direct.details.count == 3
     let widened SharedSnapshot = valid
     assert widened.details.values[0] == -7 && length(widened.details.values) == 3
     assert valid.details.count == 3 && source.details.count == 3

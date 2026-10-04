@@ -1,0 +1,146 @@
+fn partial_construction_source() Text {
+    concat("""
+        import std.result.Result
+        import std.result.ConstraintError
+
+        record State[T] {
+            value T
+            count Int
+        }
+
+        fn valid[T](value State[T]) Bool {
+            value.count >= 0
+        }
+
+        type Nonnegative[T] = State[T] where valid(self)
+        """, "\n")
+}
+
+test fn partial_records_prove_immutable_fields_without_observing_shared_siblings() {
+    let program = accepted_result(concat(partial_construction_source(), """
+        pub fn literal[T](value T) Nonnegative[T] {
+            Nonnegative(State {
+                value = value
+                count = 1
+            })
+        }
+
+        pub fn required(value List[Int], ignored Int, count Int) Nonnegative[List[Int]]
+        requires count >= 0
+        {
+            discard ignored
+            Nonnegative(State {
+                value = value
+                count = count
+            })
+        }
+
+        pub fn branch(value Text, count Int) Nonnegative[Text] {
+            if count >= 0 {
+                let copy = count
+                Nonnegative(State {
+                    count = copy
+                    value = value
+                })
+            } else {
+                Nonnegative(State {
+                    value = value
+                    count = 0
+                })
+            }
+        }
+
+        pub fn concrete(value List[Int]) Nonnegative[List[Int]] {
+            literal(value)
+        }
+
+        fn source[T](value State[T]) State[T]
+        ensures result.count == value.count
+        {
+            value
+        }
+
+        pub fn factory(value List[Int], count Int) Nonnegative[List[Int]]
+        requires count >= 0
+        {
+            Nonnegative(source(State {
+                    value = value
+                    count = count
+                }))
+        }
+        """))
+    assert length(program.functions) == 6
+    // The only conditional is the user's branch, not a predicate boundary.
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 3).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 4).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 5).body, ExprKind.If) == 0
+}
+
+test fn partial_record_snapshots_do_not_invent_evidence_or_replay_calls() {
+    let program = accepted_result(concat(partial_construction_source(), """
+        fn source(value List[Int]) List[Int] {
+            value
+        }
+
+        pub fn effect(value List[Int]) Nonnegative[List[Int]] {
+            Nonnegative(State {
+                value = source(value)
+                count = 1
+            })
+        }
+
+        pub fn unknown(value List[Int], count Int) Result[Nonnegative[List[Int]], ConstraintError] {
+            Nonnegative(State {
+                value = value
+                count = count
+            })
+        }
+
+        pub fn observed(value List[Int]) Result[Nonnegative[List[Int]], ConstraintError] {
+            Nonnegative(State {
+                value = value
+                count = value[0]
+            })
+        }
+
+        pub fn mutable(value List[Int], count Int) Result[Nonnegative[List[Int]], ConstraintError]
+        requires count >= 0
+        {
+            var changed = count
+            changed = -1
+            Nonnegative(State {
+                value = value
+                count = changed
+            })
+        }
+
+        enum Payload {
+            Number(Int)
+            Empty
+        }
+
+        pub fn enumeration(value Payload) Nonnegative[Payload] {
+            Nonnegative(State {
+                value = value
+                count = 1
+            })
+        }
+        """))
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.Call) == 1
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 3).body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 4).body, ExprKind.If) == 0
+    rejects_result(concat(partial_construction_source(), """
+        pub fn invalid(value List[Int]) Nonnegative[List[Int]] {
+            Nonnegative(State {
+                value = value
+                count = -1
+            })
+        }
+        """))
+}

@@ -1926,7 +1926,13 @@ Its constructor checks an unknown value once and returns `Result`; copying the
 refined value or widening it to the base record adds no check. Fields cannot be
 assigned in place. A closed record
 literal whose `Int`/`Bool` predicate is proved by the bounded verifier returns
-the refined type directly. Closed literals with `Float`, Text, tuple or enum fields can also
+the refined type directly. Record construction also preserves nested field
+structure and stable scalar flow facts while treating unknown or effectful
+fields as typed snapshots. An unobserved shared sibling does not prevent a
+proof about known immutable fields; each real initializer still executes once,
+in source order. The same snapshots and stable flow facts compose with verified
+factory contracts. Unsupported evidence retains the checked boundary.
+Closed literals with `Float`, Text, tuple or enum fields can also
 return directly when compile-time evaluation establishes its predicate; a false
 constant is a diagnostic. Unknown inputs, calls, and failed optional evaluation
 retain the `Result` boundary.

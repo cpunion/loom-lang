@@ -693,6 +693,8 @@ fn generic_refinements_reuse_current_predicates_arguments_and_helper_proofs() {
     let source = r#"
 import std.result.Result
 import std.result.ConstraintError
+import std.list.push
+import std.list.length
 
 record State[T] {
     value T
@@ -709,6 +711,26 @@ fn checked[T](value State[T]) Result[Valid[T], ConstraintError] {
     Valid(value)
 }
 
+fn proven[T](value T, count Int) Valid[T]
+requires count >= 0
+{
+    Valid(raw(value, count))
+}
+
+fn raw[T](value T, count Int) State[T]
+ensures result.count == count
+{
+    State {
+        value = value
+        count = count
+    }
+}
+
+fn tracked(values List[Int], trace List[Int]) List[Int] {
+    push(trace, 7)
+    values
+}
+
 fn count[T](value Valid[T]) Int
 ensures result >= 0
 {
@@ -716,6 +738,12 @@ ensures result >= 0
 }
 
 fn main() {
+    let values = [1]
+    let trace List[Int] = []
+    let shared = proven(tracked(values, trace), 0)
+    assert length(trace) == 1 && trace[0] == 7
+    values[0] = -1
+    assert shared.value[0] == -1 && count(shared) == 0
     assert count(Valid(State {
         value = 7
         count = 0
@@ -755,12 +783,22 @@ fn main() {
     success(&common::loom(&["run", package.to_str().unwrap()]));
     checked(&cached("run", &package, &cache, &[]), true);
 
+    // A weaker entry condition cannot keep the old partial-construction proof.
+    fs::write(
+        &path,
+        source.replace("requires count >= 0", "requires count >= -1"),
+    )
+    .unwrap();
+    let rejected = cached("emit-checked", &package, &cache, &[]);
+    assert!(!rejected.status.success());
+
     fs::write(&path, source.replace("value.count >= 0", "value.count > 0")).unwrap();
     let rejected = cached("emit-checked", &package, &cache, &[]);
     assert!(!rejected.status.success());
     assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("expected Valid"),
+        "{}",
         String::from_utf8_lossy(&rejected.stderr)
-            .contains("this constant does not satisfy the type constraint")
     );
     fs::write(&path, source).unwrap();
     checked(&cached("run", &package, &cache, &[]), true);

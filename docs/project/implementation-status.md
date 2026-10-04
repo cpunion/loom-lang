@@ -214,6 +214,10 @@ predicate typing, helper analysis, construction and proof expansion. Constructor
 infer arguments from the base or an expected refinement, or accept explicit
 arguments. Each new instance checks resource and mutable-observation restrictions;
 shared generic siblings are allowed, not observations of their mutable contents.
+Partial record construction proves known immutable fields independently of
+unobserved shared siblings. Nested structure and stable scalar flow facts are
+retained; unknown calls and mutable observations become independent proof-only
+snapshots, without replaying or reordering executable initializers.
 The [shared view example](../../compiler/examples/shared_views) uses `Pair[T]`
 with Int, Text and Bool elements. Generic List element constraints remain limited
 by the immutable-inline element rule. Cyclic invariant construction rejects
