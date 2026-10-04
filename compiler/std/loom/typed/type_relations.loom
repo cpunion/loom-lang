@@ -109,11 +109,10 @@ fn relation_in(types List[Type], left Int, right Int, seen List[TypeComparison],
     }
     var relation = 1
     index = 0
-    while index < length(a.arguments) {
+    while index < length(a.arguments) && relation != 0 {
         let current = relation_in(types, get(a.arguments, index), get(b.arguments, index), seen, depth + 1)
         if current == 0 {
             relation = 0
-            break
         }
         if current < 0 {
             relation = -1
