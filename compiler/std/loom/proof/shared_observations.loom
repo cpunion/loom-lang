@@ -44,7 +44,7 @@ fn shared_observations(proof Verification, value Expr, guard Expr, state State) 
                 return Result.Err("shared contract observation requires a tracked List")
             }
         }
-        if !list_state(identity, current)?.private_storage {
+        if !stable_storage(list_state(identity, current)?) {
             current = interference(proof, current)
             let observed = if list_read_expression(expression) {
                 match entry_element(proof, expression, guard, current) {

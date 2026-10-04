@@ -1,0 +1,64 @@
+fn positive_head(values List[Int]) Bool {
+    length(values) > 0 && get(values, 0) > 0
+}
+
+type PositiveHead = List[Int] where positive_head(self)
+
+record Publication {
+    values PositiveHead
+    unrelated List[Int]
+}
+
+fn published_first(value Publication) Int
+ensures result > 0 && result == old(value.values[0])
+{
+    discard length(value.unrelated)
+    get(value.values, 0)
+}
+
+fn published_length(values PositiveHead) Int
+ensures result == length(values) && result == old(length(values))
+{
+    length(values)
+}
+
+fn ordered(values List[Int]) Bool {
+    var index = 1
+    while index < length(values) {
+        if get(values, index - 1) > get(values, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+type Sorted = List[Int] where ordered(self)
+
+fn ordered_first(values Sorted) Int
+requires length(values) > 1
+ensures result <= get(values, 1)
+{
+    get(values, 0)
+}
+
+async fn shared_constrained_inputs() {
+    let values = PositiveHead([5, 6])
+    let publication = Publication {
+        values = values
+        unrelated = [0]
+    }
+    let sorted = Sorted([1, 2, 3])
+    let head, size, ordered = (run(fn() Int {
+                published_first(publication)
+            }), run(fn() Int {
+                published_length(values)
+            }), run(fn() Int {
+                ordered_first(sorted)
+            })).await
+    assert head == 5 && size == 2 && ordered == 1
+    set(publication.unrelated, 0, 99)
+    assert run(fn() Int {
+            published_first(publication)
+        }).await == 5
+}

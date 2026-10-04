@@ -42,3 +42,21 @@ test fn selective_content_havoc_uses_allocation_time_not_different_ids() {
     let later_alias = forget_modified_elements(list_bounds(Value.List(13), state), [13])
     assert get(later_alias.extents, 2).contents == -1
 }
+
+test fn protected_storage_is_stable_without_inventing_private_or_disjoint_origins() {
+    let entry = State {
+        locals = []
+        facts = []
+        extents = []
+        observations = []
+    }
+    let state = protected_extent(10, list_bounds(Value.Record([Value.List(10), Value.List(11)]), entry))
+    let protected = get(state.extents, 0)
+    let unrelated = get(state.extents, 1)
+    assert protected.read_only && stable_storage(protected)
+    assert !protected.private_storage && !protected.allocated
+    assert !stable_storage(unrelated) && extent_overlap(protected, unrelated)
+    let published = published_storage(state)
+    assert stable_storage(get(published.extents, 0))
+    assert !stable_storage(get(published.extents, 1))
+}

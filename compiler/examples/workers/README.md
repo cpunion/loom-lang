@@ -36,3 +36,13 @@ header is not publication; storing a mutable graph into shared storage is.
 The example mutates an inner List through the copy and observes the original.
 Concurrent mutation does not promise an atomic snapshot. The worker tests also
 check that changing the original cannot resize the scalar-element copy.
+
+## Constrained publication
+
+`constrained.loom` shares validated content-constrained Lists with workers and
+proves their entry elements, lengths and bounded sorted-input ordering. Their
+construction/write/escape checks establish read-only storage, including refined
+fields inside records. This is not a purity annotation, private-storage promise,
+runtime monitor or implicit copy. Unrelated mutable fields keep ordinary shared
+semantics. Length-only constraints still permit some writes and provide no
+content stability; changing that policy invalidates cached shared proofs.

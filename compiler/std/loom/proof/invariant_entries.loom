@@ -55,10 +55,6 @@ fn invariant_entry_clauses(types List[Type], ty Int, input Expr, clauses List[Ex
 }
 
 fn established_invariants(proof Verification, state State) List[Outcome] {
-    // Shared interference still needs separately validated continuing guarantees.
-    if proof.shared {
-        return outcomes(state, Value.Empty)
-    }
     let clauses = new[Expr]()
     var index = 0
     while index < length(proof.function.params) {
@@ -67,7 +63,21 @@ fn established_invariants(proof Verification, state State) List[Outcome] {
         invariant_entry_clauses(proof.program.types, ty, input, clauses, 0)
         index = index + 1
     }
-    match established_conditions(proof, clauses, state) {
+    let eligible = if proof.shared {
+        let stable = new[Expr]()
+        index = 0
+        while index < length(clauses) {
+            let clause = get(clauses, index)
+            if invariant_reads_stable(clause, state) {
+                push(stable, clause)
+            }
+            index = index + 1
+        }
+        stable
+    } else {
+        clauses
+    }
+    match established_conditions(proof, eligible, state) {
         Result.Ok(paths) => paths
         // Optional type facts outside the supported theory supply no evidence.
         Result.Err(_) => outcomes(state, Value.Empty)

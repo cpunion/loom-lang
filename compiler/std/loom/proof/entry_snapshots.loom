@@ -220,7 +220,7 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
                     return Result.Err("entry List snapshot requires a tracked handle")
                 }
             }
-            if proof.shared && !list_state(identity, view)?.private_storage {
+            if proof.shared && !stable_storage(list_state(identity, view)?) {
                 return Result.Err("entry List snapshot is not proved interference-safe")
             }
             before = array_contents(proof, identity, view)?

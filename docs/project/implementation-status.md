@@ -295,8 +295,8 @@ version through `old(values)`, including inline parameter fields, refined Lists
 and finite pure helper selections. Queries can use post-state indices such as
 `result`, but must establish bounds against the entry length. Checked read-only
 calls retain versions; possible writes retain only sound partial frames. Shared
-workers require private storage for a coherent whole entry value. This is not
-an alias, runtime copy or arbitrary graph snapshot. See the
+workers require private or validated read-only storage for a coherent whole entry
+value. This is not an alias, runtime copy or arbitrary graph snapshot. See the
 [snapshot example](../../compiler/examples/smt_contracts/snapshots.loom).
 Ordinary bounded pure `List[Int]` scans now derive scoped universal predicates
 and occurrence counts. Finite histogram laws compose with array stores and
@@ -330,7 +330,7 @@ Bounded content refinements now establish sequential List entry observations,
 including nested fields and `old(values[0])`, without duplicate preconditions or
 runtime checks. Unknown alias writes invalidate them; disjunction alternatives
 and length-only refinements supply no invented element facts. Shared interference
-still requires separate evidence.
+requires separately validated storage evidence.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining
@@ -470,14 +470,19 @@ Mixed, callback, dynamic and external-entry contexts stay conservative, without
 cloning helper bodies. GC roots and cancellation checkpoints remain.
 Required proofs are revalidated for interference: scalar snapshots and private
 List observations remain stable; finite private factory summaries compose.
+Validated content-constrained inputs also retain their storage observations,
+including refined record/tuple fields, bounded sorted predicates and `old`.
+The existing construction/write/escape analysis supplies this evidence. It
+neither promises private/disjoint storage nor changes runtime worker guards;
+length-only refinements and arbitrary read-only bodies supply none.
 Checked source allocation/return origins recognize explicit shallow copies
 from shared inputs, including `std.list.clone` through inline wrappers. No value
 contract or deep copy is inferred; multiple returned mutable leaves may alias.
 Fresh outer headers remain private when initialized with shared elements;
 mutable elements read from a copy do not inherit that privacy. Source helper
 calls are checked for publication even when their result is scalar or Unit.
-Shared entry, old and current observations are independent: nonnegative lengths
-are provable, but repeated reads, stale index guards and hypothetical overflow
+Mutable shared entry, old and current observations are independent: nonnegative
+lengths are provable, but repeated reads, stale index guards and hypothetical overflow
 gain no evidence. Once-only helper arguments and local bindings retain scalar
 snapshots through substitution, inline fields, guarded branches and cache reuse;
 independent invocations receive separate observation identities.

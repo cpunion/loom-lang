@@ -13,6 +13,7 @@ fn fib(n Int) Int {
 }
 
 async fn main() {
+    shared_constrained_inputs().await
     let local, values_result = (run(private_buffers), run(private_result)).await
     assert local == 71 && values_result[1] == 7
     let values = [0]
