@@ -608,7 +608,8 @@ timings; local variables remain conservatively rooted for the function.
   See [hash collections](#hash-collections) for key laws and the minimal API.
 - [`std.iter`](std/iter/README.md) defines `Iterator` with associated `Item` and
   `next()`. List/range sources and map/filter/take adapters are lazy; generic and
-  dynamic consumers collect, fold or short-circuit with any/all. List iterators
+  dynamic consumers collect, fold, propagate errors with try_fold, or short-circuit
+  with any/all. List iterators
   share fixed-view element identities and cursor state, not a copied snapshot.
   [The native example](examples/iterators) covers callback faults and cleanup.
 - Source `std.option` and `std.result` provide `map`, `and_then`, and

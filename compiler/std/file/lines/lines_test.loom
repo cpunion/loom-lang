@@ -2,6 +2,7 @@ import std.file.write_text
 import std.file.write_bytes
 import std.fs.remove_file
 import std.iter.collect
+import std.iter.try_fold
 import std.list.length
 import std.text.length
 import std.text.contains
@@ -175,9 +176,11 @@ test fn errors_are_not_eof_and_early_exit_closes_the_resource() {
 async fn fail_after_read(path Text, observed List[LineState]) Result[Int, FileError] {
     scoped reader = read(path)?
     std.list.push(observed, reader.file.state)
-    discard next(reader)
-    assert false
-    Result.Ok(0)
+    try_fold(reader, 0, fn(count Int, line Result[Text, FileError]) Result[Int, FileError] {
+            discard line?
+            assert false
+            Result.Ok(count + 1)
+        })
 }
 
 test async fn faults_close_the_scoped_file() {

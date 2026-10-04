@@ -401,8 +401,9 @@ Option/Result, typed JSON, storage descriptors/codecs, reflection, environment,
 filesystem, process and I/O APIs. JSON has no special runtime implementation.
 Source [`std.iter`](../../compiler/std/iter/README.md) provides an associated-type
 pull protocol, shared-view List/range sources, lazy map/filter/take and
-collect/fold/any/all consumers, including dynamic iterators. Callbacks retain
-pull order, faults and lexical cleanup.
+collect/fold/try_fold/any/all consumers, including dynamic iterators. Fallible
+folds preserve callback effects and stop before pulling a remaining suffix.
+Callbacks retain pull order, faults and lexical cleanup.
 [`std.file.lines`](../../compiler/std/file/lines/README.md) provides incremental
 synchronous UTF-8 file lines with explicit error items and scoped closure,
 including direct generic consumers. Collection hash/order laws remain caller

@@ -1,0 +1,43 @@
+test fn fallible_fold_retains_effects_and_the_unconsumed_suffix() {
+    let source = range(0, 5)
+    let visits = new[Int]()
+    let accumulated = new[Int]()
+    let folded = try_fold(source, accumulated, fn(values List[Int], value Int) Result[List[Int], Text] {
+            push(visits, value)
+            if value == 2 {
+                return Result.Err("stop")
+            }
+            push(values, value)
+            Result.Ok(values)
+        })
+    assert match folded {
+        Result.Err(error) => error == "stop"
+        Result.Ok(_) => false
+    }
+    assert std.list.length(visits) == 3 && visits[0] == 0 && visits[1] == 1 && visits[2] == 2
+    assert std.list.length(accumulated) == 2 && accumulated[0] == 0 && accumulated[1] == 1
+    assert integer_item(source.next()) == 3
+}
+
+fn sum_item(total Int, value Int) Result[Int, Text] {
+    Result.Ok(total + value)
+}
+
+test fn fallible_fold_accepts_dynamic_sources_and_empty_input() {
+    let source dyn Iterator[Item = Int] = range(1, 5)
+    assert match try_fold(source, 0, sum_item) {
+        Result.Ok(value) => value == 10
+        Result.Err(_) => false
+    }
+    let initial = [7]
+    assert match try_fold(range(0, 0), initial, fn(values List[Int], value Int) Result[List[Int], Text] {
+            assert false
+            Result.Ok(values)
+        }) {
+        Result.Ok(values) => {
+            push(values, 8)
+            initial[1] == 8
+        }
+        Result.Err(_) => false
+    }
+}

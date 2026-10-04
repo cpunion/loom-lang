@@ -42,8 +42,11 @@ there is no fixed line-length limit.
 
 `Lines` implements [`Iterator`](../../iter/README.md) with
 `Item = Result[Text, FileError]`. Import `std.iter.Iterator` for `reader.next()`.
-Direct generic consumers such as `collect`, `fold`, `any` and `all` may borrow
-the scoped reader; `collect` retains all yielded values, including errors.
+Direct generic consumers such as `collect`, `fold`, `try_fold`, `any` and `all`
+may borrow the scoped reader; `collect` retains all yielded values, including
+errors. `try_fold` lets a callback propagate each line's Result immediately;
+the [application](../../../examples/file_lines/README.md) uses it to count lines
+without retaining their contents.
 Returning a resource-containing map/filter/take adapter around that borrow is
 not supported. This is synchronous file iteration, not an async stream protocol.
 

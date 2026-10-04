@@ -25,6 +25,13 @@ order, without prefetching or parallelism. A callback fault propagates normally;
 already-consumed input is not replayed. `take` requires a nonnegative count and
 does not pull when its allowance is exhausted.
 
+`try_fold(source, initial, combine)` is the fallible consumer: `combine` returns
+`Result[Accumulator, Error]`, and the first error is propagated without another
+pull. The failing item has been consumed; callback effects are not rolled back,
+and the source can resume at its remaining suffix. Empty input returns the
+initial value unchanged. This uses ordinary Result propagation, not a new
+iterator protocol or implicit error policy.
+
 List iteration captures a fixed shared view: subsequent element updates remain
 visible, appends are excluded, and removing/replacing a tail does not substitute
 new identities for captured elements. It is not a content snapshot. Copies of
@@ -38,6 +45,6 @@ policies, not compiler assumptions about purity, termination or permanent EOF.
 No new loop syntax, coroutine protocol or runtime primitive is involved.
 
 [`std.file.lines`](../file/lines/README.md) supplies a scoped synchronous file
-source with fallible Text items. Direct consumers can borrow it inside its
-scope; adapters that return a wrapper around the resource borrow are not yet
-supported.
+source with fallible Text items. Direct consumers, including `try_fold`, borrow
+it inside its scope; adapters that return a wrapper around the resource borrow
+are not yet supported.
