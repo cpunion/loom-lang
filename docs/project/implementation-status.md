@@ -85,6 +85,9 @@ associated-type qualifiers, selected type values, `implements` guards and explic
 method calls. Associated-type navigation follows the checked concept member,
 including generic families and `Self` projections. Fresh source rebinding excludes
 instances appended by earlier checks; ordinary compilation does not collect this trace.
+Independent inspection and member completion also rebind source without changing
+the caller's symbols. Checked query tables carry their own binding snapshot,
+including generated closures and pack instances; analysis reuses this same view.
 Each package must account for its own references, including tests; unvisited
 branches refuse edits. The trace stays outside executable IR and build caches.
 External-consumer API migration and broader recovery/query support remain open.

@@ -12,7 +12,7 @@ fn header_root(spelling Text) Text {
 // Header queries use checked signature types, not a second type resolver.
 // Lexical type parameters and compile-time type bindings must never acquire
 // the definition of a same-spelled nominal type after specialization.
-fn header_shadowed(analysis SemanticView, owner Int, spelling Text) Bool {
+fn header_shadowed(analysis CheckedQuery, owner Int, spelling Text) Bool {
     let root = header_root(spelling)
     var current = owner
     while current >= 0 {
@@ -39,12 +39,12 @@ fn header_shadowed(analysis SemanticView, owner Int, spelling Text) Bool {
     false
 }
 
-fn inspect_header_type(analysis SemanticView, report Inspection, target Query,
+fn inspect_header_type(analysis CheckedQuery, report Inspection, target Query,
     owner Int, node Node, ty Int, depth Int) {
-    if depth >= 64 || !inside(node.span, target.token.span.start) || ty < 0 || ty >= length(analysis.data.types) {
+    if depth >= 64 || !inside(node.span, target.token.span.start) || ty < 0 || ty >= length(analysis.types) {
         return
     }
-    let shape = get(analysis.data.types, ty)
+    let shape = get(analysis.types, ty)
     if node.kind == NodeKind.Type && same_span(node.span, target.node.span) && target.segment + 1 == target.segments {
         if header_shadowed(analysis, owner, node.value) {
             return
@@ -92,7 +92,7 @@ fn inspect_header_type(analysis SemanticView, report Inspection, target Query,
     }
 }
 
-fn inspect_function_header(analysis SemanticView, report Inspection, function Function, target Query) {
+fn inspect_function_header(analysis CheckedQuery, report Inspection, function Function, target Query) {
     if target.node.kind != NodeKind.Type {
         return
     }
@@ -143,7 +143,7 @@ fn inspect_function_header(analysis SemanticView, report Inspection, function Fu
     }
 }
 
-fn inspect_data_header(analysis SemanticView, report Inspection, shape Type, target Query) {
+fn inspect_data_header(analysis CheckedQuery, report Inspection, shape Type, target Query) {
     let symbol = get(analysis.bindings.symbols, shape.symbol)
     var index = 0
     while index < length(symbol.node.children) {
@@ -199,7 +199,7 @@ fn header_local_shadowed(node Node, spelling Text, before Int) Bool {
     false
 }
 
-fn inspect_local_header(analysis SemanticView, report Inspection, function Function, target Query, value Expr) {
+fn inspect_local_header(analysis CheckedQuery, report Inspection, function Function, target Query, value Expr) {
     if target.node.kind != NodeKind.Type || value.kind != ExprKind.Let || value.index < 0 {
         return
     }
@@ -222,14 +222,14 @@ fn inspect_local_header(analysis SemanticView, report Inspection, function Funct
     }
 }
 
-fn nominal_body_location(analysis SemanticView, report Inspection, function Function, target Query, ty Int, path Text) {
+fn nominal_body_location(analysis CheckedQuery, report Inspection, function Function, target Query, ty Int, path Text) {
     let symbol = get(analysis.bindings.symbols, function.symbol)
     if header_shadowed(analysis, function.symbol, path) ||
     header_local_shadowed(symbol.node, header_root(path), target.node.span.start) ||
     (symbol.owner >= 0 && get(analysis.bindings.symbols, symbol.owner).node.kind == NodeKind.Function) {
         return
     }
-    let shape = get(analysis.data.types, ty)
+    let shape = get(analysis.types, ty)
     let choices = std.loom.binding.candidates(analysis.bindings, symbol.file, symbol.test_only, path)
     var index = 0
     while index < length(choices) {
@@ -240,8 +240,8 @@ fn nominal_body_location(analysis SemanticView, report Inspection, function Func
     }
 }
 
-fn inspect_variant_type(analysis SemanticView, report Inspection, function Function, target Query, ty Int) {
-    if get(analysis.data.types, ty).kind != TypeKind.Enum || target.segment + 2 != target.segments {
+fn inspect_variant_type(analysis CheckedQuery, report Inspection, function Function, target Query, ty Int) {
+    if get(analysis.types, ty).kind != TypeKind.Enum || target.segment + 2 != target.segments {
         return
     }
     var end = length(target.node.value) - 1
@@ -254,7 +254,7 @@ fn inspect_variant_type(analysis SemanticView, report Inspection, function Funct
     }
 }
 
-fn inspect_variant_pattern(analysis SemanticView, report Inspection, function Function, target Query, value Expr) {
+fn inspect_variant_pattern(analysis CheckedQuery, report Inspection, function Function, target Query, value Expr) {
     if target.node.kind != NodeKind.Pattern || value.kind != ExprKind.Match || length(value.children) != 1 {
         return
     }

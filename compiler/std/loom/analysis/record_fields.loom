@@ -1,6 +1,6 @@
 // Constraint templates have typed receivers but no executable function IDs.
 // Only field projections supply navigation evidence here, never calls or locals.
-fn inspect_constraint_field(analysis SemanticView, report Inspection, target Query, value Expr) {
+fn inspect_constraint_field(analysis CheckedQuery, report Inspection, target Query, value Expr) {
     if !inside(value.span, target.token.span.start) {
         return
     }
@@ -40,10 +40,10 @@ fn source_pattern_member(node Node, span Span) Bool {
 
 // Destructuring projections carry the nested binding's span, not its field
 // label. Match that exact source child and the checked receiver/index together.
-fn inspect_pattern_projection(analysis SemanticView, report Inspection, function Function, target Query, value Expr) {
+fn inspect_pattern_projection(analysis CheckedQuery, report Inspection, function Function, target Query, value Expr) {
     if value.kind == ExprKind.Field && length(value.children) == 1 {
         let receiver = get(value.children, 0).ty
-        let shape = get(analysis.data.types, receiver)
+        let shape = get(analysis.types, receiver)
         if shape.kind == TypeKind.Record {
             if target.node.kind == NodeKind.Field && length(target.node.children) == 1 &&
             same_span(value.span, get(target.node.children, 0).span) && get(shape.fields, value.index).name == target.node.value {

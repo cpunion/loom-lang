@@ -10,9 +10,10 @@ import std.list.get
 import std.list.length
 import std.result.Result
 
-// Query-local IDs describe a checked function closure, not a compilable package.
-// Call/FunctionRef indices retain the complete closure's function ordering.
+// Query-local IDs belong to these bindings and checked function tables, not a
+// compilable package. Call/FunctionRef indices retain closure function ordering.
 pub record CheckedQuery {
+    bindings std.loom.binding.Program
     types List[Type]
     interfaces List[Interface]
     functions List[Function]
@@ -45,7 +46,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int) Result
 
 pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) Result[CheckedQuery, Failure] {
     discard expanded_source(source)?
-    let env = prepare_with_inputs(source, inputs, true)?
+    let env = prepare_with_inputs(query_source(source)?, inputs, true)?
     discard query_templates(env)?
     var selected = -1
     var index = 0
@@ -62,6 +63,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
     if selected < 0 {
         discard layouts(env)?
         return Result.Ok(CheckedQuery {
+                bindings = env.source
                 types = env.types
                 interfaces = env.interfaces
                 functions = new[Function]()
@@ -75,6 +77,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
     let functions = emit_functions(env, true)?
     discard layouts(env)?
     Result.Ok(CheckedQuery {
+            bindings = env.source
             types = env.types
             interfaces = env.interfaces
             functions = functions
