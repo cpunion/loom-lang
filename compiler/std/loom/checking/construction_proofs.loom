@@ -33,6 +33,13 @@ fn construction_proof(context Context, node Node, source Node, declaration Int, 
         }
         index = index + 1
     }
+    construction_body_proof(stage, node,
+        expression(input.kind, input.ty, source, input.text, input.index, arguments, input.falls),
+        params, locals, new[Expr](), declaration, base)
+}
+
+fn construction_body_proof(stage Context, node Node, body Expr, params List[Int],
+    locals List[Local], premises List[Expr], declaration Int, base Int) Result[Bool, Failure] {
     let result_local = length(locals)
     push(locals, Local {
             name = "self"
@@ -50,21 +57,92 @@ fn construction_proof(context Context, node Node, source Node, declaration Int, 
         params = params
         result = base
         locals = locals
-        preconditions = new[Expr]()
+        preconditions = premises
         postconditions = expressions(predicate)
         result_local = result_local
-        body = expression(input.kind, input.ty, source, input.text, input.index, arguments, input.falls)
+        body = body
         runtime_name = ""
         span = node.span
     }
-    Result.Ok(match verify_with_helpers(program, proof, get(context.env.inputs, 0).build.proof_backend) {
+    Result.Ok(match verify_with_helpers(program, proof, get(stage.env.inputs, 0).build.proof_backend) {
             Result.Ok(_) => true
             Result.Err(_) => false
         })
 }
 
+// Compact actual binding IDs in one pass. Sequential substitutions could
+// confuse an original binding with a newly assigned compact ID.
+fn construction_fact(context Context, value Expr, bindings List[Int],
+    params List[Int], locals List[Local]) Expr {
+    if value.kind == ExprKind.Local {
+        var slot = 0
+        while slot < length(bindings) && get(bindings, slot) != value.index {
+            slot = slot + 1
+        }
+        if slot == length(bindings) {
+            let local = get(context.locals, value.index)
+            push(bindings, value.index)
+            push(params, local.ty)
+            push(locals, local)
+        }
+        return Expr {
+            kind = value.kind
+            ty = value.ty
+            span = value.span
+            text = ""
+            index = slot
+            children = value.children
+            arms = value.arms
+            falls = value.falls
+        }
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, construction_fact(context, get(value.children, index), bindings, params, locals))
+        index = index + 1
+    }
+    Expr {
+        kind = value.kind
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = value.index
+        children = children
+        arms = value.arms
+        falls = value.falls
+    }
+}
+
+fn flow_construction_proof(context Context, node Node, value Expr,
+    declaration Int, base Int) Result[Bool, Failure] {
+    let stage = staging(context, node)?
+    let env = helper_environment(stage.env)
+    let bindings = new[Int]()
+    let params = new[Int]()
+    let locals = new[Local]()
+    let body = construction_fact(context, value, bindings, params, locals)
+    let premises = new[Expr]()
+    var head = context.fact_head
+    while head >= 0 && length(premises) < 256 {
+        let fact = get(context.facts, head)
+        // Context facts already exclude mutable bindings, calls and heap reads.
+        push(premises, construction_fact(context, fact.predicate, bindings, params, locals))
+        head = fact.previous
+    }
+    let scope = predicate_context(env, declaration, locals, 0, true)
+    construction_body_proof(scope, node, body, params, locals, premises, declaration, base)
+}
+
 fn proved_construction(context Context, node Node, source Node, value Expr, declaration Int, base Int) Result[Bool, Failure] {
-    if context.env.expanding_helpers || context.env.stage_depth >= 32 || value.kind != ExprKind.Call {
+    if context.env.expanding_helpers || context.env.stage_depth >= 32 {
+        return Result.Ok(false)
+    }
+    if value.kind != ExprKind.Call {
+        if context.fact_head >= 0 && fact_reference(context, value) >= 0 &&
+        contract_call(predicate_node(context.env, declaration)) {
+            return flow_construction_proof(context, node, value, declaration, base)
+        }
         return Result.Ok(false)
     }
     // Unknown predicate proofs keep the Result boundary, but a source callee's

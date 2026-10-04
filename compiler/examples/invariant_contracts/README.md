@@ -19,8 +19,10 @@ calculations, guarded by the branches that actually executed at construction.
 These proof-only helpers do not become new runtime roots.
 
 Unsupported conjuncts supply no evidence; disjunction alternatives are never
-assumed individually. General helper loops/recursion and required Float
-arithmetic remain outside this fragment. Unknown required proofs reject.
+assumed individually. General helper loops/recursion and floating-point algebra
+remain outside this fragment. Exact IEEE comparisons use their separate value
+rules; see the [Float contract trial](../floats/contracts.loom).
+Unknown required proofs reject.
 
 `lists.loom` extends entry evidence to bounded, guarded List predicates, nested
 fields and `old(values[0])`, without repeating `requires`. Unknown alias writes
