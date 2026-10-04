@@ -3068,15 +3068,20 @@ synchronous I/O parks the mutator but can delay cancellation until the OS call
 returns. Scoped resources and owner-local Tasks/native tokens cannot cross the
 worker boundary; acquire and close resources within the callback.
 
-Shared builds revalidate mandatory contracts. Each mutable shared entry, `old`
-and current List observation is independent; scalar snapshots and observations of
+Shared builds revalidate mandatory contracts. Unprotected mutable shared entry,
+`old` and current List observations are independent; scalar snapshots and observations of
 fresh, unpublished Lists remain stable. Validated content-constrained List inputs
 also retain their entry values: construction requires non-publishing fresh storage,
 and the checked write/escape policy permits no mutation. This evidence follows
-refined fields inside records/tuples, not arbitrary read-only function bodies or
-length-only constraints. It does not imply private or disjoint storage and does
+refined fields inside records/tuples, not arbitrary read-only function bodies.
+Length-only refinements retain their validated shape predicate after interference:
+replacement-only inputs have stable lengths, while append-capable inputs have
+independent length snapshots satisfying the predicate. Neither promises stable
+elements; see the [shape example](examples/workers/shapes.loom).
+This evidence does not imply private or disjoint storage and does
 not remove runtime worker guards. The [constrained worker example](examples/workers/constrained.loom)
-proves shared entry, length and bounded sorted-input properties. Length nonnegativity is provable, but
+proves shared entry, length and bounded sorted-input properties. For unprotected inputs,
+length nonnegativity is provable, but
 two reads are not assumed equal and an earlier length check cannot justify a
 later shared indexed access. Pure helper arguments and local bindings preserve
 their once-only evaluation, including inline fields and guarded branches.

@@ -1,0 +1,60 @@
+type FixedPair = List[Int] where length(self) == 2
+
+type Growing = List[Int] where length(self) > 0
+
+type Bounded = List[Int] where length(self) > 0 && length(self) <= 3
+
+record SharedShape {
+    fixed FixedPair
+    growing Growing
+}
+
+fn fixed_size(ignored Int, values FixedPair) Int
+ensures result == 2 && length(values) == 2 && old(length(values)) == 2
+{
+    length(values)
+}
+
+fn positive_size(values Growing) Int
+ensures result > 0 && old(length(values)) > 0 && length(values) > 0
+{
+    length(values)
+}
+
+fn stable_size(values Bounded) Int
+ensures result == length(values) && result == old(length(values))
+ensures result > 0 && result <= 3
+{
+    length(values)
+}
+
+fn fixed_field(value SharedShape) Int
+ensures result == 2
+{
+    fixed_size(-1, value.fixed)
+}
+
+async fn shared_shape_inputs() {
+    let pair = FixedPair([1, 2])
+    let growing = Growing([3])
+    let bounded = Bounded([4, 5])
+    let publication = SharedShape {
+        fixed = pair
+        growing = growing
+    }
+    let writer = run(fn() Int {
+            set(pair, 0, 7)
+            set(bounded, 0, 11)
+            push(growing, 9)
+            fixed_field(publication)
+        })
+    let reader = run(fn() Int {
+            positive_size(growing)
+        })
+    let size, observed, width = (writer, reader, run(fn() Int {
+                stable_size(bounded)
+            })).await
+    assert size == 2 && observed > 0 && width == 2
+    assert pair[0] == 7 && length(growing) == 2
+    assert bounded[0] == 11
+}

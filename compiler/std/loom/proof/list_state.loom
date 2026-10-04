@@ -37,6 +37,8 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
     let extents = new[ListExtent]()
     var private_storage = initially_private
     var read_only = false
+    var fixed_extent = false
+    var invariant_type = -1
     var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
@@ -45,6 +47,8 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
         } else {
             private_storage = extent.private_storage
             read_only = extent.read_only
+            fixed_extent = extent.fixed_extent
+            invariant_type = extent.invariant_type
         }
         index = index + 1
     }
@@ -54,6 +58,8 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
             allocated = allocated
             private_storage = private_storage
             read_only = read_only
+            fixed_extent = fixed_extent
+            invariant_type = invariant_type
             contents = -1
             cells = new[ListCell]()
         })
@@ -111,6 +117,8 @@ fn published_storage(state State) State {
                 allocated = extent.allocated
                 private_storage = false
                 read_only = extent.read_only
+                fixed_extent = extent.fixed_extent
+                invariant_type = extent.invariant_type
                 contents = extent.contents
                 cells = extent.cells
             })
@@ -150,9 +158,18 @@ fn interference(proof Verification, state State) State {
     while index < length(state.extents) {
         let extent = get(state.extents, index)
         if !stable_storage(extent) {
-            match fresh_result(proof, 1) {
+            let sample = if extent.fixed_extent {
+                Value.Number(extent.size)
+            } else {
+                fresh_result(proof, 1)
+            }
+            match sample {
                 Value.Number(size) => {
                     current = with_extent(extent.identity, size, extent.allocated, current)
+                    if extent.invariant_type >= 6 {
+                        current = invariant_facts(proof.program.types, extent.invariant_type,
+                            Value.List(extent.identity), current, 0)
+                    }
                 }
                 _ => {
                 }
@@ -224,7 +241,12 @@ fn forget_modified_extents(proof Verification, state State, modified List[Int]) 
     while index < length(state.extents) {
         let extent = get(state.extents, index)
         if extent_modified(extent, state, modified) {
-            match fresh_result(proof, 1) {
+            let sample = if extent.fixed_extent {
+                Value.Number(extent.size)
+            } else {
+                fresh_result(proof, 1)
+            }
+            match sample {
                 Value.Number(size) => {
                     current = with_extent(extent.identity, size, extent.allocated, current)
                 }

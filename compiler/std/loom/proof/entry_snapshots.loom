@@ -244,6 +244,7 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
         var after_scope = call_scope(state, values)
         after_scope = captured_array_facts(before, after_scope)
         after_scope = if proof.shared && entry_length_expression(value) {
+            after_scope = captured_input_invariants(proof, before, after_scope)
             match observed {
                 Value.Number(size) => extent_bounds(size, after_scope)
                 _ => after_scope

@@ -66,6 +66,8 @@ record ListExtent {
     allocated Bool
     private_storage Bool
     read_only Bool
+    fixed_extent Bool
+    invariant_type Int
     contents Int
     cells List[ListCell]
 }

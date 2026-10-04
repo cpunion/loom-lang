@@ -46,3 +46,10 @@ fields inside records. This is not a purity annotation, private-storage promise,
 runtime monitor or implicit copy. Unrelated mutable fields keep ordinary shared
 semantics. Length-only constraints still permit some writes and provide no
 content stability; changing that policy invalidates cached shared proofs.
+
+`shapes.loom` uses the same validated write policy for continuing shape facts.
+Element replacement preserves the length of `FixedPair` and `Bounded`, not their
+element values. `Growing` permits proved appends: each length remains positive,
+but entry and current lengths need not match. These guarantees also follow
+refined record fields; they add no locking, runtime checks or private-storage
+assumptions.
