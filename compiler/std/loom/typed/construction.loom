@@ -1,0 +1,107 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.int.to_text
+
+fn same_arguments(left List[Int], right List[Int]) Bool {
+    if length(left) != length(right) {
+        return false
+    }
+    var index = 0
+    while index < length(left) {
+        if get(left, index) != get(right, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+// Append immutable structural entries, reusing their existing session identity.
+// Nominal expansion remains the checker's responsibility.
+pub fn structural_type(types List[Type], kind TypeKind, symbol Int, arguments List[Int]) Int {
+    var index = 0
+    while index < length(types) {
+        let existing = get(types, index)
+        if existing.kind == kind && existing.symbol == symbol && same_arguments(existing.arguments, arguments) {
+            return index
+        }
+        index = index + 1
+    }
+    let fields = new[Field]()
+    if kind == TypeKind.Tuple {
+        index = 0
+        while index < length(arguments) {
+            push(fields, Field {
+                    name = to_text(index),
+                    ty = get(arguments, index)
+                })
+            index = index + 1
+        }
+    }
+    push(types, Type {
+            kind = kind
+            symbol = symbol
+            arguments = arguments
+            fields = fields
+            variants = new[Variant]()
+            constraint = new[Expr]()
+        })
+    length(types) - 1
+}
+
+pub fn type_depth(types List[Type], ty Int) Int {
+    let source = get(types, ty)
+    if source.kind == TypeKind.Parameter || ty <= 5 {
+        return 0
+    }
+    if length(source.arguments) == 0 {
+        return 1
+    }
+    if length(source.arguments) == 1 {
+        let depth = type_depth(types, get(source.arguments, 0))
+        return if depth >= 64 {
+            64
+        } else {
+            depth + 1
+        }
+    }
+    depth_in(types, ty, new[(Int, Int)](), 0)
+}
+
+// Repeated arguments form a DAG, not exponentially many independent subtrees.
+// One request memoizes only visited nodes; unrelated interned types cost nothing.
+fn depth_in(types List[Type], ty Int, known List[(Int, Int)], nesting Int) Int {
+    if nesting >= 64 {
+        return 64
+    }
+    let source = get(types, ty)
+    if source.kind == TypeKind.Parameter || ty <= 5 {
+        return 0
+    }
+    var index = 0
+    while index < length(known) {
+        let entry = get(known, index)
+        if entry.0 == ty {
+            return entry.1
+        }
+        index = index + 1
+    }
+    var deepest = 0
+    index = 0
+    while index < length(source.arguments) {
+        let depth = depth_in(types, get(source.arguments, index), known, nesting + 1)
+        if depth > deepest {
+            deepest = depth
+        }
+        index = index + 1
+    }
+    let depth = if deepest >= 64 {
+        64
+    } else {
+        deepest + 1
+    }
+    push(known, (ty, depth))
+    depth
+}

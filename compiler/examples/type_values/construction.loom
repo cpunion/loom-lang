@@ -1,0 +1,44 @@
+import std.meta.tuple
+import std.meta.function
+import std.meta.parameter_types
+import std.meta.return_type
+import std.option.Option
+
+fn alternating(count Int) List[type] {
+    let elements = new[type]()
+    var index = 0
+    while index < count {
+        push(elements, if index % 2 == 0 {
+                Int
+            } else {
+                Text
+            })
+        index = index + 1
+    }
+    elements
+}
+
+fn constructed_types() {
+    let Pair = comptime {
+        tuple(alternating(2))
+    }
+    let pair Pair = (7, "seven")
+    assert identity[Pair](pair).1 == "seven"
+    let Callback = comptime {
+        function(parameter_types[fn(Int, Text) Bool](), return_type[fn(Int, Text) Bool]())
+    }
+    let check Callback = fn(number Int, text Text) Bool {
+        number == 7 && text == "seven"
+    }
+    assert check(pair.0, pair.1)
+    let NoResult = comptime {
+        function(new[type](), Option.None)
+    }
+    let finish NoResult = fn() {
+    }
+    finish()
+}
+
+test fn computed_types_use_the_ordinary_native_path() {
+    constructed_types()
+}

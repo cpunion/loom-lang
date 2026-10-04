@@ -1,0 +1,60 @@
+import std.loom.typed.structural_type
+import std.loom.typed.type_depth
+import std.loom.eval.evaluate_types
+
+fn meta_intrinsic(env Environment, owner Int) Bool {
+    let item = symbol(env, owner)
+    let file = get(env.source.files, item.file)
+    (item.name == "meta_tuple" || item.name == "meta_function") &&
+    has(item.node, NodeKind.Intrinsic) && file.trusted_std &&
+    package_label(env.source.modules, env.source.packages, file.package) == "std.meta"
+}
+
+fn meta_signature(env Environment, current Signature, node Node) Result[RuntimeSignature, Failure] {
+    let ty = meta_type(env)
+    let params = ints(intern(env, TypeKind.List, -1, ints(ty)))
+    if symbol(env, current.symbol).name == "meta_function" {
+        if length(current.params) != 2 {
+            return Result.Err(failure(env, current.symbol, node, "function type construction requires List[type] and Option[type]"))
+        }
+        let output = get(current.params, 1)
+        let shape = get(env.types, output)
+        if shape.kind != TypeKind.Enum || !same(shape.arguments, ints(ty)) || length(shape.variants) != 2 {
+            return Result.Err(failure(env, current.symbol, node, "function type construction requires std.option.Option[type]"))
+        }
+        let option = symbol(env, shape.symbol)
+        let file = get(env.source.files, option.file)
+        let some = get(shape.variants, 0)
+        let none = get(shape.variants, 1)
+        if option.name != "Option" || !file.trusted_std ||
+        package_label(env.source.modules, env.source.packages, file.package) != "std.option" ||
+        some.name != "Some" || !same(some.fields, ints(ty)) || none.name != "None" || length(none.fields) != 0 {
+            return Result.Err(failure(env, current.symbol, node, "function type construction requires std.option.Option[type]"))
+        }
+        push(params, output)
+    }
+    if length(current.compile_time) != 0 {
+        return Result.Err(failure(env, current.symbol, node, "type constructors take ordinary compile-time-evaluated arguments"))
+    }
+    Result.Ok(runtime(0, params, ty))
+}
+
+// CTFE can append only structural entries, never unexpanded nominal types.
+fn complete_structural_types(env Environment) {
+    while length(env.type_states) < length(env.types) {
+        push(env.type_states, TypeState {
+                phase = 2,
+                task_width = -1,
+                list_writes = 0
+            })
+    }
+}
+
+fn evaluate_in(context Context, program std.loom.typed.Program, expression Expr, locals Int) Result[Value, Text] {
+    let evaluated = std.loom.eval.evaluate_types(program, expression, locals)
+    complete_structural_types(context.env)
+    match evaluated {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(failed) => Result.Err(failed.message)
+    }
+}

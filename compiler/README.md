@@ -2833,6 +2833,18 @@ requires its argument to be known at that call. A type-valued evaluator local is
 not an implicit generic parameter. Declaration signatures still use `[T]`, not
 value-dependent return-type inference. See the [type-value example](examples/type_values).
 
+`std.meta.tuple(elements List[type])` and
+`std.meta.function(parameters List[type], output Option[type])` construct
+structural types inside compile-time execution. Lists can be computed with pure
+loops and local mutation; their selected shape becomes an ordinary static type,
+not a runtime-sized tuple or parameter pack. Construction shares the checker's
+type interner, so a computed type equals the same directly written type.
+An empty list produces an empty tuple, distinct from an omitted result;
+`Option.None` selects an omitted function result. Nested types, nominal identity,
+constraints, visibility and runtime resource obligations keep their ordinary
+rules. Type lists and constructor calls cannot escape into native values.
+See [construction.loom](examples/type_values/construction.loom).
+
 ### Type reflection
 
 `std.reflect.describe[T]()` resolves the declared type at its lexical call site

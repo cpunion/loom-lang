@@ -126,6 +126,10 @@ executed, captured data is not inspected, and an omitted result is `None`, not
 `Unit`. Static scalar/immutable-aggregate/function parameters,
 selected branches, function/data type packs and fixed-shape `comptime for/map` share
 ordinary typing. Heterogeneous tuple packs are not runtime-sized Lists.
+Source `std.meta.tuple`/`function` construct canonical structural types from
+compile-time-computed `List[type]` inputs, including nested shapes and omitted
+function results. The existing checker interner owns identities and validation;
+no type factory or type list becomes a runtime value.
 Static tuple/record type iteration also accepts immutable compile-time-selected
 type bindings, with the same lexical visibility and ordinary generated code.
 Record/enum packs infer arity from structural initializers, preserve nominal

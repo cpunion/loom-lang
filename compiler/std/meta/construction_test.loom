@@ -1,0 +1,58 @@
+import std.list.new
+import std.list.push
+import std.option.Option
+
+fn computed_elements(count Int) List[type] {
+    let elements = new[type]()
+    var index = 0
+    while index < count {
+        push(elements, if index % 2 == 0 {
+                Int
+            } else {
+                Text
+            })
+        index = index + 1
+    }
+    elements
+}
+
+test fn computed_type_lists_construct_canonical_tuples_and_functions() {
+    assert comptime {
+        let elements = computed_elements(2)
+        assert tuple(elements) == of[(Int, Text)]()
+        assert function(elements, Option.Some(Bool)) == of[fn(Int, Text) Bool]()
+        assert function(elements, Option.None) == of[fn(Int, Text)]()
+        let nested = [tuple(elements), function(elements, Option.Some(Int))]
+        assert tuple(nested) == of[((Int, Text), fn(Int, Text) Int)]()
+        assert function(parameter_types[fn(Text) Bool](), return_type[fn(Text) Bool]()) == of[fn(Text) Bool]()
+        assert function(parameter_types[fn()](), return_type[fn()]()) == of[fn()]()
+        var repeated = Int
+        var level = 0
+        while level < 32 {
+            repeated = tuple([repeated, repeated])
+            level = level + 1
+        }
+        assert repeated != Int
+        let Empty = tuple(new[type]())
+        assert Empty != type
+        tuple([Empty]) == tuple([tuple(new[type]())])
+    }
+    let Pair = comptime {
+        tuple(computed_elements(2))
+    }
+    let value Pair = (42, "answer")
+    assert value.0 == 42 && value.1 == "answer"
+    let Callback = comptime {
+        function([Int, Text], Option.Some(Bool))
+    }
+    let callback Callback = fn(number Int, text Text) Bool {
+        number == 42 && text == "answer"
+    }
+    assert callback(value.0, value.1)
+    let NoResult = comptime {
+        function(new[type](), Option.None)
+    }
+    let done NoResult = fn() {
+    }
+    done()
+}

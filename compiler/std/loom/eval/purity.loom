@@ -77,7 +77,7 @@ fn scalar_purity(state State, expr Expr, depth Int) Result[Bool, Failure] {
 }
 
 fn pure_intrinsic(name Text) Bool {
-    name == "list_retain_range" || name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
+    name == "meta_tuple" || name == "meta_function" || name == "list_retain_range" || name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
     name == "text_len" || name == "text_byte" || name == "text_concat" || name == "text_equal" || name == "text_slice" ||
     name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" ||
     name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" || name == "list_push" || name == "list_set" || name == "list_append" || name == "list_take" || name == "list_replace" ||

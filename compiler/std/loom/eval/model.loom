@@ -52,6 +52,7 @@ record Frame {
 // Shared work/allocation counters and next container ID cover all calls.
 record State {
     program Program
+    construct_types Bool
     budget List[Int]
     partial Bool
     task_types List[Int]
@@ -91,12 +92,17 @@ fn finished(expr Expr, value Step) Result[Value, Failure] {
 }
 
 fn state(program Program, partial Bool) State {
+    state(program, partial, false)
+}
+
+fn state(program Program, partial Bool, construct_types Bool) State {
     let budget = new[Int]()
     push(budget, 100000)
     push(budget, 16777216)
     push(budget, 0)
     State {
         program = program
+        construct_types = construct_types
         budget = budget
         partial = partial
         task_types = new[Int]()
@@ -171,7 +177,16 @@ pub fn validate(program Program, expression Expr) Result[Bool, Failure] {
 }
 
 pub fn evaluate(program Program, expression Expr, locals Int) Result[Value, Failure] {
-    let state = state(program, false)
+    evaluated(state(program, false), expression, locals)
+}
+
+// Explicitly allow canonical tuple/function entries to be appended to types.
+// Default evaluation leaves its caller's checked type table unchanged.
+pub fn evaluate_types(program Program, expression Expr, locals Int) Result[Value, Failure] {
+    evaluated(state(program, false, true), expression, locals)
+}
+
+fn evaluated(state State, expression Expr, locals Int) Result[Value, Failure] {
     discard purity(state, expression)?
     let frame = Frame { locals = slots(state, expression, locals)? calls = 0 drains = new[Expr]() }
     finished(expression, execute(state, expression, frame, 0)?)
