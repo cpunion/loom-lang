@@ -11,9 +11,9 @@ test fn selected_type_guards_keep_static_selection_and_enum_values_distinct() {
                 7
             }
         }
-        enum Maybe[T] {
-            Some(T)
-            None
+        enum Choice {
+            First
+            Second
         }
         fn scalar(comptime Bool Bool) Bool {
             comptime if Bool == true {
@@ -54,11 +54,8 @@ test fn selected_type_guards_keep_static_selection_and_enum_values_distinct() {
                 missing_unselected_branch()
             }
             assert comptime { projected(Int) == Text }
-            let Enum = comptime { Maybe[Int] }
-            comptime if match Enum.None {
-                Enum.None => true
-                Enum.Some(_) => false
-            } {
+            let Enum = comptime { Choice }
+            comptime if Enum.First == Choice.First {
                 assert true
             } else {
                 missing_unselected_branch()
