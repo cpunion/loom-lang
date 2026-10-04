@@ -39,7 +39,9 @@ test fn dynamic_predicates_use_declaration_scope_and_real_self_slot() {
             assert saved.index != 2
             assert get(get(program.functions, predicate.index).params, 0) == 1
         }
-        Result.Err(_) => { assert false }
+        Result.Err(_) => {
+            assert false
+        }
     }
 }
 
@@ -51,7 +53,9 @@ test fn unused_predicates_reject_effects_and_unproved_helper_contracts() {
             assert failure.source == 0
             assert failure.diagnostic.message == "type constraint: compile-time evaluation forbids intrinsic write"
         }
-        Result.Ok(_) => { assert false }
+        Result.Ok(_) => {
+            assert false
+        }
     }
     rejects("type Guard = Int where invalid(self)\nfn invalid(value Int) Bool ensures result { false }\nfn main() {}")
 }
@@ -59,8 +63,31 @@ test fn unused_predicates_reject_effects_and_unproved_helper_contracts() {
 test fn recursive_constraint_expansion_is_bounded() {
     match with_result("import std.result.Result\nimport std.result.ConstraintError\ntype Loop = Int where accepts(Loop(self))\nfn accepts[T](value Result[T, ConstraintError]) Bool { true }\nfn main() {}") {
         Result.Err(failure) => {
-            assert failure.diagnostic.message == "type constraint expansion depth exceeded; check for a dependency cycle"
+            assert failure.diagnostic.message == "recursive type constraint construction; check for a dependency cycle"
         }
-        Result.Ok(_) => { assert false }
+        Result.Ok(_) => {
+            assert false
+        }
     }
+    rejects_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+
+        type First = Int where accepts(Second(self))
+        type Second = Int where accepts(First(self))
+
+        fn accepts[T](value Result[T, ConstraintError]) Bool {
+            true
+        }
+        """)
+    rejects_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+
+        type Loop[T] = Int where accepts(Loop[T](self))
+
+        fn accepts[T](value Result[T, ConstraintError]) Bool {
+            true
+        }
+        """)
 }

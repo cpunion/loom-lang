@@ -16,6 +16,11 @@ construct a length-two refinement directly, without a `Result` or a second
 predicate check. `retained_length` composes that guarantee across source edits.
 Invalid ranges still fault at the original capture boundary.
 
+`Pair[T]` keeps the same invariant for arbitrary shared element types. Its
+constructor infers `T` from `View[T]`; predicate helpers retain the declared
+type arguments. The example constructs Int, Text and Bool pairs, at runtime
+and compile time, and rejects a dynamically checked one-element view.
+
 Private range metadata carries an ordinary scalar type constraint. `length`
 therefore proves a nonnegative result even for an arbitrary `View[T]` parameter,
 as `nonnegative_length` demonstrates; callers need no repeated assertion or

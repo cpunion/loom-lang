@@ -128,19 +128,18 @@ fn expanded_invariant_types(env Environment, function Function) Result[List[Type
     if length(selected) == 0 {
         return Result.Ok(env.types)
     }
-    let first = get(env.types, get(selected, 0))
-    let stage = staging(predicate_scope(env, first.symbol, get(first.fields, 0).ty), predicate_node(env, first.symbol))?
+    let first = get(selected, 0)
+    let stage = staging(predicate_scope(env, first)?, predicate_node(env, get(env.types, first).symbol))?
     let predicates = new[Expr]()
     index = 0
     while index < length(selected) {
-        let shape = get(stage.env.types, get(selected, index))
-        let base = get(shape.fields, 0).ty
-        let locals = predicate_scope(stage.env, shape.symbol, base).locals
-        let scope = predicate_context(stage.env, shape.symbol, locals, 0, true)
-        push(predicates, expr(scope, predicate_node(stage.env, shape.symbol), 2)?)
+        let ty = get(selected, index)
+        let locals = predicate_scope(stage.env, ty)?.locals
+        let scope = predicate_context(stage.env, ty, locals, 0, true)?
+        push(predicates, refinement_expression(scope, ty)?)
         index = index + 1
     }
-    let program = prepared(stage)?
+    let program = prepared_in(stage, true)?
     let types = new[Type]()
     index = 0
     while index < length(program.types) {

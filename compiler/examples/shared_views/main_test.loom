@@ -1,4 +1,8 @@
 test fn retained_ranges_agree_at_compile_time_and_runtime() {
+    assert generic_pairs()
+    assert comptime {
+        generic_pairs()
+    }
     assert shared_identity()
     assert comptime {
         shared_identity()

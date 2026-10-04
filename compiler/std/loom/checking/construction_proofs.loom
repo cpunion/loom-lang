@@ -2,7 +2,8 @@
 // only its input and predicate in a private helper queue; neither proof helpers
 // nor a second evaluation enter executable code. Unsupported proofs retain the
 // ordinary checked Result boundary, including the separate List isolation check.
-fn construction_proof(context Context, node Node, source Node, declaration Int, base Int) Result[Bool, Failure] {
+fn construction_proof(context Context, node Node, source Node, target Int) Result[Bool, Failure] {
+    let base = base_type(context.env, target)
     let stage = staging(context, node)?
     // Match the original call's inference, without a new result-type hint.
     let input = expr(stage, source, -1)?
@@ -35,11 +36,12 @@ fn construction_proof(context Context, node Node, source Node, declaration Int, 
     }
     construction_body_proof(stage, node,
         expression(input.kind, input.ty, source, input.text, input.index, arguments, input.falls),
-        params, locals, new[Expr](), declaration, base)
+        params, locals, new[Expr](), target)
 }
 
 fn construction_body_proof(stage Context, node Node, body Expr, params List[Int],
-    locals List[Local], premises List[Expr], declaration Int, base Int) Result[Bool, Failure] {
+    locals List[Local], premises List[Expr], target Int) Result[Bool, Failure] {
+    let base = base_type(stage.env, target)
     let result_local = length(locals)
     push(locals, Local {
             name = "self"
@@ -47,8 +49,7 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
             mutable = false
             is_scoped = false
         })
-    let predicate = expr(predicate_context(stage.env, declaration, locals, result_local, true),
-        predicate_node(stage.env, declaration), 2)?
+    let predicate = refinement_expression(predicate_context(stage.env, target, locals, result_local, true)?, target)?
     let program = prepared_in(stage, true)?
     let proof = Function {
         is_async = false
@@ -115,7 +116,7 @@ fn construction_fact(context Context, value Expr, bindings List[Int],
 }
 
 fn flow_construction_proof(context Context, node Node, value Expr,
-    declaration Int, base Int) Result[Bool, Failure] {
+    target Int) Result[Bool, Failure] {
     let stage = staging(context, node)?
     let env = helper_environment(stage.env)
     let bindings = new[Int]()
@@ -130,22 +131,22 @@ fn flow_construction_proof(context Context, node Node, value Expr,
         push(premises, construction_fact(context, fact.predicate, bindings, params, locals))
         head = fact.previous
     }
-    let scope = predicate_context(env, declaration, locals, 0, true)
-    construction_body_proof(scope, node, body, params, locals, premises, declaration, base)
+    let scope = predicate_context(env, target, locals, 0, true)?
+    construction_body_proof(scope, node, body, params, locals, premises, target)
 }
 
-fn proved_construction(context Context, node Node, source Node, value Expr, declaration Int, base Int) Result[Bool, Failure] {
+fn proved_construction(context Context, node Node, source Node, value Expr, target Int) Result[Bool, Failure] {
     if context.env.expanding_helpers || context.env.stage_depth >= 32 {
         return Result.Ok(false)
     }
     if value.kind != ExprKind.Call {
         if context.fact_head >= 0 && fact_reference(context, value) >= 0 &&
-        contract_call(predicate_node(context.env, declaration)) {
-            return flow_construction_proof(context, node, value, declaration, base)
+        contract_call(predicate_node(context.env, get(context.env.types, target).symbol)) {
+            return flow_construction_proof(context, node, value, target)
         }
         return Result.Ok(false)
     }
     // Unknown predicate proofs keep the Result boundary, but a source callee's
     // mandatory checking failure must not be hidden as a constructor mismatch.
-    construction_proof(context, node, source, declaration, base)
+    construction_proof(context, node, source, target)
 }

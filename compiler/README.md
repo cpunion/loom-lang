@@ -1880,6 +1880,25 @@ record Entry {
 type PositiveEntry = Entry where self.count > 0
 ```
 
+Refinements also accept ordinary type parameters and explicit concept bounds:
+
+```loom
+record Entry[T] {
+    count Int
+    notes List[T]
+}
+type PositiveEntry[T] = Entry[T] where self.count > 0
+```
+
+`PositiveEntry(entry)` infers `T` from `Entry[T]`; explicit
+`PositiveEntry[Text](entry)` is also valid. A parameter absent from the base needs
+an explicit argument or an expected refined type. Predicates and pure helper
+calls use those same arguments and declared bounds. Every specialization retains
+the ordinary resource and mutable-observation checks: generic sharing is not
+permission to constrain shared mutable contents. See [generic fixed-shape
+views](examples/shared_views). Recursive invariant construction is a dependency
+cycle, not an implicitly established invariant.
+
 `notes` keeps ordinary sharing and mutation, including through existing aliases.
 The predicate's `count` is an inline value, so those mutations cannot invalidate
 it. Pure helpers may receive the whole record. Input-origin analysis follows
