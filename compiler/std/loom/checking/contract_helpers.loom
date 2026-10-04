@@ -132,7 +132,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
         match verify_with_types(context.env.types, checked, backend) {
             Result.Ok(_) => certified_contract(context, id, checked)
             Result.Err(message) => {
-                match expanded_input_types(context, checked) {
+                match expanded_invariant_types(context, checked) {
                     Result.Ok(types) => match verify_with_types(types, checked, backend) {
                         Result.Ok(_) => {
                             return certified_contract(context, id, checked)
@@ -181,7 +181,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
                 certified_contract(context, id, with_contracts(function, function.preconditions, conditions))
             }
             Result.Err(message) => {
-                match expanded_input_types(context, proof) {
+                match expanded_invariant_types(stage, proof) {
                     Result.Ok(types) => match verify_with_helpers(proof_types(program, types), proof, backend) {
                         Result.Ok(conditions) => {
                             return certified_contract(context, id, with_contracts(function, function.preconditions, conditions))

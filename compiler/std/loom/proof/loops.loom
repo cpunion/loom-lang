@@ -369,7 +369,9 @@ fn loop_head(proof Verification, writes List[Bool], entry State) State {
                 }
                 _ => {
                     let value = record_parameter_value(proof, get(proof.function.locals, index).ty, 0)
-                    state = loop_bounds(value, assigned(state, index, value))
+                    let ty = get(proof.function.locals, index).ty
+                    state = invariant_facts(proof.program.types, ty, value,
+                        loop_bounds(value, assigned(state, index, value)), 0)
                 }
             }
         }

@@ -1,7 +1,8 @@
-// Materialize each hypothetical shared read as an independent scalar snapshot.
+// Materialize hypothetical reads as typed scalar snapshots. Shared mutable
+// reads remain independent; sequential reads reuse their current heap version.
 // The ordinary expression algebra then proves truth *and* definedness. Never
 // execute the predicate as a body assertion: that would assume its own success.
-fn shared_observations(proof Verification, value Expr, guard Expr, state State) Result[EntrySnapshot, Text] {
+fn contract_observations(proof Verification, value Expr, guard Expr, state State) Result[EntrySnapshot, Text] {
     if quantified_expression(value) {
         let current = quantified_views(proof, value, state, false, 256)?
         return Result.Ok(EntrySnapshot {
@@ -23,7 +24,7 @@ fn shared_observations(proof Verification, value Expr, guard Expr, state State) 
     let flow = proof_operation(value).flow
     while index < length(value.children) {
         let next = operand_guard(flow, index, children, guard)
-        let observed = shared_observations(proof, get(value.children, index), next, current)?
+        let observed = contract_observations(proof, get(value.children, index), next, current)?
         push(children, observed.expression)
         current = observed.state
         index = index + 1
@@ -44,8 +45,19 @@ fn shared_observations(proof Verification, value Expr, guard Expr, state State) 
                 return Result.Err("shared contract observation requires a tracked List")
             }
         }
-        if !stable_storage(list_state(identity, current)?) {
-            current = interference(proof, current)
+        let independent = proof.shared && !stable_storage(list_state(identity, current)?)
+        let unknown = if list_read_expression(expression) {
+            match pure(expression, current) {
+                Result.Ok(_) => false
+                Result.Err(_) => true
+            }
+        } else {
+            false
+        }
+        if independent || unknown {
+            if independent {
+                current = interference(proof, current)
+            }
             let observed = if list_read_expression(expression) {
                 match entry_element(proof, expression, guard, current) {
                     Result.Ok(outcome) => {
@@ -53,7 +65,11 @@ fn shared_observations(proof Verification, value Expr, guard Expr, state State) 
                         outcome.value
                     }
                     Result.Err(_) => {
-                        return Result.Err("shared contract observation is not proved interference-safe: indexed access may be invalidated")
+                        return Result.Err(if proof.shared {
+                                "shared contract observation is not proved interference-safe: indexed access may be invalidated"
+                            } else {
+                                "postcondition List index is not proved in bounds"
+                            })
                     }
                 }
             } else {

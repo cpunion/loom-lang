@@ -247,3 +247,33 @@ fn assigned(state State, id Int, value Value) State {
         observations = state.observations
     }
 }
+
+// Unit propagation is valid for any disjunction: only a proved false alternative
+// exposes the other one. This is not permission to split unknown alternatives.
+fn conditional_facts(entry State) State {
+    var state = entry
+    var pass = 0
+    var changed = true
+    while changed && pass < 8 {
+        let before = length(state.facts)
+        var index = 0
+        while index < length(state.facts) && index < 256 {
+            match get(state.facts, index) {
+                Predicate.Or(parts) => {
+                    if holds(not(get(parts, 0)), state.facts) {
+                        state = assume(state, get(parts, 1))
+                    }
+                    if holds(not(get(parts, 1)), state.facts) {
+                        state = assume(state, get(parts, 0))
+                    }
+                }
+                _ => {
+                }
+            }
+            index = index + 1
+        }
+        changed = length(state.facts) != before
+        pass = pass + 1
+    }
+    state
+}

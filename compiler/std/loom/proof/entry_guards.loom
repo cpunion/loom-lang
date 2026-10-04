@@ -71,7 +71,7 @@ fn entry_element(proof Verification, read Expr, guard Expr, entry State) Result[
     match known_element(location.identity, location.index, available) {
         Result.Ok(value) => {
             return Result.Ok(Outcome {
-                    state = entry
+                    state = guarded_value_invariants(proof, read.ty, value, valid, entry)
                     value = value
                 })
         }
@@ -81,12 +81,12 @@ fn entry_element(proof Verification, read Expr, guard Expr, entry State) Result[
     let value = record_parameter_value(proof, read.ty, 0)
     let observed = array_read(proof, location.identity, location.index, value, valid, entry)?
     Result.Ok(Outcome {
-            state = remember_observation(location.identity, location.index, value,
-                if loop_holds(valid, entry) {
-                    Predicate.Constant(true)
-                } else {
-                    valid
-                }, observed)?
+            state = guarded_value_invariants(proof, read.ty, value, valid, remember_observation(location.identity, location.index, value,
+                    if loop_holds(valid, entry) {
+                        Predicate.Constant(true)
+                    } else {
+                        valid
+                    }, observed)?)
             value = value
         })
 }

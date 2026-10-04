@@ -73,3 +73,25 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
     // mutation or opaque calls must not retain it for a fresh current extent.
     state
 }
+
+// A successful typed boundary establishes the value's own predicate, not facts
+// about another invocation or the storage from which this value was read.
+fn typed_value_state(proof Verification, ty Int, value Value, state State) State {
+    invariant_facts(proof.program.types, ty, value, bounded(value, state), 0)
+}
+
+// Hypothetical entry reads establish a typed value only where the access is
+// valid. Export those new facts with their premise, never the temporary guard.
+fn guarded_value_invariants(proof Verification, ty Int, value Value, valid Predicate, state State) State {
+    let known = invariant_facts(proof.program.types, ty, value, state, 0)
+    if loop_holds(valid, state) {
+        return known
+    }
+    var current = state
+    var index = length(state.facts)
+    while index < length(known.facts) {
+        current = assume(current, Predicate.Or(predicates(not(valid), get(known.facts, index))))
+        index = index + 1
+    }
+    current
+}
