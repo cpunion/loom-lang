@@ -805,13 +805,30 @@ fn main() {
     assert!(bodies > 0, "{trace}");
     let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
     success(&fresh);
-    // Checking a fresh body may intern additional unused abstract slots. Compare
-    // the native checked model, not those evaluator-only table entries.
+    // Fresh checking may intern unused abstract signatures and shift private
+    // table IDs. Compare actual unoptimized emission, retaining every live
+    // signature, layout, operation and fault rather than those session IDs.
     let restored =
         loom_native::native_input::decode(std::str::from_utf8(&reused.stdout).unwrap()).unwrap();
     let fresh =
         loom_native::native_input::decode(std::str::from_utf8(&fresh.stdout).unwrap()).unwrap();
-    assert_eq!(format!("{restored:?}"), format!("{fresh:?}"));
+    use loom_native::codegen::{Backend, EmitOptions, Llvm, Optimization};
+    for (name, program) in [("restored", &restored), ("fresh", &fresh)] {
+        Llvm.emit(
+            program,
+            EmitOptions {
+                object: &directory.path().join(format!("{name}.o")),
+                ir: Some(&directory.path().join(format!("{name}.ll"))),
+                test_mode: false,
+                optimization: Optimization::O0,
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        fs::read_to_string(directory.path().join("restored.ll")).unwrap(),
+        fs::read_to_string(directory.path().join("fresh.ll")).unwrap()
+    );
     checked(&cached("run", &package, &cache, &[]), true);
     fs::write(
         &path,
