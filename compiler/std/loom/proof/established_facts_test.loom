@@ -1,0 +1,31 @@
+test fn established_scalar_facts_keep_supported_conjunction_terms() {
+    let positive = operation(">", local(0), literal("0"))
+    let unknown = operation("==", operation("/", local(0), literal("2")), literal("1"))
+    let goal = operation(">", local(1), literal("0"))
+    assert verified(fixture(local(0), [unknown, positive], goal))
+    assert verified(fixture(local(0), [operation("&&", positive, unknown)], goal))
+    assert verified(fixture(local(0), [operation("&&", unknown, positive)], goal))
+    assert !verified(fixture(local(0), [operation("||", positive, unknown)], goal))
+    assert !verified(fixture(local(0), [unknown], goal))
+    let conjunction = operation("&&", positive, unknown)
+    let weaker = operation(">=", local(0), literal("1"))
+    assert implies(conjunction, weaker)
+    assert implies_facts([conjunction], weaker)
+    assert !implies(operation("||", positive, unknown), weaker)
+    assert !implies_facts([operation("||", positive, unknown)], weaker)
+    let yes = expression(ExprKind.Bool, 2, "true", -1, [])
+    let helper = contract_fixture([1], 2, yes, [weaker], [])
+    assert implies_with_helpers(proof_helpers([helper]), conjunction, helper_call(0, 2, [local(0)]))
+}
+
+test fn unmodeled_entry_facts_never_establish_goal_truth_or_safety() {
+    let unknown = operation("==", operation("/", local(0), literal("2")), literal("1"))
+    let no = expression(ExprKind.Bool, 2, "false", -1, [])
+    assert !verified(fixture(local(0), [unknown], no))
+    assert !verified(fixture(local(0), [unknown], unknown))
+    let unsafe = operation(">", operation("+", local(0), literal("1")), local(0))
+    assert !verified(fixture(literal("0"), [unknown], unsafe))
+    let unaccounted = expression(ExprKind.Call, 2, "", 0, [local(0)])
+    let yes = expression(ExprKind.Bool, 2, "true", -1, [])
+    assert !verified(fixture(local(0), [unaccounted], yes))
+}

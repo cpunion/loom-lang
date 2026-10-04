@@ -88,3 +88,73 @@ requires !(value < 0.0)
 }
 """)
 }
+
+test fn unrelated_scalar_facts_do_not_block_sufficient_helper_evidence() {
+    let program = accepted_result("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where positive(self)
+
+pub fn required(value Int, divisor Int) Positive
+requires value > 0
+{
+    let quotient = value / divisor
+    discard quotient
+    Positive(value)
+}
+""")
+    assert length(program.functions) == 1
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.Call) == 0
+    rejects_result("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where positive(self)
+
+pub fn insufficient(value Int, divisor Int) Positive {
+    let quotient = value / divisor
+    discard quotient
+    Positive(value)
+}
+""")
+}
+
+test fn helper_weakening_keeps_supported_terms_without_solving_quotients() {
+    let program = accepted_result("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+fn at_least_one(value Int) Bool {
+    value >= 1
+}
+
+type Divided = Int where positive(self) && self / 2 == 4
+type Natural = Int where at_least_one(self)
+
+pub fn weaken(value Divided) Natural {
+    Natural(value)
+}
+""")
+    assert length(program.functions) == 1
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.Call) == 0
+    rejects_result("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+fn at_least_one(value Int) Bool {
+    value >= 1
+}
+
+type Alternative = Int where positive(self) || self / 2 == 4
+type Natural = Int where at_least_one(self)
+
+pub fn insufficient(value Alternative) Natural {
+    Natural(value)
+}
+""")
+}

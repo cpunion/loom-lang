@@ -291,6 +291,30 @@ fn established_entry(proof Verification, state State) Result[List[Outcome], Text
     established_conditions(proof, proof.function.preconditions, state)
 }
 
+// These conditions have executed and hold. Losing an unsupported scalar fact
+// weakens the available evidence; it does not prove that operation or its safety.
+// Keep conjunction terms independently, but never extract disjunction operands
+// or ignore an expression whose storage/effects are not accounted for.
+fn established_scalar_condition(condition Expr, state State, depth Int) Result[State, Text] {
+    if depth <= 0 {
+        return Result.Ok(state)
+    }
+    if proof_operation(condition).flow == OperandFlow.And {
+        let left = established_scalar_condition(get(condition.children, 0), state, depth - 1)?
+        return established_scalar_condition(get(condition.children, 1), left, depth - 1)
+    }
+    match pure(condition, state) {
+        Result.Ok(value) => Result.Ok(assume(state, boolean(value)?))
+        Result.Err(message) => {
+            if entry_guard_expression(condition) {
+                Result.Ok(state)
+            } else {
+                Result.Err(message)
+            }
+        }
+    }
+}
+
 fn established_conditions(proof Verification, conditions List[Expr], state State) Result[List[Outcome], Text] {
     var reads = false
     var index = 0
@@ -302,7 +326,7 @@ fn established_conditions(proof Verification, conditions List[Expr], state State
         var current = state
         index = 0
         while index < length(conditions) {
-            current = assume(current, boolean(pure(get(conditions, index), current)?)?)
+            current = established_scalar_condition(get(conditions, index), current, 256)?
             index = index + 1
         }
         return Result.Ok(outcomes(current, Value.Empty))

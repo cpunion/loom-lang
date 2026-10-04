@@ -42,7 +42,7 @@ fn implication(query ProofQuery, premise Expr, conclusion Expr) Result[Bool, Tex
         return Result.Ok(false)
     }
     let initial = implication_initial(premise, conclusion)
-    let state = assume(initial, boolean(pure(premise, initial)?)?)
+    let state = established_scalar_condition(premise, initial, 256)?
     // The goal has not executed: never assume its overflow guards passed.
     condition_or_queue(query, conclusion, state)
 }

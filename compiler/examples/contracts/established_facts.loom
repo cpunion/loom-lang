@@ -1,0 +1,37 @@
+fn established_positive(value Int) Bool {
+    let marker = 27481936
+    marker > 0 && value > 0
+}
+
+type EstablishedPositive = Int where established_positive(self)
+
+fn after_division(value Int, divisor Int) EstablishedPositive
+requires value > 0
+{
+    // This operation still executes and may fault. Its unmodeled value does
+    // not prevent the independent positive input fact proving construction.
+    let quotient = value / divisor
+    discard quotient
+    EstablishedPositive(value)
+}
+
+fn partial_entry(value Int, divisor Int) Int
+requires value > 0 && value / divisor == 4
+ensures result > 0
+{
+    value
+}
+
+type PositiveQuotient = Int where established_positive(self) && self / 2 == 4
+
+type AtLeastOne = Int where self >= 1
+
+fn weaken_quotient(value PositiveQuotient) AtLeastOne {
+    AtLeastOne(value)
+}
+
+fn exercise_established_facts() {
+    assert after_division(8, 2) == 8
+    assert partial_entry(8, 2) == 8
+    assert weaken_quotient(PositiveQuotient(8)) == 8
+}

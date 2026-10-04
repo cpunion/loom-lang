@@ -175,8 +175,8 @@ fn evaluated(context Expansion, guard Expr, value Expr, required Bool, universal
     push(context.checks, Evaluation {
             guard = guard
             value = value
-        required = required
-        universal = universal
+            required = required
+            universal = universal
         })
     Result.Ok(true)
 }
@@ -442,7 +442,7 @@ fn evaluation_proved(query ProofQuery, premise Expr, guard Expr, value Expr, req
     }
     let condition = normalized_predicate(guarded_value(guard, predicate))?
     let initial = implication_initial(premise, condition)
-    let state = assume(initial, boolean(pure(premise, initial)?)?)
+    let state = established_scalar_condition(premise, initial, 256)?
     condition_or_queue(query, condition, state)
 }
 
