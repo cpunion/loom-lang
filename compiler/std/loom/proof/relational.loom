@@ -15,7 +15,7 @@ record FactLocal {
 // Compact only referenced identities. A large original local ID is not an
 // allocation size, and different scalar types must never share one identity.
 fn fact_expression(value Expr, locals List[FactLocal], budget List[Int], depth Int) Result[Expr, Text] {
-    if depth >= 64 || !conjunction_step(budget) || (value.ty != 1 && value.ty != 2 && value.ty != 5) || length(value.arms) != 0 {
+    if depth >= 64 || !conjunction_step(budget) || !scalar_type(value.ty) || length(value.arms) != 0 {
         return Result.Err("unsupported scalar fact")
     }
     var local = value.index
@@ -40,7 +40,7 @@ fn fact_expression(value Expr, locals List[FactLocal], budget List[Int], depth I
             return Result.Err("inconsistent scalar identity")
         }
     } else {
-        let literal = value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool
+        let literal = value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text
         let unary = value.kind == ExprKind.Unary || value.kind == ExprKind.Coerce
         if (!literal && !unary && value.kind != ExprKind.Binary) ||
         length(value.children) != (if literal {
@@ -368,7 +368,11 @@ fn scalar_facts_imply(premises List[Expr], conclusion Expr, backend ProofBackend
                     if ty == 5 {
                         Value.Float(FloatValue.Variable(index))
                     } else {
-                        Value.Empty
+                        if ty == 3 {
+                            Value.Text(TextValue.Variable(index))
+                        } else {
+                            Value.Empty
+                        }
                     }
                 }
             })

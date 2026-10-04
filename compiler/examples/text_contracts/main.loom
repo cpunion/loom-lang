@@ -102,6 +102,7 @@ ensures result
 }
 
 async fn exercise() {
+    exercise_construction()
     let value = concat("é", "😀")
     assert relay(value) == value
     assert tagged(Tag("ready")) == "ready"

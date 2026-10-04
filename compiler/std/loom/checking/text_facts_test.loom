@@ -1,0 +1,53 @@
+test fn immutable_text_facts_prove_direct_and_helper_construction() {
+    let program = accepted_result("""
+type Ready = Text where self == "ready"
+
+fn ready_value(value Text) Bool {
+    value == "ready"
+}
+
+type Status = Text where ready_value(self)
+
+pub fn required(ignored Int, value Text) Ready
+requires value == "ready"
+{
+    discard ignored
+    let copy = value
+    Ready(copy)
+}
+
+pub fn selected(value Text) Status {
+    if value == "ready" {
+        Status(value)
+    } else {
+        Status("ready")
+    }
+}
+""")
+    assert length(program.functions) == 2
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.Call) == 0
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.Call) == 0
+}
+
+test fn text_facts_preserve_disjunction_and_mutable_binding_boundaries() {
+    rejects_result("""
+type Ready = Text where self == "ready"
+
+pub fn alternative(value Text) Ready
+requires value == "ready" || value == "waiting"
+{
+    Ready(value)
+}
+""")
+    rejects_result("""
+type Ready = Text where self == "ready"
+
+pub fn overwritten(value Text) Ready
+requires value == "ready"
+{
+    var current = value
+    current = "waiting"
+    Ready(current)
+}
+""")
+}
