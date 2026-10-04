@@ -14,8 +14,25 @@ pub record View[T] {
 record State[T] {
     source List[T]
     removed List[List[T]]
+    range Range
+}
+
+record Bounds {
     start Int
     end Int
+}
+
+type Range = Bounds where self.start >= 0 && self.end >= self.start
+
+fn retained_bounds[T](source List[T], removed List[List[T]], start Int, end Int) Bounds
+ensures result.start == start && result.end == end
+ensures result.start >= 0 && result.end >= result.start
+{
+    list_retain_range(source, removed, start, end)
+    Bounds {
+        start = start
+        end = end
+    }
 }
 
 // Bounds are checked once. Removing a source element preserves it for every
@@ -24,13 +41,11 @@ pub fn capture[T](source List[T], start Int, end Int) View[T]
 ensures start >= 0 && end >= start && length(result) == end - start
 {
     let removed = new[List[T]]()
-    list_retain_range(source, removed, start, end)
     View {
         state = State {
             source = source
             removed = removed
-            start = start
-            end = end
+            range = Range(retained_bounds(source, removed, start, end))
         }
     }
 }
@@ -39,28 +54,30 @@ pub fn capture[T](source List[T]) View[T] {
     capture(source, 0, std.list.length(source))
 }
 
-pub fn length[T](view View[T]) Int {
-    view.state.end - view.state.start
+pub fn length[T](view View[T]) Int
+ensures result == view.state.range.end - view.state.range.start && result >= 0
+{
+    view.state.range.end - view.state.range.start
 }
 
 pub fn get[T](view View[T], index Int) T {
     assert index >= 0 && index < length(view)
-    let position = view.state.start + index
+    let position = view.state.range.start + index
     let removed = view.state.removed
-    if position < view.state.end - std.list.length(removed) {
+    if position < view.state.range.end - std.list.length(removed) {
         std.list.get(view.state.source, position)
     } else {
-        std.list.get(std.list.get(removed, view.state.end - 1 - position), 0)
+        std.list.get(std.list.get(removed, view.state.range.end - 1 - position), 0)
     }
 }
 
 pub fn set[T](view View[T], index Int, value T) {
     assert index >= 0 && index < length(view)
-    let position = view.state.start + index
+    let position = view.state.range.start + index
     let removed = view.state.removed
-    if position < view.state.end - std.list.length(removed) {
+    if position < view.state.range.end - std.list.length(removed) {
         std.list.set(view.state.source, position, value)
     } else {
-        std.list.set(std.list.get(removed, view.state.end - 1 - position), 0, value)
+        std.list.set(std.list.get(removed, view.state.range.end - 1 - position), 0, value)
     }
 }

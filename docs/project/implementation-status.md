@@ -396,6 +396,8 @@ moving GC and suspension. Explicit range capture has a verified normal-return
 length contract; it composes with fixed-length construction without another
 predicate check. Range registration discards private-storage/frame evidence,
 not granting content invariants or an unchanged mutable source length.
+Private range metadata has a scalar type constraint, so the verified `length`
+contract also supplies nonnegativity for arbitrary `View[T]` parameters.
 Explicitly isolated Lists with immutable elements
 support constrained construction; copies of the constrained value share.
 Length-only predicates permit element writes, and bounded preservation proofs
