@@ -1,0 +1,66 @@
+import std.loom.checking.static_parameter_info
+
+test fn projected_type_navigation_uses_checked_members_and_source_origins() {
+    let text = """
+        concept Family {
+            type Item[T]
+            fn echo[T](self Self, value Self.Item[T]) Self.Item[T] {
+                let Selected = comptime { Self.Item[T] }
+                let selected Selected = value
+                selected
+            }
+        }
+        impl Family for Bool {
+            type Item[T] = (T, Text)
+        }
+        pub fn selected[S Family, T](source S, value S.Item[T]) S.Item[T] {
+            discard source
+            let Receiver = comptime { S }
+            let Selected = comptime { Receiver.Family.Item[T] }
+            let selected Selected = value
+            selected
+        }
+        record Runtime {
+            Item Int
+        }
+        fn read_runtime[S Family](S Runtime) Int {
+            S.Item
+        }
+        concept Packed {
+        }
+        impl[Ts...] Packed for (Ts...) {
+        }
+        fn consume[P Packed](value P) {
+            discard value
+        }
+        fn fixed(comptime amount Int) Int {
+            amount
+        }
+        fn main() {
+            assert selected[Bool, Int](true, (7, "seven")).0 == 7
+            assert false.echo[Int]((8, "eight")).0 == 8
+            assert read_runtime[Bool](Runtime { Item = 9 }) == 9
+            consume((7, "pack"))
+            assert fixed(7) == 7
+        }
+        """
+    let analysis = accepted(input(text))
+    let declared = query_offset(text, "Family {")
+    let member = query_offset(text, "Item[T]")
+    only_definition(inspection(analysis, text, "Family.Item[T]"), declared, declared + 6)
+    only_definition(inspection(analysis, text, "Item[T] }"), member, member + 4)
+    only_definition(inspection(analysis, text, "Item[T])"), member, member + 4)
+    let bindings = query_bindings(input(text))
+    only_definition(independent_found(bindings, text, "Family.Item[T]"), declared, declared + 6)
+    only_definition(independent_found(bindings, text, "Item[T] }"), member, member + 4)
+    let field = query_offset(text, "Item Int")
+    only_definition(inspection(analysis, text, "Item\n}"), field, field + 4)
+    var owner = 0
+    while get(analysis.bindings.symbols, owner).name != "fixed" {
+        owner = owner + 1
+    }
+    assert match static_parameter_info(analysis.bindings, owner, 0, build_inputs(no_input_reader)) {
+        Result.Ok(info) => length(info.references) == 1
+        Result.Err(_) => false
+    }
+}

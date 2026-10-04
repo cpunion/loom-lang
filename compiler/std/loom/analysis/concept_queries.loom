@@ -6,8 +6,12 @@ fn inspect_concept_references(view SemanticView, report Inspection, target Query
     while index < length(references) {
         let reference = get(references, index)
         let node = reference.node
-        if reference.file == file && same_span(node.span, target.node.span) && node.kind == target.node.kind &&
-        node.value == target.node.value && reference.segment == target.segment &&
+        // Type resolution rewrites selected receivers and wraps an applied
+        // Name as a Type. Keep its source origin and checked path segment.
+        let same_kind = node.kind == target.node.kind ||
+            (node.kind == NodeKind.Type && target.node.kind == NodeKind.Name)
+        if reference.file == file && node.span.start == target.node.span.start && node.span.end >= target.node.span.end &&
+        same_kind && reference.segment == target.segment &&
         get(view.bindings.symbols, reference.symbol).name == target.token.value {
             symbol_location(view, report, reference.symbol)
         }
@@ -45,7 +49,8 @@ fn inspect_concept_at(analysis Analysis, view SemanticView, file Int, offset Int
     var index = 0
     while index < length(view.bindings.symbols) {
         let symbol = get(view.bindings.symbols, index)
-        possible = possible || (symbol.node.kind == NodeKind.Concept && symbol.name == token.value)
+        possible = possible || ((symbol.node.kind == NodeKind.Concept || symbol.node.kind == NodeKind.AssociatedType) &&
+            symbol.name == token.value)
         index = index + 1
     }
     if !possible {
