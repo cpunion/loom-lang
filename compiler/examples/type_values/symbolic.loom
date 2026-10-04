@@ -1,0 +1,49 @@
+import std.meta.tuple
+import std.meta.function
+import std.option.Option
+
+fn tagged_type(item type) type {
+    let elements = new[type]()
+    var index = 0
+    while index < 2 {
+        push(elements, if index == 0 {
+                item
+            } else {
+                Text
+            })
+        index = index + 1
+    }
+    tuple(elements)
+}
+
+pub fn tagged[T](value T) (T, Text) {
+    let Tagged = comptime {
+        tagged_type(T)
+    }
+    let tagged Tagged = (value, "tagged")
+    tagged
+}
+
+fn through_callback[T](value T) T {
+    let Callback = comptime {
+        function([T], Option.Some(T))
+    }
+    let callback Callback = identity[T]
+    callback(value)
+}
+
+fn symbolic_types() {
+    assert tagged(7).0 == 7
+    assert tagged(true).0
+    assert tagged("text").0 == "text"
+    assert through_callback(9) == 9
+    assert through_callback(false) == false
+    let shared = tagged([1, 2])
+    push(shared.0, 3)
+    assert length(shared.0) == 3
+    assert tagged(Positive(4)).0 == 4
+}
+
+test fn symbolic_construction_specializes_without_runtime_types() {
+    symbolic_types()
+}

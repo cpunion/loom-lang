@@ -1,6 +1,7 @@
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.TypeKind
+import std.loom.typed.type_relation
 import std.list.new
 import std.list.get
 import std.list.push
@@ -33,22 +34,30 @@ fn arguments(state State, expr Expr, frame Frame, depth Int) Result[Step, Failur
     }
     Result.Ok(step(aggregate(-1, 0, values)))
 }
-fn equal(state State, expr Expr, left Value, right Value, depth Int) Result[Bool, Failure] {
+fn equal(state State, expr Expr, left Value, right Value, depth Int) Result[Int, Failure] {
     if depth >= 256 { return Result.Err(failure(expr, "compile-time value depth exhausted")) }
     discard spend(state, expr, 0, 1)?
-    if left.ty != right.ty || left.number != right.number { return Result.Ok(false) }
-    if left.ty == 5 { return Result.Ok(left.floating == right.floating) }
+    if left.ty < 0 || right.ty < 0 { return Result.Ok(-1) }
+    if left.ty != right.ty { return Result.Ok(0) }
+    if left.ty >= 0 && left.ty < length(state.program.types) && get(state.program.types, left.ty).kind == TypeKind.Meta {
+        return Result.Ok(std.loom.typed.type_relation(state.program.types, left.number, right.number))
+    }
+    if left.number != right.number { return Result.Ok(0) }
+    if left.ty == 5 { return Result.Ok(if left.floating == right.floating { 1 } else { 0 }) }
     if left.ty == 3 {
         discard spend(state, expr, 0, length(left.text) / 32 + length(right.text) / 32 + 1)?
-        return Result.Ok(left.text == right.text)
+        return Result.Ok(if left.text == right.text { 1 } else { 0 })
     }
-    if length(left.items) != length(right.items) { return Result.Ok(false) }
+    if length(left.items) != length(right.items) { return Result.Ok(0) }
+    var relation = 1
     var index = 0
     while index < length(left.items) {
-        if !equal(state, expr, get(left.items, index), get(right.items, index), depth + 1)? { return Result.Ok(false) }
+        let current = equal(state, expr, get(left.items, index), get(right.items, index), depth + 1)?
+        if current == 0 { return Result.Ok(0) }
+        if current < 0 { relation = -1 }
         index = index + 1
     }
-    Result.Ok(true)
+    Result.Ok(relation)
 }
 fn operation(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
     let left = execute(state, child(expr, 0)?, frame, depth + 1)?
@@ -78,7 +87,7 @@ fn operation(state State, expr Expr, frame Frame, depth Int) Result[Step, Failur
     if a.ty == 5 && b.ty == 5 { return Result.Ok(step(float_arithmetic(expr, a.floating, b.floating)?)) }
     if expr.text == "==" || expr.text == "!=" {
         let same = equal(state, expr, a, b, 0)?
-        return Result.Ok(step(flag(if expr.text == "==" { same } else { !same })))
+        return Result.Ok(step(if same < 0 { unknown() } else { flag(if expr.text == "==" { same == 1 } else { same == 0 }) }))
     }
     Result.Err(failure(expr, "invalid compile-time binary operator"))
 }
@@ -180,7 +189,12 @@ fn matched(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     Result.Err(failure(expr, "compile-time match has no matching arm"))
 }
 fn atomic(state State, expr Expr, frame Frame) Result[Step, Failure] {
-    if expr.kind == ExprKind.TypeValue { return Result.Ok(step(aggregate(expr.ty, expr.index, new[Value]()))) }
+    if expr.kind == ExprKind.TypeValue {
+        // Optional scalar folding has no type table. Identity alone cannot
+        // distinguish a formal parameter from a concrete type.
+        if state.partial { return Result.Ok(step(unknown())) }
+        return Result.Ok(step(aggregate(expr.ty, expr.index, new[Value]())))
+    }
     if expr.kind == ExprKind.Bytes {
         discard spend(state, expr, 0, length(expr.text))?
         discard spend(state, expr, 1, length(expr.text) / 2)?

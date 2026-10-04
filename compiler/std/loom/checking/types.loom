@@ -344,14 +344,7 @@ fn infer(env Environment, pattern Int, actual Int, arguments List[Int]) Bool {
     matched
 }
 fn concrete(env Environment, ty Int) Bool {
-    let source = get(env.types, ty)
-    if source.kind == TypeKind.Parameter || source.kind == TypeKind.Associated { return false }
-    var index = 0
-    while index < length(source.arguments) {
-        if !concrete(env, get(source.arguments, index)) { return false }
-        index = index + 1
-    }
-    true
+    std.loom.typed.concrete_type(env.types, ty)
 }
 fn type_depth(env Environment, ty Int) Int {
     std.loom.typed.type_depth(env.types, ty)

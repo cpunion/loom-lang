@@ -5,11 +5,81 @@ fn constructed(text Text) Result[std.loom.typed.Program, Failure] {
         import std.meta.tuple
         import std.meta.function
         import std.option.Option
+        import std.list.new
+        import std.list.push
 
         """, text))
     push(files, source_file("std.meta", input_file("../../meta/construction.loom"), true))
     push(files, source_file("std.option", input_file("../../option/option.loom"), true))
+    push(files, source_file("std.list", input_file("../../list/list.loom"), true))
     checked(files)
+}
+
+test fn symbolic_construction_preserves_generic_requirements() {
+    assert match constructed("""
+        fn pair_type(item type) type {
+            let items = new[type]()
+            var index = 0
+            while index < 2 {
+                push(items, if index == 0 { item } else { Text })
+                index = index + 1
+            }
+            tuple(items)
+        }
+        pub fn wrap[T](value T) (T, Text) {
+            let Pair = comptime { pair_type(T) }
+            let pair Pair = (value, "wrapped")
+            pair
+        }
+        fn main() {
+            assert wrap(7).0 == 7
+            assert wrap(true).0
+            assert wrap("text").0 == "text"
+        }
+        """) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let invalid = ["""
+        concept Display {
+            fn display(self Self) Text
+        }
+        pub fn render[T](value T) Text {
+            let Pair = comptime { tuple([T, Text]) }
+            let pair Pair = (value, "wrapped")
+            pair.0.display()
+        }
+        """, """
+        fn selected(item type) type {
+            if item == Int { Int } else { Bool }
+        }
+        pub fn wrap[T](value T) T {
+            let Selected = comptime { selected(T) }
+            let selected Selected = value
+            selected
+        }
+        """, """
+        pub fn unproved[T](value T) Int
+        ensures result > 0
+        {
+            let Pair = comptime { tuple([T, Int]) }
+            let pair Pair = (value, 0)
+            pair.1
+        }
+        """, """
+        pub fn capture[T](value T) {
+            let Pair = comptime { tuple([if value == value { T } else { Text }]) }
+            discard Pair
+        }
+        """]
+    var index = 0
+    while index < length(invalid) {
+        assert match constructed(get(invalid, index)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
 }
 
 test fn computed_structural_types_keep_ordinary_typing_and_constraints() {

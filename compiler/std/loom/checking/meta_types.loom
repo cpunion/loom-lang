@@ -22,7 +22,7 @@ fn meta_literal(context Context, node Node, ty Int) Result[Expr, Failure] {
     if ty == 0 {
         return Result.Err(error(context, node, "an omitted result is not a source type value"))
     }
-    if !concrete(context.env, ty) {
+    if !concrete(context.env, ty) && context.emit && context.env.stage_depth == 0 {
         return deferred(context, node, meta_type(context.env))
     }
     Result.Ok(expression(ExprKind.TypeValue, meta_type(context.env), node, "", ty, new[Expr](), true))

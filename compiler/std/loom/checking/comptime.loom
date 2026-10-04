@@ -37,6 +37,8 @@ fn parameter_name(context Context, name Text) Bool {
     false
 }
 fn depends_on_type(context Context, node Node) Bool {
+    if node.kind == NodeKind.Name && meta_named(context, node) &&
+    type_parameter_operand(context, node) { return true }
     if node.kind == NodeKind.Type && parameter_name(context, slice(node.value, 0, first_dot(node.value))) { return true }
     // Explicit generic arguments occupy the type namespace, even when a value
     // binding has the same spelling. Ordinary index/value names do not.
@@ -274,7 +276,9 @@ fn compile_time(context Context, node Node, expected Int, enforce Bool) Result[E
         discard isolated(context, node, value, length(context.locals))?
         // Syntax may mention a shadowed static name. Only checked IR can show
         // that this computation still depends on its unknown value.
-        if type_dependent || contains_deferred(value) { return deferred(context, node, value.ty) }
+        if contains_deferred(value) || (type_dependent && get(context.env.types, value.ty).kind != TypeKind.Meta) {
+            return deferred(context, node, value.ty)
+        }
     }
     materialize(context, node, computed(context, node, source, expected)?)
 }
