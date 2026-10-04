@@ -143,6 +143,9 @@ reject. Computed aliases retain explicit public bounds and ordinary constraints.
 Associated projections also supply type values, including generic families,
 qualified concepts, `Self` and immutable selected receiver types. They retain
 ordinary bounds, visibility and value-shadowing rules.
+Selected type bindings and explicit static type parameters also participate in
+compile-time equality/conformance guards. Unknown guards remain deferred;
+selected enum constructors are still values, not types.
 Static tuple/record type iteration also accepts immutable compile-time-selected
 type bindings, with the same lexical visibility and ordinary generated code.
 Record/enum packs infer arity from structural initializers, preserve nominal

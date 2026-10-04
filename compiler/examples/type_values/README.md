@@ -28,6 +28,11 @@ the same identity and checks as a directly written structural type. See
 
 An immutable binding of a computed type can supply local annotations, generic
 arguments, visible nominal constructors and exact-type record/enum patterns.
+It also supplies type equality and `implements` operands in `comptime if`.
+An explicit `comptime receiver type` parameter supports the same guards and
+associated projections; unknown selection remains deferred until specialization.
+See [projections.loom](projections.loom). Runtime shadows remain values, and enum
+variants selected through a type binding remain enum values.
 Static field and type-pack iteration uses the same constructors and patterns;
 [static_nominal.loom](static_nominal.loom) selects record, enum and refinement
 shapes with `comptime if`. An unknown generic shape does not gain undeclared

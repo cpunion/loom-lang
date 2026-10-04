@@ -1,0 +1,154 @@
+test fn selected_type_guards_keep_static_selection_and_enum_values_distinct() {
+    discard accepted("""
+        concept Family {
+            type Item[T]
+            fn number(self Self) Int
+        }
+        impl Family for Bool {
+            type Item[T] = (T, Text)
+            fn number(self Bool) Int {
+                discard self
+                7
+            }
+        }
+        enum Maybe[T] {
+            Some(T)
+            None
+        }
+        fn scalar(comptime Bool Bool) Bool {
+            comptime if Bool == true {
+                true
+            } else {
+                false
+            }
+        }
+        fn projected(comptime receiver type) type {
+            comptime if receiver implements Family {
+                comptime if receiver.Family.Item[Int] == (Int, Text) {
+                    receiver.Item[Int]
+                } else {
+                    Bool
+                }
+            } else {
+                Text
+            }
+        }
+        pub fn optional[T](value T) Int {
+            let Selected = comptime { T }
+            comptime if Selected implements Family {
+                value.number()
+            } else {
+                discard value
+                0
+            }
+        }
+        fn main() {
+            assert optional(true) == 7 && optional(8) == 0
+            let Pair = comptime { projected(Bool) }
+            let value Pair = (7, "seven")
+            assert value.0 == 7
+            let Selected = comptime { Bool }
+            comptime if List[Selected] == List[Bool] && Selected != Int {
+                assert true
+            } else {
+                missing_unselected_branch()
+            }
+            assert comptime { projected(Int) == Text }
+            let Enum = comptime { Maybe[Int] }
+            comptime if match Enum.None {
+                Enum.None => true
+                Enum.Some(_) => false
+            } {
+                assert true
+            } else {
+                missing_unselected_branch()
+            }
+            assert scalar(true) && !scalar(false)
+        }
+        """)
+}
+
+test fn selected_type_guards_do_not_grant_runtime_or_unproved_requirements() {
+    let invalid = ["""
+        concept Family {
+            type Item
+        }
+        fn runtime(receiver type) type {
+            comptime if receiver implements Family {
+                receiver.Item
+            } else {
+                Int
+            }
+        }
+        """, """
+        concept Family {
+            fn number(self Self) Int
+        }
+        pub fn shadowed[T](T Bool) Int {
+            comptime if T implements Family {
+                7
+            } else {
+                0
+            }
+        }
+        """, """
+        pub fn unknown[T]() Int
+        ensures result == 1
+        {
+            let Selected = comptime { T }
+            comptime if Selected == Int {
+                1
+            } else {
+                0
+            }
+        }
+        """, """
+        concept Family {
+            type Item
+        }
+        fn typo(comptime receiver type) Bool {
+            comptime if receiver == MissingType {
+                true
+            } else {
+                false
+            }
+        }
+        """, """
+        concept Family {
+        }
+        enum Maybe[T] {
+            Some(T)
+            None
+        }
+        fn main() {
+            let Selected = comptime { Maybe[Int] }
+            comptime if Selected.None implements Family {
+            }
+        }
+        """]
+    var index = 0
+    while index < length(invalid) {
+        rejects(get(invalid, index))
+        index = index + 1
+    }
+}
+
+test fn static_type_queries_retain_guard_and_annotation_uses() {
+    let references = static_uses("""
+        fn is_integer(comptime selected type) Bool {
+            comptime if selected == Int {
+                comptime if List[selected] == List[Int] {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        fn main() {
+            assert is_integer(Int) && !is_integer(Bool)
+        }
+        """, "is_integer", 0)
+    assert length(references) == 2
+}

@@ -48,7 +48,7 @@ fn static_reference(context Context, node Node, constant Int) {
     let queries = get(context.env.inputs, 0).static_queries
     let query = get(queries, 0)
     if context.signature.symbol != query.owner || constant != query.constant ||
-    (node.kind != NodeKind.Name && node.kind != NodeKind.Call) ||
+    (node.kind != NodeKind.Name && node.kind != NodeKind.Call && node.kind != NodeKind.Type) ||
     slice(node.value, 0, first_dot(node.value)) != query.name {
         return
     }

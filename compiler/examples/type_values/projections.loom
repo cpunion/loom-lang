@@ -24,6 +24,14 @@ impl ProjectionSource for Bool {
     type Item[T] = (T, Text)
 }
 
+fn selected_item(comptime receiver type) type {
+    comptime if receiver implements ProjectionSource {
+        receiver.Item[Int]
+    } else {
+        Text
+    }
+}
+
 pub fn label_item[S ProjectionSource, T](source S, value S.Item[T]) (S.Item[T], Text) {
     discard source
     let Selected = comptime {
@@ -42,6 +50,16 @@ fn projected_types() {
     assert labelled.0.0 == 7 && labelled.1 == "function"
     let method = false.labelled[Text](("value", "text"))
     assert method.0.0 == "value" && method.1 == "method"
+    let Item = comptime {
+        selected_item(Bool)
+    }
+    let item Item = (7, "selected")
+    assert item.0 == 7
+    comptime if Item == (Int, Text) {
+        assert comptime {
+            selected_item(Int) == Text
+        }
+    }
     let Selected = comptime {
         Maybe[Int]
     }
