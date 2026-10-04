@@ -552,6 +552,7 @@ fn checked_program(env Environment, reuse List[Bool], reusable List[Bool], hits 
 }
 
 fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool], hits List[Int], bodies BodyReuse) Result[std.loom.typed.Program, Failure] {
+    discard check_pack_contracts(env)?
     let source = env.source
     let deferred_roots = new[Int]()
     var index = 0
@@ -604,15 +605,15 @@ fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool
     discard check_unreached(env, deferred_roots)?
     discard layouts(env)?
     let program = std.loom.typed.Program {
-            types = env.types
-            functions = functions
-            entry = entry
-            tests = tests
-            test_names = test_names
-            exports = exports
-            interfaces = env.interfaces
-            witnesses = env.witnesses
-        }
+        types = env.types
+        functions = functions
+        entry = entry
+        tests = tests
+        test_names = test_names
+        exports = exports
+        interfaces = env.interfaces
+        witnesses = env.witnesses
+    }
     discard worker_contracts(env, program)?
     Result.Ok(program)
 }

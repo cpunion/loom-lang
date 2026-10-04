@@ -1,0 +1,55 @@
+type Nonnegative = Int where self >= 0
+
+pub fn checked_value[Ts...](value Int, context (Ts...)) Int
+requires value >= 0
+ensures result == value && result >= 0 {
+    value
+}
+
+fn constrained_value[Ts...](value Int, context (Ts...)) Nonnegative
+requires value >= 0 {
+    Nonnegative(checked_value(value, context))
+}
+
+concept Budgeted {
+    fn keep[Ts...](self Self, value Int, context (Ts...)) Int
+    requires value >= 0
+    ensures result == value && result >= 0
+
+    fn fallback[Ts...](self Self, value Int, context Ts...) Int
+    requires value >= 0
+    ensures result == value && result >= 0 {
+        value
+    }
+}
+
+impl Budgeted for Bool {
+    fn keep[Us...](self Bool, renamed Int, unused (Us...)) Int {
+        renamed
+    }
+}
+
+fn through_dynamic(source dyn Budgeted, value Int) Int
+requires value >= 0
+ensures result == value && result >= 0 {
+    source.keep(value, (1, true))
+}
+
+fn exercise_contracts() {
+    let empty = pack()
+    assert checked_value(0, empty) == 0
+    assert constrained_value(42, (true, "context", [1])) == 42
+    let callback fn(Int, (Int, Bool)) Int = checked_value
+    assert callback(3, (1, true)) == 3
+    assert comptime {
+        checked_value(4, (false,))
+    } == 4
+    let source dyn Budgeted = true
+    assert source.keep(5, empty) == 5
+    assert source.fallback(6, "extra", false) == 6
+    assert through_dynamic(source, 7) == 7
+
+    let log List[Int] = []
+    assert checked_value(mark(log, 42), (mark(log, 1), mark(log, 2))) == 42
+    assert length(log) == 3 && log[0] == 42 && log[1] == 1 && log[2] == 2
+}

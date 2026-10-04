@@ -35,6 +35,7 @@ fn take(values (Int, Int, Int), log List[Int]) {
 }
 
 fn exercise() {
+    exercise_contracts()
     exercise_methods()
     exercise_static()
     exercise_mixed()

@@ -846,6 +846,25 @@ checks the body with independent abstract element types and only the declared
 bounds, before concrete instantiation. Zero-element packs produce an inferred
 empty tuple, not a no-result expression; source `()` and `Unit` remain unavailable.
 
+Pack-independent postconditions use ordinary abstract proofs, without sampling
+arities. The compiler checks that the body, return type and contracts mention
+neither the type pack nor any pack-bearing input; it then erases those inputs
+for the required proof. Uncalled families and inherited method contracts are
+checked too. Selected arities retain their normal bounds and resource checks.
+
+```loom
+fn keep[Ts...](value Int, context (Ts...)) Int
+requires value >= 0
+ensures result == value && result >= 0 {
+    value
+}
+```
+
+The [contract example](examples/variadics/contracts.loom) composes this guarantee
+with constrained construction, CTFE and dyn methods. Proofs depending on pack
+values, types or iteration remain unsupported: executing an empty pack or a
+few selected arities is not a universal proof.
+
 A structural parameter can supply arity without a direct value pack. This
 includes a callback's parameter list or returned tuple, nested tuples and
 nominal type arguments. An input with a known shape supplies arity; ordinary
@@ -2161,6 +2180,9 @@ Without a summary, the prover can expand a finite pure body using those values. 
 are evaluated in order and their values captured before applying the summary;
 separate call results are not equated merely because they share a callee. The
 emitted function keeps its ordinary calls and original locals.
+Unused function-typed inputs may remain opaque, just like abstract receivers;
+they supply no callable-result or effect facts. Invoking an unknown callback
+still rejects a required proof.
 
 Immutable Text identities, exact literals and established `==`/`!=` facts also
 participate in these proofs, including `old`, finite helpers, Text refinements

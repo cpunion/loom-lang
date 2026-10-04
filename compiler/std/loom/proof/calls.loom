@@ -130,7 +130,7 @@ fn fresh_result(proof Verification, ty Int) Value {
 
 fn opaque_parameter(kind TypeKind) Bool {
     kind == TypeKind.Dyn || kind == TypeKind.Parameter || kind == TypeKind.Associated ||
-    kind == TypeKind.Text || kind == TypeKind.Bytes || kind == TypeKind.List
+    kind == TypeKind.Text || kind == TypeKind.Bytes || kind == TypeKind.List || kind == TypeKind.Function
 }
 
 fn opaque_argument(program Program, ty Int, depth Int) Bool {

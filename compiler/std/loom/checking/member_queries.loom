@@ -201,7 +201,7 @@ fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCand
             while method < length(env.packs) {
                 let pack = get(env.packs, method)
                 let item = symbol(env, pack.source)
-                if pack.arity < 0 && item.owner == capability.symbol && starts_with(item.name, prefix) {
+                if pack.arity == -1 && item.owner == capability.symbol && starts_with(item.name, prefix) {
                     push(hints, MemberCandidate {
                             name = item.name
                             ty = ""
