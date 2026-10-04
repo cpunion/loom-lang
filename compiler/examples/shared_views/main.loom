@@ -29,6 +29,12 @@ ensures result == end - start && result >= 0
     length(view)
 }
 
+pub fn nonnegative_length[T](view View[T]) Int
+ensures result >= 0
+{
+    length(view)
+}
+
 fn pop[T](source List[T]) T {
     match take_last(source) {
         Option.Some((value, remaining)) => {
@@ -64,6 +70,7 @@ fn shared_identity() Bool {
     set(first, 0, 12)
     assert get(replacement, 0) == 12 && source[0] == 100
     assert length(first) == 2 && length(second) == 2
+    assert nonnegative_length(first) == 2
     assert get(second, 1) == 30
     assert retained_length(source, 0, 1) == 1
     true

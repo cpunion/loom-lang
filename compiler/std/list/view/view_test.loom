@@ -9,3 +9,18 @@ test fn empty_ranges_and_copies_have_immutable_shape() {
 }
 
 import std.list.push
+
+fn bounded_length[T](view View[T]) Int
+ensures result >= 0
+{
+    length(view)
+}
+
+test fn arbitrary_view_arguments_carry_the_immutable_range_constraint() {
+    let source = ["first", "second"]
+    let view = capture(source, 1, 2)
+    std.list.push(source, "third")
+    set(view, 0, "updated")
+    assert bounded_length(view) == 1 && source[1] == "updated"
+    assert bounded_length(capture(source, 2, 2)) == 0
+}

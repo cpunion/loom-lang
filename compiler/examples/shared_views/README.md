@@ -16,6 +16,11 @@ construct a length-two refinement directly, without a `Result` or a second
 predicate check. `retained_length` composes that guarantee across source edits.
 Invalid ranges still fault at the original capture boundary.
 
+Private range metadata carries an ordinary scalar type constraint. `length`
+therefore proves a nonnegative result even for an arbitrary `View[T]` parameter,
+as `nonnegative_length` demonstrates; callers need no repeated assertion or
+construction history. Shared source and retained cells remain unconstrained.
+
 Updates remain visible through the source and overlapping views. When an element
 is removed from the source, existing views retain it together; appending creates
 a new element, not a replacement in old views. Growth and moving GC do not change
