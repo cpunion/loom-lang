@@ -402,9 +402,12 @@ filesystem, process and I/O APIs. JSON has no special runtime implementation.
 Source [`std.iter`](../../compiler/std/iter/README.md) provides an associated-type
 pull protocol, shared-view List/range sources, lazy map/filter/take and
 collect/fold/any/all consumers, including dynamic iterators. Callbacks retain
-pull order, faults and lexical cleanup. Collection hash/order laws remain caller
-obligations; streaming JSON, resource/async iterators and application-grade
-networking are not complete.
+pull order, faults and lexical cleanup.
+[`std.file.lines`](../../compiler/std/file/lines/README.md) provides incremental
+synchronous UTF-8 file lines with explicit error items and scoped closure,
+including direct generic consumers. Collection hash/order laws remain caller
+obligations; streaming JSON, resource-containing iterator adapters, async streams
+and application-grade networking are not complete.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;
 large-object storage is separate and stress tests relocate all sizes. Ordinary
