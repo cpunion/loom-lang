@@ -1,0 +1,29 @@
+fn prepared_text(value Text) Bool {
+    let proof_marker = 83194627
+    proof_marker > 0 && value == "ready"
+}
+
+type Prepared = Text where prepared_text(self)
+
+fn required_tag(ignored Int, value Text) Tag
+requires value == "ready"
+{
+    discard ignored
+    let copy = value
+    Tag(copy)
+}
+
+fn selected_text(value Text) Prepared {
+    if value == "ready" {
+        let copy = value
+        Prepared(copy)
+    } else {
+        Prepared("ready")
+    }
+}
+
+fn exercise_construction() {
+    assert required_tag(-1, "ready") == "ready"
+    assert selected_text("ready") == "ready"
+    assert selected_text("waiting") == "ready"
+}

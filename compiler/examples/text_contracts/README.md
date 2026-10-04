@@ -19,6 +19,11 @@ The native test checks O0/O2 IR for proof-only helper elimination and runs the
 artifacts under moving-GC stress, retaining dynamically allocated Text and a
 refined Text value across timer suspension.
 
+The [construction example](construction.loom) uses immutable entry, branch and
+copy facts to construct refinements directly, including a pure helper predicate.
+The native artifact retains declared entry checks but no extra predicate helper;
+mutable variables and unknown disjunction alternatives still need validation.
+
 The [byte-length example](lengths.loom) proves UTF-8 byte counts (six for `é😀`,
 not two characters), preserved entry lengths and equal-value lengths. Checked
 1–8-byte names widen to a 1–16-byte type without a second check, while unknown

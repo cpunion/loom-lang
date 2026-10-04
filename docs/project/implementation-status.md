@@ -222,6 +222,8 @@ state and does not treat shared-storage mutation as pure.
 Constrained construction can combine stable immutable scalar flow facts with a
 pure helper predicate in a private proof queue. Actual binding identities stay
 distinct, and helper requirements and hypothetical arithmetic still need proof.
+Immutable Text participates through byte equality and copied-value identity,
+including helper-defined refinements, without storage-address assumptions.
 Mutable bindings, heap reads and caller effects are not imported as stable facts;
 unknown results retain the checked `Result` boundary.
 Expression composition now shares operation descriptions for operand shape,

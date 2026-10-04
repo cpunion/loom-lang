@@ -1967,7 +1967,12 @@ local or parameter, from `requires`, a successful `assert`, or the current
 `if`/`while` branch. For a pure helper predicate, it transfers only those stable
 scalar facts into a private proof scope and checks the helper's requirements and
 evaluation safety. Unknown results retain checked construction; caller effects
-are not replayed, and proof-only helpers do not become native roots:
+are not replayed, and proof-only helpers do not become native roots.
+
+Int, IEEE Float and immutable Text use their own value theories. Text equality
+and immutable copies do not expose native addresses or make mutable bindings
+stable; unknown alternatives remain unknown. See the
+[Text construction example](examples/text_contracts/construction.loom).
 
 ```loom
 type Positive = Int where self > 0
