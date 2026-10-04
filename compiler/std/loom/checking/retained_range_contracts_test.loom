@@ -1,0 +1,35 @@
+test fn retained_range_checks_supply_only_executed_scalar_bounds() {
+    list_length_contract("""
+        import std.list.retain_range
+        fn checked(source List[Int], start Int, end Int) Int
+        ensures result == end - start && result >= 0
+        {
+            let removed = std.list.new[List[Int]]()
+            retain_range(source, removed, start, end)
+            end - start
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.retain_range
+        fn skipped(source List[Int], start Int, end Int, flag Bool) Int
+        ensures result >= 0
+        {
+            if flag {
+                let removed = std.list.new[List[Int]]()
+                retain_range(source, removed, start, end)
+            }
+            end - start
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.retain_range
+        fn no_private_frame(source List[Int], start Int, end Int) Int
+        ensures result == 0
+        {
+            let removed = std.list.new[List[Int]]()
+            retain_range(source, removed, start, end)
+            length(removed)
+        }
+        """, false)
+}

@@ -1,6 +1,6 @@
 fn list_operation(name Text) Bool {
     name == "list_new" || name == "list_len" || name == "list_get" ||
-    name == "list_set" || name == "list_push"
+    name == "list_set" || name == "list_push" || name == "list_retain_range"
 }
 
 // Recognize an ordinary forwarding body by checked structure, never its source
@@ -37,6 +37,17 @@ fn forwarded_list_operation(program Program, function Function, depth Int) Text 
 
 fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArguments) Result[List[Outcome], Text] {
     var state = inputs.state
+    if name == "list_retain_range" && length(inputs.values) == 4 {
+        let start = list_value_index(get(inputs.values, 2))?
+        let end = list_value_index(get(inputs.values, 3))?
+        // Native range validation has succeeded on normal continuation. Its
+        // registry can later append retained cells after another alias shrinks
+        // the source. Do not grant private origin or a frame for that storage.
+        state = forget_extents(proof, published_storage(state))
+        state = assume(assume(state, Predicate.Compare(">=", start)),
+            Predicate.Compare(">=", add(end, scale(start, integer(-1)))))
+        return Result.Ok(outcomes(state, Value.Empty))
+    }
     if length(inputs.values) > 0 {
         match get(inputs.values, 0) {
             Value.EntryList(size, _) => {

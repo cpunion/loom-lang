@@ -1,0 +1,41 @@
+test fn retaining_ranges_drops_storage_privacy_and_loop_frames() {
+    let source = local(0)
+    let function = fixture(source, [], operation("==", local(1), local(0)))
+    let proof = verification(function, empty_proof_program())
+    let before = with_extent(10, constant(integer(2)), true,
+        with_extent(11, constant(integer(0)), true, State {
+                locals = new[Value]()
+                facts = new[Predicate]()
+                extents = new[ListExtent]()
+                observations = new[Observation]()
+            }))
+    let start = variable(20)
+    let end = variable(21)
+    let paths = match list_operation_outcomes(proof, "list_retain_range", 0, CallArguments {
+            state = before
+            values = [Value.List(10), Value.List(11), Value.Number(start), Value.Number(end)]
+        }) {
+        Result.Ok(paths) => paths
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let after = get(paths, 0).state
+    assert holds(Predicate.Compare(">=", start), after.facts)
+    assert holds(Predicate.Compare(">=", add(end, scale(start, integer(-1)))), after.facts)
+    assert private_storage_lost(before, after)
+    assert match list_extent(11, after) {
+        Result.Ok(size) => length(size.terms) != 0
+        Result.Err(_) => false
+    }
+
+    let retained = expression(ExprKind.Intrinsic, 0, "list_retain_range", -1,
+        [local(0), local(0), literal("0"), literal("2")])
+    let modified = new[Int]()
+    assert match loop_storage_writes(proof, retained, before, modified, false, 64) {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+    assert length(modified) == 1 && get(modified, 0) == -1
+}

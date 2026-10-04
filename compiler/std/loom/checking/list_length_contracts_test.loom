@@ -6,6 +6,7 @@ fn list_length_contract(text Text, valid Bool) {
         intrinsic fn list_push[T](values List[T], value T)
         intrinsic fn list_get[T](values List[T], index Int) T
         intrinsic fn list_set[T](values List[T], index Int, value T)
+        intrinsic fn list_retain_range[T](source List[T], removed List[List[T]], start Int, end Int)
         pub fn length[T](values List[T]) Int {
             list_len(values)
         }
@@ -20,6 +21,9 @@ fn list_length_contract(text Text, valid Bool) {
         }
         pub fn set[T](values List[T], index Int, value T) {
             list_set(values, index, value)
+        }
+        pub fn retain_range[T](source List[T], removed List[List[T]], start Int, end Int) {
+            list_retain_range(source, removed, start, end)
         }
         """, true))
     match checked(files) {
