@@ -134,6 +134,9 @@ Pure construction also accepts symbolic generic elements in local annotations
 and callback types. Structural comparison keeps equality, distinctness and
 unresolved relationships separate; unknown selection and required proofs still
 reject. Computed aliases retain explicit public bounds and ordinary constraints.
+Associated projections also supply type values, including generic families,
+qualified concepts, `Self` and immutable selected receiver types. They retain
+ordinary bounds, visibility and value-shadowing rules.
 Static tuple/record type iteration also accepts immutable compile-time-selected
 type bindings, with the same lexical visibility and ordinary generated code.
 Record/enum packs infer arity from structural initializers, preserve nominal

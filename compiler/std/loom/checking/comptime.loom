@@ -220,7 +220,8 @@ fn type_operand(context Context, node Node) Bool {
 }
 fn type_parameter_operand(context Context, node Node) Bool {
     if node.kind == NodeKind.AssociatedType { return type_parameter_operand(context, child(node, 0)) }
-    if parameter_name(context, slice(node.value, 0, first_dot(node.value))) { return true }
+    let first = slice(node.value, 0, first_dot(node.value))
+    if first == "Self" || parameter_name(context, first) { return true }
     var index = 0
     while index < length(node.children) {
         if type_parameter_operand(context, child(node, index)) { return true }

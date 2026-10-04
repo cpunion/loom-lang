@@ -1,0 +1,64 @@
+test fn projected_type_values_preserve_bounds_qualification_and_shadowing() {
+    assert match constructed("""
+        concept Family {
+            type Item[T]
+        }
+        impl Family for Bool {
+            type Item[T] = (T, Text)
+        }
+        pub fn tagged[S Family, T](source S, value S.Item[T]) (S.Item[T], Text) {
+            discard source
+            let Selected = comptime { S }
+            let Tagged = comptime { tuple([Selected.Family.Item[T], Text]) }
+            let tagged Tagged = (value, "item")
+            tagged
+        }
+        fn main() {
+            assert tagged[Bool, Int](true, (7, "seven")).0.0 == 7
+        }
+        """) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let invalid = ["""
+        concept Family {
+            type Item
+        }
+        pub fn undeclared[S](source S) {
+            discard source
+            let Tagged = comptime { tuple([S.Item, Text]) }
+            discard Tagged
+        }
+        """, """
+        concept First {
+            type Item
+        }
+        concept Second {
+            type Item
+        }
+        pub fn ambiguous[S First + Second](source S) {
+            discard source
+            let Tagged = comptime { tuple([S.Item, Text]) }
+            discard Tagged
+        }
+        """, """
+        concept Family {
+            type Item
+        }
+        record Value {
+            Item Int
+        }
+        pub fn shadowed[S Family](S Value) {
+            let Tagged = comptime { tuple([S.Item, Text]) }
+            discard Tagged
+        }
+        """]
+    var index = 0
+    while index < length(invalid) {
+        assert match constructed(get(invalid, index)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}
