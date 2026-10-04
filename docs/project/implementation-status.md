@@ -326,6 +326,11 @@ while retaining executable preconditions, bodies and faults.
 Completed sequential proofs are shared across private queues in the same checked
 snapshot, not across edits or via pending/cyclic promises. Shared verification
 remains separate.
+Bounded content refinements now establish sequential List entry observations,
+including nested fields and `old(values[0])`, without duplicate preconditions or
+runtime checks. Unknown alias writes invalidate them; disjunction alternatives
+and length-only refinements supply no invented element facts. Shared interference
+still requires separate evidence.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining

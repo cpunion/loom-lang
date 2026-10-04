@@ -1,0 +1,75 @@
+// Type construction has established these predicates. Reuse the ordinary entry
+// read machinery, not a runtime assertion or a promise of private storage.
+fn invariant_entry_supported(value Expr, depth Int) Bool {
+    if depth >= 32 || value.ty == 5 || proof_operation(value).arity < 0 ||
+    (value.kind == ExprKind.Local && value.index != 0) {
+        return false
+    }
+    var index = 0
+    while index < length(value.children) {
+        if !invariant_entry_supported(get(value.children, index), depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn invariant_entry_at(value Expr, input Expr) Expr {
+    if value.kind == ExprKind.Local {
+        return input
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, invariant_entry_at(get(value.children, index), input))
+        index = index + 1
+    }
+    proof_expr(value, value.kind, value.ty, value.text, value.index, children)
+}
+
+fn invariant_entry_clauses(types List[Type], ty Int, input Expr, clauses List[Expr], depth Int) {
+    if ty < 6 || ty >= length(types) || depth >= 16 {
+        return
+    }
+    let shape = get(types, ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        invariant_entry_clauses(types, get(shape.fields, 0).ty, input, clauses, depth + 1)
+        var index = 0
+        while index < length(shape.constraint) {
+            let predicate = get(shape.constraint, index)
+            if contains_list_read(predicate) && bounded_contract(predicate) && invariant_entry_supported(predicate, 0) {
+                push(clauses, invariant_entry_at(predicate, input))
+            }
+            index = index + 1
+        }
+    } else if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        var index = 0
+        while index < length(shape.fields) {
+            let field = get(shape.fields, index)
+            let member = proof_expr(input, ExprKind.Field, field.ty, field.name, index, snapshot_child(input))
+            invariant_entry_clauses(types, field.ty, member, clauses, depth + 1)
+            index = index + 1
+        }
+    }
+}
+
+fn established_invariants(proof Verification, state State) List[Outcome] {
+    // Shared interference still needs separately validated continuing guarantees.
+    if proof.shared {
+        return outcomes(state, Value.Empty)
+    }
+    let clauses = new[Expr]()
+    var index = 0
+    while index < length(proof.function.params) {
+        let ty = get(proof.function.params, index)
+        let input = proof_expr(proof.function.body, ExprKind.Local, ty, "", index, new[Expr]())
+        invariant_entry_clauses(proof.program.types, ty, input, clauses, 0)
+        index = index + 1
+    }
+    match established_conditions(proof, clauses, state) {
+        Result.Ok(paths) => paths
+        // Optional type facts outside the supported theory supply no evidence.
+        Result.Err(_) => outcomes(state, Value.Empty)
+    }
+}
