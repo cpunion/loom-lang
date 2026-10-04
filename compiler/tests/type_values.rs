@@ -32,6 +32,8 @@ import std.list.push
 import std.meta.of
 import std.meta.parameter_types
 import std.meta.return_type
+import std.meta.tuple
+import std.meta.function
 import std.option.Option
 
 fn choose(flag Bool) type {
@@ -58,6 +60,9 @@ pub fn answer() Int {
         assert length(parameters) == 2 && parameters[0] == Int && parameters[1] == Bool
         let declared = parameter_types[fn(Int, Bool) Text]()
         assert length(declared) == 2 && declared[0] == Int && declared[1] == Bool
+        assert tuple(declared) == of[(Int, Bool)]()
+        assert function(declared, return_type(unused_callback)) == of[fn(Int, Bool) Text]()
+        assert function(parameter_types(unused_no_result), return_type(unused_no_result)) == of[fn()]()
         assert length(parameter_types[fn()]()) == 0
         assert match return_type[fn()]() {
             Option.None => true
@@ -79,7 +84,9 @@ pub fn answer() Int {
     }
     let Selected = comptime { choose(true) }
     let value Selected = 42
-    value
+    let Pair = comptime { tuple([Int, Text]) }
+    let pair Pair = (value, "answer")
+    pair.0
 }
 fn main() {
     assert answer() == 42

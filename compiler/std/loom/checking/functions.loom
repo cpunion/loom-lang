@@ -380,7 +380,9 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
 fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
     let current = get(env.signatures, id)
     let item = symbol(env, current.symbol)
-    let expected = if build_intrinsic(env, current.symbol) {
+    let expected = if meta_intrinsic(env, current.symbol) {
+        meta_signature(env, current, item.node)?
+    } else if build_intrinsic(env, current.symbol) {
         if !same(current.compile_time, ints(0)) {
             return Result.Err(failure(env, current.symbol, item.node, "build inputs require one comptime Text parameter"))
         }

@@ -1,0 +1,15 @@
+import std.option.Option
+
+intrinsic fn meta_tuple(elements List[type]) type
+
+intrinsic fn meta_function(parameters List[type], output Option[type]) type
+
+// Lists may be computed with ordinary pure loops; construction is compile-time-only.
+pub fn tuple(elements List[type]) type {
+    meta_tuple(elements)
+}
+
+// None means an omitted result, not a source-visible Unit type.
+pub fn function(parameters List[type], output Option[type]) type {
+    meta_function(parameters, output)
+}

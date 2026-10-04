@@ -1,0 +1,89 @@
+import std.build.input_file
+
+fn constructed(text Text) Result[std.loom.typed.Program, Failure] {
+    let files = source_files(concat("""
+        import std.meta.tuple
+        import std.meta.function
+        import std.option.Option
+
+        """, text))
+    push(files, source_file("std.meta", input_file("../../meta/construction.loom"), true))
+    push(files, source_file("std.option", input_file("../../option/option.loom"), true))
+    checked(files)
+}
+
+test fn computed_structural_types_keep_ordinary_typing_and_constraints() {
+    assert match constructed("""
+        type Positive = Int where self > 0
+        fn identity[T](value T) T {
+            value
+        }
+        fn main() {
+            let Pair = comptime { tuple([Positive, Text]) }
+            let pair Pair = (Positive(7), "seven")
+            assert identity[Pair](pair).0 == 7
+            let Callback = comptime { function([Int], Option.Some(Bool)) }
+            let callback Callback = fn(value Int) Bool {
+                value > 0
+            }
+            assert callback(7)
+        }
+        """) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let invalid = ["""
+        fn main() {
+            let Pair = tuple([Int, Text])
+            discard Pair
+        }
+        """, """
+        fn select(flag Bool) {
+            let Pair = comptime { tuple([if flag { Int } else { Text }]) }
+            discard Pair
+        }
+        """, """
+        fn main() {
+            let Pair = comptime { tuple([Int, Text]) }
+            let wrong Pair = (true, "text")
+            discard wrong
+        }
+        """, """
+        type Positive = Int where self > 0
+        fn main() {
+            let Pair = comptime { tuple([Positive, Text]) }
+            let invalid Pair = (0, "zero")
+            discard invalid
+        }
+        """, """
+        fn main() {
+            let Callback = comptime { function([Int], Option.Some(Text)) }
+            let wrong Callback = fn(value Int) Bool {
+                value > 0
+            }
+            discard wrong
+        }
+        """, """
+        pub fn unproved() Int
+        ensures result > 0
+        {
+            let Pair = comptime { tuple([Int, Text]) }
+            let pair Pair = (0, "zero")
+            pair.0
+        }
+        """, """
+        fn main() {
+            let Pair = comptime { tuple([type]) }
+            let escaped Pair = (Int,)
+            discard escaped
+        }
+        """]
+    var index = 0
+    while index < length(invalid) {
+        assert match constructed(get(invalid, index)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}

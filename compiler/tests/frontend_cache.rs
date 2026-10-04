@@ -746,6 +746,68 @@ fn main() {
 }
 
 #[test]
+fn computed_structural_types_restore_current_identities_after_an_edit() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+import std.meta.tuple
+import std.meta.function
+import std.option.Option
+fn increment(value Int) Int {
+    value + 1
+}
+fn answer() (Int, Text) {
+    let Pair = comptime { tuple([Int, Text]) }
+    let pair Pair = (41, "answer")
+    pair
+}
+fn main() {
+    let Callback = comptime { function([Int], Option.Some(Int)) }
+    let callback Callback = increment
+    let pair = answer()
+    assert callback(pair.0) == 42 && pair.1 == "answer"
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(
+        &path,
+        format!("fn unused(value List[Bool]) List[Bool] {{ value }}\n{source}"),
+    )
+    .unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    let bodies: usize = trace
+        .split(", bodies reused ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(bodies > 0, "{trace}");
+    let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
+    success(&fresh);
+    // Checking a fresh body may intern additional unused abstract slots. Compare
+    // the native checked model, not those evaluator-only table entries.
+    let restored =
+        loom_native::native_input::decode(std::str::from_utf8(&reused.stdout).unwrap()).unwrap();
+    let fresh =
+        loom_native::native_input::decode(std::str::from_utf8(&fresh.stdout).unwrap()).unwrap();
+    assert_eq!(format!("{restored:?}"), format!("{fresh:?}"));
+    checked(&cached("run", &package, &cache, &[]), true);
+    fs::write(
+        &path,
+        source.replace("tuple([Int, Text])", "tuple([Bool, Text])"),
+    )
+    .unwrap();
+    assert!(!cached("check", &package, &cache, &[]).status.success());
+}
+
+#[test]
 fn generated_definitions_persist_across_processes_without_reusing_old_output() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

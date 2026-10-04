@@ -226,7 +226,7 @@ fn folded_predicate(env Environment, owner Int, known Value) Result[Value, Failu
     }
     let bind = expression(ExprKind.Let, 0, predicate, "", 0, expressions(literal), true)
     let initialized = expression(ExprKind.Block, 2, predicate, "", -1, pair(bind, value), true)
-    match std.loom.eval.evaluate(prepared(stage)?, initialized, length(stage.locals)) {
+    match evaluate_in(stage, prepared(stage)?, initialized, length(stage.locals)) {
         Result.Ok(value) => Result.Ok(value)
         Result.Err(_) => Result.Ok(unknown())
     }
@@ -241,7 +241,7 @@ fn folded_record_predicate(env Environment, owner Int, base Int, value Expr) Res
     let condition = expr(stage, predicate, 2)?
     let bind = expression(ExprKind.Let, 0, predicate, "", 0, expressions(value), value.falls)
     let initialized = expression(ExprKind.Block, 2, predicate, "", -1, pair(bind, condition), value.falls)
-    match std.loom.eval.evaluate(prepared(stage)?, initialized, length(stage.locals)) {
+    match evaluate_in(stage, prepared(stage)?, initialized, length(stage.locals)) {
         Result.Ok(evaluated) => Result.Ok(evaluated)
         Result.Err(_) => Result.Ok(unknown())
     }

@@ -237,10 +237,10 @@ fn macro_call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let target = schedule(stage.env, id, new[Int](), new[StaticValue](), node)?
     let invocation = expression(ExprKind.Call, current.result, node, "", target, expressions(argument), true)
     let program = prepared(stage)?
-    let generated_value = match std.loom.eval.evaluate(program, invocation, 0) {
+    let generated_value = match evaluate_in(stage, program, invocation, 0) {
         Result.Ok(value) => value
         Result.Err(failed) => {
-            return Result.Err(error(context, node, concat("macro generator: ", failed.message)))
+            return Result.Err(error(context, node, concat("macro generator: ", failed)))
         }
     }
     let parsed = if current.result == 3 {

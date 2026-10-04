@@ -61,23 +61,11 @@ fn initialize_types(env Environment) {
     discard intern(env, TypeKind.Float, -1, new[Int]())
 }
 fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
-    var index = 0
-    while index < length(env.types) {
-        let existing = get(env.types, index)
-        if existing.kind == kind && existing.symbol == symbol && same(existing.arguments, arguments) { return index }
-        index = index + 1
+    let ty = std.loom.typed.structural_type(env.types, kind, symbol, arguments)
+    if length(env.type_states) < length(env.types) {
+        push(env.type_states, TypeState { phase = 2 task_width = -1 list_writes = 0 })
     }
-    let fields = new[Field]()
-    if kind == TypeKind.Tuple {
-        index = 0
-        while index < length(arguments) {
-            push(fields, Field { name = to_text(index) ty = get(arguments, index) })
-            index = index + 1
-        }
-    }
-    push(env.types, Type { kind = kind symbol = symbol arguments = arguments fields = fields variants = new[Variant]() constraint = new[Expr]() })
-    push(env.type_states, TypeState { phase = 2 task_width = -1 list_writes = 0 })
-    length(env.types) - 1
+    ty
 }
 fn tuple_type(env Environment, owner Int, node Node, elements List[Int]) Result[Int, Failure] {
     // Zero-length packs produce an inferred empty tuple. The parser still
@@ -366,16 +354,7 @@ fn concrete(env Environment, ty Int) Bool {
     true
 }
 fn type_depth(env Environment, ty Int) Int {
-    let source = get(env.types, ty)
-    if source.kind == TypeKind.Parameter || ty <= 5 { return 0 }
-    var deepest = 0
-    var index = 0
-    while index < length(source.arguments) {
-        let depth = type_depth(env, get(source.arguments, index))
-        if depth > deepest { deepest = depth }
-        index = index + 1
-    }
-    deepest + 1
+    std.loom.typed.type_depth(env.types, ty)
 }
 fn layout(env Environment, id Int, states List[Int], owner Int) Result[Bool, Failure] {
     let ty = get(env.types, id)

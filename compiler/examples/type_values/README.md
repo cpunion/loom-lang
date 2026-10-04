@@ -20,6 +20,12 @@ Loom helpers use structural function packs and never execute the callback.
 Their results stay inside compile-time execution; see
 [signatures.loom](signatures.loom).
 
+`std.meta.tuple(elements)` and `std.meta.function(parameters, output)` build
+ordinary tuple/function types from computed `List[type]` inputs. The optional
+output is `None` for no result. Loops may select the elements; the result has
+the same identity and checks as a directly written structural type. See
+[construction.loom](construction.loom) for native annotations and callbacks.
+
 An immutable binding of a computed type can supply local annotations, generic
 arguments, visible nominal constructors and exact-type record/enum patterns.
 Static field and type-pack iteration uses the same constructors and patterns;

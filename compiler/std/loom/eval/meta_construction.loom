@@ -1,0 +1,52 @@
+import std.loom.typed.structural_type
+import std.loom.typed.type_depth
+
+fn meta_identity(state State, expr Expr, value Value) Result[Int, Failure] {
+    if value.ty < 0 || value.ty >= length(state.program.types) ||
+    get(state.program.types, value.ty).kind != TypeKind.Meta ||
+    value.number <= 0 || value.number >= length(state.program.types) {
+        return Result.Err(failure(expr, "type construction needs known source types"))
+    }
+    if std.loom.typed.type_depth(state.program.types, value.number) >= 64 {
+        return Result.Err(failure(expr, "type specialization depth exceeded; expansion must be finite"))
+    }
+    Result.Ok(value.number)
+}
+
+fn meta_construct(state State, expr Expr, values List[Value]) Result[Value, Failure] {
+    if !state.construct_types {
+        return Result.Err(failure(expr, "compile-time type construction requires an extensible type table"))
+    }
+    let source = get(values, 0)
+    if source.ty < 0 || source.ty >= length(state.program.types) ||
+    get(state.program.types, source.ty).kind != TypeKind.List {
+        return Result.Err(failure(expr, "type construction needs List[type]"))
+    }
+    let size = list_length(source)
+    discard spend(state, expr, 0, size + 1)?
+    discard spend(state, expr, 1, size * 16 + 64)?
+    let arguments = new[Int]()
+    var index = 0
+    while index < size {
+        push(arguments, meta_identity(state, expr, list_element(source, index))?)
+        index = index + 1
+    }
+    let kind = if expr.text == "meta_tuple" {
+        TypeKind.Tuple
+    } else {
+        TypeKind.Function
+    }
+    if kind == TypeKind.Function {
+        let output = get(values, 1)
+        if output.number == 0 && length(output.items) == 1 {
+            push(arguments, meta_identity(state, expr, get(output.items, 0))?)
+        } else {
+            if output.number != 1 || length(output.items) != 0 {
+                return Result.Err(failure(expr, "function type construction needs a checked Option[type]"))
+            }
+            push(arguments, 0)
+        }
+    }
+    let ty = std.loom.typed.structural_type(state.program.types, kind, -1, arguments)
+    Result.Ok(aggregate(expr.ty, ty, new[Value]()))
+}
