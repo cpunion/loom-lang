@@ -2004,6 +2004,13 @@ fn replace_first[T](pair Pair[T], value T) {
 ```
 
 Aliases observe that replacement. Source helpers such as `set` and `reverse`
+can also replace already constrained elements: `Pair[PositiveAccount]` preserves
+each element's amount invariant by accepting a newly constructed
+`PositiveAccount`, not a raw account with an unchecked amount. The
+[element example](examples/list_contracts/refinements.loom) proves a positive
+return after reading such an element and exercises replacement across aliases
+and suspension while leaving unobserved notes mutable.
+Source helpers
 work by the same inferred effects, without special library-name rules or a new
 check after each write. Appending additionally requires a static proof that
 the predicate at length `n` implies it at `n + 1`, including helper preconditions
