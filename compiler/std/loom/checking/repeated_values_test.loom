@@ -1,0 +1,91 @@
+test fn repeated_value_packs_share_shape_in_calls_references_and_cached_bodies() {
+    let source = """
+        fn pair[Ts...](left Ts..., marker Text, right Ts...) ((Ts...), Text, (Ts...)) {
+            (left, marker, right)
+        }
+        fn triple[Ts...](a Ts..., b Ts..., c Ts...) ((Ts...), (Ts...), (Ts...)) {
+            (a, b, c)
+        }
+        fn mixed[Ts...](comptime constants Ts..., values Ts...) (Ts...) {
+            let selected = comptime map value in constants {
+                value
+            }
+            discard selected
+            values
+        }
+        fn bounded[Ts...](a Ts..., number Int, b Ts...) Int
+            requires number >= 0
+            ensures result == number && result >= 0 {
+            number
+        }
+        pub fn answer() Int {
+            assert pair(1, true, "middle", 2, false).2.0 == 2
+            assert pair("empty").1 == "empty"
+            assert pair[Int](3, "explicit", 4).0.0 == 3
+            let callback fn(Int, Bool, Text, Int, Bool) ((Int, Bool), Text, (Int, Bool)) = pair
+            assert callback(5, true, "callback", 6, false).2.0 == 6
+            assert triple(1, 2, 3).2.0 == 3
+            discard triple()
+            assert comptime { pair(7, "ctfe", 8).2.0 } == 8
+            assert mixed(9, true, 10, false).0 == 10
+            discard mixed()
+            bounded(true, 42, false)
+        }
+        """
+    discard accepted(source)
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, concat(source, "\nfn unrelated() {}\n")) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+}
+
+test fn repeated_value_packs_require_integral_width_matching_types_and_linear_tasks() {
+    let header = """
+        fn pair[Ts...](left Ts..., right Ts...) ((Ts...), (Ts...)) {
+            (left, right)
+        }
+
+        """
+    rejects(concat(header, """
+        fn main() {
+            discard pair(1, 2, 3)
+        }
+        """))
+    rejects(concat(header, """
+        fn main() {
+            discard pair(1, true)
+        }
+        """))
+    rejects(concat(header, """
+        fn main() {
+            let callback fn(Int, Int, Int) ((Int,), (Int,)) = pair
+            discard callback
+        }
+        """))
+    rejects("""
+        fn mixed[Ts...](comptime constants Ts..., values Ts...) (Ts...) {
+            values
+        }
+        pub fn invalid(value Int) {
+            discard mixed(value, 1)
+        }
+        """)
+    rejects(concat(header, """
+        async fn item() Int {
+            1
+        }
+        async fn main() {
+            let task = item()
+            let repeated = pair(task, task)
+            discard repeated.0.0.await
+            discard repeated.1.0.await
+        }
+        """))
+}

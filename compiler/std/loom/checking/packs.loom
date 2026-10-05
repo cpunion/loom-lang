@@ -124,19 +124,15 @@ fn has_type_expansion(node Node) Bool {
     false
 }
 
-fn value_pack_position(parameters List[Node]) Int {
+fn variadic_parameters(parameters List[Node]) Bool {
     var index = 0
     while index < length(parameters) {
         if child(get(parameters, index), 0).kind == NodeKind.Spread {
-            return index
+            return true
         }
         index = index + 1
     }
-    -1
-}
-
-fn variadic_parameters(parameters List[Node]) Bool {
-    value_pack_position(parameters) >= 0
+    false
 }
 
 fn structural_pack_position(parameters List[Node]) Int {
@@ -211,16 +207,9 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         return Result.Ok(false)
     }
     var index = 0
-    var packed = false
     while index < length(parameters) {
         let parameter = get(parameters, index)
         let spread = child(parameter, 0).kind == NodeKind.Spread
-        if spread {
-            if packed {
-                return Result.Err(failure(env, owner, parameter, "declare only one variadic value parameter"))
-            }
-            packed = true
-        }
         if spread && !mentions_pack(child(parameter, 0), pack.value) {
             return Result.Err(failure(env, owner, parameter, "the variadic parameter type must use the declared pack"))
         }
@@ -503,7 +492,7 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, mem
     if node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap {
         let mapping = node.kind == NodeKind.ComptimeMap
         let source = child(node, 0)
-        // Pack elaboration handles its own final value pack. Other maps wait
+        // Pack elaboration handles each named value pack. Other maps wait
         // until checking resolves their source to a lexical aggregate binding.
         if source.kind == NodeKind.Name && source.value == values && !shadowed {
             let iterations = new[Node]()
@@ -735,41 +724,36 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
     let types = group(declaration, NodeKind.TypeParameters)
     let pack = get(types, pack_parameter(declaration))
     let parameters = group(declaration, NodeKind.Parameters)
-    let position = value_pack_position(parameters)
-    let values = if position < 0 {
-        declaration
-    } else {
-        get(parameters, position)
-    }
-    let variadic = position >= 0
-    let static_values = variadic && has(values, NodeKind.Comptime)
     let expanded_types = expand_pack_parameters(types, arity)
     let expanded_params = new[Node]()
-    let elements = new[Node]()
+    let bindings = new[Node]()
     var index = 0
     var type_shadowed = false
     while index < length(parameters) {
         let parameter = get(parameters, index)
         type_shadowed = type_shadowed || parameter.value == pack.value
-        if index == position {
+        if child(parameter, 0).kind == NodeKind.Spread {
+            let static_values = has(parameter, NodeKind.Comptime)
+            let elements = new[Node]()
             var element = 0
             while element < arity {
-                let name = pack_name(values.value, element)
-                let ty = expand_pack_type(env, owner, child(child(values, 0), 0), pack.value, arity, element, true, 0)?
+                let name = pack_name(parameter.value, element)
+                let ty = expand_pack_type(env, owner, child(child(parameter, 0), 0), pack.value, arity, element, true, 0)?
                 let parts = source_nodes(ty)
                 if static_values {
-                    push(parts, pack_node(values, NodeKind.Comptime, "", new[Node]()))
+                    push(parts, pack_node(parameter, NodeKind.Comptime, "", new[Node]()))
                 }
-                push(expanded_params, pack_node(values, NodeKind.Parameter, name, parts))
-                push(elements, pack_node(values, NodeKind.Name, name, new[Node]()))
+                push(expanded_params, pack_node(parameter, NodeKind.Parameter, name, parts))
+                push(elements, pack_node(parameter, NodeKind.Name, name, new[Node]()))
                 element = element + 1
             }
+            push(bindings, pack_binding(parameter, parameter.value,
+                    pack_node(parameter, NodeKind.Tuple, "", elements), static_values))
         } else {
             push(expanded_params, expand_pack_type(env, owner, parameter, pack.value, arity, -1, false, 0)?)
         }
         index = index + 1
     }
-    let tuple = pack_node(values, NodeKind.Tuple, "", elements)
     let children = new[Node]()
     index = 0
     while index < length(declaration.children) {
@@ -781,12 +765,17 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                 push(children, pack_node(member, member.kind, "", expanded_params))
             } else {
                 let typed = expand_pack_type(env, owner, member, pack.value, arity, -1, false, 0)?
-                let expanded = if variadic && has_pack_iteration(typed) {
-                    let count = new[Int]()
-                    push(count, 0)
-                    expand_pack_iteration(env, owner, typed, values.value, tuple_iteration_members(arity), false, static_values, false, false, 0, count)?
-                } else {
-                    typed
+                var expanded = typed
+                var parameter = 0
+                while has_pack_iteration(expanded) && parameter < length(parameters) {
+                    let values = get(parameters, parameter)
+                    if child(values, 0).kind == NodeKind.Spread {
+                        let count = new[Int]()
+                        push(count, 0)
+                        expanded = expand_pack_iteration(env, owner, expanded, values.value,
+                            tuple_iteration_members(arity), false, has(values, NodeKind.Comptime), false, false, 0, count)?
+                    }
+                    parameter = parameter + 1
                 }
                 let type_expanded = if has_pack_iteration(expanded) && !type_shadowed {
                     let count = new[Int]()
@@ -796,10 +785,11 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                     expanded
                 }
                 if member.kind == NodeKind.Block {
-                    let body = if variadic {
-                        source_nodes(pack_binding(values, values.value, tuple, static_values))
-                    } else {
-                        new[Node]()
+                    let body = new[Node]()
+                    var binding = 0
+                    while binding < length(bindings) {
+                        push(body, get(bindings, binding))
+                        binding = binding + 1
                     }
                     // The source body retains its own scope, including shadowing
                     // the immutable parameter name and lexical cleanup boundaries.
@@ -1071,7 +1061,7 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
                         -1
                     }
                 } else {
-                    length(shape) - length(parameters)
+                    sequence_pack_arity(parameters, length(shape) - 1)
                 }
             } else {
                 -1

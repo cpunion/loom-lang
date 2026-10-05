@@ -17,6 +17,27 @@ fn repeated_label(first Int, middle Bool, last Int) Text {
     "callback"
 }
 
+fn paired_values[Ts...](left Ts..., separator Text, right Ts...) ((Ts...), (Ts...)) {
+    assert separator == "middle"
+    (left, right)
+}
+
+fn triple_values[Ts...](first Ts..., second Ts..., third Ts...) (Ts...) {
+    discard first
+    discard second
+    third
+}
+
+fn static_pair[Ts...](comptime constants Ts..., values Ts...) (Ts...) {
+    let grid = comptime map constant in constants {
+        comptime map value in values {
+            (constant, value)
+        }
+    }
+    discard grid
+    values
+}
+
 record Repeated[Ts...] {
     values (Ts..., Bool, Ts...)
 }
@@ -25,12 +46,43 @@ concept Repeating {
     fn keep[Ts...](self Self, values (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) {
         values
     }
+    fn pair[Ts...](self Self, left Ts..., separator Text, right Ts...) ((Ts...), (Ts...)) {
+        paired_values[Ts...](left..., separator, right...)
+    }
 }
 
 impl Repeating for Bool {
 }
 
+impl Repeating for Int {
+    fn pair[Us...](self Int, first Us..., label Text, second Us...) ((Us...), (Us...)) {
+        assert self == 1
+        paired_values[Us...](first..., label, second...)
+    }
+}
+
 fn exercise_repeated_packs() {
+    let paired = paired_values(1, true, "middle", 2, false)
+    assert paired.0.0 == 1 && paired.1.0 == 2 && !paired.1.1
+    discard paired_values("middle")
+    let direct_callback fn(Int, Text, Int) ((Int,), (Int,)) = paired_values
+    assert direct_callback(3, "middle", 4).1.0 == 4
+    assert triple_values(5, true, 6, false, 7, true).0 == 7
+    discard triple_values()
+    assert static_pair(8, true, 9, false).0 == 9
+    discard static_pair()
+    assert comptime {
+        paired_values(10, "middle", 11).1.0
+    } == 11
+    let defaulted dyn Repeating = true
+    assert defaulted.pair(12, "middle", 13).1.0 == 13
+    let overridden dyn Repeating = 1
+    assert overridden.pair(14, true, "middle", 15, false).1.0 == 15
+    discard overridden.pair("middle")
+    let order List[Int] = []
+    let ordered = paired_values(mark(order, 1), mark(order, 2), "middle", mark(order, 3), mark(order, 4))
+    assert ordered.0.0 == 1 && ordered.1.1 == 4
+    assert length(order) == 4 && order[0] == 1 && order[1] == 2 && order[2] == 3 && order[3] == 4
     let log List[Int] = []
     let values = repeated((mark(log, 1), "left", true, mark(log, 2), "right"))
     assert values.0 == 1 && values.1 == "left" && values.2
@@ -68,7 +120,20 @@ async fn repeated_tasks[Ts...](values (Task[Ts]..., Task[Ts]...)) (Ts..., Ts...)
     }
 }
 
+async fn paired_tasks[Ts...](left Task[Ts]..., right Task[Ts]...) ((Ts...), (Ts...)) {
+    let first = comptime map task in left {
+        task.await
+    }
+    let second = comptime map task in right {
+        task.await
+    }
+    (first, second)
+}
+
 async fn exercise_repeated_tasks() {
+    let pair = paired_tasks(item(3), item(true), item(4), item(false)).await
+    assert pair.0.0 == 3 && pair.0.1 && pair.1.0 == 4 && !pair.1.1
+    discard paired_tasks().await
     let results = repeated_tasks((item(1), item("left"), item(2), item("right"))).await
     assert results.0 == 1 && results.1 == "left"
     assert results.2 == 2 && results.3 == "right"

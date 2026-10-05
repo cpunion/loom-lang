@@ -17,7 +17,9 @@ fn sequence_pack_arity(patterns List[Node], count Int) Int {
     var spreads = 0
     var index = 0
     while index < length(patterns) {
-        if get(patterns, index).kind == NodeKind.Spread {
+        let pattern = get(patterns, index)
+        if pattern.kind == NodeKind.Spread ||
+        (pattern.kind == NodeKind.Parameter && child(pattern, 0).kind == NodeKind.Spread) {
             spreads = spreads + 1
         }
         index = index + 1

@@ -820,14 +820,19 @@ An ordinary top-level function can declare one type pack among fixed type
 parameters. Its width is the total type argument count minus all fixed
 parameters; explicit arguments retain declaration order. Structural
 tuple, function and nominal parameters may expand it at any parameter position;
-a direct variadic value
-parameter may have fixed parameters on either side. Its width is the argument
-count minus the fixed parameter count; two value packs still reject as ambiguous.
-Type patterns expand elementwise; the named value pack
-is an immutable tuple.
+direct variadic value parameters may have fixed parameters on either side.
+All expansions of the declared type pack have the same width. Subtract fixed
+parameters from the argument count and divide by the number of direct expansions;
+a nonintegral width rejects. Ordinary inference checks matching element types
+across every occurrence. Type patterns expand elementwise; each named value
+pack is an immutable tuple.
 Fixed prefixes/suffixes also work with empty packs, static parameters, contextual
 function values and static/dyn methods; they keep source-order input effects and
 ordinary Task obligations. See the [position example](examples/variadics/positions.loom).
+The [repeated example](examples/variadics/repeated.loom) also exercises repeated
+direct values, mixed static/runtime packs, nested iteration and Task frames.
+Independent type packs remain unsupported; repeating one sequence does not
+infer unrelated sequence widths.
 
 ```loom
 pub fn pack[Ts...](values Ts...) (Ts...) {

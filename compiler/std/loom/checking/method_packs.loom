@@ -337,7 +337,7 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
                 let parameters = group(item.node, NodeKind.Parameters)
                 let fixed = fixed_pack_parameters(item.node)
                 let arity = if variadic_parameters(parameters) {
-                    length(all_inputs.nodes) - length(parameters) + 1
+                    sequence_pack_arity(parameters, length(all_inputs.nodes))
                 } else {
                     if length(all_inputs.nodes) == length(parameters) {
                         if length(types) != 0 {
