@@ -13,7 +13,7 @@ fn definition_key(options Options, project Project, identity Text) Text {
         }, identity)
 }
 
-fn definition_load(path Text, prefix Text, project Project, inputs BuildInputs) DefinitionCache {
+fn definition_input(path Text, prefix Text, project Project, inputs BuildInputs) Option[Text] {
     if match entry_kind(path) {
         Result.Ok(kind) => kind == FileKind.File,
         _ => false
@@ -24,13 +24,7 @@ fn definition_load(path Text, prefix Text, project Project, inputs BuildInputs) 
                 // artifacts run BEFORE the trusted compiler-host import API.
                 match frontend_decode_kind(bytes, prefix, project, "definitions", inputs) {
                     Option.Some(value) => {
-                        match import_trusted_definition_cache(value.input) {
-                            Result.Ok(cache) => {
-                                return cache
-                            }
-                            Result.Err(_) => {
-                            }
-                        }
+                        return Option.Some(value.input)
                     }
                     Option.None => {
                     }
@@ -40,7 +34,19 @@ fn definition_load(path Text, prefix Text, project Project, inputs BuildInputs) 
             }
         }
     }
-    definition_cache()
+    Option.None
+}
+
+fn definition_load(path Text, prefix Text, project Project, inputs BuildInputs) DefinitionCache {
+    // Retire the raw bundle and decoded metadata before allocating cached IR.
+    // Only the authenticated snapshot text crosses this call boundary.
+    match definition_input(path, prefix, project, inputs) {
+        Option.Some(text) => match import_trusted_definition_cache(text) {
+            Result.Ok(cache) => cache
+            Result.Err(_) => definition_cache()
+        }
+        Option.None => definition_cache()
+    }
 }
 
 fn prepare_incremental(options Options, project Project, inputs BuildInputs, identity Text) Result[Prepared, Text] {

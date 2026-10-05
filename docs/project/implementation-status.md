@@ -634,6 +634,8 @@ compile-time execution. Integrity and observed-input validation remain mandatory
 these changes do not make local snapshots portable proof artifacts.
 Private decoded IR shares empty lists only within its read-only snapshot. Replay
 and resident-cache detachment still create independent mutable public lists.
+Raw bundle buffers and decoded metadata retire before restoring cached IR; only
+the authenticated snapshot text remains live across that phase boundary.
 See [native benchmarks](../../benchmarks/basic/README.md) separately; compiler
 latency is not interpreter or application runtime performance.
 
