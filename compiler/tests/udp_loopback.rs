@@ -33,7 +33,7 @@ fn source_datagrams_use_real_readiness_packets_cancellation_and_moving_gc() {
         assert!(text.contains("loom_rt_task_wait_socket"));
         assert!(text.contains("loom_rt_socket_multicast_v4"));
         assert!(text.contains("loom_rt_socket_membership_v4"));
-        assert!(!text.contains("loom_rt_task_wait_resolve"));
+        assert!(text.contains("loom_rt_task_wait_resolve"));
         success(
             &common::command(&[
                 "test",
@@ -50,4 +50,47 @@ fn source_datagrams_use_real_readiness_packets_cancellation_and_moving_gc() {
             Command::new(&tests).env("LOOM_GC_STRESS", "1"),
         ));
     }
+    let numeric = directory.path().join("numeric");
+    fs::create_dir(&numeric).unwrap();
+    fs::write(
+        numeric.join("main.loom"),
+        r#"
+import std.net.udp.connect
+import std.net.udp.close
+import std.result.Result
+
+async fn main() {
+    match connect("127.0.0.1:9").await {
+        Result.Ok(connection) => {
+            assert match close(connection) {
+                Result.Ok(_) => true
+                Result.Err(_) => false
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+    success(
+        &common::command(&[
+            "build",
+            numeric.to_str().unwrap(),
+            "--output",
+            executable.to_str().unwrap(),
+            "--emit-ir",
+            ir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap(),
+    );
+    success(&common::run_tasks(&executable));
+    assert!(
+        !fs::read_to_string(ir)
+            .unwrap()
+            .contains("loom_rt_task_wait_resolve")
+    );
 }

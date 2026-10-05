@@ -555,7 +555,11 @@ options and retain active leases. The native example/source tests use TTL zero
 for real local IPv4 multicast packets, delayed readiness, deadlines and moving
 GC. This is not routed or IPv6 multicast delivery evidence; default-interface
 support remains host-dependent.
-Hostname connections interleave address families with configurable bounded
+UDP hostname connect composes existing async DNS with ordered endpoint selection;
+it does not probe peer reachability. The numeric overload still omits the
+resolver operation from native IR. Source/native tests cover resolved fixed-peer
+packets and invalid/exhausted inputs, without a new runtime boundary.
+TCP hostname connections interleave address families with configurable bounded
 concurrency, stagger and a total cancellation deadline. Numeric address races
 share that source policy. Sockets are registered before suspension, so completed
 losers and unextracted child results cannot escape cancellation cleanup.

@@ -3468,7 +3468,12 @@ selection; failure can leave options partly applied. Close if exact policy is
 required. The example uses TTL zero for a real local IPv4 multicast exchange,
 including delayed readiness and a draining deadline. This does not establish
 routed multicast delivery or IPv6 delivery under host interface policy.
-See the [UDP example](examples/udp_echo).
+`connect(host, port).await` uses the existing async DNS resolver and chooses the
+first endpoint accepted by the OS in resolver order, without probing or racing
+remote peers. Lookup errors return `UdpError.Resolve`; invalid peer ports and
+exhausted endpoints return `UdpError.Connect`. Numeric-only calls omit the
+resolver operation from native IR. Task deadlines can bound lookup, with running
+OS lookup drainage on cancellation. See the [UDP example](examples/udp_echo).
 
 `std.net.dns.resolve(host, port).await` returns numeric socket addresses in OS
 resolver order, including hosts-file entries, as `Result[List[Text], ResolveError]`.
