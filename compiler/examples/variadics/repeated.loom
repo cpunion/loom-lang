@@ -1,0 +1,76 @@
+// Every expansion denotes the same ordered type sequence, not a fresh pack.
+fn repeated[Ts...](values (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) {
+    values
+}
+
+fn tripled[Ts...](values (Ts..., Ts..., Ts...)) (Ts..., Ts..., Ts...) {
+    values
+}
+
+fn repeated_callback[R, Ts...](callback fn(Ts..., Bool, Ts...) R,
+    values (Ts..., Bool, Ts...)) R {
+    callback(values...)
+}
+
+fn repeated_label(first Int, middle Bool, last Int) Text {
+    assert first == 1 && middle && last == 2
+    "callback"
+}
+
+record Repeated[Ts...] {
+    values (Ts..., Bool, Ts...)
+}
+
+concept Repeating {
+    fn keep[Ts...](self Self, values (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) {
+        values
+    }
+}
+
+impl Repeating for Bool {
+}
+
+fn exercise_repeated_packs() {
+    let log List[Int] = []
+    let values = repeated((mark(log, 1), "left", true, mark(log, 2), "right"))
+    assert values.0 == 1 && values.1 == "left" && values.2
+    assert values.3 == 2 && values.4 == "right"
+    assert length(log) == 2 && log[0] == 1 && log[1] == 2
+    assert repeated((true,)).0
+    assert repeated[Int]((3, false, 4)).2 == 4
+    let callback fn((Int, Bool, Int)) (Int, Bool, Int) = repeated
+    assert callback((5, true, 6)).2 == 6
+    assert repeated_callback(repeated_label, (1, true, 2)) == "callback"
+    assert comptime {
+        repeated((7, true, 8)).2
+    } == 8
+
+    let triple = tripled((1, true, "a", 2, false, "b", 3, true, "c"))
+    assert triple.3 == 2 && !triple.4 && triple.8 == "c"
+    discard tripled(pack())
+    let packet = Repeated {
+        values = (9, true, 10)
+    }
+    assert packet.values.2 == 10
+    let source dyn Repeating = true
+    assert source.keep((11, "first", false, 12, "last")).4 == "last"
+    assert source.keep((true,)).0
+
+    let shared = [13]
+    let aliases = repeated((shared, true, shared))
+    aliases.0[0] = 14
+    assert aliases.2[0] == 14 && shared[0] == 14
+}
+
+async fn repeated_tasks[Ts...](values (Task[Ts]..., Task[Ts]...)) (Ts..., Ts...) {
+    comptime map task in values {
+        task.await
+    }
+}
+
+async fn exercise_repeated_tasks() {
+    let results = repeated_tasks((item(1), item("left"), item(2), item("right"))).await
+    assert results.0 == 1 && results.1 == "left"
+    assert results.2 == 2 && results.3 == "right"
+    discard repeated_tasks(pack()).await
+}

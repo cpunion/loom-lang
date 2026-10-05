@@ -332,6 +332,7 @@ fn sum[Ts... Number](values Ts...) Int {
     total
 }
 fn pack[Ts...](values Ts...) (Ts...) { values }
+fn repeat[Ts...](values (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) { values }
 fn main() {
     let packet = Packet { values = pack(40, 2, true) }
     let values = packet.values
@@ -340,6 +341,8 @@ fn main() {
     let empty = Packet { values = pack() }
     discard empty
     discard pack(pack()...)
+    let repeated = repeat((40, true, 2))
+    assert repeated.0 + repeated.2 == 42 && repeated.1
 }
 "#,
     )
@@ -362,5 +365,6 @@ fn main() {
     let text = fs::read_to_string(ir).unwrap();
     assert!(!text.contains("call ptr @loom_"));
     assert!(!text.contains("@loom_task_"));
+    assert!(!text.contains("@loom_rt_alloc"));
     success(&Command::new(executable).output().unwrap());
 }

@@ -50,8 +50,8 @@ fn mentions_pack(node Node, name Text) Bool {
     false
 }
 
-// Direct tuple expansions retain their one-expansion rule. Nested function
-// and nominal patterns use the same type elaboration and ordinary inference.
+// Every occurrence uses the declaration's same pack. Its arity is inferred
+// from shape equations; ordinary inference checks all expanded element types.
 fn tuple_pack_expansion(parameter Node) Int {
     let ty = child(parameter, 0)
     if ty.kind != NodeKind.TupleType {
@@ -164,23 +164,19 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
     while index < length(parameters) {
         let parameter = get(parameters, index)
         let spread = child(parameter, 0).kind == NodeKind.Spread
-        let tuple = tuple_pack_parameter(parameter)
         if spread && index + 1 != length(parameters) {
             return Result.Err(failure(env, owner, parameter, "a variadic value parameter must be last"))
         }
         if spread && !mentions_pack(child(parameter, 0), pack.value) {
             return Result.Err(failure(env, owner, parameter, "the variadic parameter type must use the declared pack"))
         }
-        if tuple {
+        if tuple_pack_parameter(parameter) {
             let shape = child(parameter, 0)
-            let expansion = tuple_pack_expansion(parameter)
-            if !mentions_pack(child(shape, expansion), pack.value) {
-                return Result.Err(failure(env, owner, parameter, "the tuple expansion type must use the declared pack"))
-            }
-            var field = expansion + 1
+            var field = 0
             while field < length(shape.children) {
-                if child(shape, field).kind == NodeKind.Spread {
-                    return Result.Err(failure(env, owner, child(shape, field), "a structural tuple parameter has one direct type expansion"))
+                let pattern = child(shape, field)
+                if pattern.kind == NodeKind.Spread && !mentions_pack(pattern, pack.value) {
+                    return Result.Err(failure(env, owner, pattern, "the tuple expansion type must use the declared pack"))
                 }
                 field = field + 1
             }

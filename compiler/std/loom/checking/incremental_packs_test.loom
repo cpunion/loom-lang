@@ -22,12 +22,16 @@ test fn variadic_bodies_restore_by_source_declaration_and_arity() {
         fn scalar(value Int) Int {
             value
         }
+        fn repeated[Ts...](items (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) {
+            items
+        }
         pub fn answer() Int {
             let callback = keep(scalar)
             assert callback(3) == 3
             let pair = mapped(bundle(3, true))
             let triple = bundle(1, "two", false)
             assert pair.1 && !triple.2
+            assert repeated((4, true, 5)).2 == 5
             pair.0 + count(triple...) + count(1)
         }
         """
@@ -47,10 +51,15 @@ test fn variadic_bodies_restore_by_source_declaration_and_arity() {
             false
         }
     }
-    assert bodies_reused(cache) >= 6
+    assert bodies_reused(cache) >= 7
     discard restored_definition_cache(cache)
     let invalid = std.text.join(std.text.split(source, "bundle(3, true)"), "bundle(3, 4)")
     assert match cached_source(cache, invalid) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let inconsistent = std.text.join(std.text.split(source, "repeated((4, true, 5))"), "repeated((4, true, false))")
+    assert match cached_source(restored_definition_cache(initial), inconsistent) {
         Result.Err(_) => true
         Result.Ok(_) => false
     }
