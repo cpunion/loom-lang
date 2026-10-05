@@ -1,0 +1,192 @@
+// A proof-only family erases opaque inputs. Element-independent iterations
+// become ordinary counted loops over symbolic nonnegative widths, so the
+// existing invariant prover checks zero and arbitrary-many iterations. Native
+// specializations still expand and check every element, resource and effect.
+fn pack_proof_width(index Int) Text {
+    concat("$packwidth#", std.int.to_text(index))
+}
+
+fn pack_proof_sources(node Node) List[Text] {
+    let names = pack_names(declared_packs(node))
+    let parameters = group(node, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if has_type_expansion(child(parameter, 0)) {
+            push(names, parameter.value)
+        }
+        index = index + 1
+    }
+    names
+}
+
+fn pack_proof_loop_width(declaration Node, source Node) Int {
+    if source.kind != NodeKind.Name {
+        return -1
+    }
+    let packs = declared_packs(declaration)
+    let parameters = group(declaration, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if parameter.value == source.value {
+            let ty = child(parameter, 0)
+            let pattern = if ty.kind == NodeKind.Spread {
+                child(ty, 0)
+            } else if ty.kind == NodeKind.TupleType && length(ty.children) == 1 && child(ty, 0).kind == NodeKind.Spread {
+                child(child(ty, 0), 0)
+            } else {
+                return -1
+            }
+            let names = expansion_packs(pattern, pack_names(packs))
+            if length(names) == 1 {
+                return get(names, 0)
+            }
+            return -1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(packs) {
+        if get(packs, index).value == source.value {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn pack_proof_control(node Node) Bool {
+    if node.kind == NodeKind.Break || node.kind == NodeKind.Continue {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if pack_proof_control(child(node, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, erased List[Text], elements List[Text], count List[Int], depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, node, "variadic contract proof depth exceeded"))
+    }
+    if node.kind == NodeKind.Discard && child(node, 0).kind == NodeKind.Name {
+        var index = 0
+        while index < length(elements) {
+            if child(node, 0).value == get(elements, index) {
+                return Result.Ok(pack_node(node, NodeKind.Block, "", new[Node]()))
+            }
+            index = index + 1
+        }
+    }
+    var index = 0
+    while index < length(erased) {
+        let name = get(erased, index)
+        if pack_root(node, name) ||
+        ((node.kind == NodeKind.Call || node.kind == NodeKind.Construct || node.kind == NodeKind.RecordPattern) && slice(node.value, 0, first_dot(node.value)) == name) ||
+        pack_local_binds(node, name) ||
+        (node.kind == NodeKind.Parameter && node.value == name) ||
+        (node.kind == NodeKind.Arm && pack_pattern_binds(child(node, 0), name)) ||
+        ((node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) && iteration_binds(node, name)) {
+            return Result.Err(failure(env, owner, node,
+                    "variadic contract proof requires element-independent iteration; pack content and type induction are not supported"))
+        }
+        index = index + 1
+    }
+    if node.kind == NodeKind.ComptimeFor {
+        let width = pack_proof_loop_width(declaration, child(node, 0))
+        if width >= 0 {
+            if pack_proof_control(child(node, 1)) {
+                return Result.Err(failure(env, owner, node, "variadic contract induction cannot change the target of break or continue"))
+            }
+            let nested = new[Text]()
+            index = 0
+            while index < length(erased) {
+                push(nested, get(erased, index))
+                index = index + 1
+            }
+            push(nested, node.value)
+            let ignored = new[Text]()
+            index = 0
+            while index < length(elements) {
+                push(ignored, get(elements, index))
+                index = index + 1
+            }
+            push(ignored, node.value)
+            let identity = get(count, 0)
+            set(count, 0, identity + 1)
+            let cursor = concat("$packindex#", std.int.to_text(identity))
+            let position = pack_node(node, NodeKind.Name, cursor, new[Node]())
+            let statements = new[Node]()
+            let key = part(node, NodeKind.IterationKey)
+            if key >= 0 {
+                push(statements, pack_binding(child(node, key), child(node, key).value, position, false))
+            }
+            push(statements, pack_proof_tree(env, owner, declaration, child(node, 1), nested, ignored, count, depth + 1)?)
+            let increment = pack_node(node, NodeKind.Binary, "+", [position, pack_node(node, NodeKind.Integer, "1", new[Node]())])
+            push(statements, pack_node(node, NodeKind.Assign, cursor, source_nodes(increment)))
+            let guard = pack_node(node, NodeKind.Binary, "<", [position, pack_node(node, NodeKind.Name, pack_proof_width(width), new[Node]())])
+            let loop = pack_node(node, NodeKind.While, "", [guard, pack_node(node, NodeKind.Block, "", statements)])
+            let start = pack_node(node, NodeKind.Var, cursor, source_nodes(pack_node(node, NodeKind.Integer, "0", new[Node]())))
+            return Result.Ok(pack_node(node, NodeKind.Block, "", [start, loop, pack_node(node, NodeKind.Block, "", new[Node]())]))
+        }
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(node.children) {
+        push(children, pack_proof_tree(env, owner, declaration, child(node, index), erased, elements, count, depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}
+
+fn pack_contract_declaration(env Environment, owner Int) Result[Node, Failure] {
+    let node = symbol(env, owner).node
+    let packs = declared_packs(node)
+    let erased = pack_proof_sources(node)
+    let children = new[Node]()
+    let count = ints(0)
+    var index = 0
+    while index < length(node.children) {
+        let member = child(node, index)
+        if member.kind == NodeKind.TypeParameters || member.kind == NodeKind.Parameters {
+            let members = new[Node]()
+            var selected = 0
+            while selected < length(member.children) {
+                let input = child(member, selected)
+                if input.kind != NodeKind.TypePack && !(input.kind == NodeKind.Parameter && has_type_expansion(child(input, 0))) {
+                    push(members, input)
+                }
+                selected = selected + 1
+            }
+            if member.kind == NodeKind.Parameters {
+                selected = 0
+                while selected < length(packs) {
+                    push(members, pack_node(member, NodeKind.Parameter, pack_proof_width(selected), source_nodes(pack_node(member, NodeKind.Type, "Int", new[Node]()))))
+                    selected = selected + 1
+                }
+            }
+            push(children, pack_node(member, member.kind, member.value, members))
+        } else {
+            push(children, pack_proof_tree(env, owner, node, member, erased, new[Text](), count, 0)?)
+        }
+        index = index + 1
+    }
+    // Implementations inherit the declaration's symbolic-width domain; this
+    // is not permission to strengthen a public method's preconditions.
+    let parent = symbol(env, owner).owner
+    if parent < 0 || symbol(env, parent).node.kind != NodeKind.Impl {
+        index = 0
+        while index < length(packs) {
+            let width = pack_node(node, NodeKind.Name, pack_proof_width(index), new[Node]())
+            let guard = pack_node(node, NodeKind.Binary, ">=", [width, pack_node(node, NodeKind.Integer, "0", new[Node]())])
+            push(children, pack_node(node, NodeKind.Requires, "", source_nodes(guard)))
+            index = index + 1
+        }
+    }
+    Result.Ok(pack_node(node, NodeKind.Function, node.value, children))
+}

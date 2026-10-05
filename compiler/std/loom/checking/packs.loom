@@ -389,7 +389,7 @@ fn expand_family_type(env Environment, owner Int, node Node, names List[Text], w
             let pattern = get(child.children, 0)
             if node.kind == NodeKind.Type && (pattern.kind == NodeKind.TupleType || pattern.kind == NodeKind.Tuple) {
                 push(children, pack_node(child, NodeKind.Spread, "", source_nodes(
-                    expand_family_type(env, owner, pattern, names, widths, elements, true, depth + 1, preserve_other_packs)?)))
+                            expand_family_type(env, owner, pattern, names, widths, elements, true, depth + 1, preserve_other_packs)?)))
                 index = index + 1
                 continue
             }
@@ -401,7 +401,11 @@ fn expand_family_type(env Environment, owner Int, node Node, names List[Text], w
                         expansion_elements(pattern, names, elements, selected), true, depth + 1, preserve_other_packs)?)
                 selected = selected + 1
             }
-            let nominal = if node.kind == NodeKind.Type { find_data(env, owner, node, node.value)? } else { -1 }
+            let nominal = if node.kind == NodeKind.Type {
+                find_data(env, owner, node, node.value)?
+            } else {
+                -1
+            }
             if nominal >= 0 && type_pack_count(symbol(env, nominal).node) > 1 {
                 push(children, pack_node(child, NodeKind.Spread, "", source_nodes(pack_node(pattern, NodeKind.TupleType, "", expanded))))
             } else {
@@ -433,39 +437,8 @@ fn pack_contract(node Node, name Text) Bool {
     false
 }
 
-// Dependency erasure, not an arity sample: every clause, the return type and
-// the body must be independent of the sequence and all pack-bearing inputs.
-// Their ordinary proof is then unchanged by adding any number of opaque
-// inputs. Selected arities still check bounds, resource use and native types.
 fn validate_pack_contract(env Environment, owner Int) Result[Bool, Failure] {
-    let node = symbol(env, owner).node
-    let packs = declared_packs(node)
-    let parameters = group(node, NodeKind.Parameters)
-    var index = 0
-    while index < length(node.children) {
-        let member = child(node, index)
-        if member.kind != NodeKind.TypeParameters && member.kind != NodeKind.Parameters {
-            var dependent = false
-            var pack = 0
-            while pack < length(packs) {
-                dependent = dependent || mentions_pack(member, get(packs, pack).value)
-                pack = pack + 1
-            }
-            var parameter = 0
-            while parameter < length(parameters) {
-                let input = get(parameters, parameter)
-                if has_type_expansion(child(input, 0)) {
-                    dependent = dependent || pack_contract(member, input.value)
-                }
-                parameter = parameter + 1
-            }
-            if dependent {
-                return Result.Err(failure(env, owner, member,
-                        "variadic postcondition proof depends on a type or value pack; universal induction is not supported yet"))
-            }
-        }
-        index = index + 1
-    }
+    discard pack_contract_declaration(env, owner)?
     Result.Ok(true)
 }
 
@@ -497,39 +470,18 @@ fn erased_pack_signature(env Environment, owner Int) Result[Int, Failure] {
         }
         index = index + 1
     }
-    discard validate_pack_contract(env, owner)?
     let item = symbol(env, owner)
+    let proof = pack_contract_declaration(env, owner)?
     let declaration = method_pack_source(env, owner)
     let inherited = if declaration >= 0 && declaration != owner {
         get(env.signatures, erased_pack_signature(env, declaration)?).symbol
     } else {
         -1
     }
-    let children = new[Node]()
-    index = 0
-    while index < length(item.node.children) {
-        let member = child(item.node, index)
-        if member.kind == NodeKind.TypeParameters || member.kind == NodeKind.Parameters {
-            let members = new[Node]()
-            var selected = 0
-            while selected < length(member.children) {
-                let input = child(member, selected)
-                if input.kind != NodeKind.TypePack &&
-                !(input.kind == NodeKind.Parameter && has_type_expansion(child(input, 0))) {
-                    push(members, input)
-                }
-                selected = selected + 1
-            }
-            push(children, pack_node(member, member.kind, member.value, members))
-        } else {
-            push(children, member)
-        }
-        index = index + 1
-    }
     let source = length(env.source.symbols)
     push(env.source.symbols, Symbol {
             file = item.file
-            node = pack_node(item.node, NodeKind.Function, item.node.value, children)
+            node = proof
             name = item.name
             public = false
             test_only = item.test_only
