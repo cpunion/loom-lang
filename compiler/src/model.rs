@@ -102,6 +102,7 @@ pub enum Primitive {
     SocketListen,
     SocketBindDatagram,
     SocketConnectDatagram,
+    SocketDatagramBroadcast,
     SocketConnect,
     SocketConnectStatus,
     SocketAccept,

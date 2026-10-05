@@ -238,6 +238,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::SocketListen
         | Primitive::SocketBindDatagram
         | Primitive::SocketConnectDatagram
+        | Primitive::SocketDatagramBroadcast
         | Primitive::SocketConnect
         | Primitive::SocketConnectStatus
         | Primitive::SocketAccept

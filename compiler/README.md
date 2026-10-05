@@ -3451,7 +3451,10 @@ a `Connection` with an ephemeral local port and fixed peer. It has no handshake
 or reachability/delivery guarantee. `send(connection, bytes)` sends one packet
 to that peer; `receive` uses kernel peer filtering. Connection copies share the
 same close/abort identity; `peer_address` and `local_address` expose numeric
-endpoints, not descriptors. Multicast and broadcast configuration remain open.
+endpoints, not descriptors. `set_broadcast(socket, enabled)` explicitly controls
+IPv4 broadcast permission for an unconnected Socket; `broadcast(socket)` queries
+it. It defaults off, is shared by aliases, and does not guarantee routing or
+delivery through the host's network policy. Multicast configuration remains open.
 See the [UDP example](examples/udp_echo).
 
 `std.net.dns.resolve(host, port).await` returns numeric socket addresses in OS

@@ -8,7 +8,8 @@ target/loom run compiler/examples/udp_echo
 ```
 
 Two ordinary Tasks exchange a Unicode datagram over real IPv4 loopback sockets.
-The client uses a fixed-peer `Connection`; its delayed send lets the server
+The server checks its default-off broadcast permission and explicitly toggles
+it without changing its identity. The client uses a fixed-peer `Connection`; its delayed send lets the server
 register a read with the platform reactor.
 The source `std.net.udp` library retries readiness, preserves packet boundaries,
 returns each packet's numeric sender, and closes sockets through lexical `defer`.
@@ -27,5 +28,8 @@ must still drain. Use the existing Task deadline helpers for receive deadlines.
 handshake. `send(connection, bytes)` targets only that peer, and the kernel
 filters incoming packets from other senders. Connection copies share the same
 close/abort identity. The source tests also exercise filtering and empty packets.
-IPv6 numeric endpoints are supported when the host enables that family; DNS,
-multicast and broadcast configuration remain future work.
+`set_broadcast(socket, enabled)` controls IPv4 broadcast permission and
+`broadcast(socket)` queries it; aliases share the option. The source tests
+verify configuration, not delivery under arbitrary routing/firewall policy.
+IPv6 numeric endpoints are supported when the host enables that family; DNS
+and multicast configuration remain future work.

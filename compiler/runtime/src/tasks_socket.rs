@@ -286,6 +286,20 @@ impl Sockets {
             .map_or(-1, |address| i64::from(address.port()))
     }
 
+    fn datagram_broadcast(&self, token: i64, mode: i64) -> i64 {
+        let Some(socket) = self.get(token) else {
+            return -1;
+        };
+        let Socket::Datagram(socket) = socket.as_ref() else {
+            return -1;
+        };
+        match mode {
+            -1 => socket.broadcast().map_or(-1, i64::from),
+            0 | 1 => socket.set_broadcast(mode == 1).map_or(-1, |()| 0),
+            _ => -1,
+        }
+    }
+
     fn address(&self, token: i64, peer: bool) -> Option<SocketAddr> {
         let socket = self.get(token)?;
         match socket.as_ref() {
@@ -424,6 +438,11 @@ pub(super) extern "C-unwind" fn loom_rt_socket_abort(token: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_socket_local_port(token: i64) -> i64 {
     edit(|owner, _| Ok(owner.sockets().local_port(token)))
+}
+
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_socket_datagram_broadcast(token: i64, mode: i64) -> i64 {
+    edit(|owner, _| Ok(owner.sockets().datagram_broadcast(token, mode)))
 }
 
 #[unsafe(no_mangle)]
@@ -709,6 +728,27 @@ pub(super) extern "C-unwind" fn loom_rt_task_wait_socket(token: i64, interests: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn broadcast_options_share_identity_without_retiring_leases() {
+        let sockets = Sockets::default();
+        let token = sockets.bind_datagram("127.0.0.1:0");
+        assert!(token > 0);
+        let lease = sockets.get(token).unwrap();
+        assert_eq!(sockets.datagram_broadcast(token, -1), 0);
+        for enabled in [1, 0] {
+            assert_eq!(sockets.datagram_broadcast(token, enabled), 0);
+            assert_eq!(sockets.datagram_broadcast(token, -1), enabled);
+            assert!(!sockets.close(token));
+        }
+        assert_eq!(sockets.datagram_broadcast(token, 2), -1);
+        drop(lease);
+        assert!(sockets.close(token));
+        assert_eq!(sockets.datagram_broadcast(token, -1), -1);
+        let listener = sockets.listen("127.0.0.1:0");
+        assert_eq!(sockets.datagram_broadcast(listener, 1), -1);
+        assert!(sockets.close(listener));
+    }
 
     #[test]
     fn addresses_and_stream_options_preserve_leased_half_closed_handles() {

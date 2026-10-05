@@ -1144,7 +1144,9 @@ impl Converter<'_> {
                         Some((&[Type::Int, Type::Bytes], Type::Int))
                     }
                     Primitive::SocketAddress => Some((&[Type::Int, Type::Int], Type::Text)),
-                    Primitive::SocketSetNodelay => Some((&[Type::Int, Type::Int], Type::Int)),
+                    Primitive::SocketSetNodelay | Primitive::SocketDatagramBroadcast => {
+                        Some((&[Type::Int, Type::Int], Type::Int))
+                    }
                     Primitive::SocketSetKeepalive => Some((
                         &[Type::Int, Type::Int, Type::Int, Type::Int, Type::Int],
                         Type::Int,
@@ -1510,6 +1512,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "socket_listen" => P::SocketListen,
         "socket_bind_datagram" => P::SocketBindDatagram,
         "socket_connect_datagram" => P::SocketConnectDatagram,
+        "socket_datagram_broadcast" => P::SocketDatagramBroadcast,
         "socket_connect" => P::SocketConnect,
         "socket_connect_status" => P::SocketConnectStatus,
         "socket_accept" => P::SocketAccept,
@@ -1681,7 +1684,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitSocket
         | P::TaskWaitTls
         | P::PathRename => 2,
-        P::SocketAddress | P::SocketSetNodelay => 2,
+        P::SocketAddress | P::SocketSetNodelay | P::SocketDatagramBroadcast => 2,
         P::TlsOutput | P::TlsPeerCertificate => 2,
         P::TextSlice
         | P::BytesSet
@@ -2001,6 +2004,7 @@ mod tests {
             ("socket_abort", &[1][..]),
             ("socket_bind_datagram", &[2][..]),
             ("socket_connect_datagram", &[2][..]),
+            ("socket_datagram_broadcast", &[1, 1][..]),
             ("socket_send_datagram", &[1, 3, 1][..]),
             ("socket_receive_from", &[1, 3, 1, 3][..]),
             ("socket_send_to", &[1, 3, 1, 2][..]),
