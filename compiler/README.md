@@ -1983,8 +1983,12 @@ change that List's existing writable aliases. No automatic copy or runtime
 monitor is installed. Copies of a constrained value keep sharing its storage.
 
 Indexing, ordinary non-escaping read helpers and explicit copies are allowed.
-Shared element results currently cannot escape through a constrained borrow;
-extent-only predicates do not grant an unrestricted outer alias.
+Shared element results may escape when their stored type graph proves they cannot
+contain the protected outer header. This covers nested Lists and supported
+record/tuple/enum fields without freezing their contents. Recursive backreferences,
+opaque captures/dyn data and unresolved types remain conservative; non-escaping
+helpers can still return independent scalar observations.
+Extent-only predicates never grant an unrestricted outer alias.
 When the predicate observes only length, element replacement is also permitted:
 
 ```loom

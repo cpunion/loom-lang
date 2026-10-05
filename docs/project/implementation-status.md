@@ -235,7 +235,9 @@ may retain shared elements while proving an independent, unpublished outer heade
 input resizing cannot change the copy's extent, and nested updates remain visible.
 Content
 constraints still require immutable inline elements, and raw writable aliases
-cannot escape. Cyclic invariant construction rejects
+cannot escape. Shared elements can return through checked reads when their stored
+type graph cannot contain the protected outer header; recursive backreferences,
+opaque captures and unresolved types remain conservative. Cyclic invariant construction rejects
 before recursive expansion exhausts the compiler stack.
 
 Every declared `ensures` requires a static proof. The CLI submits remaining

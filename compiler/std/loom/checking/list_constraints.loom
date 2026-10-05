@@ -149,14 +149,14 @@ fn constraint_operation(env Environment, functions List[Function], value Expr) B
     }
     if value.kind == ExprKind.Intrinsic {
         return invariant_intrinsic_allowed(true, writes, value.text, inputs) &&
-        (value.ty == 0 || inline_constraint_base(env, value.ty, 0))
+        (value.ty == 0 || inline_constraint_base(env, value.ty, 0) || constraint_output_independent(env, value))
     }
     if value.kind != ExprKind.Call {
         return false
     }
     let reads = invariant_reads(env, functions, value, true, writes)
     let output = invariant_call(reads, value.index, inputs, 0)
-    get(reads.valid, 0) && !origin_shared(output)
+    get(reads.valid, 0) && (!origin_shared(output) || constraint_output_independent(env, value))
 }
 
 fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr) Result[Bool, Failure] {

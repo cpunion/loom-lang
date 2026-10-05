@@ -1,0 +1,74 @@
+import std.loom.typed.type_relation
+
+// A returned element cannot expose the protected header if its stored type
+// graph cannot contain that List. Opaque captures/conformance and unresolved
+// types supply no such evidence. This is not a promise of element immutability.
+fn constraint_storage_reachable(env Environment, target Int, ty Int) Bool {
+    let pending = ints(ty)
+    let seen = new[Int]()
+    var next = 0
+    while next < length(pending) {
+        if next >= 256 {
+            return true
+        }
+        let current = get(pending, next)
+        next = next + 1
+        if current < 0 || current >= length(env.types) ||
+        std.loom.typed.type_relation(env.types, target, current) != 0 {
+            return true
+        }
+        if get(env.type_states, current).phase != 2 {
+            return true
+        }
+        var index = 0
+        while index < length(seen) && get(seen, index) != current {
+            index = index + 1
+        }
+        if index < length(seen) {
+            continue
+        }
+        push(seen, current)
+        let shape = get(env.types, current)
+        if shape.kind == TypeKind.Unit || shape.kind == TypeKind.Int ||
+        shape.kind == TypeKind.Bool || shape.kind == TypeKind.Float ||
+        shape.kind == TypeKind.Text || shape.kind == TypeKind.Bytes || shape.kind == TypeKind.Meta {
+            continue
+        }
+        if shape.kind == TypeKind.List {
+            push(pending, get(shape.arguments, 0))
+        } else if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple || shape.kind == TypeKind.Refined {
+            index = 0
+            while index < length(shape.fields) {
+                push(pending, get(shape.fields, index).ty)
+                index = index + 1
+            }
+        } else if shape.kind == TypeKind.Enum {
+            index = 0
+            while index < length(shape.variants) {
+                let fields = get(shape.variants, index).fields
+                var field = 0
+                while field < length(fields) {
+                    push(pending, get(fields, field))
+                    field = field + 1
+                }
+                index = index + 1
+            }
+        } else {
+            return true
+        }
+    }
+    false
+}
+
+fn constraint_output_independent(env Environment, value Expr) Bool {
+    var index = 0
+    while index < length(value.children) {
+        let input = get(value.children, index)
+        if constraint_weakened(env, input) &&
+        constraint_storage_reachable(env, input.ty, value.ty) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}

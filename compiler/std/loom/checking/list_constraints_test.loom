@@ -212,6 +212,66 @@ test fn extent_factories_share_elements_without_sharing_the_outer_header() {
         """)
 }
 
+test fn constrained_reads_return_elements_that_cannot_contain_the_outer_header() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.list.push
+        type Nonempty[T] = List[T] where length(self) > 0
+        record Row {
+            items List[Int]
+        }
+        enum Item {
+            Value(Row)
+        }
+        fn filled[T](value T) Nonempty[T] {
+            Nonempty([value])
+        }
+        fn direct[T](values Nonempty[T]) T {
+            values[0]
+        }
+        fn forwarded[T](values List[T]) T {
+            values[0]
+        }
+        fn read[T](values Nonempty[T]) T {
+            forwarded(values)
+        }
+        fn main() {
+            let inner = [1]
+            let rows = filled(Row { items = inner })
+            direct(rows).items[0] = 7
+            assert length(rows) == 1
+            match read(filled(Item.Value(Row { items = inner }))) {
+                Item.Value(row) => {
+                    push(row.items, 9)
+                }
+            }
+            let tuple = direct(filled((inner, true)))
+            push(tuple.0, 5)
+            assert inner[0] == 7 && length(inner) == 3
+        }
+        """)
+}
+
+test fn constrained_element_results_do_not_expose_recursive_or_opaque_backrefs() {
+    list_constraint_reject("""
+        import std.list.length
+        record Node {
+            children List[Node]
+        }
+        type Nonempty = List[Node] where length(self) > 0
+        pub fn expose(values Nonempty) Node {
+            values[0]
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Nonempty = List[fn() Int] where length(self) > 0
+        pub fn expose(values Nonempty) fn() Int {
+            values[0]
+        }
+        """)
+}
+
 test fn list_constraints_reject_old_aliases_mutation_and_unrestricted_escapes() {
     let header = list_constraint_source()
     list_constraint_reject(concat(header, """

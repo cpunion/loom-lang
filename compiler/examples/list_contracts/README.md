@@ -24,10 +24,14 @@ suspension. Fresh construction proves a singleton directly; copying unknown
 input retains checked `Result` construction, including rejection of empty input.
 The copy shares nested elements but not the outer header: resizing the input
 does not change its length, while nested updates remain visible through a
-non-escaping read helper.
+non-escaping read helper. Generic `first` also returns the shared inner List:
+its stored type cannot contain the protected outer header, so the caller may
+mutate it without invalidating the outer extent.
 Raw writable outer aliases still cannot escape, and predicates observing shared
 element contents remain unsupported. The factory must prove fresh, unpublished
 outer storage; purity or a method named `clone` is not sufficient.
+Potential recursive backreferences and opaque function/dyn captures cannot escape
+through this type-graph rule.
 
 `entry.loom` proves append against `old(length(values))`, without an explicit
 size parameter. Two consecutive calls use different invocation-entry lengths;
