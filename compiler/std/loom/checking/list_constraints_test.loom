@@ -272,6 +272,107 @@ test fn constrained_element_results_do_not_expose_recursive_or_opaque_backrefs()
         """)
 }
 
+fn account_constraint_source() Text {
+    """
+    import std.list.length
+    import std.list.clone
+    import std.list.push
+    import std.result.Result
+    import std.result.ConstraintError
+    record Account[T] {
+        amount Int
+        notes T
+    }
+    fn amount[T](value Account[T]) Int {
+        value.amount
+    }
+    fn positive[T](values List[Account[T]]) Bool {
+        var index = 0
+        while index < length(values) {
+            if amount(values[index]) <= 0 {
+                return false
+            }
+            index = index + 1
+        }
+        length(values) > 0
+    }
+    type PositiveAccounts[T] = List[Account[T]] where positive(self)
+
+    """
+}
+
+test fn list_content_constraints_observe_immutable_fields_not_shared_siblings() {
+    list_constraint_accept(concat(account_constraint_source(), """
+        fn copied[T](values List[Account[T]]) Result[PositiveAccounts[T], ConstraintError] {
+            PositiveAccounts(clone(values))
+        }
+        fn first(values PositiveAccounts[List[Int]]) Account[List[Int]] {
+            values[0]
+        }
+        fn main() {
+            let notes = [1]
+            let input = [Account {
+                amount = 10
+                notes = notes
+            }]
+            match copied(input) {
+                Result.Ok(values) => {
+                    input[0] = Account {
+                        amount = -1
+                        notes = notes
+                    }
+                    first(values).notes[0] = -2
+                    assert values[0].amount == 10 && notes[0] == -2
+                }
+                Result.Err(_) => {
+                    assert false
+                }
+            }
+        }
+        """))
+    list_constraint_reject(concat(account_constraint_source(), """
+        pub fn invalid(values PositiveAccounts[List[Int]]) {
+            values[0] = Account {
+                amount = -1
+                notes = []
+            }
+        }
+        """))
+}
+
+test fn list_predicates_reject_indirect_storage_even_with_the_same_header_type() {
+    list_constraint_reject("""
+        import std.list.length
+        record Node {
+            children List[Node]
+        }
+        fn nested(values List[Node]) Bool {
+            length(values) > 0 && length(values[0].children) > 0
+        }
+        type Nested = List[Node] where nested(self)
+        pub fn use(values Nested) Int {
+            length(values)
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        record Account {
+            amount Int
+            notes List[Int]
+        }
+        fn observed(value Account) Bool {
+            length(value.notes) > 0 && value.notes[0] > 0
+        }
+        fn positive(values List[Account]) Bool {
+            length(values) > 0 && observed(values[0])
+        }
+        type Positive = List[Account] where positive(self)
+        pub fn use(values Positive) Int {
+            length(values)
+        }
+        """)
+}
+
 test fn list_constraints_reject_old_aliases_mutation_and_unrestricted_escapes() {
     let header = list_constraint_source()
     list_constraint_reject(concat(header, """

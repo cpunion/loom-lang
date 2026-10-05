@@ -233,9 +233,10 @@ shared elements; the [native example](../../compiler/examples/list_contracts/ref
 checks generic replacement, append, checked copying and suspension. Fresh factories
 may retain shared elements while proving an independent, unpublished outer header;
 input resizing cannot change the copy's extent, and nested updates remain visible.
-Content
-constraints still require immutable inline elements, and raw writable aliases
-cannot escape. Shared elements can return through checked reads when their stored
+Content constraints may observe immutable element fields beside unobserved shared
+siblings. The checker tracks reads through elements and rejects nested mutable
+observations, including same-type recursive headers; this is not a deep freeze.
+Raw writable outer aliases cannot escape. Shared elements can return through checked reads when their stored
 type graph cannot contain the protected outer header; recursive backreferences,
 opaque captures and unresolved types remain conservative. Cyclic invariant construction rejects
 before recursive expansion exhausts the compiler stack.

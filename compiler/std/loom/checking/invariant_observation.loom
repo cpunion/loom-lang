@@ -10,6 +10,7 @@ record InvariantReads {
     references List[Expr]
     contents Bool
     writes Int
+    root_list Int
     element_reads List[Bool]
     calls List[InvariantCall]
     valid List[Bool]
@@ -84,7 +85,7 @@ fn invariant_call(reads InvariantReads, target Int, inputs List[InputOrigin], de
     push(reads.calls, InvariantCall {
             target = target
             inputs = inputs
-            origin = origin_input()
+            origin = origin_input(reads.root_list >= 0)
         })
     if function.runtime_name != "" && !invariant_intrinsic_allowed(reads.contents, reads.writes, function.runtime_name, inputs) {
         set(reads.valid, 0, false)
@@ -172,6 +173,19 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     if kind == ExprKind.Intrinsic && origin_shared(borrowed) && value.text != "list_len" {
         set(reads.element_reads, 0, true)
     }
+    // List predicates may read their controlled outer header, not mutable
+    // storage reached through an element. Immutable field projections below
+    // erase origins, so unobserved shared siblings need not be frozen.
+    if kind == ExprKind.Intrinsic && reads.root_list >= 0 && origin_shared(borrowed) {
+        let root = length(inputs) != 0 && !get(inputs, 0).indirect &&
+        get(value.children, 0).ty == reads.root_list
+        if !root || (value.text != "list_len" && value.text != "list_get" && value.text != "list_retain_range") {
+            set(reads.valid, 0, false)
+        }
+        if shared && (value.text == "list_get" || value.text == "list_retain_range") {
+            borrowed = origin_indirect(borrowed)
+        }
+    }
     if ((kind == ExprKind.Intrinsic && !invariant_intrinsic_allowed(reads.contents, reads.writes, value.text, inputs)) || kind == ExprKind.DynCall ||
         kind == ExprKind.FrameStore) && origin_shared(borrowed) {
         set(reads.valid, 0, false)
@@ -219,16 +233,16 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
         return if value.index >= 0 && length(value.children) == 1 {
             origin_field(borrowed, -1 - value.index)
         } else {
-            origin_input()
+            origin_input(borrowed.indirect)
         }
     }
     if (kind == ExprKind.List || kind == ExprKind.DynBox) && origin_shared(borrowed) {
-        return origin_input()
+        return origin_input(borrowed.indirect)
     }
     borrowed
 }
 
-fn invariant_reads(env Environment, functions List[Function], value Expr, contents Bool, writes Int) InvariantReads {
+fn invariant_reads(env Environment, functions List[Function], value Expr, contents Bool, writes Int, root_list Int) InvariantReads {
     let references = new[Expr]()
     invariant_references(value, references)
     var function = 0
@@ -248,14 +262,15 @@ fn invariant_reads(env Environment, functions List[Function], value Expr, conten
         references = references
         contents = contents
         writes = writes
+        root_list = root_list
         element_reads = invariant_flag(false)
         calls = new[InvariantCall]()
         valid = invariant_flag(true)
     }
 }
 
-fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int, contents Bool) InvariantReads {
-    let reads = invariant_reads(env, program.functions, value, contents, 0)
+fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int, root_list Int) InvariantReads {
+    let reads = invariant_reads(env, program.functions, value, root_list >= 0, 0, root_list)
     let inputs = new[InputOrigin]()
     push(inputs, origin_input())
     let frame = invariant_frame(count, inputs)

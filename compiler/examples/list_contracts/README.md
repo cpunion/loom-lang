@@ -27,8 +27,11 @@ does not change its length, while nested updates remain visible through a
 non-escaping read helper. Generic `first` also returns the shared inner List:
 its stored type cannot contain the protected outer header, so the caller may
 mutate it without invalidating the outer extent.
-Raw writable outer aliases still cannot escape, and predicates observing shared
-element contents remain unsupported. The factory must prove fresh, unpublished
+The account example constrains each immutable `amount` beside shared `notes`.
+Input replacement and notes updates cannot change the copied amounts, including
+across suspension; a nonpositive account fails checked construction. Reading
+shared notes in the predicate rejects rather than assuming they remain unchanged.
+Raw writable outer aliases still cannot escape. The factory must prove fresh, unpublished
 outer storage; purity or a method named `clone` is not sufficient.
 Potential recursive backreferences and opaque function/dyn captures cannot escape
 through this type-graph rule.

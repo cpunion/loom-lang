@@ -69,3 +69,60 @@ async fn exercise_generic_extents() {
 test async fn generic_extent_constraints_preserve_shared_nested_elements() {
     exercise_generic_extents().await
 }
+
+record Account {
+    amount Int
+    notes List[Int]
+}
+
+fn positive_accounts(values List[Account]) Bool {
+    var index = 0
+    while index < length(values) {
+        if values[index].amount <= 0 {
+            return false
+        }
+        index = index + 1
+    }
+    length(values) > 0
+}
+
+type PositiveAccounts = List[Account] where positive_accounts(self)
+
+fn checked_accounts(values List[Account]) Result[PositiveAccounts, ConstraintError] {
+    PositiveAccounts(clone(values))
+}
+
+fn first_account(values PositiveAccounts) Account {
+    values[0]
+}
+
+async fn exercise_observed_fields() {
+    let notes = [1]
+    let input = [Account {
+            amount = 10
+            notes = notes
+        }]
+    assert match checked_accounts(input) {
+        Result.Ok(values) => {
+            input[0] = Account {
+                amount = -1
+                notes = []
+            }
+            let row = first_account(values)
+            row.notes[0] = -2
+            push(notes, 3)
+            sleep_ms(1).await
+            assert length(values) == 1 && values[0].amount == 10
+            notes[0] == -2 && length(row.notes) == 2
+        }
+        Result.Err(_) => false
+    }
+    assert match checked_accounts(input) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
+
+test async fn immutable_element_fields_survive_unobserved_shared_updates() {
+    exercise_observed_fields().await
+}
