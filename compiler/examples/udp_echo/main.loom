@@ -1,7 +1,10 @@
 import std.net.udp.Socket
+import std.net.udp.Connection
 import std.net.udp.Datagram
 import std.net.udp.UdpError
 import std.net.udp.bind
+import std.net.udp.connect
+import std.net.udp.peer_address
 import std.net.udp.local_address
 import std.net.udp.receive
 import std.net.udp.send
@@ -17,9 +20,9 @@ async fn echo(server Socket) Result[Datagram, UdpError] {
     Result.Ok(packet)
 }
 
-async fn request(client Socket, address Text) Result[Datagram, UdpError] {
+async fn request(client Connection) Result[Datagram, UdpError] {
     sleep_ms(2).await
-    discard send(client, to_bytes("hello from Loom 🧵"), address).await?
+    discard send(client, to_bytes("hello from Loom 🧵")).await?
     receive(client, 1024).await
 }
 
@@ -28,12 +31,13 @@ async fn exercise() Result[Bool, UdpError] {
     defer {
         discard close(server)
     }
-    let client = bind("127.0.0.1:0").await?
+    let address = local_address(server)?
+    let client = connect(address).await?
     defer {
         discard close(client)
     }
-    let address = local_address(server)?
-    let incoming, outgoing = (echo(server), request(client, address)).await
+    assert peer_address(client)? == address
+    let incoming, outgoing = (echo(server), request(client)).await
     let received = incoming?
     let replied = outgoing?
     assert received.sender == local_address(client)?

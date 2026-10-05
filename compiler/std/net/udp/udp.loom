@@ -12,6 +12,11 @@ pub record Socket {
     state State
 }
 
+// The peer is fixed at creation; no unrestricted Socket wrapper escapes.
+pub record Connection {
+    state State
+}
+
 pub record Datagram {
     sender Text
     data Bytes
@@ -19,6 +24,7 @@ pub record Datagram {
 
 pub enum UdpError {
     Bind
+    Connect
     Address
     Limit
     Receive
@@ -28,6 +34,10 @@ pub enum UdpError {
 }
 
 intrinsic fn socket_bind_datagram(address Text) Int
+
+intrinsic fn socket_connect_datagram(address Text) Int
+
+intrinsic fn socket_send_datagram(token Int, value Bytes, end Int) Int
 
 intrinsic fn socket_receive_from(token Int, buffer Bytes, limit Int, sender Bytes) Int
 
@@ -52,6 +62,39 @@ pub async fn bind(address Text) Result[Socket, UdpError] {
                 token = token
             }
         })
+}
+
+// Numeric endpoint, ephemeral local port. UDP has no handshake: success only
+// establishes the local peer/filter, not remote reachability or delivery.
+pub async fn connect(address Text) Result[Connection, UdpError] {
+    let token = socket_connect_datagram(address)
+    if token < 0 {
+        return Result.Err(UdpError.Connect)
+    }
+    Result.Ok(Connection {
+            state = State {
+                token = token
+            }
+        })
+}
+
+fn as_socket(connection Connection) Socket {
+    Socket {
+        state = connection.state
+    }
+}
+
+pub fn peer_address(connection Connection) Result[Text, UdpError] {
+    let address = socket_address(connection.state.token, 1)
+    if address == "" {
+        Result.Err(UdpError.Address)
+    } else {
+        Result.Ok(address)
+    }
+}
+
+pub fn local_address(connection Connection) Result[Text, UdpError] {
+    local_address(as_socket(connection))
 }
 
 pub fn local_address(socket Socket) Result[Text, UdpError] {
@@ -93,6 +136,30 @@ pub async fn receive(socket Socket) Result[Datagram, UdpError] {
     receive(socket, 65535).await
 }
 
+// The kernel filters packets from other peers; packet/error semantics match
+// ordinary Socket receives, including empty data and truncation.
+pub async fn receive(connection Connection, limit Int) Result[Datagram, UdpError] {
+    receive(as_socket(connection), limit).await
+}
+
+pub async fn receive(connection Connection) Result[Datagram, UdpError] {
+    receive(connection, 65535).await
+}
+
+pub async fn send(connection Connection, value Bytes) Result[Int, UdpError] {
+    let end = length(value)
+    while true {
+        let count = socket_send_datagram(connection.state.token, value, end)
+        if count == end {
+            return Result.Ok(count)
+        }
+        if count != -2 {
+            return Result.Err(UdpError.Send)
+        }
+        socket_wait(connection.state.token, 2).await
+    }
+}
+
 // The initial extent is retained across readiness retries. A packet is never
 // split into stream-like partial sends. Use caller synchronization for aliases
 // that could modify the existing bytes while this Task is pending.
@@ -120,6 +187,10 @@ pub fn close(socket Socket) Result[Int, UdpError] {
     }
 }
 
+pub fn close(connection Connection) Result[Int, UdpError] {
+    close(as_socket(connection))
+}
+
 // Revokes aliases and wakes pending receives/sends. Already delivered packets
 // are not rolled back. Drain those Tasks before leaving their enclosing scope.
 pub fn abort(socket Socket) Result[Int, UdpError] {
@@ -128,4 +199,8 @@ pub fn abort(socket Socket) Result[Int, UdpError] {
     } else {
         Result.Ok(0)
     }
+}
+
+pub fn abort(connection Connection) Result[Int, UdpError] {
+    abort(as_socket(connection))
 }
