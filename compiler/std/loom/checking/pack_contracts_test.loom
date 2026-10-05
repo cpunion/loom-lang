@@ -401,7 +401,7 @@ test fn variadic_element_observations_do_not_guess_values_types_or_identity() {
         fn unsupported[Ts... C](values Ts...) Int
         ensures result >= 0 {
             var sum = 0
-            comptime for item in values { sum = sum + item.value[Bool]() }
+            comptime for item in values { sum = sum + item.value[typeof(item)]() }
             sum
         }
         """)
@@ -419,17 +419,133 @@ test fn variadic_element_observations_do_not_guess_values_types_or_identity() {
         """)
 }
 
+fn pack_report_contracts() Text {
+    """
+        record Report {
+            count Int
+            valid Bool
+            label Text
+        }
+        concept Reports {
+            fn report[Tag](self Self, input Int, label Text) Report
+            requires input >= 0
+            ensures result.count == input && result.valid && result.label == label {
+                Report {
+                    count = input
+                    valid = true
+                    label = label
+                }
+            }
+            fn echo[Tag](self Self, input Text, comptime marker Int) Text
+            ensures result == input {
+                input
+            }
+            fn pair(self Self, input Int) (Int, Bool)
+            requires input >= 0
+            ensures result.0 == input && result.1 {
+                (input, true)
+            }
+        }
+        impl Reports for Bool {}
+        impl Reports for Int {}
+        fn collect[Tag, Ts... Reports](input Int, label Text, values Ts...) Report
+        requires input >= 0
+        ensures result.count >= input && result.valid && result.label == label {
+            var summary = Report {
+                count = input
+                valid = true
+                label = label
+            }
+            comptime for item in values {
+                let seen = item.report[Tag](input, "checked")
+                let pair = item.pair(seen.count)
+                summary = Report {
+                    count = summary.count + pair.0
+                    valid = summary.valid && seen.valid && pair.1
+                    label = item.echo[Tag](summary.label, 7)
+                }
+            }
+            summary
+        }
+        """
+}
+
+test fn variadic_observations_reuse_generic_text_and_inline_aggregate_summaries() {
+    let definitions = pack_report_contracts()
+    discard accepted(concat(definitions, """
+        fn main() {
+            let empty = collect[Bool](2, "empty")
+            assert empty.count == 2 && empty.valid && empty.label == "empty"
+            let mixed = collect[Bool, Int, Bool](2, "mixed", 7, true)
+            assert mixed.count == 6 && mixed.valid && mixed.label == "mixed"
+            assert comptime { collect[Int, Bool](3, "static", false) }.count == 6
+        }
+        """))
+    rejects(std.text.join(std.text.split(definitions, "summary.count + pair.0"), "summary.count - pair.0"))
+    rejects(std.text.join(std.text.split(definitions, "summary.valid && seen.valid && pair.1"), "summary.valid && !seen.valid"))
+    rejects(std.text.join(std.text.split(definitions, "item.echo[Tag](summary.label, 7)"), "item.echo[Tag](\"changed\", 7)"))
+    rejects(std.text.join(std.text.split(definitions, "ensures result == input"), "ensures true"))
+}
+
+test fn variadic_observations_do_not_reveal_receiver_types_through_results() {
+    let source = """
+        concept C {
+            fn copy(self Self) Self
+            ensures true {
+                self
+            }
+        }
+        fn unsupported[Ts... C](values Ts...) Bool
+        ensures result {
+            comptime for item in values {
+                let copy = item.copy()
+                discard copy
+            }
+            true
+        }
+        """
+    assert match checked(source_files(source)) {
+        Result.Err(failed) => failed.diagnostic.message ==
+        "variadic element observations require a synchronous concept method with a declared postcondition and no receiver-dependent types, contracts or arguments"
+        Result.Ok(_) => false
+    }
+    rejects("""
+        concept C {
+            type Item
+            fn copy(self Self) Self.Item
+            ensures true
+        }
+        fn unsupported[Ts... C](values Ts...) Bool
+        ensures result {
+            comptime for item in values { discard item.copy() }
+            true
+        }
+        """)
+    rejects("""
+        concept C {
+            fn value[Ts...](self Self, values Ts...) Int
+            ensures result >= 0
+        }
+        fn unsupported[Ts... C](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values { sum = sum + item.value(1) }
+            sum
+        }
+        """)
+}
+
 test fn variadic_element_observations_invalidate_opaque_shared_effects() {
     list_length_contract("""
         import std.list.length
         concept C {
-            fn value(self Self) Int
-            ensures result >= 0
+            fn value[Tag](self Self) (Int, Text)
+            ensures result.0 >= 0
         }
         fn wrong[Ts... C](shared List[Int], values Ts...) Int
         ensures result == old(length(shared)) {
             let before = length(shared)
-            comptime for item in values { discard item.value() }
+            comptime for item in values { discard item.value[Bool]() }
             length(shared)
         }
         """, false)

@@ -1,5 +1,5 @@
 // Proof-only families use counted loops over symbolic nonnegative widths.
-// Opaque elements can only be observed through declared scalar method summaries:
+// Opaque elements can only be observed through declared method summaries:
 // each call supplies a fresh result, never element identity or type equality.
 // Native specializations still check every element, resource and effect.
 record PackProofElement {
@@ -142,13 +142,17 @@ fn pack_proof_observation(env Environment, owner Int, pack Int, node Node) Resul
             if method.kind == NodeKind.Function && method.value == node.value &&
             length(parameters) == length(child(node, 2).children) + 1 {
                 let returns = group(method, NodeKind.ReturnType)
-                var supported = length(group(method, NodeKind.TypeParameters)) == 0 &&
-                length(child(node, 1).children) == 0 && !has(method, NodeKind.Async) &&
+                // Ordinary signature/summary checking owns type inference,
+                // static arguments and supported result shapes. The family
+                // guard only prevents the abstract receiver escaping into
+                // type selection or value-dependent contracts.
+                var supported = length(declared_packs(method)) == 0 && !has(method, NodeKind.Async) &&
                 has(method, NodeKind.Ensures) && length(returns) == 1
                 if supported {
-                    let output = get(returns, 0)
-                    supported = output.kind == NodeKind.Type && length(output.children) == 0 &&
-                    (output.value == "Int" || output.value == "Bool")
+                    supported = !pack_proof_opaque_contract(get(returns, 0), "Self")
+                    if has(method, NodeKind.TypeParameters) {
+                        supported = supported && !pack_proof_opaque_contract(child(method, part(method, NodeKind.TypeParameters)), "Self")
+                    }
                 }
                 var argument = 1
                 while argument < length(parameters) {
@@ -166,7 +170,7 @@ fn pack_proof_observation(env Environment, owner Int, pack Int, node Node) Resul
                 }
                 if !supported {
                     return Result.Err(failure(env, owner, node,
-                            "variadic element observations require a non-generic concept method with an Int or Bool postcondition and no receiver-dependent contracts or arguments"))
+                            "variadic element observations require a synchronous concept method with a declared postcondition and no receiver-dependent types, contracts or arguments"))
                 }
                 found = true
             }
@@ -232,7 +236,7 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
         (node.kind == NodeKind.Arm && pack_pattern_binds(child(node, 0), name)) ||
         ((node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) && iteration_binds(node, name)) {
             return Result.Err(failure(env, owner, node,
-                    "variadic contract proof permits pack elements only as declared scalar method receivers or discarded values; type-dependent induction is not supported"))
+                    "variadic contract proof permits pack elements only as declared method receivers or discarded values; type-dependent induction is not supported"))
         }
         index = index + 1
     }

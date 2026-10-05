@@ -315,6 +315,11 @@ fn scalar_packs_do_not_introduce_runtime_storage_or_task_machinery() {
 concept Number {
     fn number(self Self) Int
     ensures result >= 0
+
+    fn checked[Tag](self Self) (Int, Bool)
+    ensures result.0 >= 0 && result.1 {
+        (self.number(), true)
+    }
 }
 impl Number for Int {
     fn number(self Int) Int { if self < 0 { 0 } else { self } }
@@ -329,7 +334,9 @@ fn sum[Ts... Number](values Ts...) Int
 ensures result >= 0 {
     var total = 0
     comptime for value in values {
-        total = total + value.number()
+        let pair = value.checked[Bool]()
+        assert pair.1
+        total = total + pair.0
     }
     total
 }

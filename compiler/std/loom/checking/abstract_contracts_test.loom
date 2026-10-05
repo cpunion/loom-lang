@@ -127,9 +127,19 @@ test fn abstract_method_contracts_keep_static_arguments_and_package_scope() {
         ensures result > 0 {
             receiver.keep[Bool](value, 7)
         }
+        fn many[Ts... C](value Int, receivers Ts...) Int
+        requires value > 0
+        ensures result > 0 {
+            var current = value
+            comptime for receiver in receivers {
+                current = receiver.keep[Bool](current, 7)
+            }
+            current
+        }
         fn main() {
             assert forward(true, 8) == 8
             assert comptime { forward(true, 9) } == 9
+            assert many(8, true, false) == 8 && many(9) == 9
         }
         """)
     push(files, source_file("rules", """
