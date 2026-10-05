@@ -4,6 +4,17 @@ record DataSelection {
     supplied List[Node]
 }
 
+// Shorthand As... and explicit (As...)... describe the same nominal slot.
+// Its tuple-shaped sequence pattern is also shared by method/impl schemas.
+fn type_group_pattern(argument Node) Node {
+    let expanded = child(argument, 0)
+    if expanded.kind == NodeKind.TupleType || expanded.kind == NodeKind.Tuple {
+        pack_node(expanded, NodeKind.TupleType, "", expanded.children)
+    } else {
+        pack_node(argument, NodeKind.TupleType, "", source_nodes(argument))
+    }
+}
+
 // Explicit groups occupy declared pack slots; an unmarked tuple remains one
 // ordinary type. Flatten only after recording every boundary, including zero.
 fn data_type_groups(env Environment, owner Int, node Node, declaration Int, types List[Node]) Result[DataSelection, Failure] {

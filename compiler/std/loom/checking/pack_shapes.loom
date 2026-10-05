@@ -180,12 +180,7 @@ fn shape_data_group_equations(env Environment, pattern Node, shape Type, names L
         if get(parameters, index).kind == NodeKind.TypePack {
             let count = get(shape.pack_widths, pack)
             if member.kind == NodeKind.Spread {
-                let expanded = child(member, 0)
-                let tuple = if expanded.kind == NodeKind.TupleType || expanded.kind == NodeKind.Tuple {
-                    expanded
-                } else {
-                    pack_node(member, NodeKind.TupleType, "", source_nodes(member))
-                }
+                let tuple = type_group_pattern(member)
                 let elements = new[Int]()
                 var element = 0
                 while element < count {

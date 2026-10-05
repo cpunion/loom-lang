@@ -12,6 +12,18 @@ concept FirstGroup {
     fn first_width(self Self) Int
 }
 
+concept Keeping {
+    fn keep[As..., Bs...](self Self, value Groups[As..., Bs...]) Groups[As..., Bs...] {
+        value
+    }
+}
+
+impl Keeping for Bool {
+    fn keep[Xs..., Ys...](self Self, value Groups[(Xs...)..., (Ys...)...]) Groups[(Xs...)..., (Ys...)...] {
+        value
+    }
+}
+
 impl[As...] FirstGroup for Groups[(As...)..., (Int,)...] {
     fn first_width(self Self) Int {
         var count = 0
@@ -61,6 +73,8 @@ async fn exercise_groups() {
     assert selected(wide) == 2 && selected(narrow) == 6
     let dynamic dyn FirstGroup = wide
     assert dynamic.first_width() == 2
+    let keeper dyn Keeping = true
+    assert keeper.keep(wide).left.1 == 2 && keeper.keep(narrow).right.1 == 6
     assert comptime {
         Groups[(Int, Int)..., (Int,)...] != Groups[(Int,)..., (Int, Int)...]
     }

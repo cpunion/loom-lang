@@ -136,12 +136,7 @@ fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth
                     if member.kind != NodeKind.Spread {
                         return Result.Err(failure(env, owner, member, "expand each nominal pack group with ..."))
                     }
-                    let expanded = child(member, 0)
-                    let tuple = if expanded.kind == NodeKind.TupleType {
-                        expanded
-                    } else {
-                        pack_node(member, NodeKind.TupleType, "", source_nodes(member))
-                    }
+                    let tuple = type_group_pattern(member)
                     push(children, impl_target_schema(env, owner, tuple, element, depth + 1)?)
                 } else {
                     push(children, impl_target_schema(env, owner, member, element, depth + 1)?)

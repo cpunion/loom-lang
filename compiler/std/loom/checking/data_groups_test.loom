@@ -7,10 +7,20 @@ test fn independent_nominal_groups_keep_boundaries_through_inference_and_cache()
         fn left[As..., Bs...](value Groups[As..., Bs...]) (As...) {
             value.left
         }
+        concept Keeping {
+            fn keep[As..., Bs...](self Self, value Groups[As..., Bs...]) Groups[As..., Bs...]
+        }
+        impl Keeping for Bool {
+            fn keep[Xs..., Ys...](self Self, value Groups[(Xs...)..., (Ys...)...]) Groups[(Xs...)..., (Ys...)...] {
+                value
+            }
+        }
         pub fn answer() Int {
             let a Groups[(Int, Int)..., (Int,)...] = Groups { left = (40, 2), right = (1,) }
             let b Groups[(Int,)..., (Int, Int)...] = Groups { left = (3,), right = (4, 5) }
             assert left(a).1 == 2 && b.right.1 == 5
+            let receiver dyn Keeping = true
+            assert receiver.keep(a).left.1 == 2 && receiver.keep(b).right.1 == 5
             a.left.0 + a.left.1
         }
         """
