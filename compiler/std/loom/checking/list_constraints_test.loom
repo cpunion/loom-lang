@@ -83,6 +83,66 @@ fn list_constraint_source() Text {
     """
 }
 
+test fn generic_list_extent_constraints_ignore_shared_element_contents() {
+    list_constraint_accept("""
+        import std.list.length
+        type Nonempty[T] = List[T] where length(self) > 0
+        fn filled[T](value T) Nonempty[T] {
+            Nonempty([value])
+        }
+        fn size[T](values Nonempty[T]) Int {
+            length(values)
+        }
+        fn main() {
+            assert size(filled(42)) == 1
+            let inner = [1]
+            let outer = filled(inner)
+            inner[0] = -1
+            assert size(outer) == 1
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Nonempty[T] = List[T] where length(self) > 0
+        fn expose[T](values Nonempty[T]) List[T] {
+            values
+        }
+        fn main() {
+            discard expose(Nonempty([1]))
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Nonempty[T] = List[T] where length(self) > 0
+        fn empty() Nonempty[Int] {
+            Nonempty[Int]([])
+        }
+        """)
+}
+
+test fn generic_extent_constraints_keep_content_and_task_boundaries() {
+    list_constraint_reject("""
+        import std.list.length
+        fn positive(values List[List[Int]]) Bool {
+            length(values) > 0 && length(values[0]) > 0 && values[0][0] > 0
+        }
+        type Positive = List[List[Int]] where positive(self)
+        pub fn use(value Positive) Int {
+            length(value)
+        }
+        """)
+    assert match list_constraint_checked("""
+        import std.list.length
+        type Nonempty[T] = List[T] where length(self) > 0
+        pub fn invalid(value Nonempty[Task[Int]]) {
+            discard value
+        }
+        """) {
+        Result.Err(failed) => failed.diagnostic.message == "refinements cannot contain scoped resources or one-shot Tasks"
+        Result.Ok(_) => false
+    }
+}
+
 test fn list_constraints_accept_fresh_storage_and_non_escaping_reads() {
     list_constraint_accept(concat(list_constraint_source(), """
         fn copied(input List[Int]) Result[Positive, ConstraintError] {
@@ -184,9 +244,6 @@ test fn list_constraint_factories_must_not_publish_or_return_input_aliases() {
             Positive([])
         }
         """))
-    list_constraint_reject("""
-        type Invalid = List[List[Int]] where true
-        """)
 }
 
 test fn length_constraints_allow_shared_element_replacement_through_helpers() {

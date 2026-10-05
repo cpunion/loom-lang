@@ -147,5 +147,5 @@ test fn generic_refinements_reject_mutable_observation_and_resource_instantiatio
 
         type Invalid[T] = State[T] where head(self.values) > 0
         """, "type constraints may observe immutable fields, not shared mutable contents")
-    rejects_result("type Invalid[T] = List[T] where true")
+    discard accepted_result("type Unobserved[T] = List[T] where true")
 }

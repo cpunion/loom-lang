@@ -105,7 +105,7 @@ fn construction_fact(context Context, value Expr, bindings List[Int],
     }
 }
 
-// Keep immutable scalar evidence and record shape. Everything else is an
+// Keep immutable scalar evidence and fresh aggregate shape. Everything else is an
 // independent typed snapshot: proof preparation must not replay effects or
 // identify separate observations of mutable storage.
 fn construction_input(context Context, value Expr, bindings List[Int],
@@ -113,11 +113,16 @@ fn construction_input(context Context, value Expr, bindings List[Int],
     if fact_size(context, value, 0) > 0 {
         return construction_fact(context, value, bindings, params, locals)
     }
-    if depth < 64 && value.kind == ExprKind.Record {
+    if depth < 64 && (value.kind == ExprKind.Record || value.kind == ExprKind.List) {
         let fields = new[Expr]()
         var index = 0
         while index < length(value.children) {
             let field = get(value.children, index)
+            if value.kind == ExprKind.List {
+                push(fields, construction_input(context, field, bindings, params, locals, depth + 1))
+                index = index + 1
+                continue
+            }
             let input = construction_input(context, get(field.children, 0), bindings, params, locals, depth + 1)
             push(fields, Expr {
                     kind = field.kind
@@ -211,7 +216,7 @@ fn proved_construction(context Context, node Node, source Node, value Expr, targ
     if context.env.expanding_helpers || context.env.stage_depth >= 32 {
         return Result.Ok(false)
     }
-    if value.kind == ExprKind.Record {
+    if value.kind == ExprKind.Record || value.kind == ExprKind.List {
         return flow_construction_proof(context, node, value, target)
     }
     if value.kind != ExprKind.Call {

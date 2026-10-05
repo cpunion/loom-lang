@@ -228,8 +228,12 @@ snapshots, without replaying or reordering executable initializers.
 Verified factory contracts accept unmodeled inputs without an opaque-type
 whitelist; such inputs contribute no tag, payload or finiteness assumptions.
 The [shared view example](../../compiler/examples/shared_views) uses `Pair[T]`
-with Int, Text and Bool elements. Generic List element constraints remain limited
-by the immutable-inline element rule. Cyclic invariant construction rejects
+with Int, Text and Bool elements. Extent-only List constraints accept generic and
+shared elements; the [native example](../../compiler/examples/list_contracts/refinements.loom)
+checks generic replacement, append and suspension, plus checked Int copying. Content
+constraints still require immutable inline elements, and raw writable aliases
+cannot escape. Shared-element factory results still use conservative whole-graph
+alias checks. Cyclic invariant construction rejects
 before recursive expansion exhausts the compiler stack.
 
 Every declared `ensures` requires a static proof. The CLI submits remaining
