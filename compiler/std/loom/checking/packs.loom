@@ -290,13 +290,9 @@ fn pack_name(pack Text, index Int) Text {
 // Only type positions substitute a pack name. Runtime identifiers and source
 // spans remain intact; this is typed-declaration elaboration, not text macros.
 fn expand_pack_type(env Environment, owner Int, node Node, pack Text, arity Int, element Int, types Bool, depth Int) Result[Node, Failure] {
-    expand_pack_type_in(env, owner, node, pack, arity, element, types, depth, false)
-}
-
-fn expand_pack_type_in(env Environment, owner Int, node Node, pack Text, arity Int, element Int, types Bool, depth Int, preserve_other_packs Bool) Result[Node, Failure] {
     let names = new[Text]()
     push(names, pack)
-    expand_family_type(env, owner, node, names, ints(arity), ints(element), types, depth, preserve_other_packs)
+    expand_family_type(env, owner, node, names, ints(arity), ints(element), types, depth, false)
 }
 
 fn pack_root_index(node Node, names List[Text]) Int {

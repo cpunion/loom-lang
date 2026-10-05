@@ -347,6 +347,31 @@ record Groups[As..., Bs...] {
 concept Shape {}
 impl Shape for Groups[(Int, Int)..., (Int,)...] {}
 impl Shape for Groups[(Int,)..., (Int, Int)...] {}
+concept Widths {
+    fn widths(self Self) (Int, Int)
+}
+impl[As..., Bs...] Widths for Groups[As..., Bs...] {
+    fn widths(self Self) (Int, Int) {
+        var left = 0
+        var right = 0
+        comptime for A in As { left = left + 1 }
+        comptime for B in Bs { right = right + 1 }
+        (left, right)
+    }
+}
+record Envelope[T] {
+    value T
+}
+type Marked[T] = Envelope[T] where true
+impl[As..., Bs...] Widths for Marked[((As...), (Bs...))] {
+    fn widths(self Self) (Int, Int) {
+        var left = 0
+        var right = 0
+        comptime for A in As { left = left + 1 }
+        comptime for B in Bs { right = right + 1 }
+        (left, right)
+    }
+}
 fn main() {
     let packet = Packet { values = pack(40, 2, true) }
     let values = packet.values
@@ -368,6 +393,9 @@ fn main() {
     let narrow Groups[(Int,)..., (Int, Int)...] = Groups { left = (40,), right = (1, 1) }
     assert wide.left.0 + wide.left.1 + wide.right.0 == 42
     assert narrow.left.0 + narrow.right.0 + narrow.right.1 == 42
+    assert wide.widths().0 == 2 && narrow.widths().0 == 1
+    let marked = Marked(Envelope { value = ((40, 1), (1,)) })
+    assert marked.widths().0 == 2 && marked.widths().1 == 1
 }
 "#,
     )

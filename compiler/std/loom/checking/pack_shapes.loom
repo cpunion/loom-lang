@@ -112,10 +112,20 @@ fn shape_sequence_equations(patterns List[Node], count Int, names List[Text], ro
 }
 
 fn shape_type_equations(env Environment, pattern Node, ty Int, names List[Text], rows List[List[Int]], widths List[Int], depth Int) {
+    shape_type_equations(env, pattern, ty, names, rows, widths, depth, false)
+}
+
+// Call probing may weaken a refinement. Impl targets instead retain its
+// nominal parameters, which need not match those of the underlying type.
+fn shape_type_equations(env Environment, pattern Node, ty Int, names List[Text], rows List[List[Int]], widths List[Int], depth Int, exact Bool) {
     if depth >= 64 || !has_type_expansion(pattern) {
         return
     }
-    let shape = get(env.types, base_type(env, ty))
+    let shape = get(env.types, if exact {
+            ty
+        } else {
+            base_type(env, ty)
+        })
     if (pattern.kind == NodeKind.TupleType && shape.kind != TypeKind.Tuple) ||
     (pattern.kind == NodeKind.FunctionType && shape.kind != TypeKind.Function) {
         return
@@ -124,7 +134,7 @@ fn shape_type_equations(env Environment, pattern Node, ty Int, names List[Text],
         return
     }
     if pattern.kind == NodeKind.Type && length(shape.pack_widths) > 1 {
-        shape_data_group_equations(env, pattern, shape, names, rows, widths, depth)
+        shape_data_group_equations(env, pattern, shape, names, rows, widths, depth, exact)
         return
     }
     let patterns = if pattern.kind == NodeKind.FunctionType {
@@ -152,11 +162,11 @@ fn shape_type_equations(env Environment, pattern Node, ty Int, names List[Text],
                 let width = known_expansion_width(expanded, names, widths)
                 var element = 0
                 while element < width {
-                    shape_type_equations(env, expanded, get(shape.arguments, offset + element), names, rows, widths, depth + 1)
+                    shape_type_equations(env, expanded, get(shape.arguments, offset + element), names, rows, widths, depth + 1, exact)
                     element = element + 1
                 }
             } else {
-                shape_type_equations(env, member, get(shape.arguments, offset), names, rows, widths, depth + 1)
+                shape_type_equations(env, member, get(shape.arguments, offset), names, rows, widths, depth + 1, exact)
             }
         }
         index = index + 1
@@ -164,14 +174,16 @@ fn shape_type_equations(env Environment, pattern Node, ty Int, names List[Text],
     if pattern.kind == NodeKind.FunctionType {
         let returns = group(pattern, NodeKind.ReturnType)
         if length(returns) != 0 {
-            shape_type_equations(env, get(returns, 0), get(shape.arguments, count), names, rows, widths, depth + 1)
+            shape_type_equations(env, get(returns, 0), get(shape.arguments, count), names, rows, widths, depth + 1, exact)
         }
     }
 }
 
-fn shape_data_group_equations(env Environment, pattern Node, shape Type, names List[Text], rows List[List[Int]], widths List[Int], depth Int) {
+fn shape_data_group_equations(env Environment, pattern Node, shape Type, names List[Text], rows List[List[Int]], widths List[Int], depth Int, exact Bool) {
     let parameters = group(symbol(env, shape.symbol).node, NodeKind.TypeParameters)
-    if length(parameters) != length(pattern.children) { return }
+    if length(parameters) != length(pattern.children) {
+        return
+    }
     var index = 0
     var pack = 0
     var offset = 0
@@ -187,12 +199,12 @@ fn shape_data_group_equations(env Environment, pattern Node, shape Type, names L
                     push(elements, get(shape.arguments, offset + element))
                     element = element + 1
                 }
-                shape_type_equations(env, tuple, intern(env, TypeKind.Tuple, -1, elements), names, rows, widths, depth + 1)
+                shape_type_equations(env, tuple, intern(env, TypeKind.Tuple, -1, elements), names, rows, widths, depth + 1, exact)
             }
             offset = offset + count
             pack = pack + 1
         } else {
-            shape_type_equations(env, member, get(shape.arguments, offset), names, rows, widths, depth + 1)
+            shape_type_equations(env, member, get(shape.arguments, offset), names, rows, widths, depth + 1, exact)
             offset = offset + 1
         }
         index = index + 1

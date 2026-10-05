@@ -30,6 +30,47 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn independent_impl_groups_replay_native_methods_from_current_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    for entry in fs::read_dir(common::root().join("compiler/examples/data_packs")).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "loom")
+        {
+            fs::copy(&path, package.join(path.file_name().unwrap())).unwrap();
+        }
+    }
+    checked(&cached("run", &package, &cache, &[]), false);
+    fs::write(package.join("aaa.loom"), "fn unrelated() {}\n").unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(
+        trace.contains("bodies reused ") && !trace.contains("bodies reused 0"),
+        "{trace}"
+    );
+    let fresh = common::loom(&["run", package.to_str().unwrap()]);
+    success(&fresh);
+    let replayed = cached("run", &package, &cache, &[]);
+    checked(&replayed, true);
+    assert_eq!(replayed.stdout, fresh.stdout);
+    let path = package.join("independent_impls.loom");
+    let source = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        source.replace("right = right + 1", "right = right - 1"),
+    )
+    .unwrap();
+    let invalid = cached("check", &package, &cache, &[]);
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("postcondition"));
+}
+
+#[test]
 fn entry_storage_contracts_survive_edited_body_cache_reuse() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

@@ -1,0 +1,92 @@
+concept GroupCollection {
+    type Left
+    type Right
+    fn left(self Self) Self.Left
+    fn right(self Self) Self.Right
+    fn counts(self Self) (Int, Int)
+    ensures result.0 >= 0 && result.1 >= 0
+    fn keep[Xs..., Ys...](self Self, first (Xs...), second (Ys...)) ((Xs...), (Ys...)) {
+        (first, second)
+    }
+    fn mix[Xs..., Ys...](self Self, first (Xs...), second (Ys...)) ((Xs...), (Ys...))
+}
+
+impl[As..., Bs...] GroupCollection for Groups[(As...)..., Bs...] {
+    type Left = (As...)
+    type Right = (Bs...)
+
+    fn left(self Self) Self.Left {
+        self.left
+    }
+
+    fn right(self Self) Self.Right {
+        self.right
+    }
+
+    fn counts(self Self) (Int, Int) {
+        var left = 0
+        var right = 0
+        comptime for A in As {
+            left = left + 1
+        }
+        comptime for B in Bs {
+            right = right + 1
+        }
+        (left, right)
+    }
+
+    fn mix[Us..., Vs...](self Self, first (Us...), second (Vs...)) ((Us...), (Vs...)) {
+        (first, second)
+    }
+}
+
+fn group_left[C GroupCollection](value C) C.Left {
+    value.left()
+}
+
+async fn independent_implementations() {
+    let events List[Int] = []
+    let first = Groups {
+        left = (mark(events, 1), mark(events, 2)),
+        right = (mark(events, 3),)
+    }
+    let second = Groups {
+        left = (4,),
+        right = (5, 6)
+    }
+    assert length(events) == 3 && events[0] == 1 && events[1] == 2 && events[2] == 3
+    let a dyn GroupCollection[Left = (Int, Int), Right = (Int,)] = first
+    let b dyn GroupCollection[Left = (Int,), Right = (Int, Int)] = second
+    assert a.counts().0 == 2 && b.counts().0 == 1
+    assert a.left().1 == 2 && b.right().1 == 6
+    assert a.mix((7, 8), (9,)).0.1 == 8
+    assert a.mix((10,), (11, 12)).1.1 == 12
+    assert b.keep((13, true), ("default",)).0.1
+    discard b.mix(packet().values, packet().values)
+
+    let blank = Groups {
+        left = packet().values,
+        right = packet().values
+    }
+    assert blank.counts().0 == 0 && blank.counts().1 == 0
+    let constant = comptime {
+        Groups {
+            left = (14,),
+            right = (true, "ctfe")
+        }.counts()
+    }
+    assert constant.0 == 1 && constant.1 == 2
+
+    let shared = [15]
+    let source = Groups {
+        left = (shared,),
+        right = (true, shared)
+    }
+    let dynamic dyn GroupCollection[Left = (List[Int],), Right = (Bool, List[Int])] = source
+    let values = dynamic.left()
+    values.0[0] = 42
+    assert source.right.1[0] == 42 && group_left(source).0[0] == 42
+    let resumed = echo(dynamic).await
+    assert resumed.counts().1 == 2 && resumed.right().1[0] == 42
+    assert resumed.mix((16, false), ("resumed",)).1.0 == "resumed"
+}

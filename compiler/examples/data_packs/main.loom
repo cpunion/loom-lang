@@ -65,6 +65,7 @@ async fn exercise() {
     exercise_factories().await
     associated().await
     implementation_packs().await
+    independent_implementations().await
     let events List[Int] = []
     let source = Packet {
         tag = "once",
