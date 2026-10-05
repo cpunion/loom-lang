@@ -106,7 +106,11 @@ fn cache_project(output Bytes, project Project, selection List[Int]) Result[Bool
             if !complete && !std.loom.ast.same(std.loom.project.select_source(parsed, false), file.tree) {
                 return Result.Err("cache requires source-backed syntax")
             }
-            mode = if complete { 1 } else { 0 }
+            mode = if complete {
+                1
+            } else {
+                0
+            }
             set(selection, index, mode)
         }
         cache_int(output, file.package)
@@ -184,7 +188,11 @@ fn cache_read_project(reader CacheReader, selection List[Int]) Result[Project, T
         }
         let complete = cache_read_bool(reader)?
         let selected = std.loom.project.select_source(tree, complete)
-        push(selection, if complete { 1 } else { 0 })
+        push(selection, if complete {
+                1
+            } else {
+                0
+            })
         push(files, SourceFile {
                 package = package
                 path = path
@@ -248,10 +256,9 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
 // cache bundle. Never import untrusted/downloaded input through this API.
 // Source changes after import still use the ordinary dependency invalidation.
 pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] {
-    let reader = CacheReader {
-        text = text
-        cursor = ints(0)
-    }
+    // Decoded IR is private and read-only. Empty lists can share storage;
+    // replay and resident snapshots detach every mutable public list.
+    let reader = cache_reader(text)
     if cache_read_text(reader)? != "loom-definition-snapshot 9" {
         return Result.Err("invalid definition snapshot")
     }

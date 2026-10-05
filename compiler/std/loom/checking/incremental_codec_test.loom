@@ -11,10 +11,7 @@ test fn snapshot_numbers_keep_the_canonical_counted_encoding() {
         index = index + 1
     }
     assert std.bytes.to_text(output) == std.bytes.to_text(expected)
-    let reader = CacheReader {
-        text = std.bytes.to_text(output)
-        cursor = ints(0)
-    }
+    let reader = cache_reader(std.bytes.to_text(output))
     index = 0
     while index < length(values) {
         let value = get(values, index)
