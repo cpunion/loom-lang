@@ -475,6 +475,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         let declaration = symbol(context.env, owner).node
         let pack = pack_parameter(declaration)
         if declaration.kind == NodeKind.Function && pack >= 0 {
+            let fixed = fixed_pack_parameters(declaration)
             let parameters = group(declaration, NodeKind.Parameters)
             var arity = length(inputs.nodes) - length(parameters) + 1
             if !variadic_parameters(parameters) {
@@ -482,14 +483,14 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                 if length(inputs.nodes) == length(parameters) {
                     if length(types) != 0 {
                         if length(options) == 0 || structural_pack_position(parameters) < 0 {
-                            arity = length(types) - pack
+                            arity = length(types) - fixed
                         } else {
                             // A fixed overload may supply a needed contextual
                             // hint, such as List[T] for an empty list inside a
                             // block. Probe privately before adding a structural
                             // contender that would remove that single hint.
                             if structural_call_arity(context, inputs, parameters) >= 0 {
-                                arity = length(types) - pack
+                                arity = length(types) - fixed
                             }
                         }
                     } else {
@@ -500,7 +501,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                     }
                 }
             }
-            if arity >= 0 && (length(types) == 0 || length(types) == pack + arity) {
+            if arity >= 0 && (length(types) == 0 || length(types) == fixed + arity) {
                 push(options, pack_signature(context.env, owner, arity)?)
             }
         }

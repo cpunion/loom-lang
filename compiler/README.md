@@ -816,7 +816,9 @@ runtime evaluation. A tuple of Tasks can be awaited directly; this uses
 
 ### Variadic functions
 
-An ordinary top-level function can declare one final type pack. Structural
+An ordinary top-level function can declare one type pack among fixed type
+parameters. Its width is the total type argument count minus all fixed
+parameters; explicit arguments retain declaration order. Structural
 tuple, function and nominal parameters may expand it at any parameter position;
 a direct variadic value
 parameter must be last. Type patterns expand elementwise; the named value pack
@@ -827,7 +829,7 @@ pub fn pack[Ts...](values Ts...) (Ts...) {
     values
 }
 
-fn forward[R, Ts...](callback fn(Ts...) R, values Ts...) R {
+fn forward[Ts..., R](callback fn(Ts...) R, values Ts...) R {
     callback(values...)
 }
 
@@ -1099,7 +1101,7 @@ pack-independent postconditions proved by dependency erasure above. Required
 proofs that depend on pack values or types reject even when uncalled: proving
 selected arities is not a proof for every arity. Preconditions use fixed scalar
 parameters, not the tuple pack, and retain ordinary checked/runtime boundaries.
-Concept methods accept the same final type pack, including defaults, overrides,
+Concept methods accept the same type pack, including defaults, overrides,
 ordinary generic implementation parameters, structural inference and `async`.
 Implementations may rename the pack and inherit its element requirements, but
 cannot strengthen them. Conformance compares expansion-preserving type schemas,
@@ -1108,7 +1110,7 @@ not a few sampled arities. A selected arity becomes an ordinary method slot;
 receiver-only in dynamic methods, even inside an empty expansion. See the
 [method-pack example](examples/variadics/methods.loom).
 
-Impl headers also accept one final pack. The target determines its arity:
+Impl headers also accept one pack among fixed parameters. The target determines its arity:
 
 ```loom
 record Cells[Ts...] {
@@ -1148,7 +1150,7 @@ Multiple independent packs in one parameter list and sequence-dependent
 universal proofs remain open. This implementation does not complete the accepted
 metaprogramming design.
 
-Records and enums accept one final type pack too:
+Records and enums accept one type pack among fixed type parameters too:
 
 ```loom
 record Packet[Tag, Ts...] {

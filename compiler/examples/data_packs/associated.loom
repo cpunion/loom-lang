@@ -26,7 +26,7 @@ impl Source for Bool {
     }
 }
 
-record Produced[Tag, Ts...Source] {
+record Produced[Ts...Source, Tag] {
     tag Tag
     sources (Ts...)
     items (Ts.Item...)

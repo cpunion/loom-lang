@@ -1,4 +1,4 @@
-record Cells[Head, Ts...] {
+record Cells[Ts..., Head] {
     head Head
     values (Ts...)
 }
@@ -11,10 +11,10 @@ concept Collection {
     fn echo[Us...](self Self, values Us...) (Us...) {
         values
     }
-    fn mix[Us...](self Self, values (Us...)) (Us...)
+    fn mix[Us..., R](self Self, values (Us...), extra R) (Us..., R)
 }
 
-impl[Head, Ts...] Collection for Cells[Head, Ts...] {
+impl[Ts..., Head] Collection for Cells[Ts..., Head] {
     type Items = (Ts...)
 
     fn items(self Self) Self.Items {
@@ -29,8 +29,8 @@ impl[Head, Ts...] Collection for Cells[Head, Ts...] {
         count
     }
 
-    fn mix[Us...](self Self, values (Us...)) (Us...) {
-        values
+    fn mix[Us..., R](self Self, values (Us...), extra R) (Us..., R) {
+        (values..., extra)
     }
 }
 
@@ -69,10 +69,10 @@ async fn implementation_packs() {
     values.0[0] = 42
     assert source.head[0] == 42
     assert dynamic.echo(3).0 == 3
-    assert dynamic.mix((4, "native")).1 == "native"
-    assert scalar.mix((true,)).0
+    assert dynamic.mix((4, "native"), false).1 == "native"
+    assert scalar.mix((true,), "suffix").1 == "suffix"
 
     let resumed = echo(source).await
     assert resumed.count() == 2 && resumed.items().1
-    assert resumed.mix((5,)).0 == 5
+    assert resumed.mix((5,), true).1
 }

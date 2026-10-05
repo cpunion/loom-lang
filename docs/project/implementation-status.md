@@ -186,7 +186,9 @@ Pack-independent postconditions use dependency erasure and ordinary abstract
 proofs, including uncalled families and inherited method contracts; the
 [contract example](../../compiler/examples/variadics/contracts.loom) exercises
 constrained construction, CTFE and dyn dispatch. Bodies, return types or clauses
-reading a type pack or pack-bearing input still reject. Multiple packs in one
+reading a type pack or pack-bearing input still reject. A single type pack can
+have fixed parameters before and after it, including concept methods and impl
+families; the same ordered expansion and width rule applies to each. Multiple packs in one
 parameter list and sequence-dependent universal proofs remain unsupported.
 Compile-time execution is not proof by sampling.
 

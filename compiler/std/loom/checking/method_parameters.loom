@@ -111,6 +111,7 @@ fn method_bounds_match(env Environment, declaration Int, implementation Int) Res
     if length(expected) != length(actual) { return Result.Ok(false) }
     var index = 0
     while index < length(actual) {
+        if get(actual, index).kind != get(expected, index).kind { return Result.Ok(false) }
         let supplied = get(actual, index).children
         let declared = get(expected, index).children
         var bound = 0

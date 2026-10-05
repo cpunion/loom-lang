@@ -10,9 +10,8 @@ fn impl_pack_member(env Environment, owner Int) Bool {
 fn validate_impl_pack(env Environment, owner Int) Result[Bool, Failure] {
     let node = symbol(env, owner).node
     let parameters = group(node, NodeKind.TypeParameters)
-    let pack = pack_parameter(node)
-    if pack + 1 != length(parameters) {
-        return Result.Err(failure(env, owner, node, "declare one type pack, last in the type parameter list"))
+    if !one_type_pack(node) {
+        return Result.Err(failure(env, owner, node, "declare only one type pack in a type parameter list"))
     }
     if !has_type_expansion(child(node, 1)) {
         return Result.Err(failure(env, owner, node, "an implementation pack needs a structural target expansion"))
@@ -425,18 +424,8 @@ fn materialize_impl_pack(env Environment, template Int, arity Int) Result[Int, F
         return Result.Err(failure(env, header.source, item.node, "implementation pack specialization budget exceeded; expansion must be finite"))
     }
     let types = group(item.node, NodeKind.TypeParameters)
-    let pack = get(types, length(types) - 1)
-    let parameters = new[Node]()
-    index = 0
-    while index + 1 < length(types) {
-        push(parameters, get(types, index))
-        index = index + 1
-    }
-    index = 0
-    while index < arity {
-        push(parameters, pack_node(pack, NodeKind.Name, pack_name(pack.value, index), pack.children))
-        index = index + 1
-    }
+    let pack = get(types, pack_parameter(item.node))
+    let parameters = expand_pack_parameters(types, arity)
     let children = new[Node]()
     index = 0
     while index < length(item.node.children) {

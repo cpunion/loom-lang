@@ -197,7 +197,7 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
     let item = symbol(env, declaration)
     let pack = pack_parameter(item.node)
     if (pack < 0 && length(arguments) != length(group(item.node, NodeKind.TypeParameters))) ||
-        (pack >= 0 && (length(arguments) < pack || pack + 1 != length(group(item.node, NodeKind.TypeParameters)))) {
+        (pack >= 0 && (length(arguments) < fixed_pack_parameters(item.node) || !one_type_pack(item.node))) {
         return Result.Err(failure(env, declaration, item.node, "wrong number of type arguments"))
     }
     var index = 0
@@ -248,7 +248,7 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
         let original = child(item.node, index)
         let member = if pack >= 0 && (original.kind == NodeKind.Field || original.kind == NodeKind.Variant) {
             let parameter = get(group(item.node, NodeKind.TypeParameters), pack)
-            expand_pack_type(env, declaration, original, parameter.value, length(arguments) - pack, -1, true, 0)?
+            expand_pack_type(env, declaration, original, parameter.value, length(arguments) - fixed_pack_parameters(item.node), -1, true, 0)?
         } else { original }
         if member.kind == NodeKind.Field {
             push(fields, Field { name = member.value ty = resolve_bound(env, declaration, child(member, 0), arguments, obligations, depth + 1)? })
