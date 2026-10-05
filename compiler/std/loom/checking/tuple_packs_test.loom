@@ -83,12 +83,6 @@ test fn tuple_packs_check_every_shape_element_and_declared_bound() {
         }
         """)
     rejects("""
-        fn bad[Ts...](values Ts..., tail Bool) {
-            discard values
-            discard tail
-        }
-        """)
-    rejects("""
         concept Show {
             fn show(self Self) Text
         }

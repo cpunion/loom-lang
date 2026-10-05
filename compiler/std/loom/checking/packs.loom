@@ -124,8 +124,19 @@ fn has_type_expansion(node Node) Bool {
     false
 }
 
+fn value_pack_position(parameters List[Node]) Int {
+    var index = 0
+    while index < length(parameters) {
+        if child(get(parameters, index), 0).kind == NodeKind.Spread {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
 fn variadic_parameters(parameters List[Node]) Bool {
-    length(parameters) != 0 && child(get(parameters, length(parameters) - 1), 0).kind == NodeKind.Spread
+    value_pack_position(parameters) >= 0
 }
 
 fn structural_pack_position(parameters List[Node]) Int {
@@ -200,11 +211,15 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         return Result.Ok(false)
     }
     var index = 0
+    var packed = false
     while index < length(parameters) {
         let parameter = get(parameters, index)
         let spread = child(parameter, 0).kind == NodeKind.Spread
-        if spread && index + 1 != length(parameters) {
-            return Result.Err(failure(env, owner, parameter, "a variadic value parameter must be last"))
+        if spread {
+            if packed {
+                return Result.Err(failure(env, owner, parameter, "declare only one variadic value parameter"))
+            }
+            packed = true
         }
         if spread && !mentions_pack(child(parameter, 0), pack.value) {
             return Result.Err(failure(env, owner, parameter, "the variadic parameter type must use the declared pack"))
@@ -720,41 +735,39 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
     let types = group(declaration, NodeKind.TypeParameters)
     let pack = get(types, pack_parameter(declaration))
     let parameters = group(declaration, NodeKind.Parameters)
-    let values = if length(parameters) == 0 {
+    let position = value_pack_position(parameters)
+    let values = if position < 0 {
         declaration
     } else {
-        get(parameters, length(parameters) - 1)
+        get(parameters, position)
     }
-    let variadic = variadic_parameters(parameters)
+    let variadic = position >= 0
     let static_values = variadic && has(values, NodeKind.Comptime)
     let expanded_types = expand_pack_parameters(types, arity)
     let expanded_params = new[Node]()
+    let elements = new[Node]()
     var index = 0
     var type_shadowed = false
-    while index < length(parameters) - if variadic {
-        1
-    } else {
-        0
-    } {
-        push(expanded_params, expand_pack_type(env, owner, get(parameters, index), pack.value, arity, -1, false, 0)?)
-        type_shadowed = type_shadowed || get(parameters, index).value == pack.value
-        index = index + 1
-    }
-    let elements = new[Node]()
-    if variadic {
-        type_shadowed = type_shadowed || values.value == pack.value
-        index = 0
-        while index < arity {
-            let name = pack_name(values.value, index)
-            let ty = expand_pack_type(env, owner, child(child(values, 0), 0), pack.value, arity, index, true, 0)?
-            let parts = source_nodes(ty)
-            if static_values {
-                push(parts, pack_node(values, NodeKind.Comptime, "", new[Node]()))
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        type_shadowed = type_shadowed || parameter.value == pack.value
+        if index == position {
+            var element = 0
+            while element < arity {
+                let name = pack_name(values.value, element)
+                let ty = expand_pack_type(env, owner, child(child(values, 0), 0), pack.value, arity, element, true, 0)?
+                let parts = source_nodes(ty)
+                if static_values {
+                    push(parts, pack_node(values, NodeKind.Comptime, "", new[Node]()))
+                }
+                push(expanded_params, pack_node(values, NodeKind.Parameter, name, parts))
+                push(elements, pack_node(values, NodeKind.Name, name, new[Node]()))
+                element = element + 1
             }
-            push(expanded_params, pack_node(values, NodeKind.Parameter, name, parts))
-            push(elements, pack_node(values, NodeKind.Name, name, new[Node]()))
-            index = index + 1
+        } else {
+            push(expanded_params, expand_pack_type(env, owner, parameter, pack.value, arity, -1, false, 0)?)
         }
+        index = index + 1
     }
     let tuple = pack_node(values, NodeKind.Tuple, "", elements)
     let children = new[Node]()

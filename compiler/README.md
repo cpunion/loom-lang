@@ -821,8 +821,13 @@ parameters. Its width is the total type argument count minus all fixed
 parameters; explicit arguments retain declaration order. Structural
 tuple, function and nominal parameters may expand it at any parameter position;
 a direct variadic value
-parameter must be last. Type patterns expand elementwise; the named value pack
+parameter may have fixed parameters on either side. Its width is the argument
+count minus the fixed parameter count; two value packs still reject as ambiguous.
+Type patterns expand elementwise; the named value pack
 is an immutable tuple.
+Fixed prefixes/suffixes also work with empty packs, static parameters, contextual
+function values and static/dyn methods; they keep source-order input effects and
+ordinary Task obligations. See the [position example](examples/variadics/positions.loom).
 
 ```loom
 pub fn pack[Ts...](values Ts...) (Ts...) {
@@ -898,7 +903,7 @@ retain their normal checks. The [variadic example](examples/variadics/main.loom)
 exercises these paths through check/build/test/run.
 
 `comptime for item in values { ... }` visits an immutable, statically shaped
-tuple or record binding. This includes the final value pack of a variadic
+tuple or record binding. This includes the named value pack of a variadic
 function, a structural tuple parameter, or an ordinary `let` aggregate. Tuples
 use element order; records use field declaration order, not initializer order. Its body
 is copied into a lexical block for each element and checked with that element's
