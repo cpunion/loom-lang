@@ -177,7 +177,13 @@ runtime pack ABI. The [method example](../../compiler/examples/variadics/methods
 also checks sharing and once-only effects. Impl-header packs infer arity from
 nominal, tuple and function target shapes, including nested/repeated expansions.
 Selected arities check methods and associated bindings with abstract elements;
-method-local packs retain their independent arity. Overlap checking preserves
+method-local packs retain their independent arity.
+One direct value pack retains ordinary parameter order between fixed
+parameters; argument count uniquely selects its width. Empty/static packs,
+contextual function references, fixed-scalar contracts, dyn defaults/overrides,
+Task suspension and restored cache recipes have native/checker evidence in the
+[position example](../../compiler/examples/variadics/positions.loom).
+Overlap checking preserves
 expansions and conservatively rejects unknown intersections, without sampling.
 Private cache recipes retain the original member and both arities. The
 [impl example](../../compiler/examples/data_packs/implementations.loom) exercises

@@ -1,0 +1,67 @@
+fn framed[Head, Ts..., Tail](head Head, values Ts..., tail Tail) (Head, Ts..., Tail) {
+    (head, values..., tail)
+}
+
+fn static_suffix[Ts...](comptime values Ts..., tail Text) (Ts..., Text) {
+    (values..., tail)
+}
+
+fn bounded_suffix[Ts...](ignored Ts..., value Int) Int
+requires value >= 0
+ensures result == value && result >= 0
+{
+    value
+}
+
+concept SuffixPacking {
+    fn finish[Ts...](self Self, values Ts..., tail Text) (Ts..., Text) {
+        (values..., tail)
+    }
+}
+
+impl SuffixPacking for Bool {
+}
+
+impl SuffixPacking for Int {
+    fn finish[Us...](self Int, items Us..., label Text) (Us..., Text) {
+        (items..., label)
+    }
+}
+
+fn exercise_pack_positions() {
+    assert framed("first", 1, true, "last").3 == "last"
+    assert framed("first", "last").1 == "last"
+    assert framed[Text, Int, Bool, Text]("first", 1, true, "last").2
+    let callback fn(Int, Text, Bool) (Int, Text, Bool) = framed
+    assert callback(1, "middle", true).1 == "middle"
+    assert comptime {
+        framed("first", 2, "last").1
+    } == 2
+    assert static_suffix(3, true, "tail").1
+    assert static_suffix("tail").0 == "tail"
+    assert bounded_suffix(true, "ignored", 42) == 42
+    assert bounded_suffix(0) == 0
+    let source dyn SuffixPacking = true
+    assert source.finish(4, false, "default").2 == "default"
+    assert source.finish("empty").0 == "empty"
+    let overridden dyn SuffixPacking = 5
+    assert overridden.finish(true, "override").0
+    let log List[Int] = []
+    let values = framed(mark(log, 1), mark(log, 2), mark(log, 3), mark(log, 4))
+    assert values.0 == 1 && values.3 == 4
+    assert length(log) == 4 && log[0] == 1 && log[1] == 2 && log[2] == 3 && log[3] == 4
+}
+
+async fn gather_suffix[Ts...](values Task[Ts]..., label Text) (Ts..., Text) {
+    let completed = comptime map task in values {
+        task.await
+    }
+    (completed..., label)
+}
+
+async fn exercise_pack_position_tasks() {
+    let values = gather_suffix(item(6), item(true), "tail").await
+    assert values.0 == 6 && values.1 && values.2 == "tail"
+    let empty = gather_suffix("empty").await
+    assert empty.0 == "empty"
+}

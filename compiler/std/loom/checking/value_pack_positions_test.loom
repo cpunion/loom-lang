@@ -1,0 +1,84 @@
+test fn value_pack_positions_keep_fixed_parameters_in_inference_and_cache_replay() {
+    let source = """
+        fn frame[Head, Ts..., Tail](head Head, values Ts..., tail Tail) (Head, Ts..., Tail) {
+            (head, values..., tail)
+        }
+        fn constants[Ts...](comptime values Ts..., tail Text) (Ts..., Text) {
+            (values..., tail)
+        }
+        fn checked[Ts...](ignored Ts..., value Int) Int
+            requires value >= 0
+            ensures result == value && result >= 0 {
+            value
+        }
+        pub fn answer() Int {
+            let selected fn(Int, Text, Bool) (Int, Text, Bool) = frame
+            assert selected(1, "middle", true).1 == "middle"
+            assert frame[Text, Int, Bool, Text]("first", 2, true, "last").2
+            assert frame("first", "last").1 == "last"
+            assert constants(3, true, "last").1
+            assert constants("empty").0 == "empty"
+            assert comptime { frame(4, false, "last").0 } == 4
+            checked("ignored", false, 42)
+        }
+        """
+    discard accepted(source)
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, concat(source, "\nfn unrelated() {}\n")) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+}
+
+test fn nonfinal_value_packs_keep_arity_type_static_and_task_obligations() {
+    rejects("""
+        fn ambiguous[Ts...](left Ts..., right Ts...) {
+            discard left
+            discard right
+        }
+        """)
+    rejects("""
+        fn frame[Ts...](head Int, values Ts..., tail Text) (Ts...) {
+            values
+        }
+        fn main() {
+            discard frame(1)
+        }
+        """)
+    rejects("""
+        fn frame[Ts...](values Ts..., tail Text) (Ts...) {
+            values
+        }
+        fn main() {
+            discard frame(true, 1)
+        }
+        """)
+    rejects("""
+        fn constants[Ts...](comptime values Ts..., tail Text) (Ts...) {
+            values
+        }
+        pub fn invalid(value Int) {
+            discard constants(value, "last")
+        }
+        """)
+    rejects("""
+        async fn item() Int {
+            1
+        }
+        fn frame[Ts...](values Task[Ts]..., tail Text) (Task[Ts]...) {
+            values
+        }
+        async fn main() {
+            let task = item()
+            let pair = frame(task, task, "last")
+            discard pair.0.await
+            discard pair.1.await
+        }
+        """)
+}
