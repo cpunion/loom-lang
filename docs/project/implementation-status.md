@@ -91,6 +91,8 @@ instances appended by earlier checks; ordinary compilation does not collect this
 Independent inspection and member completion also rebind source without changing
 the caller's symbols. Checked query tables carry their own binding snapshot,
 including generated closures and pack instances; analysis reuses this same view.
+Folded queries cache checked ordinary-function closures; generic/static owners
+retain the full application-instance check, not invented specialization inputs.
 Each package must account for its own references, including tests; unvisited
 branches refuse edits. The trace stays outside executable IR and build caches.
 External-consumer API migration and broader recovery/query support remain open.

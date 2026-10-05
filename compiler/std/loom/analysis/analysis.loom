@@ -51,6 +51,7 @@ pub record Analysis {
     proof_backend ProofBackend
     // Lazy query evidence; never attached to executable IR or definition caches.
     declarations List[List[std.loom.checking.DeclarationReference]]
+    declaration_scopes List[Location]
 }
 pub record Expression {
     function Int
@@ -97,6 +98,7 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
             targets = detached.targets
             proof_backend = detached.proof_backend
             declarations = new[List[std.loom.checking.DeclarationReference]]()
+            declaration_scopes = new[Location]()
         })
 }
 

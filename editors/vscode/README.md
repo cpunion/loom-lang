@@ -184,7 +184,8 @@ generic and associated-type bounds, `impl`, `dyn`, qualified associated types,
 `implements` conditions and explicit concept method calls. It distinguishes
 local receivers from concept qualifiers before lowering erases those names.
 The trace is reused within an unchanged analysis, never added to executable IR
-or replayed from cached bodies. Each package must account for its own references;
+or replayed from cached bodies. Ordinary function queries check their call closure;
+generic/static owners retain the application-instance check. Each package must account for its own references;
 an unvisited compile-time branch still refuses rename. Ordinary compilation does
 not collect this evidence.
 Type aliases, unobserved type

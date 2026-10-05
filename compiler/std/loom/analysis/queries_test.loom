@@ -188,6 +188,10 @@ test fn folded_calls_and_specialized_callbacks_keep_checked_declaration_bindings
             }
         }
 
+        fn other() Int {
+            comptime { identity(9) }
+        }
+
         fn main() {
             let computed = comptime {
                 let callback fn(Int) Int = identity[Int]
@@ -204,6 +208,8 @@ test fn folded_calls_and_specialized_callbacks_keep_checked_declaration_bindings
     let callback = inspection(analysis, text, "identity[Int]")
     only_type(callback, "fn(Int) Int")
     only_definition(callback, declared, declared + 8)
+    only_definition(inspection(analysis, text, "identity(9)"), declared, declared + 8)
+    assert length(analysis.declaration_scopes) == 2
     let call = inspection(analysis, text, "identity(7)")
     only_type(call, "fn(Int) Int")
     only_definition(call, declared, declared + 8)
