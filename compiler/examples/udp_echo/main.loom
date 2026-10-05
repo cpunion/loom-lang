@@ -17,6 +17,7 @@ import std.result.Result
 import std.text.to_bytes
 import std.bytes.to_text
 import std.time.sleep_ms
+import std.int.parse
 
 async fn echo(server Socket) Result[Datagram, UdpError] {
     let packet = receive(server, 1024).await?
@@ -42,7 +43,14 @@ async fn exercise() Result[Bool, UdpError] {
     discard join_multicast(server, "239.255.0.1", "0.0.0.0")?
     discard leave_multicast(server, "239.255.0.1", "0.0.0.0")?
     let address = local_address(server)?
-    let client = connect(address).await?
+    let endpoint = split(address, ":")
+    let port = match parse(endpoint[1]) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(UdpError.Address)
+        }
+    }
+    let client = connect("127.0.0.1", port).await?
     defer {
         discard close(client)
     }
