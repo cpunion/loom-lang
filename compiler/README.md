@@ -844,7 +844,8 @@ equations, empty packs, dyn methods, CTFE and typed suspension.
 Instance and body-cache keys retain every width, not just their sum. Shape
 reasoning remains bounded; it does not enumerate specializations or solve all
 integer feasibility problems. Impl headers use the same shape equations.
-Sequence-dependent universal postcondition proofs remain unsupported.
+Element-independent iteration contracts use symbolic-width induction;
+universal element-content/type proofs remain unsupported.
 
 ```loom
 pub fn pack[Ts...](values Ts...) (Ts...) {
@@ -887,9 +888,30 @@ ensures result == value && result >= 0 {
 ```
 
 The [contract example](examples/variadics/contracts.loom) composes this guarantee
-with constrained construction, CTFE and dyn methods. Proofs depending on pack
-values, types or iteration remain unsupported: executing an empty pack or a
-few selected arities is not a universal proof.
+with constrained construction, CTFE and dyn methods. Element-independent
+`comptime for` over a type pack, direct value pack or `(Ts...)` input also
+supports induction: a private counted loop uses symbolic nonnegative widths
+and the existing scalar/List invariant rules. Zero and arbitrary-many
+iterations are proved, including index use, nested independent packs, early
+returns and inherited method contracts. Native code remains statically expanded.
+
+```loom
+fn counted[Ts...](values Ts...) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+```
+
+The [induction example](examples/variadics/induction.loom) also exercises shared
+List updates, CTFE and dyn defaults/overrides. Element content, type reflection,
+pack-dependent result shapes and broader structural sources remain unsupported
+in family proofs. Shadowed erased sources and loop control that would change
+its target reject. Executing a few selected arities is never a universal proof.
 
 A structural parameter can supply arity without a direct value pack. This
 includes a callback's parameter list or returned tuple, nested tuples and
@@ -1118,10 +1140,10 @@ or record preserves the fields' compile-time identities, including nested loops
 and closure capture. See the [static pack example](examples/variadics/static.loom)
 and [aggregate parameter example](examples/comptime_parameters/aggregates.loom).
 
-Unselected arities have not had their bodies verified, except for the
-pack-independent postconditions proved by dependency erasure above. Required
-proofs that depend on pack values or types reject even when uncalled: proving
-selected arities is not a proof for every arity. Preconditions use fixed scalar
+Unselected arities have not had their bodies verified, except for required
+postconditions in the dependency-erasure and element-independent induction
+fragments above. Content/type-dependent family proofs reject even when uncalled:
+proving selected arities is not a proof for every arity. Preconditions use fixed scalar
 parameters, not the tuple pack, and retain ordinary checked/runtime boundaries.
 Concept methods accept the same type pack, including defaults, overrides,
 ordinary generic implementation parameters, structural inference and `async`.
@@ -1196,7 +1218,7 @@ intersections reject conservatively. Bounds or sampled arities do not prove
 disjointness. An impl family's ordinary method contracts are proved at each
 selected arity; unselected arities have not had their bodies verified.
 
-Sequence-dependent universal proofs remain open. This implementation does not
+Universal element-content/type proofs remain open. This implementation does not
 complete the accepted metaprogramming design.
 
 Records and enums accept type packs among fixed type parameters too. Independent
@@ -2239,7 +2261,7 @@ mathematical endpoints and a bounded traversal. It discharges known scalar range
 and overflow safety without discarding eager operand checks; loose ranges remain
 unproved. The CLI also enables Z3's bounded polynomial normalization before search,
 without extending the solver timeout. Nonconstant division and universal pack
-proofs remain unsupported. Nonlinear solving is incomplete: unknown or timeout
+content/type proofs remain unsupported. Nonlinear solving is incomplete: unknown or timeout
 still blocks a proof.
 
 Constrained construction, scalar flow facts, pure-helper implication and supported

@@ -196,8 +196,12 @@ native/dyn calls, declared contracts, shared values, CTFE and async payloads.
 Pack-independent postconditions use dependency erasure and ordinary abstract
 proofs, including uncalled families and inherited method contracts; the
 [contract example](../../compiler/examples/variadics/contracts.loom) exercises
-constrained construction, CTFE and dyn dispatch. Bodies, return types or clauses
-reading a type pack or pack-bearing input still reject. A single type pack can
+constrained construction, CTFE and dyn dispatch. Element-independent pack
+iteration now reuses scalar/List loop induction over symbolic widths, including
+zero iterations, indices, independent nested packs and inherited methods. The
+[induction example](../../compiler/examples/variadics/induction.loom) covers CTFE,
+shared List updates and native/dyn defaults. Content/type-dependent proofs,
+pack-dependent results and broader structural sources still reject. A single type pack can
 have fixed parameters before and after it, including concept methods and impl
 families; the same ordered expansion and width rule applies to each.
 Functions and concept methods now select independent sequence widths through
@@ -217,7 +221,7 @@ recursive data, CTFE, shared graphs and Task payloads. Independent impl headers
 reuse these shape equations, abstract checks and nominal group boundaries. The
 [independent impl example](../../compiler/examples/data_packs/independent_impls.loom)
 also exercises associated bindings, dyn defaults/overrides and shared values
-through suspension. Sequence-dependent universal proofs remain unsupported.
+through suspension. Universal element-content/type induction remains unsupported.
 Compile-time execution is not proof by sampling.
 
 Independent nominal declarations do not share a global type-count budget.
@@ -292,7 +296,7 @@ these terms handles bounded safety/range obligations before SMT, with mathematic
 endpoints and unchanged eager operand checks. Polynomial identities, safety
 bounds and verified call summaries compose with Text lengths; see the
 [polynomial example](../../compiler/examples/smt_contracts/polynomials.loom).
-Nonconstant division, general collection induction and sequence-dependent
+Nonconstant division, general collection induction and content/type-dependent
 variadic proofs remain unsupported; nonlinear solver queries may still be unknown or time out.
 Constrained construction, stable scalar facts, pure-helper implication and
 supported List-append preservation now share the same optional backend and

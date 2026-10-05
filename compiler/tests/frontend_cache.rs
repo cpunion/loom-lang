@@ -671,9 +671,10 @@ fn mapped[Ts...](items (Ts...)) (Ts...) {
         item
     }
 }
-fn count[Ts...](items Ts...) Int {
+fn count[Ts...](items Ts...) Int
+ensures result >= 0 {
     var total = 0
-    comptime for item in items {
+    comptime for index, item in items {
         discard item
         total = total + 1
     }
@@ -714,6 +715,17 @@ fn main() {
     assert!(
         String::from_utf8_lossy(&invalid.stderr).contains("required postcondition is not proved")
     );
+    // None of this package's calls selects five elements. Restoring selected
+    // bodies must not bypass the family's arbitrary-width induction proof.
+    fs::write(
+        &path,
+        source.replace(
+            "        total = total + 1",
+            "        if index >= 4 { return -1 }\n        total = total + 1",
+        ),
+    )
+    .unwrap();
+    assert!(!cached("check", &package, &cache, &[]).status.success());
     fs::write(
         &path,
         source.replace("bundle(3, true)", "bundle(3, true, 9)"),

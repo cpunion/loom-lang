@@ -38,6 +38,7 @@ fn exercise() {
     exercise_independent_packs()
     exercise_pack_positions()
     exercise_contracts()
+    exercise_pack_induction()
     exercise_methods()
     exercise_static()
     exercise_mixed()

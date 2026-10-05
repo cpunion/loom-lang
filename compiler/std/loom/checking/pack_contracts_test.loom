@@ -32,7 +32,7 @@ test fn variadic_contracts_use_parametric_erasure_and_ordinary_algebra() {
         """)
 }
 
-test fn variadic_contracts_reject_false_uncalled_and_pack_dependent_proofs() {
+test fn variadic_contracts_reject_false_uncalled_and_content_dependent_proofs() {
     let uncalled = """
         fn uncalled[Ts...](ignored Ts...) Int
         ensures result > 0 {
@@ -79,6 +79,167 @@ test fn variadic_contracts_reject_false_uncalled_and_pack_dependent_proofs() {
         }
         async fn main() {
             discard keep(1, item())
+        }
+        """)
+}
+
+test fn variadic_induction_proves_arbitrary_widths_with_shared_loop_rules() {
+    list_length_contract("""
+        import std.list.push
+        import std.list.length
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn indices[Ts...](values (Ts...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for index, item in values {
+                discard item
+                total = total + index
+            }
+            total
+        }
+        fn types[Ts...](ignored (Ts...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for T in Ts {
+                total = total + 1
+            }
+            total
+        }
+        fn append[Ts...](log List[Int], values (Ts...)) Int
+        ensures result >= 0 && length(log) >= old(length(log)) {
+            var total = 0
+            let alias = log
+            comptime for index, item in values {
+                discard item
+                push(alias, index)
+                total = total + 1
+            }
+            total
+        }
+        fn early[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            comptime for index, item in values {
+                discard item
+                if index > 2 {
+                    return index
+                }
+            }
+            0
+        }
+        concept Counts {
+            fn count[As..., Bs...](self Self, first (As...), second (Bs...)) (Int, Int)
+            ensures result.0 >= 0 && result.1 >= 0
+
+            fn default_count[Ts...](self Self, values Ts...) Int
+            ensures result >= 0 {
+                var total = 0
+                comptime for item in values {
+                    discard item
+                    total = total + 1
+                }
+                total
+            }
+        }
+        impl Counts for Bool {
+            fn count[Us..., Vs...](self Bool, left (Us...), right (Vs...)) (Int, Int) {
+                var outer = 0
+                var inner = 0
+                comptime for item in left {
+                    discard item
+                    outer = outer + 1
+                    comptime for other in right {
+                        discard other
+                        inner = inner + 1
+                    }
+                }
+                (outer, inner)
+            }
+        }
+        fn main() {
+            assert count() == 0 && count(true, "two") == 2
+            let source dyn Counts = true
+            assert source.count((true, 1), ("a",)).1 == 2
+            assert source.default_count() == 0
+        }
+        """, true)
+}
+
+test fn variadic_induction_rejects_sampling_shadowing_and_changed_control() {
+    rejects("""
+        fn wrong[Ts...](values Ts...) Int
+        ensures result > 0 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn main() {
+            assert wrong(true) == 1
+        }
+        """)
+    rejects("""
+        fn wrong[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            comptime for index, item in values {
+                discard item
+                if index >= 3 {
+                    return -1
+                }
+            }
+            0
+        }
+        fn main() {
+            assert wrong() == 0 && wrong(true) == 0
+        }
+        """)
+    rejects("""
+        fn wrong[Ts...](values Ts...) Int
+        ensures result == 0 {
+            let values = (1,)
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var total = 0
+            while total == 0 {
+                comptime for item in values {
+                    discard item
+                    total = -1
+                    break
+                }
+                total = 0
+                break
+            }
+            total
+        }
+        """)
+    rejects("""
+        record T {
+            value Int
+        }
+        fn wrong[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            comptime for T in Ts {
+                discard T { value = 0 }
+            }
+            0
         }
         """)
 }
