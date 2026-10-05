@@ -1007,11 +1007,13 @@ is callable. The callback overloads delegate to the same implementation. Neither
 form adds compiler intrinsics, runtime type tags or native metadata helpers.
 
 A structural parameter takes one tuple argument and one runtime tuple
-parameter. It may have fixed fields around one expanded pattern, such as
-`values (Int, Pattern[Ts]..., Text)`. The pack arity is the argument's statically
-known tuple width minus the fixed fields, including for named tuples, function
-results and contextual function references. A zero-element pack retains the
-fixed fields. Ordinary checking validates those fields and every expanded
+parameter. It may repeat the same pack with fixed fields between expansions,
+such as `values (Ts..., Bool, Ts...)`. If there are `k` expansions and `f` fixed
+fields, the statically known tuple width `w` supplies `k * arity + f = w`.
+Negative or nonintegral arities reject; ordinary inference then checks every
+occurrence's ordered element types. This also applies to nested patterns,
+function results and contextual function references. A zero-element pack retains
+the fixed fields. Ordinary checking validates those fields and every expanded
 element; `comptime for/map` visits the entire value tuple, while iteration over
 `Ts` visits only its type pack. Several parameters may use the same pack, each
 with its own fixed fields and element pattern:
@@ -1092,10 +1094,11 @@ or record preserves the fields' compile-time identities, including nested loops
 and closure capture. See the [static pack example](examples/variadics/static.loom)
 and [aggregate parameter example](examples/comptime_parameters/aggregates.loom).
 
-Unselected arities have not had their bodies verified. Variadic `ensures`
-declarations currently reject even when uncalled: proving selected arities is
-not a proof for every arity. Preconditions currently use fixed scalar parameters,
-not the tuple pack, and retain ordinary checked/runtime boundaries.
+Unselected arities have not had their bodies verified, except for the
+pack-independent postconditions proved by dependency erasure above. Required
+proofs that depend on pack values or types reject even when uncalled: proving
+selected arities is not a proof for every arity. Preconditions use fixed scalar
+parameters, not the tuple pack, and retain ordinary checked/runtime boundaries.
 Concept methods accept the same final type pack, including defaults, overrides,
 ordinary generic implementation parameters, structural inference and `async`.
 Implementations may rename the pack and inherit its element requirements, but
@@ -1141,9 +1144,9 @@ intersections reject conservatively. Bounds or sampled arities do not prove
 disjointness. An impl family's ordinary method contracts are proved at each
 selected arity; unselected arities have not had their bodies verified.
 
-Multiple packs in one parameter list,
-general type-list reflection and richer pack iteration remain open. This
-implementation does not complete the accepted metaprogramming design.
+Multiple independent packs in one parameter list and sequence-dependent
+universal proofs remain open. This implementation does not complete the accepted
+metaprogramming design.
 
 Records and enums accept one final type pack too:
 

@@ -158,6 +158,11 @@ tuple or nominal patterns; contextual function references and overloads use
 ordinary inference after expansion. The
 [native example](../../compiler/examples/data_packs/functions.loom) covers
 shared captures and once-only input effects, without a runtime pack.
+One structural tuple can repeat the same pack around fixed fields. Its width
+determines arity algebraically; all occurrences retain the same ordered element
+types. Native callbacks, CTFE, dyn methods, shared aliases and Task transfers use
+ordinary expanded signatures; see the
+[repeated pattern example](../../compiler/examples/variadics/repeated.loom).
 Packs used only in results or compile-time generation are also accepted. Expected
 results select arity for ordinary/async calls, function references and static/dyn
 methods; explicit arguments select type generators without sample inputs.

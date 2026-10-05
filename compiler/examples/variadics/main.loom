@@ -40,6 +40,7 @@ fn exercise() {
     exercise_static()
     exercise_mixed()
     exercise_shared_packs()
+    exercise_repeated_packs()
     empty_expansion()
     let pair = pack(1, "two")
     assert pair.0 == 1 && pair.1 == "two"
@@ -87,6 +88,7 @@ async fn exercise_tasks() {
     assert constants.0 == 42 && constants.1 == "async"
     exercise_mixed_tasks().await
     exercise_shared_tasks().await
+    exercise_repeated_tasks().await
     suspended_empty_expansion().await
     let tasks = task_pack(item(1), item("two")).await
     assert tasks.0.await == 1

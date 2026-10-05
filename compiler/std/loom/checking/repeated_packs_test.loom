@@ -1,0 +1,84 @@
+test fn repeated_pack_patterns_infer_one_sequence_without_sampling() {
+    discard accepted("""
+        fn keep[Ts...](values (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) {
+            values
+        }
+        fn triple[Ts...](values (Ts..., Ts..., Ts...)) (Ts..., Ts..., Ts...) {
+            values
+        }
+        fn main() {
+            assert keep((1, "a", true, 2, "b")).4 == "b"
+            assert keep((true,)).0
+            assert keep[Int]((3, false, 4)).2 == 4
+            assert triple((1, true, 2, false, 3, true)).5
+            let callback fn((Int, Bool, Int)) (Int, Bool, Int) = keep
+            assert callback((5, true, 6)).2 == 6
+            assert comptime { keep((7, true, 8)).2 } == 8
+        }
+        """)
+}
+
+test fn repeated_pack_patterns_check_every_occurrence_and_fixed_field() {
+    let declaration = """
+        fn keep[Ts...](values (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) {
+            values
+        }
+
+        """
+    rejects(concat(declaration, "fn main() { discard keep((1, true, false)) }"))
+    rejects(concat(declaration, "fn main() { discard keep((1, true)) }"))
+    rejects(concat(declaration, "fn main() { discard keep((1, 2, 3)) }"))
+    rejects(concat(declaration, "fn main() { let callback fn((Int, Bool, Text)) (Int, Bool, Text) = keep\ndiscard callback }"))
+    rejects("""
+        fn wrong[Ts...](values (Ts..., Int...)) {
+            discard values
+        }
+        """)
+    rejects("""
+        concept Show {
+            fn show(self Self) Text
+        }
+        impl Show for Int {
+            fn show(self Int) Text { "int" }
+        }
+        fn shown[Ts... Show](values (Ts..., Ts...)) Text {
+            values.0.show()
+        }
+        fn main() { discard shown((true, false)) }
+        """)
+    discard accepted("""
+        concept Show {
+            fn show(self Self) Text
+        }
+        impl Show for Int {
+            fn show(self Int) Text { "int" }
+        }
+        fn shown[Ts... Show](values (Ts..., Ts...)) Text {
+            values.0.show()
+        }
+        fn main() { assert shown((1, 2)) == "int" }
+        """)
+}
+
+test fn repeated_pack_tasks_keep_each_transfer_obligation() {
+    discard accepted("""
+        async fn item[T](value T) T { value }
+        async fn gather[Ts...](values (Task[Ts]..., Task[Ts]...)) (Ts..., Ts...) {
+            comptime map task in values { task.await }
+        }
+        async fn main() {
+            let results = gather((item(1), item(true), item(2), item(false))).await
+            assert results.0 == 1 && results.1 && results.2 == 2 && !results.3
+        }
+        """)
+    rejects("""
+        async fn item() Int { 1 }
+        async fn gather[Ts...](values (Task[Ts]..., Task[Ts]...)) (Ts..., Ts...) {
+            comptime map task in values { task.await }
+        }
+        async fn main() {
+            let task = item()
+            discard gather((task, task)).await
+        }
+        """)
+}
