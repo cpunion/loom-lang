@@ -3,6 +3,7 @@ fn list_length_contract(text Text, valid Bool) {
     push(files, source_file("std.list", """
         intrinsic fn list_len[T](values List[T]) Int
         intrinsic fn list_new[T]() List[T]
+        intrinsic fn list_new_capacity[T](capacity Int) List[T]
         intrinsic fn list_push[T](values List[T], value T)
         intrinsic fn list_get[T](values List[T], index Int) T
         intrinsic fn list_set[T](values List[T], index Int, value T)
@@ -12,6 +13,9 @@ fn list_length_contract(text Text, valid Bool) {
         }
         pub fn new[T]() List[T] {
             list_new[T]()
+        }
+        pub fn new[T](capacity Int) List[T] {
+            list_new_capacity[T](capacity)
         }
         pub fn push[T](values List[T], value T) {
             list_push(values, value)
@@ -37,6 +41,38 @@ fn list_length_contract(text Text, valid Bool) {
             assert !valid
         }
     }
+}
+
+test fn reserved_lists_are_empty_and_do_not_change_other_storage() {
+    list_length_contract("""
+        import std.list.new
+        import std.list.length
+        import std.list.push
+        fn empty(capacity Int) List[Int]
+        ensures length(result) == 0
+        {
+            new[Int](capacity)
+        }
+        fn retained(values List[Int], capacity Int) Int
+        ensures result == old(length(values))
+        {
+            let before = length(values)
+            let fresh = empty(capacity)
+            push(fresh, 1)
+            assert length(fresh) == 1
+            assert length(values) == before
+            length(values)
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.new
+        import std.list.length
+        fn wrong(capacity Int) List[Int]
+        ensures length(result) == capacity
+        {
+            new[Int](capacity)
+        }
+        """, false)
 }
 
 test fn list_lengths_compose_through_helpers_aliases_and_scalar_loops() {

@@ -1,13 +1,23 @@
 import std.option.Option
 
-pub fn is_empty[T](values List[T]) Bool { length(values) == 0 }
+pub fn is_empty[T](values List[T]) Bool {
+    length(values) == 0
+}
 
 pub fn first[T](values List[T]) Option[T] {
-    if is_empty(values) { Option.None } else { Option.Some(get(values, 0)) }
+    if is_empty(values) {
+        Option.None
+    } else {
+        Option.Some(get(values, 0))
+    }
 }
 
 pub fn last[T](values List[T]) Option[T] {
-    if is_empty(values) { Option.None } else { Option.Some(get(values, length(values) - 1)) }
+    if is_empty(values) {
+        Option.None
+    } else {
+        Option.Some(get(values, length(values) - 1))
+    }
 }
 
 // Copy the initial source prefix, including when source and target are aliases.
@@ -22,7 +32,7 @@ pub fn append[T](target List[T], source List[T]) {
 
 // The outer list is fresh; contained shared data remains shared.
 pub fn clone[T](values List[T]) List[T] {
-    let copied = new[T]()
+    let copied = new[T](length(values))
     append(copied, values)
     copied
 }

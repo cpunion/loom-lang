@@ -55,14 +55,10 @@ fn expression_end(value Step, end Int) Step {
     } }
 }
 fn one(value Node) List[Node] {
-    let nodes = new[Node]()
-    push(nodes, value)
-    nodes
+    [value]
 }
 fn two(first Node, second Node) List[Node] {
-    let nodes = one(first)
-    push(nodes, second)
-    nodes
+    [first, second]
 }
 fn reserved(value Text) Bool {
     value == "fn" || value == "pub" || value == "intrinsic" || value == "type" ||
@@ -127,7 +123,8 @@ fn parameter(cursor Cursor) Result[Step, Diagnostic] {
     let compile_time = word(cursor, "comptime")
     let named = name(if compile_time { next(cursor) } else { cursor })?
     let ty = type_item(named.rest)?
-    let children = one(ty.node)
+    let children = new[Node](if compile_time { 2 } else { 1 })
+    push(children, ty.node)
     if compile_time {
         push(children, done(cursor, next(cursor), NodeKind.Comptime, "", new[Node]()).node)
     }
@@ -186,7 +183,8 @@ fn parenthesized(cursor Cursor, mode Items, tuple_kind NodeKind) Result[Step, Di
         if first.node.kind == NodeKind.Spread { return Result.Ok(done(cursor, rest, tuple_kind, "", one(first.node))) }
         return Result.Ok(done(cursor, rest, first.node.kind, first.node.value, first.node.children))
     }
-    let children = one(first.node)
+    let children = new[Node]()
+    push(children, first.node)
     while at(rest, Kind.Comma) {
         rest = newlines(next(rest))
         if !at(rest, Kind.RParen) {

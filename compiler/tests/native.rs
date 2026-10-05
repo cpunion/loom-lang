@@ -118,6 +118,69 @@ fn source_std_under_forced_collection() {
 }
 
 #[test]
+fn source_list_capacity_preserves_argument_effects_and_faults() {
+    let application = source(
+        r#"
+import std.list.new
+import std.list.push
+import std.list.length
+import std.text.concat
+record Item {
+    text Text
+    values List[Int]
+}
+fn capacity(calls List[Int]) Int {
+    push(calls, 1)
+    3
+}
+fn main() {
+    let calls = new[Int]()
+    let values = new[Item](capacity(calls))
+    let alias = values
+    assert length(calls) == 1 && length(values) == 0
+    var index = 0
+    while index < 40 {
+        push(alias, Item {
+                text = concat("managed", " value")
+                values = [index]
+            })
+        index = index + 1
+    }
+    assert length(values) == 40
+    assert values[39].text == "managed value" && values[39].values[0] == 39
+}
+"#,
+    );
+    let invalid = source("import std.list.new\nfn main() { discard new[Int](-1) }");
+    for level in ["0", "2"] {
+        let artifact = common::executable(application.path(), "app");
+        success(
+            &common::command(&[
+                "build",
+                path(application.path()),
+                "--output",
+                path(&artifact),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        success(
+            &Command::new(artifact)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+        let failure = common::command(&["run", path(invalid.path())])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap();
+        assert!(!failure.status.success());
+        assert!(String::from_utf8_lossy(&failure.stderr).contains("invalid list capacity"));
+    }
+}
+
+#[test]
 fn source_sha256_ranges_fault_before_reading_invalid_bounds() {
     for bounds in ["-1, 0", "1, 0", "0, 2", "9223372036854775807, 0"] {
         let directory = source(&format!(

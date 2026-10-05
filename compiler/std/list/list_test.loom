@@ -17,6 +17,30 @@ test fn aliases_observe_growth_and_element_changes() {
     assert get(alias, 1) == 2
 }
 
+test fn reserved_lists_remain_empty_shared_and_grow_normally() {
+    let values = new[Int](0)
+    let alias = values
+    push(alias, 7)
+    assert length(values) == 1 && get(values, 0) == 7
+    let entries = new[Entry](3)
+    assert length(entries) == 0
+    var index = 0
+    while index < 40 {
+        push(entries, Entry {
+                name = concat("entry", " name")
+                count = index
+                enabled = true
+            })
+        index = index + 1
+    }
+    assert length(entries) == 40
+    assert get(entries, 39).name == "entry name"
+    assert get(entries, 39).count == 39
+    assert length(comptime {
+            new[Int](8)
+        }) == 0
+}
+
 test fn bool_and_managed_record_elements() {
     let flags = new[Bool]()
     push(flags, true)
@@ -25,9 +49,17 @@ test fn bool_and_managed_record_elements() {
     assert get(flags, 0) && get(flags, 1)
 
     let entries = new[Entry]()
-    push(entries, Entry { name = concat("lo", "om") count = 7 enabled = true })
+    push(entries, Entry {
+            name = concat("lo", "om")
+            count = 7
+            enabled = true
+        })
     let alias = entries
-    set(alias, 0, Entry { name = concat("re", "vised") count = 11 enabled = false })
+    set(alias, 0, Entry {
+            name = concat("re", "vised")
+            count = 11
+            enabled = false
+        })
     assert get(entries, 0).name == "revised"
     assert get(entries, 0).count == 11
     assert !get(entries, 0).enabled
@@ -39,9 +71,15 @@ enum Event {
 }
 
 fn event(enabled Bool) Event {
-    if !enabled { return Event.Idle }
+    if !enabled {
+        return Event.Idle
+    }
     Event.Ready(
-        Entry { name = concat("lo", "om") count = 7 enabled = true },
+        Entry {
+            name = concat("lo", "om")
+            count = 7
+            enabled = true
+        },
         concat("re", "ady")
     )
 }

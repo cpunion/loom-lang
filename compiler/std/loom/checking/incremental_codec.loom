@@ -136,6 +136,16 @@ fn cache_read_count(reader CacheReader) Result[Int, Text] {
     Result.Ok(count)
 }
 
+// Counts come from disk, not a trusted in-memory List. Avoid large speculative
+// allocations before malformed input has supplied the declared elements.
+fn cache_capacity(count Int) Int {
+    if count < 256 {
+        count
+    } else {
+        256
+    }
+}
+
 fn cache_read_bool(reader CacheReader) Result[Bool, Text] {
     let value = cache_read_int(reader)?
     if value < 0 || value > 1 {
@@ -158,7 +168,7 @@ fn cache_read_ints(reader CacheReader) Result[List[Int], Text] {
     if count == 0 {
         return Result.Ok(reader.integers)
     }
-    let values = new[Int]()
+    let values = new[Int](cache_capacity(count))
     var index = 0
     while index < count {
         push(values, cache_read_int(reader)?)
@@ -193,8 +203,8 @@ fn cache_read_type(reader CacheReader) Result[Type, Text] {
     let kind = cache_type_kind(cache_read_int(reader)?)?
     let symbol = cache_read_int(reader)?
     let arguments = cache_read_ints(reader)?
-    let fields = new[Field]()
     let count = cache_read_count(reader)?
+    let fields = new[Field](cache_capacity(count))
     var index = 0
     while index < count {
         push(fields, Field {
@@ -203,8 +213,8 @@ fn cache_read_type(reader CacheReader) Result[Type, Text] {
             })
         index = index + 1
     }
-    let variants = new[Variant]()
     let variant_count = cache_read_count(reader)?
+    let variants = new[Variant](cache_capacity(variant_count))
     index = 0
     while index < variant_count {
         push(variants, Variant {
@@ -262,7 +272,7 @@ fn cache_read_expressions(reader CacheReader, depth Int) Result[List[Expr], Text
     if count == 0 {
         return Result.Ok(reader.expressions)
     }
-    let values = new[Expr]()
+    let values = new[Expr](cache_capacity(count))
     var index = 0
     while index < count {
         push(values, cache_read_expression(reader, depth)?)
@@ -286,7 +296,7 @@ fn cache_read_expression(reader CacheReader, depth Int) Result[Expr, Text] {
     let arms = if count == 0 {
         reader.arms
     } else {
-        new[Arm]()
+        new[Arm](cache_capacity(count))
     }
     var index = 0
     while index < count {
@@ -345,7 +355,7 @@ fn cache_read_function(reader CacheReader) Result[Function, Text] {
     let params = cache_read_ints(reader)?
     let return_type = cache_read_int(reader)?
     let count = cache_read_count(reader)?
-    let locals = new[Local]()
+    let locals = new[Local](cache_capacity(count))
     var index = 0
     while index < count {
         push(locals, Local {

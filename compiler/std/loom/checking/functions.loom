@@ -53,11 +53,20 @@ fn signature_in(env Environment, id Int, arguments List[Int], node Node, owner I
     index = 0
     while index < length(original.requirements) {
         let obligation = get(original.requirements, index)
-        push(obligations, Requirement { ty = substitute(env, owner, obligation.ty, arguments, node)? capability = obligation.capability })
+        push(obligations, Requirement {
+                ty = substitute(env, owner, obligation.ty, arguments, node)?
+                capability = obligation.capability
+            })
         index = index + 1
     }
-    Result.Ok(Signature { symbol = original.symbol parameters = original.parameters params = params
-        compile_time = original.compile_time result = substitute(env, owner, original.result, arguments, node)? requirements = obligations })
+    Result.Ok(Signature {
+            symbol = original.symbol
+            parameters = original.parameters
+            params = params
+            compile_time = original.compile_time
+            result = substitute(env, owner, original.result, arguments, node)?
+            requirements = obligations
+        })
 }
 
 fn method_target(env Environment, id Int, arguments List[Int], constants List[StaticValue]) Result[Instance, Failure] {
@@ -73,14 +82,22 @@ fn method_target(env Environment, id Int, arguments List[Int], constants List[St
     }
     let methods = get(env.concepts, concept_index(env, capability)).methods
     var slot = 0
-    while get(methods, slot) != id { slot = slot + 1 }
+    while get(methods, slot) != id {
+        slot = slot + 1
+    }
     let target = get(get(env.implementations, selected.implementation).methods, slot)
     if target == id && !has(declaration, NodeKind.Block) {
         return Result.Err(failure(env, current.symbol, declaration, "concept evidence has no concrete implementation"))
     }
-    Result.Ok(Instance { signature = target
-        arguments = if target == id { arguments } else { member_arguments(selected.arguments, argument_tail(arguments, 1)) }
-        constants = constants })
+    Result.Ok(Instance {
+            signature = target
+            arguments = if target == id {
+                arguments
+            } else {
+                member_arguments(selected.arguments, argument_tail(arguments, 1))
+            }
+            constants = constants
+        })
 }
 
 fn abstract_method_instance(env Environment, id Int, arguments List[Int]) Bool {
@@ -97,9 +114,13 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
     let declaration = symbol(env, current.symbol).node
     if prototype(env, current.symbol) && !abstract_method_instance(env, id, arguments) {
         let selected = method_target(env, id, arguments, constants)?
-        if selected.signature != id { return schedule(env, selected.signature, selected.arguments, constants, node) }
+        if selected.signature != id {
+            return schedule(env, selected.signature, selected.arguments, constants, node)
+        }
     }
-    if !known_constants(constants) { return Result.Err(failure(env, current.symbol, declaration, "comptime arguments must be determined for this instance")) }
+    if !known_constants(constants) {
+        return Result.Err(failure(env, current.symbol, declaration, "comptime arguments must be determined for this instance"))
+    }
     // Dispatch must validate the selected implementation/default, not only the
     // concept declaration. Witness activation and CTFE schedule here as well.
     discard validate_static(env, id, constants, declaration)?
@@ -109,7 +130,9 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
         let previous = get(env.pending, index)
         if previous.signature == id {
             instances = instances + 1
-            if same(previous.arguments, arguments) && same_constants(previous.constants, constants) { return Result.Ok(index) }
+            if same(previous.arguments, arguments) && same_constants(previous.constants, constants) {
+                return Result.Ok(index)
+            }
         }
         index = index + 1
     }
@@ -125,22 +148,28 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
         index = index + 1
     }
     let scheduled = length(env.pending)
-    push(env.pending, Instance { signature = id arguments = arguments constants = constants })
+    push(env.pending, Instance {
+            signature = id
+            arguments = arguments
+            constants = constants
+        })
     Result.Ok(scheduled)
 }
 
 fn runtime(parameters Int, params List[Int], returns Int) RuntimeSignature {
-    RuntimeSignature { parameters = parameters params = params result = returns }
+    RuntimeSignature {
+        parameters = parameters
+        params = params
+        result = returns
+    }
 }
 
-fn two_types(a Int, b Int) List[Int] { let values = ints(a)
-    push(values, b)
-    values
+fn two_types(a Int, b Int) List[Int] {
+    [a, b]
 }
 
-fn three_types(a Int, b Int, c Int) List[Int] { let values = two_types(a, b)
-    push(values, c)
-    values
+fn three_types(a Int, b Int, c Int) List[Int] {
+    [a, b, c]
 }
 
 fn runtime_signature(env Environment, name Text) RuntimeSignature {
@@ -206,7 +235,11 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     }
     if name == "socket_receive_from" || name == "socket_send_to" {
         let arguments = three_types(1, 4, 1)
-        push(arguments, if name == "socket_receive_from" { 4 } else { 3 })
+        push(arguments, if name == "socket_receive_from" {
+                4
+            } else {
+                3
+            })
         return runtime(0, arguments, 1)
     }
     if name == "task_next" {
@@ -358,6 +391,9 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "list_new" {
         return runtime(1, new[Int](), list)
     }
+    if name == "list_new_capacity" {
+        return runtime(1, ints(1), list)
+    }
     if name == "list_len" {
         return runtime(1, ints(list), 1)
     }
@@ -391,7 +427,15 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
         if !same(current.compile_time, ints(0)) {
             return Result.Err(failure(env, current.symbol, item.node, "build inputs require one comptime Text parameter"))
         }
-        runtime(0, ints(3), if item.name == "option_present" { 2 } else { if item.name == "input_bytes" { 4 } else { 3 } })
+        runtime(0, ints(3), if item.name == "option_present" {
+                2
+            } else {
+                if item.name == "input_bytes" {
+                    4
+                } else {
+                    3
+                }
+            })
     } else if reflection_intrinsic(env, current.symbol) {
         if predicate_intrinsic(env, current.symbol) {
             discard predicate_model(env, current.symbol, current.result, item.node)?
@@ -436,12 +480,18 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
             if item.name == "list_replace" && !std.loom.typed.list_replace_result(env.types, current.result, parameter, list) {
                 return Result.Err(failure(env, current.symbol, item.node, "list_replace requires an (element, remaining List) result"))
             }
-            runtime(1, if item.name == "list_take" { ints(list) } else { three_types(list, 1, parameter) }, current.result)
+            runtime(1, if item.name == "list_take" {
+                    ints(list)
+                } else {
+                    three_types(list, 1, parameter)
+                }, current.result)
         } else {
             runtime_signature(env, item.name)
         }
     }
-    if expected.parameters < 0 { return Result.Err(failure(env, current.symbol, item.node, "unknown private runtime intrinsic")) }
+    if expected.parameters < 0 {
+        return Result.Err(failure(env, current.symbol, item.node, "unknown private runtime intrinsic"))
+    }
     if has(item.node, NodeKind.Async) != (item.name == "async_worker" || item.name == "timer_until_ns" || item.name == "socket_wait" || item.name == "tls_wait" || item.name == "task_next" || item.name == "task_next_terminal" || item.name == "task_outcome" || item.name == "async_read" || item.name == "async_write" || item.name == "async_write_bytes" || item.name == "async_open" || item.name == "async_close" || item.name == "async_resolve" || item.name == "async_process_capture") {
         return Result.Err(failure(env, current.symbol, item.node, "intrinsic declaration has an incorrect async modifier"))
     }
@@ -455,7 +505,9 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
 }
 
 fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
-    if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text { return Result.Ok(true) }
+    if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text {
+        return Result.Ok(true)
+    }
     if node.kind == NodeKind.Name {
         if package(node.value) == "" || lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 {
             return Result.Ok(true)
@@ -498,6 +550,7 @@ fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
     }
     Result.Err(error(context, node, "contracts require scalar predicates and pure helper calls"))
 }
+
 // Parameters cannot be rebound. Immutable entry expressions denote the same
 // value at normal return; their helpers and definedness still need the ordinary
 // mandatory proof. Shared observations take the separate entry-snapshot path.
@@ -506,15 +559,21 @@ fn old_parameter(context Context, node Node) Bool {
     let root = slice(node.value, 0, first_dot(node.value))
     var index = 0
     while index < length(parameters) {
-        if get(parameters, index).value == root { return true }
+        if get(parameters, index).value == root {
+            return true
+        }
         index = index + 1
     }
     false
 }
 
 fn old_place(context Context, node Node) Bool {
-    if node.kind == NodeKind.Name { return old_parameter(context, node) }
-    if node.kind == NodeKind.Select { return old_place(context, child(node, 0)) }
+    if node.kind == NodeKind.Name {
+        return old_parameter(context, node)
+    }
+    if node.kind == NodeKind.Select {
+        return old_place(context, child(node, 0))
+    }
     false
 }
 
@@ -524,7 +583,7 @@ fn old_inline_path(context Context, value Expr) Bool {
     }
     if value.kind == ExprKind.Local {
         return value.index >= 0 && value.index < length(context.locals) &&
-            !get(context.locals, value.index).mutable
+        !get(context.locals, value.index).mutable
     }
     if value.kind == ExprKind.Field {
         let receiver = get(value.children, 0)
@@ -570,11 +629,23 @@ fn old_entry_expression(context Context, node Node, shared Bool, depth Int) Resu
     node.kind != NodeKind.Tuple && node.kind != NodeKind.Select && node.kind != NodeKind.Construct {
         return Result.Ok(false)
     }
-    let operands = if call { child(node, 1).children } else { node.children }
-    var index = if node.kind == NodeKind.Construct { 1 } else { 0 }
+    let operands = if call {
+        child(node, 1).children
+    } else {
+        node.children
+    }
+    var index = if node.kind == NodeKind.Construct {
+        1
+    } else {
+        0
+    }
     while index < length(operands) {
         let operand = get(operands, index)
-        let input = if node.kind == NodeKind.Construct { child(operand, 0) } else { operand }
+        let input = if node.kind == NodeKind.Construct {
+            child(operand, 0)
+        } else {
+            operand
+        }
         if !old_entry_expression(context, input, shared, depth + 1)? {
             return Result.Ok(false)
         }
@@ -586,10 +657,14 @@ fn old_entry_expression(context Context, node Node, shared Bool, depth Int) Resu
 }
 
 fn has_old(node Node) Bool {
-    if node.kind == NodeKind.Old { return true }
+    if node.kind == NodeKind.Old {
+        return true
+    }
     var index = 0
     while index < length(node.children) {
-        if has_old(child(node, index)) { return true }
+        if has_old(child(node, index)) {
+            return true
+        }
         index = index + 1
     }
     false
@@ -597,7 +672,9 @@ fn has_old(node Node) Bool {
 
 fn old_contract(context Context, node Node, kind NodeKind) Result[Node, Failure] {
     if node.kind == NodeKind.Old {
-        if kind != NodeKind.Ensures { return Result.Err(error(context, node, "old is only valid in ensures")) }
+        if kind != NodeKind.Ensures {
+            return Result.Err(error(context, node, "old is only valid in ensures"))
+        }
         let argument = child(node, 0)
         if old_entry_expression(context, argument, false, 0)? {
             return Result.Ok(argument)
@@ -611,7 +688,12 @@ fn old_contract(context Context, node Node, kind NodeKind) Result[Node, Failure]
         push(children, old_contract(context, child(node, index), kind)?)
         index = index + 1
     }
-    Result.Ok(Node { kind = node.kind value = node.value span = node.span children = children })
+    Result.Ok(Node {
+            kind = node.kind
+            value = node.value
+            span = node.span
+            children = children
+        })
 }
 
 fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failure] {
@@ -621,7 +703,11 @@ fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failu
         let member = child(node, index)
         if member.kind == kind {
             let source = child(member, 0)
-            let predicate = if has_old(source) { old_contract(context, source, kind)? } else { source }
+            let predicate = if has_old(source) {
+                old_contract(context, source, kind)?
+            } else {
+                source
+            }
             discard scalar_contract(context, predicate)?
             push(clauses, expr(context, predicate, 2)?)
         }
@@ -639,12 +725,29 @@ record FunctionScope {
 fn function_scope(env Environment, declared Signature, arguments List[Int], constants List[StaticValue], emit Bool) Result[FunctionScope, Failure] {
     let current = scoped_type_domains(env, declared, arguments)?
     let item = symbol(env, current.symbol)
-    var context = Context { lexical = new_lexical() env = env signature = current arguments = arguments
-        constants = constants locals = new[Local]() bindings = new[Binding]() head = -1
-        cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = emit }
+    var context = Context {
+        lexical = new_lexical()
+        env = env
+        signature = current
+        arguments = arguments
+        constants = constants
+        locals = new[Local]()
+        bindings = new[Binding]()
+        head = -1
+        cleanups = new[Cleanup]()
+        cleanup_head = -1
+        loop_boundary = -2
+        facts = new[Fact]()
+        fact_head = -1
+        emit = emit
+    }
     let parameters = group(item.node, NodeKind.Parameters)
     let filtered = has_static(current)
-    let runtime_params = if filtered { new[Int]() } else { current.params }
+    let runtime_params = if filtered {
+        new[Int]()
+    } else {
+        current.params
+    }
     let resources = resource_concept(env, "MustScope") >= 0
     var index = 0
     var constant = 0
@@ -655,10 +758,19 @@ fn function_scope(env Environment, declared Signature, arguments List[Int], cons
                 return Result.Err(error(context, parameter, "comptime parameters cannot contain MustScope resources"))
             }
             let storage = static_environment_type(env, get(constants, constant))
-            let local = if storage >= 0 { length(context.locals) } else { -1 }
+            let local = if storage >= 0 {
+                length(context.locals)
+            } else {
+                -1
+            }
             context = bind_name(context, parameter, parameter.value, local, constant, -1)?
             if storage >= 0 {
-                push(context.locals, Local { name = parameter.value ty = storage mutable = false is_scoped = false })
+                push(context.locals, Local {
+                        name = parameter.value
+                        ty = storage
+                        mutable = false
+                        is_scoped = false
+                    })
                 push(runtime_params, storage)
             }
             constant = constant + 1
@@ -667,7 +779,9 @@ fn function_scope(env Environment, declared Signature, arguments List[Int], cons
             if resources && must_scope(context, get(current.params, index))? {
                 resource_borrow_local(context, length(context.locals) - 1)
             }
-            if filtered { push(runtime_params, get(current.params, index)) }
+            if filtered {
+                push(runtime_params, get(current.params, index))
+            }
         }
         index = index + 1
     }
@@ -678,16 +792,26 @@ fn function_scope(env Environment, declared Signature, arguments List[Int], cons
         context = assuming(context, get(preconditions, index), true, 0)
         index = index + 1
     }
-    Result.Ok(FunctionScope { context = context preconditions = preconditions params = runtime_params })
+    Result.Ok(FunctionScope {
+            context = context
+            preconditions = preconditions
+            params = runtime_params
+        })
 }
 
 // Construction and mandatory verification share one binder/body checker. A
 // private proof closure can construct its caller without verifying it recursively.
 fn function_body(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[CheckedBody, Failure] {
-    if id < 0 { return closure_body(env, -1 - id, new[Context](), emit) }
+    if id < 0 {
+        return closure_body(env, -1 - id, new[Context](), emit)
+    }
     let original = get(env.signatures, id)
     let item = symbol(env, original.symbol)
-    let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
+    let runtime_name = if has(item.node, NodeKind.Intrinsic) {
+        validate_intrinsic(env, id)?
+    } else {
+        ""
+    }
     let current = signature(env, id, arguments, item.node)?
     discard task_signature(env, current, item.node)?
     let scope = function_scope(env, current, arguments, constants, emit)?
@@ -705,23 +829,55 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
             push(values, atom(ExprKind.Local, get(current.params, index), item.node, index))
             index = index + 1
         }
-        let call = expression(if has(item.node, NodeKind.Async) { ExprKind.Suspend } else { ExprKind.Intrinsic },
+        let call = expression(if has(item.node, NodeKind.Async) {
+                ExprKind.Suspend
+            } else {
+                ExprKind.Intrinsic
+            },
             current.result, item.node, runtime_name, -1, values, runtime_name != "fault_text")
         expression(ExprKind.Block, current.result, item.node, "", -1, expressions(call), call.falls)
     }
     var result_local = -1
     if has(item.node, NodeKind.Ensures) || inherited_method_contract(env, current.symbol, NodeKind.Ensures) {
         result_local = length(context.locals)
-        push(context.locals, Local { name = "result" ty = current.result mutable = false is_scoped = false })
+        push(context.locals, Local {
+                name = "result"
+                ty = current.result
+                mutable = false
+                is_scoped = false
+            })
         let binding = length(context.bindings)
-        push(context.bindings, Binding { name = "result" local = result_local constant = -1 previous = context.head })
+        push(context.bindings, Binding {
+                name = "result"
+                local = result_local
+                constant = -1
+                previous = context.head
+            })
         context = context_at(context, binding)
     }
-    let checked_function = Function { is_async = has(item.node, NodeKind.Async) symbol = current.symbol arguments = arguments params = scope.params result = current.result
-        locals = context.locals preconditions = scope.preconditions postconditions = new[Expr]() result_local = result_local
-        body = body runtime_name = if runtime_name == "resource_generate" { "" } else { runtime_name } span = item.node.span }
+    let checked_function = Function {
+        is_async = has(item.node, NodeKind.Async)
+        symbol = current.symbol
+        arguments = arguments
+        params = scope.params
+        result = current.result
+        locals = context.locals
+        preconditions = scope.preconditions
+        postconditions = new[Expr]()
+        result_local = result_local
+        body = body
+        runtime_name = if runtime_name == "resource_generate" {
+            ""
+        } else {
+            runtime_name
+        }
+        span = item.node.span
+    }
     discard task_flow(context, checked_function)?
-    Result.Ok(CheckedBody { context = context function = checked_function })
+    Result.Ok(CheckedBody {
+            context = context
+            function = checked_function
+        })
 }
 
 fn checked_function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
@@ -731,7 +887,9 @@ fn checked_function(env Environment, id Int, arguments List[Int], constants List
 }
 
 fn function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
-    if active_pack(env) < 0 { return checked_function(env, id, arguments, constants, emit) }
+    if active_pack(env) < 0 {
+        return checked_function(env, id, arguments, constants, emit)
+    }
     let pending = pending_pack_snapshot(env)
     match checked_function(env, id, arguments, constants, emit) {
         Result.Ok(checked) => Result.Ok(checked)

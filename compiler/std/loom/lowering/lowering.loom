@@ -54,9 +54,7 @@ fn shape(types List[Type], kind TypeKind, arguments List[Int]) Int {
 }
 
 fn ints(value Int) List[Int] {
-    let values = new[Int]()
-    push(values, value)
-    values
+    [value]
 }
 
 fn function_type(types List[Type], params List[Int], output Int) Int {

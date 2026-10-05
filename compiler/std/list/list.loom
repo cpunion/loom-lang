@@ -1,11 +1,22 @@
 intrinsic fn list_new[T]() List[T]
+
+intrinsic fn list_new_capacity[T](capacity Int) List[T]
+
 intrinsic fn list_len[T](values List[T]) Int
+
 intrinsic fn list_get[T](values List[T], index Int) T
+
 intrinsic fn list_push[T](values List[T], value T)
+
 intrinsic fn list_set[T](values List[T], index Int, value T)
 
 pub fn new[T]() List[T] {
     list_new[T]()
+}
+
+// Reserve storage without adding elements. Negative capacity is a RuntimeFault.
+pub fn new[T](capacity Int) List[T] {
+    list_new_capacity[T](capacity)
 }
 
 pub fn length[T](values List[T]) Int {

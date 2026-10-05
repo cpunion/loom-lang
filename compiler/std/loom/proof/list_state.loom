@@ -272,7 +272,8 @@ fn storage_operation(program Program, name Text, ty Int, arguments List[Expr], r
     if requirement == StorageRequirement.Local {
         return modeled || local_storage_operation(program, name, arguments)
     }
-    modeled || name == "list_new" || (requirement == StorageRequirement.Extent && name == "list_set")
+    modeled || name == "list_new" || name == "list_new_capacity" ||
+    (requirement == StorageRequirement.Extent && name == "list_set")
 }
 
 fn storage_expression(value Expr) Bool {

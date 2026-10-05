@@ -318,7 +318,8 @@ fn named_expr(cursor Cursor, records Bool) Result[Step, Diagnostic] {
     }
     if records && at(rest, Kind.LBrace) {
         rest = newlines(next(rest))
-        let children = one(types.node)
+        let children = new[Node]()
+        push(children, types.node)
         while !at(rest, Kind.RBrace) {
             if at(rest, Kind.Dot) {
                 let second = next(rest)
@@ -379,8 +380,7 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
                 }
                 if !numeric && at(types.rest, Kind.LParen) {
                     let args = sequence(types.rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
-                    let children = two(parsed.node, types.node)
-                    push(children, args.node)
+                    let children = [parsed.node, types.node, args.node]
                     parsed = done(start, args.rest, NodeKind.MethodCall, field.node.value, children)
                 } else {
                     parsed = done(start, field.rest, NodeKind.Select, field.node.value, one(parsed.node))
@@ -534,11 +534,13 @@ fn pattern_at(cursor Cursor, depth Int, payload Bool, binding Bool) Result[Step,
 fn match_expr(cursor Cursor) Result[Step, Diagnostic] {
     let value = expr(next(cursor), 0, false, false)?
     var rest = newlines(expect(newlines(value.rest), Kind.LBrace, "'{' after the matched value")?)
-    let children = one(value.node)
+    let children = new[Node]()
+    push(children, value.node)
     while !at(rest, Kind.RBrace) {
         let start = rest
         let matched = pattern(rest)?
-        let members = one(matched.node)
+        let members = new[Node](3)
+        push(members, matched.node)
         rest = matched.rest
         if word(rest, "if") {
             let guard = expr(next(rest), 0, false, true)?
@@ -571,7 +573,9 @@ fn match_expr(cursor Cursor) Result[Step, Diagnostic] {
 fn if_expr(cursor Cursor) Result[Step, Diagnostic] {
     let condition = expr(next(cursor), 0, false, false)?
     let then_body = block(condition.rest)?
-    let children = two(condition.node, then_body.node)
+    let children = new[Node](3)
+    push(children, condition.node)
+    push(children, then_body.node)
     var rest = then_body.rest
     let after = newlines(rest)
     if word(after, "else") {

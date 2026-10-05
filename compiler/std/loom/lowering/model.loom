@@ -100,15 +100,11 @@ fn nonfall(value Expr) Expr {
 }
 
 fn one(value Expr) List[Expr] {
-    let values = new[Expr]()
-    push(values, value)
-    values
+    [value]
 }
 
 fn pair(first Expr, second Expr) List[Expr] {
-    let values = one(first)
-    push(values, second)
-    values
+    [first, second]
 }
 
 fn empty(span Span) Expr {

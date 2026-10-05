@@ -127,7 +127,7 @@ fn cache_project(output Bytes, project Project, selection List[Int]) Result[Bool
 fn cache_read_project(reader CacheReader, selection List[Int]) Result[Project, Text] {
     let root = cache_read_int(reader)?
     let module_count = cache_read_count(reader)?
-    let modules = new[ModuleInstance]()
+    let modules = new[ModuleInstance](cache_capacity(module_count))
     var index = 0
     while index < module_count {
         push(modules, ModuleInstance {
@@ -137,7 +137,7 @@ fn cache_read_project(reader CacheReader, selection List[Int]) Result[Project, T
         index = index + 1
     }
     let package_count = cache_read_count(reader)?
-    let packages = new[Package]()
+    let packages = new[Package](cache_capacity(package_count))
     index = 0
     while index < package_count {
         let instance = cache_read_int(reader)?
@@ -146,7 +146,7 @@ fn cache_read_project(reader CacheReader, selection List[Int]) Result[Project, T
         }
         let relative = cache_read_text(reader)?
         let import_count = cache_read_count(reader)?
-        let imports = new[PackageImport]()
+        let imports = new[PackageImport](cache_capacity(import_count))
         var edge = 0
         while edge < import_count {
             let spelling = cache_read_text(reader)?
@@ -171,7 +171,7 @@ fn cache_read_project(reader CacheReader, selection List[Int]) Result[Project, T
         return Result.Err("invalid cached root")
     }
     let file_count = cache_read_count(reader)?
-    let files = new[SourceFile]()
+    let files = new[SourceFile](cache_capacity(file_count))
     index = 0
     while index < file_count {
         let package = cache_read_int(reader)?
@@ -296,15 +296,15 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         index = index + 1
     }
     let type_count = cache_read_count(reader)?
-    let types = new[Type]()
+    let types = new[Type](cache_capacity(type_count))
     index = 0
     while index < type_count {
         push(types, cache_read_type(reader)?)
         index = index + 1
     }
     let function_count = cache_read_count(reader)?
-    let functions = new[Function]()
-    let targets = new[BodyTarget]()
+    let functions = new[Function](cache_capacity(function_count))
+    let targets = new[BodyTarget](cache_capacity(function_count))
     index = 0
     while index < function_count {
         push(targets, BodyTarget {

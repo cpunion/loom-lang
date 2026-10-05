@@ -14,7 +14,8 @@ fn function_expression(cursor Cursor) Result[Step, Diagnostic] {
     if !word(start, "fn") { return Result.Err(error(start, "expected fn after async")) }
     match sequence(next(start), Kind.LParen, Kind.RParen, NodeKind.Parameters, Items.Parameters, false) {
         Result.Ok(parameters) => {
-            let children = one(parameters.node)
+            let children = new[Node]()
+            push(children, parameters.node)
             if asynchronous { push(children, done(cursor, start, NodeKind.Async, "", new[Node]()).node) }
             let parsed = function_contents(cursor, parameters.rest, children, "", false, false)
             match parsed {
