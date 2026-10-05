@@ -19,7 +19,7 @@ record Concept {
 record Implementation {
     symbol Int
     source Int
-    arity Int
+    widths List[Int]
     depth Int
     capability Int
     ty Int
@@ -258,7 +258,7 @@ fn implementation_methods(env Environment, position Int) Result[Bool, Failure] {
         }
         index = index + 1
     }
-    set(env.implementations, position, Implementation { symbol = owner source = header.source arity = header.arity depth = header.depth capability = capability ty = ty methods = methods associated = header.associated state = 3 })
+    set(env.implementations, position, Implementation { symbol = owner source = header.source widths = header.widths depth = header.depth capability = capability ty = ty methods = methods associated = header.associated state = 3 })
     Result.Ok(true)
 }
 fn evidence(context Context, ty Int, capability Int) Result[Bool, Failure] {

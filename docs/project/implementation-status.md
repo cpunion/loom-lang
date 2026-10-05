@@ -176,8 +176,8 @@ abstract declared bounds. Dynamic calls use finite ordinary slots, not a new
 runtime pack ABI. The [method example](../../compiler/examples/variadics/methods.loom)
 also checks sharing and once-only effects. Impl-header packs infer arity from
 nominal, tuple and function target shapes, including nested/repeated expansions.
-Selected arities check methods and associated bindings with abstract elements;
-method-local packs retain their independent arity.
+Selected shapes check methods and associated bindings with abstract elements;
+method-local packs retain their own widths.
 Direct value packs retain ordinary parameter order between fixed
 parameters; all occurrences of the same type pack share a width, uniquely
 selected by the argument-count equation. Nonintegral widths and mismatched
@@ -190,7 +190,7 @@ suspension reuse that expansion in the
 [repeated example](../../compiler/examples/variadics/repeated.loom).
 Overlap checking preserves
 expansions and conservatively rejects unknown intersections, without sampling.
-Private cache recipes retain the original member and both arities. The
+Private cache recipes retain the original member and both width vectors. The
 [impl example](../../compiler/examples/data_packs/implementations.loom) exercises
 native/dyn calls, declared contracts, shared values, CTFE and async payloads.
 Pack-independent postconditions use dependency erasure and ordinary abstract
@@ -213,9 +213,11 @@ independent widths in nominal identity and cache recipes. Explicit `...` groups
 distinguish a sequence of types from a single tuple type; field/payload and
 contextual inference remain structural. The
 [group example](../../compiler/examples/data_packs/groups.loom) covers overloads,
-recursive data, CTFE, shared graphs, existing single-pack impls and Task payloads.
-Independent impl-header packs and sequence-dependent universal proofs remain
-unsupported.
+recursive data, CTFE, shared graphs and Task payloads. Independent impl headers
+reuse these shape equations, abstract checks and nominal group boundaries. The
+[independent impl example](../../compiler/examples/data_packs/independent_impls.loom)
+also exercises associated bindings, dyn defaults/overrides and shared values
+through suspension. Sequence-dependent universal proofs remain unsupported.
 Compile-time execution is not proof by sampling.
 
 Independent nominal declarations do not share a global type-count budget.

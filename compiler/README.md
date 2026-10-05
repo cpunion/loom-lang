@@ -843,9 +843,8 @@ than relying on a guessed split. See the
 equations, empty packs, dyn methods, CTFE and typed suspension.
 Instance and body-cache keys retain every width, not just their sum. Shape
 reasoning remains bounded; it does not enumerate specializations or solve all
-integer feasibility problems. Independent packs in impl headers and
-sequence-dependent universal postcondition proofs remain
-unsupported.
+integer feasibility problems. Impl headers use the same shape equations.
+Sequence-dependent universal postcondition proofs remain unsupported.
 
 ```loom
 pub fn pack[Ts...](values Ts...) (Ts...) {
@@ -1133,7 +1132,8 @@ not a few sampled arities. A selected arity becomes an ordinary method slot;
 receiver-only in dynamic methods, even inside an empty expansion. See the
 [method-pack example](examples/variadics/methods.loom).
 
-Impl headers also accept one pack among fixed parameters. The target determines its arity:
+Impl headers accept type packs among fixed parameters. Target shape determines
+each width:
 
 ```loom
 record Cells[Ts...] {
@@ -1155,13 +1155,40 @@ impl[Ts...] Collection for Cells[Ts...] {
 ```
 
 Fixed prefixes, nested/repeated tuple or nominal patterns and function types
-use ordinary inference after expansion. Selected arities check every method
+use ordinary inference after expansion. Independent packs require a unique
+nonnegative integral solution, just like function packs:
+
+```loom
+concept GroupView {
+    type Left
+    type Right
+    fn left(self Self) Self.Left
+    fn right(self Self) Self.Right
+}
+
+impl[As..., Bs...] GroupView for Groups[(As...)..., Bs...] {
+    type Left = (As...)
+    type Right = (Bs...)
+
+    fn left(self Self) Self.Left {
+        self.left
+    }
+
+    fn right(self Self) Self.Right {
+        self.right
+    }
+}
+```
+
+Selected shapes check every method
 and associated binding with abstract elements and declared requirements, not
 only the caller's concrete types. `comptime for T in Ts` uses the same type
-iteration as function packs. A method-local pack has an independent arity;
+iteration as function packs. Method-local packs have their own width vector;
 defaults, overrides, CTFE, dyn slots and native Task payloads stay ordinary.
-Incremental recipes retain source identity and both arities, not generated impl
-indices. See the [impl example](examples/data_packs/implementations.loom).
+Incremental recipes retain source identity and both width vectors, not generated
+impl indices or summed lengths. See the
+[single-pack example](examples/data_packs/implementations.loom) and
+[independent impl example](examples/data_packs/independent_impls.loom).
 
 Overlapping impl families reject before a call selects an arity. Fixed
 constructors and anchored prefix/suffix patterns prove disjointness; unknown
@@ -1169,9 +1196,8 @@ intersections reject conservatively. Bounds or sampled arities do not prove
 disjointness. An impl family's ordinary method contracts are proved at each
 selected arity; unselected arities have not had their bodies verified.
 
-Independent packs in impl headers and sequence-dependent
-universal proofs, remain open. This implementation does not complete the accepted
-metaprogramming design.
+Sequence-dependent universal proofs remain open. This implementation does not
+complete the accepted metaprogramming design.
 
 Records and enums accept type packs among fixed type parameters too. Independent
 groups infer uniquely from structural fields/payloads or an expected type.
@@ -1197,7 +1223,7 @@ one tuple type. `()...` denotes an empty type group, not a source empty-tuple
 value. Flat arguments cannot guess independent boundaries. Distinct width
 vectors retain distinct nominal instances even when their flattened arguments
 match. Cache replay, overloads, type comparison, recursive List-backed data,
-existing single-pack impl families and Tasks retain those boundaries without a
+impl families and Tasks retain those boundaries without a
 runtime pack object. See the [group example](examples/data_packs/groups.loom).
 
 The common single-pack form also accepts flat explicit arguments:

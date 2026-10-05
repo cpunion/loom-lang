@@ -150,10 +150,10 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
                 } else {
                     new[Int]()
                 }
-                implementation_arity = if instance.signature < 0 {
-                    -1
+                implementation_widths = if instance.signature < 0 {
+                    new[Int]()
                 } else {
-                    impl_member_arity(env, source)
+                    copy_indices(impl_member_widths(env, source))
                 }
                 prototype = if prototype == value.symbol || (pack >= 0 && prototype == get(env.packs, pack).source) {
                     -1

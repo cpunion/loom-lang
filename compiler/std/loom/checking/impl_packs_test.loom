@@ -155,3 +155,158 @@ test fn implementation_pack_bodies_restore_source_and_both_arity_axes() {
         Result.Ok(_) => false
     }
 }
+
+test fn independent_implementation_packs_keep_header_and_method_widths_in_replay() {
+    let source = """
+        record Groups[Head, As..., Bs..., Tail] {
+            head Head
+            left (As...)
+            right (Bs...)
+            tail Tail
+        }
+        concept Collection {
+            type Left
+            type Right
+            fn left(self Self) Self.Left
+            fn right(self Self) Self.Right
+            fn counts(self Self) (Int, Int)
+                ensures result.0 >= 0 && result.1 >= 0
+            fn keep[Xs..., Ys...](self Self, first (Xs...), second (Ys...)) ((Xs...), (Ys...)) {
+                (first, second)
+            }
+            fn mix[Xs..., Ys...](self Self, first (Xs...), second (Ys...)) ((Xs...), (Ys...))
+        }
+        impl[Head, As..., Bs..., Tail] Collection for Groups[Head, (As...)..., Bs..., Tail] {
+            type Left = (As...)
+            type Right = (Bs...)
+            fn left(self Self) Self.Left { self.left }
+            fn right(self Self) Self.Right { self.right }
+            fn counts(self Self) (Int, Int) {
+                var left = 0
+                var right = 0
+                comptime for A in As { left = left + 1 }
+                comptime for B in Bs { right = right + 1 }
+                (left, right)
+            }
+            fn mix[Us..., Vs...](self Self, first (Us...), second (Vs...)) ((Us...), (Vs...)) {
+                (first, second)
+            }
+        }
+        fn empty[Ts...](values Ts...) (Ts...) { values }
+        pub fn answer() Int {
+            let first = Groups { head = true, left = (1, 2), right = (3,), tail = false }
+            let second = Groups { head = true, left = (4,), right = (5, 6), tail = false }
+            let a dyn Collection[Left = (Int, Int), Right = (Int,)] = first
+            let b dyn Collection[Left = (Int,), Right = (Int, Int)] = second
+            assert a.counts().0 == 2 && b.counts().0 == 1
+            assert a.left().1 == 2 && b.right().1 == 6
+            assert a.mix((7, 8), (9,)).0.1 == 8
+            assert a.mix((10,), (11, 12)).1.1 == 12
+            assert b.keep((13, true), ("default",)).0.1
+            discard b.mix(empty(), empty())
+            let blank = Groups { head = true, left = empty(), right = empty(), tail = false }
+            assert blank.counts().0 == 0 && blank.counts().1 == 0
+            assert comptime { Groups { head = 0, left = (14,), right = (true, "ctfe"), tail = 0 }.counts().1 } == 2
+            a.left().0 + b.right().0
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, concat("fn unrelated() {}\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert bodies_reused(restored) >= 8
+    discard restored_definition_cache(restored)
+    rejects(std.text.join(std.text.split(source, "right = right + 1"), "right = right - 1"))
+}
+
+test fn independent_implementation_packs_solve_structural_equations_without_guessing() {
+    discard accepted("""
+        record Box[T] { value T }
+        concept Size { fn size(self Self) Int }
+        impl[As..., Bs...] Size for Box[((As..., Bs...), (As..., As..., Bs...))] {
+            fn size(self Self) Int {
+                var count = 0
+                comptime for A in As { count = count + 1 }
+                comptime for B in Bs { count = count + 10 }
+                count
+            }
+        }
+        concept Callable { fn valid(self Self) Bool }
+        impl[As..., Bs...] Callable for fn(As...) (Bs...) {
+            fn valid(self Self) Bool { true }
+        }
+        fn callback(value Int) (Bool, Text) { (true, "callback") }
+        type Marked[T] = Box[T] where true
+        concept MarkedSize { fn size(self Self) Int }
+        impl[As..., Bs...] MarkedSize for Marked[((As...), (Bs...))] {
+            fn size(self Self) Int {
+                var count = 0
+                comptime for A in As { count = count + 1 }
+                comptime for B in Bs { count = count + 10 }
+                count
+            }
+        }
+        fn main() {
+            assert Box { value = ((1, true, "a"), (2, false, 3, true, "b")) }.size() == 12
+            let call fn(Int) (Bool, Text) = callback
+            assert call.valid()
+            assert Marked(Box { value = ((1, 2), (true,)) }).size() == 12
+        }
+        """)
+    let patterns = """
+        record Box[T] { value T }
+        concept C { fn check(self Self) Bool }
+        impl[As..., Bs...] C for Box[((As..., As...), (Bs...), (As...))] {
+            fn check(self Self) Bool { true }
+        }
+        """
+    rejects(concat(patterns, "fn main() { discard Box { value = ((1, 2, 3), (true,), (1,)) }.check() }"))
+    rejects(concat(patterns, "fn main() { discard Box { value = ((1, 2), (true,), (false,)) }.check() }"))
+    rejects("""
+        concept C { fn check(self Self) Bool }
+        impl[As..., Bs...] C for (As..., Bs...) {
+            fn check(self Self) Bool { true }
+        }
+        fn main() { discard (1, true, "ambiguous").check() }
+        """)
+    rejects("""
+        concept C {}
+        impl[As..., Bs...] C for ((As...), (Bs...)) {}
+        impl[Xs..., Ys...] C for ((Xs...), (Ys...)) {}
+        """)
+    discard accepted("""
+        record Groups[As..., Bs...] { left (As...); right (Bs...) }
+        concept C {}
+        impl[As..., Bs...] C for Groups[(Int, As...)..., Bs...] {}
+        impl[Xs..., Ys...] C for Groups[(Bool, Xs...)..., Ys...] {}
+        """)
+    let missing_bound = """
+        concept Show { fn show(self Self) Int }
+        impl Show for Int { fn show(self Int) Int { self } }
+        record Groups[As..., Bs...] { left (As...); right (Bs...) }
+        concept C { fn total(self Self) Int }
+        impl[As...Show, Bs...] C for Groups[As..., Bs...] {
+            fn total(self Self) Int {
+                var total = 0
+                let values = self.right
+                comptime for value in values { total = total + value.show() }
+                total
+            }
+        }
+        fn main() { discard Groups { left = (1,), right = (2,) }.total() }
+        """
+    rejects(missing_bound)
+    discard accepted(std.text.join(std.text.split(missing_bound, "impl[As...Show, Bs...]"), "impl[As...Show, Bs...Show]"))
+}

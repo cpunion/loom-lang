@@ -1,5 +1,5 @@
 // An impl family is selected by target shape, then checked with abstract
-// elements for that arity. Expanded owners are private; source spans and
+// elements for those widths. Expanded owners are private; source spans and
 // nominal data identities remain those of the original declarations.
 fn impl_pack_member(env Environment, owner Int) Bool {
     let parent = symbol(env, owner).owner
@@ -10,9 +10,6 @@ fn impl_pack_member(env Environment, owner Int) Bool {
 fn validate_impl_pack(env Environment, owner Int) Result[Bool, Failure] {
     let node = symbol(env, owner).node
     let parameters = group(node, NodeKind.TypeParameters)
-    if !one_type_pack(node) {
-        return Result.Err(failure(env, owner, node, "declare only one type pack in a type parameter list"))
-    }
     if !has_type_expansion(child(node, 1)) {
         return Result.Err(failure(env, owner, node, "an implementation pack needs a structural target expansion"))
     }
@@ -100,8 +97,14 @@ fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth
         return Result.Err(failure(env, owner, node, "implementation target nesting limit exceeded"))
     }
     if node.kind == NodeKind.Spread {
-        let pack = pack_parameter(symbol(env, owner).node)
-        if pack < 0 || !mentions_pack(child(node, 0), get(group(symbol(env, owner).node, NodeKind.TypeParameters), pack).value) {
+        let names = pack_names(declared_packs(symbol(env, owner).node))
+        var selected = false
+        var index = 0
+        while index < length(names) {
+            selected = selected || mentions_pack(child(node, 0), get(names, index))
+            index = index + 1
+        }
+        if !selected {
             return Result.Err(failure(env, owner, node, "type expansion must use this declaration's pack"))
         }
         return Result.Ok(pack_node(node, NodeKind.Spread, "", source_nodes(impl_target_schema(env, owner, child(node, 0), true, depth + 1)?)))
@@ -342,76 +345,28 @@ fn impl_type_schema(env Environment, ty Int, node Node) Node {
     pack_node(node, NodeKind.Type, constructor, children)
 }
 
-fn impl_pack_arity(env Environment, owner Int, node Node, ty Int, depth Int) Result[Int, Failure] {
-    if depth >= 64 {
-        return Result.Ok(-1)
+fn impl_pack_shape(env Environment, owner Int, node Node, ty Int) Result[List[Int], Failure] {
+    let schema = impl_target_schema(env, owner, node, false, 0)?
+    if !impl_schemas_overlap(schema, impl_type_schema(env, ty, node)) {
+        return Result.Ok(new[Int]())
     }
-    let shape = get(env.types, ty)
-    if node.kind == NodeKind.Type && length(shape.pack_widths) > 1 {
-        let declaration = find_data(env, owner, node, node.value)?
-        if declaration != shape.symbol { return Result.Ok(-1) }
-        let names = pack_names(declared_packs(symbol(env, owner).node))
-        let rows = new[List[Int]]()
-        shape_type_equations(env, node, ty, names, rows, new[Int](), depth)
-        let widths = solved_pack_shape(rows, length(names))
-        return Result.Ok(if length(widths) == 1 { get(widths, 0) } else { -1 })
-    }
-    if node.kind == NodeKind.TupleType && shape.kind != TypeKind.Tuple {
-        return Result.Ok(-1)
-    }
-    if node.kind == NodeKind.FunctionType && shape.kind != TypeKind.Function {
-        return Result.Ok(-1)
-    }
-    if node.kind == NodeKind.Type {
-        if node.value == "List" || node.value == "Task" {
-            if (node.value == "List" && shape.kind != TypeKind.List) ||
-            (node.value == "Task" && shape.kind != TypeKind.Task) {
-                return Result.Ok(-1)
-            }
-        } else {
-            let declaration = find_data(env, owner, node, node.value)?
-            if declaration < 0 || shape.symbol != declaration ||
-            (shape.kind != TypeKind.Record && shape.kind != TypeKind.Enum && shape.kind != TypeKind.Refined) {
-                return Result.Ok(-1)
-            }
+    let names = pack_names(declared_packs(symbol(env, owner).node))
+    let rows = new[List[Int]]()
+    var widths = new[Int]()
+    var round = 0
+    while round <= length(names) {
+        shape_type_equations(env, node, ty, names, rows, widths, 0, true)
+        let next = partial_pack_shape(rows, length(names))
+        if length(next) == 0 {
+            return Result.Ok(next)
         }
-    }
-    let patterns = if node.kind == NodeKind.FunctionType {
-        group(node, NodeKind.Parameters)
-    } else {
-        node.children
-    }
-    let count = length(shape.arguments) - if node.kind == NodeKind.FunctionType {
-        1
-    } else {
-        0
-    }
-    let direct = sequence_pack_arity(patterns, count)
-    if direct >= 0 {
-        return Result.Ok(direct)
-    }
-    if length(patterns) != count {
-        return Result.Ok(-1)
-    }
-    var index = 0
-    while index < count {
-        if has_type_expansion(get(patterns, index)) {
-            let arity = impl_pack_arity(env, owner, get(patterns, index), get(shape.arguments, index), depth + 1)?
-            if arity >= 0 {
-                return Result.Ok(arity)
-            }
+        if same(next, widths) {
+            return Result.Ok(solved_pack_shape(rows, length(names)))
         }
-        index = index + 1
+        widths = next
+        round = round + 1
     }
-    let returns = group(node, NodeKind.ReturnType)
-    if node.kind == NodeKind.FunctionType && length(returns) != 0 {
-        return impl_pack_arity(env, owner, get(returns, 0), get(shape.arguments, count), depth + 1)
-    }
-    Result.Ok(-1)
-}
-
-fn expand_impl_node(env Environment, owner Int, node Node, pack Text, arity Int, element Int, types Bool, depth Int) Result[Node, Failure] {
-    expand_pack_type_in(env, owner, node, pack, arity, element, types, depth, true)
+    Result.Ok(solved_pack_shape(rows, length(names)))
 }
 
 fn impl_arguments(env Environment, header Implementation, ty Int) List[Int] {
@@ -435,9 +390,9 @@ fn demand_implementations(env Environment, ty Int, capability Int) Result[Bool, 
     while index < length(protocol.families) {
         let source = get(protocol.families, index)
         let header = get(env.implementations, source)
-        let arity = impl_pack_arity(env, header.symbol, child(symbol(env, header.symbol).node, 1), ty, 0)?
-        if arity >= 0 {
-            let selected = materialize_impl_pack(env, source, arity)?
+        let widths = impl_pack_shape(env, header.symbol, child(symbol(env, header.symbol).node, 1), ty)?
+        if length(widths) != 0 {
+            let selected = materialize_impl_pack(env, source, widths)?
             if complete(impl_arguments(env, get(env.implementations, selected), ty)) && protocol.ready {
                 discard check_impl_packs(env)?
             }
@@ -447,14 +402,14 @@ fn demand_implementations(env Environment, ty Int, capability Int) Result[Bool, 
     Result.Ok(true)
 }
 
-fn materialize_impl_pack(env Environment, template Int, arity Int) Result[Int, Failure] {
+fn materialize_impl_pack(env Environment, template Int, widths List[Int]) Result[Int, Failure] {
     let header = get(env.implementations, template)
     var index = 0
     var count = 0
     while index < length(env.implementations) {
         let previous = get(env.implementations, index)
-        if previous.source == header.source && previous.arity >= 0 {
-            if previous.arity == arity {
+        if previous.source == header.source && length(previous.widths) != 0 {
+            if same(previous.widths, widths) {
                 return Result.Ok(index)
             }
             count = count + 1
@@ -478,12 +433,23 @@ fn materialize_impl_pack(env Environment, template Int, arity Int) Result[Int, F
     if depth > 64 {
         return Result.Err(failure(env, header.source, item.node, "implementation pack specialization depth exceeded; expansion must be finite"))
     }
-    if arity > 1024 || count >= 1024 {
+    let names = pack_names(declared_packs(item.node))
+    if length(widths) != length(names) {
+        return Result.Err(failure(env, header.source, item.node, "type pack shape does not match its declaration"))
+    }
+    index = 0
+    while index < length(widths) {
+        if get(widths, index) < 0 || get(widths, index) > 1024 {
+            return Result.Err(failure(env, header.source, item.node, "implementation pack specialization budget exceeded; expansion must be finite"))
+        }
+        index = index + 1
+    }
+    if count >= 1024 {
         return Result.Err(failure(env, header.source, item.node, "implementation pack specialization budget exceeded; expansion must be finite"))
     }
     let types = group(item.node, NodeKind.TypeParameters)
-    let pack = get(types, pack_parameter(item.node))
-    let parameters = expand_pack_parameters(types, arity)
+    let parameters = expand_family_parameters(types, widths)
+    let elements = unknown_extents(length(names))
     let children = new[Node]()
     index = 0
     while index < length(item.node.children) {
@@ -491,9 +457,11 @@ fn materialize_impl_pack(env Environment, template Int, arity Int) Result[Int, F
         if node.kind == NodeKind.TypeParameters {
             push(children, pack_node(node, node.kind, "", parameters))
         } else {
-            var expanded = expand_impl_node(env, header.source, node, pack.value, arity, -1, false, 0)?
-            if has_pack_iteration(expanded) {
-                expanded = expand_type_iteration(env, header.source, expanded, pack.value, arity, false, false, 0, ints(0))?
+            var expanded = expand_family_type(env, header.source, node, names, widths, elements, false, 0, true)?
+            var pack = 0
+            while has_pack_iteration(expanded) && pack < length(names) {
+                expanded = expand_type_iteration(env, header.source, expanded, get(names, pack), get(widths, pack), false, false, 0, ints(0))?
+                pack = pack + 1
             }
             push(children, expanded)
         }
@@ -545,7 +513,7 @@ fn materialize_impl_pack(env Environment, template Int, arity Int) Result[Int, F
     push(env.implementations, Implementation {
             symbol = owner
             source = header.source
-            arity = arity
+            widths = copy_indices(widths)
             depth = depth
             capability = header.capability
             ty = -1
@@ -579,7 +547,7 @@ fn impl_pack_state(env Environment, index Int, state Int) {
     set(env.implementations, index, Implementation {
             symbol = header.symbol
             source = header.source
-            arity = header.arity
+            widths = header.widths
             depth = header.depth
             capability = header.capability
             ty = header.ty
@@ -589,16 +557,16 @@ fn impl_pack_state(env Environment, index Int, state Int) {
         })
 }
 
-fn impl_member_arity(env Environment, owner Int) Int {
+fn impl_member_widths(env Environment, owner Int) List[Int] {
     let parent = symbol(env, owner).owner
     if parent < 0 || symbol(env, parent).node.kind != NodeKind.Impl {
-        return -1
+        return new[Int]()
     }
-    get(env.implementations, implementation_owner(env, parent)).arity
+    get(env.implementations, implementation_owner(env, parent)).widths
 }
 
 fn impl_member_source(env Environment, owner Int) Int {
-    if impl_member_arity(env, owner) < 0 {
+    if length(impl_member_widths(env, owner)) == 0 {
         return owner
     }
     let item = symbol(env, owner)
@@ -616,12 +584,12 @@ fn impl_member_source(env Environment, owner Int) Int {
     -1
 }
 
-fn impl_member_instance(env Environment, source Int, arity Int) Result[Int, Failure] {
-    if arity < 0 {
+fn impl_member_instance(env Environment, source Int, widths List[Int]) Result[Int, Failure] {
+    if length(widths) == 0 {
         return Result.Ok(source)
     }
     let item = symbol(env, source)
-    let selected = materialize_impl_pack(env, implementation_owner(env, item.owner), arity)?
+    let selected = materialize_impl_pack(env, implementation_owner(env, item.owner), widths)?
     discard check_impl_packs(env)?
     let owner = get(env.implementations, selected).symbol
     var index = 0
@@ -638,11 +606,11 @@ fn impl_member_instance(env Environment, source Int, arity Int) Result[Int, Fail
 }
 
 // Like function packs, check a worklist with abstract elements. A recursive
-// family may discover another arity without retaining native checker frames.
+// family may discover another shape without retaining native checker frames.
 fn check_impl_packs(env Environment) Result[Bool, Failure] {
     var index = 0
     while index < length(env.implementations) {
-        if get(env.implementations, index).arity >= 0 && get(env.implementations, index).state == 4 {
+        if length(get(env.implementations, index).widths) != 0 && get(env.implementations, index).state == 4 {
             return Result.Ok(true)
         }
         index = index + 1
@@ -650,7 +618,7 @@ fn check_impl_packs(env Environment) Result[Bool, Failure] {
     index = 0
     while index < length(env.implementations) {
         let header = get(env.implementations, index)
-        if header.arity >= 0 && header.state == 3 {
+        if length(header.widths) != 0 && header.state == 3 {
             impl_pack_state(env, index, 4)
             discard implementation_types(env, index)?
             var method = 0

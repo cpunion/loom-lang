@@ -3,7 +3,7 @@
 record BodyTarget {
     symbol Int
     widths List[Int]
-    implementation_arity Int
+    implementation_widths List[Int]
     prototype Int
     arguments List[Int]
     constants List[BodyConstant]
@@ -394,7 +394,7 @@ fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure
 // all replayed call sites then use that environment's stable function ID.
 fn body_schedule_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure] {
     let prior = get(get(reuse.prior, 0).targets, target)
-    let owner = impl_member_instance(env, body_symbol(reuse, prior.symbol), prior.implementation_arity)?
+    let owner = impl_member_instance(env, body_symbol(reuse, prior.symbol), prior.implementation_widths)?
     if length(prior.widths) != 0 {
         let selected = selected_pack_signature(env, owner, prior.widths)?
         discard check_pack_arity(env, selected)?
@@ -494,7 +494,7 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
     } else {
         new[Int]()
     }
-    let implementation_arity = impl_member_arity(env, source)
+    let implementation_widths = impl_member_widths(env, source)
     if owner >= length(reuse.allowed) || !get(reuse.allowed, owner) {
         return Result.Ok(Option.None)
     }
@@ -511,7 +511,7 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         let candidate = get(candidates, index)
         let value = get(prior.functions, candidate)
         let target = get(prior.targets, candidate)
-        if same(target.widths, widths) && target.implementation_arity == implementation_arity && body_symbol(reuse, target.symbol) == owner &&
+        if same(target.widths, widths) && same(target.implementation_widths, implementation_widths) && body_symbol(reuse, target.symbol) == owner &&
         (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
             (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_eligible(reuse, candidate) &&
         same(body_types(env, reuse, value.arguments)?, instance.arguments) &&

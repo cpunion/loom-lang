@@ -26,7 +26,7 @@ fn body_copy_interfaces(env Environment) List[BodyInterface] {
                     } else {
                         copy_indices(get(env.packs, pack).widths)
                     }
-                    implementation_arity = -1
+                    implementation_widths = new[Int]()
                     prototype = -1
                     arguments = copy_indices(value.arguments)
                     constants = body_copy_constants(env, value.constants)
@@ -148,7 +148,7 @@ fn cache_read_interfaces(reader CacheReader) Result[List[BodyInterface], Text] {
             push(slots, BodyTarget {
                     symbol = cache_read_int(reader)?
                     widths = cache_read_ints(reader)?
-                    implementation_arity = -1
+                    implementation_widths = new[Int]()
                     prototype = -1
                     arguments = cache_read_ints(reader)?
                     constants = cache_read_constants(reader)?

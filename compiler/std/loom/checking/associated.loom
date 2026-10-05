@@ -66,7 +66,7 @@ fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failur
     if header.state >= 2 { return Result.Ok(header.ty) }
     let item = symbol(env, header.symbol)
     if header.state == 1 || depth > 64 { return Result.Err(failure(env, header.symbol, item.node, "cyclic implementation target")) }
-    set(env.implementations, index, Implementation { symbol = header.symbol source = header.source arity = header.arity depth = header.depth capability = header.capability ty = -1
+    set(env.implementations, index, Implementation { symbol = header.symbol source = header.source widths = header.widths depth = header.depth capability = header.capability ty = -1
         methods = header.methods associated = header.associated state = 1 })
     let parameters = abstract_arguments(env, length(type_parameters(env, header.symbol)))
     let ty = resolve(header_environment(env), header.symbol, child(item.node, 1), parameters, depth + 1)?
@@ -86,7 +86,7 @@ fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failur
         if !get(seen, parameter) { return Result.Err(failure(env, header.symbol, item.node, "every implementation parameter must occur in its target type")) }
         parameter = parameter + 1
     }
-    set(env.implementations, index, Implementation { symbol = header.symbol source = header.source arity = header.arity depth = header.depth capability = header.capability ty = ty
+    set(env.implementations, index, Implementation { symbol = header.symbol source = header.source widths = header.widths depth = header.depth capability = header.capability ty = ty
         methods = header.methods associated = header.associated state = 2 })
     Result.Ok(ty)
 }
@@ -155,7 +155,7 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
             if pack >= 0 { discard validate_impl_pack(env, owner)? }
             let protocol = get(env.concepts, concept_index(env, capability))
             push(if pack >= 0 { protocol.families } else { protocol.implementations }, length(env.implementations))
-            push(env.implementations, Implementation { symbol = owner source = owner arity = -1 depth = 0 capability = capability ty = -1
+            push(env.implementations, Implementation { symbol = owner source = owner widths = new[Int]() depth = 0 capability = capability ty = -1
                 methods = new[Int]() associated = bindings state = if pack >= 0 { -1 } else { 0 } })
         }
         owner = owner + 1
