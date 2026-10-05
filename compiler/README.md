@@ -1959,8 +1959,10 @@ See the [record refinement example](examples/record_refinement/main.loom).
 List-backed constraints can observe lengths independently of their element
 type, including generic or shared elements. Predicates observing element
 contents still require immutable scalars, Text, or inline records/tuples/enums.
-Construction must use a fresh List literal or a pure factory proved not to return or publish
-input aliases. Explicit source `std.list.clone` is one such factory, not a
+Construction must use a fresh List literal or a pure factory proved to return a
+fresh, unpublished outer header. Elements may retain their specified sharing;
+the existing header cannot be returned through a nested input either.
+Explicit source `std.list.clone` is one such factory, not a
 compiler-recognized public name:
 
 ```loom

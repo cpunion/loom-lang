@@ -168,6 +168,50 @@ test fn list_constraints_accept_fresh_storage_and_non_escaping_reads() {
         """))
 }
 
+test fn extent_factories_share_elements_without_sharing_the_outer_header() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.list.clone
+        import std.list.push
+        import std.result.Result
+        import std.result.ConstraintError
+        type Nonempty[T] = List[T] where length(self) > 0
+        fn copied[T](values List[T]) Result[Nonempty[T], ConstraintError] {
+            Nonempty(clone(values))
+        }
+        fn first(values List[List[Int]]) Int {
+            values[0][0]
+        }
+        fn main() {
+            let inner = [1]
+            let input = [inner]
+            match copied(input) {
+                Result.Ok(value) => {
+                    push(input, inner)
+                    inner[0] = 7
+                    assert length(value) == 1
+                    assert first(value) == 7
+                }
+                Result.Err(_) => {
+                    assert false
+                }
+            }
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        import std.result.Result
+        import std.result.ConstraintError
+        type Nonempty = List[Int] where length(self) > 0
+        fn nested(input List[List[Int]]) List[Int] {
+            input[0]
+        }
+        pub fn invalid(input List[List[Int]]) Result[Nonempty, ConstraintError] {
+            Nonempty(nested(input))
+        }
+        """)
+}
+
 test fn list_constraints_reject_old_aliases_mutation_and_unrestricted_escapes() {
     let header = list_constraint_source()
     list_constraint_reject(concat(header, """

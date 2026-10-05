@@ -11,7 +11,7 @@ fn singleton[T](value T) Nonempty[T] {
     Nonempty([value])
 }
 
-fn copied_nonempty(input List[Int]) Result[Nonempty[Int], ConstraintError] {
+fn copied_nonempty[T](input List[T]) Result[Nonempty[T], ConstraintError] {
     Nonempty(clone(input))
 }
 
@@ -21,6 +21,10 @@ fn replace_first[T](values Nonempty[T], value T) {
 
 fn append_value[T](values Nonempty[T], value T) {
     push(values, value)
+}
+
+fn first_nested_value(values List[List[Int]]) Int {
+    values[0][0]
 }
 
 async fn exercise_generic_extents() {
@@ -34,13 +38,19 @@ async fn exercise_generic_extents() {
     append_value(outer, inner)
     sleep_ms(1).await
     assert length(alias) == 2
-    let empty List[Int] = []
+    let empty List[List[Int]] = []
     assert match copied_nonempty(empty) {
         Result.Ok(_) => false
         Result.Err(_) => true
     }
-    assert match copied_nonempty([7]) {
-        Result.Ok(value) => length(value) == 1
+    let input = [inner]
+    assert match copied_nonempty(input) {
+        Result.Ok(value) => {
+            push(input, [9])
+            inner[0] = 7
+            assert length(value) == 1
+            first_nested_value(value) == 7
+        }
         Result.Err(_) => false
     }
 }
