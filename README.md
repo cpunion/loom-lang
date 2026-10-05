@@ -8,9 +8,9 @@ changes.
 The active frontend is written in Loom: it loads packages, parses source,
 checks types and required proofs, and produces a checked native program.
 A narrow Rust tool lowers that program through LLVM 22/Inkwell. An existing
-Loom compiler bootstraps the current source; a pinned historical seed can be
-built on demand when needed. The active tree has one language frontend, not a
-permanent Rust basic version. Previous frontends and interpreters remain only
+Loom compiler bootstraps the current source; fresh checkouts compile a portable
+checked seed bound to pinned Loom source. The active tree has one language
+frontend, not a permanent Rust basic version. Previous frontends and interpreters remain only
 in Git history.
 
 ## Start here

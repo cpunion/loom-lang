@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0 # Cold bootstrap resolves the pinned seed from Git history.
+          fetch-depth: 0 # Seed reproduction resolves its pinned source commit.
 
       - name: Check documentation
         run: |
@@ -87,8 +87,8 @@ jobs:
       - name: Relocated toolchain and generic CPU gate
         run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
 
-      - name: Verify pinned Windows stage 0 against source
-        run: node scripts/windows-bootstrap-seed.mjs --check target/loom
+      - name: Verify portable stage 0 against source
+        run: node scripts/bootstrap-seed.mjs --check target/loom
 
       - name: Package and verify extracted toolchain
         run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
@@ -146,8 +146,8 @@ jobs:
       - name: Relocated toolchain and generic CPU gate
         run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
 
-      - name: Verify pinned Windows stage 0 against source
-        run: node scripts/windows-bootstrap-seed.mjs --check target/loom
+      - name: Verify portable stage 0 against source
+        run: node scripts/bootstrap-seed.mjs --check target/loom
 
       - name: Package and verify extracted toolchain
         run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"

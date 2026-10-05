@@ -10,7 +10,7 @@ Use Rust 1.88, LLVM 22, and Clang. See the
 [compiler guide](compiler/README.md) for setup and executable examples.
 The root Cargo workspace contains the LLVM/platform tool and small runtime;
 the language frontend is Loom source. The guide describes bootstrapping it
-from an existing compiler or a frozen historical seed, not a second active
+from an existing compiler or a source-bound checked seed, not a second active
 Rust frontend.
 
 Run the relevant local gate:

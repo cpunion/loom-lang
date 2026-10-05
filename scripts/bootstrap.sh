@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# A preceding Loom compiler builds current Loom. The frozen Rust compiler is
-# recovered only when no installed Loom seed is supplied. Verified source
-# checkpoints let the compiler adopt capabilities it previously implemented.
+# A preceding Loom compiler builds current Loom. Fresh checkouts compile the
+# source-bound, portable checked stage 0 with the current native bridge.
 development=false
 if [[ $# == 1 && "$1" == --dev ]]; then
     development=true
@@ -55,83 +54,33 @@ if [[ "$exe_suffix" == .exe ]]; then
     # Environment variables are not subject to Git Bash's argv path conversion.
     LOOM_RUNTIME_LIBRARY="$(cygpath -m "$LOOM_RUNTIME_LIBRARY")"
 fi
-if [[ "$exe_suffix" == .exe && -z "$seed_compiler" && -z "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
-    # This checked stage 0 is regenerated from the pinned source commit by
-    # scripts/windows-bootstrap-seed.mjs. The checksum detects checkout damage;
-    # Unix CI independently compares its bytes with a fresh source emission.
-    checked_archive="$repo_root/compiler/bootstrap/windows-stage0.checked.gz"
-    (cd "$repo_root/compiler/bootstrap" && sha256sum -c windows-stage0.checked.gz.sha256)
-    mkdir -p "$target_root/bootstrap/windows-stage0"
-    checked_input="$target_root/bootstrap/windows-stage0/compiler.checked"
+if [[ -z "$seed_compiler" && -z "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
+    # The checksum detects checkout damage. Unix CI independently reproduces
+    # every checked byte from the immutable source pin, using the Loom checker.
+    checked_archive="$repo_root/compiler/bootstrap/stage0.checked.gz"
+    if command -v sha256sum >/dev/null; then
+        (cd "$repo_root/compiler/bootstrap" && sha256sum -c stage0.checked.gz.sha256)
+    else
+        (cd "$repo_root/compiler/bootstrap" && shasum -a 256 -c stage0.checked.gz.sha256)
+    fi
+    mkdir -p "$target_root/bootstrap/stage0"
+    checked_input="$target_root/bootstrap/stage0/compiler.checked"
     checked_temporary="$(mktemp "$checked_input.XXXXXX")"
     if ! gzip -dc "$checked_archive" > "$checked_temporary"; then
         rm -f "$checked_temporary"
-        printf 'Cannot decompress the pinned Windows stage 0 input.\n' >&2
+        printf 'Cannot decompress the pinned stage 0 input.\n' >&2
         exit 1
     fi
     mv -f "$checked_temporary" "$checked_input"
-    LOOM_BOOTSTRAP_INPUT="$(cygpath -m "$checked_input")"
+    LOOM_BOOTSTRAP_INPUT="$checked_input"
+    if [[ "$exe_suffix" == .exe ]]; then
+        LOOM_BOOTSTRAP_INPUT="$(cygpath -m "$checked_input")"
+    fi
 fi
 if [[ -n "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
     seed_compiler="$target_root/loom-stage0$exe_suffix"
     printf 'Building the initial native compiler from checked input...\n'
     "$target_root/debug/loom-native$exe_suffix" "$LOOM_BOOTSTRAP_INPUT" --output "$seed_compiler"
-elif [[ -z "$seed_compiler" ]]; then
-    IFS= read -r seed_pin < compiler/bootstrap/seed
-    bootstrap_cache="$target_root/bootstrap/$seed_pin"
-    seed_source="$bootstrap_cache/source"
-    seed_compiler="$bootstrap_cache/loom-stage0"
-    if [[ ! -x "$seed_compiler" ]]; then
-        if ! git cat-file -e "$seed_pin^{commit}" 2>/dev/null; then
-            printf 'Missing pinned bootstrap commit %s.\nFetch it with: git fetch origin %s\n' "$seed_pin" "$seed_pin" >&2
-            exit 1
-        fi
-        printf 'Recovering the frozen compiler from %s...\n' "$seed_pin"
-        mkdir -p "$seed_source"
-        # Separate archive creation from extraction: an early pipe consumer
-        # exit can otherwise fail git with SIGPIPE under pipefail.
-        git archive --format=tar --output="$bootstrap_cache/source.tar" \
-            "$seed_pin" Cargo.toml Cargo.lock compiler rustfmt.toml
-        tar -xf "$bootstrap_cache/source.tar" -C "$seed_source"
-        rm -f "$bootstrap_cache/source.tar"
-        cargo build --locked --workspace --manifest-path "$seed_source/Cargo.toml" \
-            --target-dir "$bootstrap_cache/target"
-        # The historical Rust compiler builds only the historical Loom seed,
-        # never current source. Its runtime and std stay inside this cache.
-        LOOM_STD="$seed_source/compiler/std" \
-        LOOM_RUNTIME_LIBRARY="$bootstrap_cache/target/debug/libloom_seed_runtime.a" \
-            "$bootstrap_cache/target/debug/loom" build "$seed_source/compiler/loom" \
-            --output "$seed_compiler"
-    fi
-    # Each immutable checkpoint uses only its predecessor's language subset.
-    # These are cached bootstrap inputs, not active frontends or compatibility
-    # layers. The current LLVM bridge/runtime serve every source checkpoint.
-    while IFS= read -r checkpoint || [[ -n "$checkpoint" ]]; do
-        if [[ ! "$checkpoint" =~ ^[0-9a-f]{40}$ ]]; then
-            printf 'Invalid source bootstrap checkpoint: %s\n' "$checkpoint" >&2
-            exit 1
-        fi
-        checkpoint_cache="$target_root/bootstrap/$checkpoint"
-        checkpoint_source="$checkpoint_cache/source"
-        checkpoint_compiler="$checkpoint_cache/loom-stage0"
-        if [[ ! -x "$checkpoint_compiler" ]]; then
-            if ! git cat-file -e "$checkpoint^{commit}" 2>/dev/null; then
-                printf 'Missing source bootstrap checkpoint %s.\nFetch it with: git fetch origin %s\n' "$checkpoint" "$checkpoint" >&2
-                exit 1
-            fi
-            printf 'Building source bootstrap checkpoint %s...\n' "$checkpoint"
-            mkdir -p "$checkpoint_source"
-            git archive --format=tar --output="$checkpoint_cache/source.tar" \
-                "$checkpoint" compiler/loom compiler/std
-            tar -xf "$checkpoint_cache/source.tar" -C "$checkpoint_source"
-            rm -f "$checkpoint_cache/source.tar"
-            "$seed_compiler" build "$checkpoint_source/compiler/loom" \
-                --std "$checkpoint_source/compiler/std" \
-                --native-tool "$target_root/debug/loom-native$exe_suffix" \
-                --output "$checkpoint_compiler"
-        fi
-        seed_compiler="$checkpoint_compiler"
-    done < compiler/bootstrap/checkpoints
 fi
 
 # Every current stage uses one current native backend/runtime. Only the source

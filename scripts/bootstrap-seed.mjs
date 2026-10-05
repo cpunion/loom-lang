@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Reproduce the small, source-bound checked input used only for a Windows
-// stage 0. Its producer is the normal Loom compiler's emit-checked command.
+// Reproduce the portable, source-bound checked stage 0. Its producer is the
+// normal Loom compiler's emit-checked command, never a host-language frontend.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -12,17 +12,17 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const mode = process.argv[2];
 const compiler = process.argv[3] && resolve(process.argv[3]);
 if (!(["--check", "--write"].includes(mode) && compiler && process.argv.length === 4)) {
-  console.error("Usage: node scripts/windows-bootstrap-seed.mjs <--check|--write> <working-loom-compiler>");
+  console.error("Usage: node scripts/bootstrap-seed.mjs <--check|--write> <working-loom-compiler>");
   process.exit(2);
 }
 if (process.platform === "win32") throw new Error("regenerate the source-bound seed on macOS or Linux");
 if (!existsSync(compiler)) throw new Error(`missing Loom compiler: ${compiler}`);
 
-const pinFile = join(root, "compiler/bootstrap/windows-stage0.source");
-const archiveFile = join(root, "compiler/bootstrap/windows-stage0.checked.gz");
+const pinFile = join(root, "compiler/bootstrap/stage0.source");
+const archiveFile = join(root, "compiler/bootstrap/stage0.checked.gz");
 const sumFile = `${archiveFile}.sha256`;
 const pin = readFileSync(pinFile, "utf8").trim();
-if (!/^[0-9a-f]{40}$/.test(pin)) throw new Error("invalid Windows stage 0 source pin");
+if (!/^[0-9a-f]{40}$/.test(pin)) throw new Error("invalid stage 0 source pin");
 
 function run(program, args, cwd, input) {
   const result = spawnSync(program, args, { cwd, input, maxBuffer: 64 * 1024 * 1024 });
@@ -68,17 +68,17 @@ try {
   if (mode === "--write") {
     const compressed = gzipSync(normalized, { level: 9, mtime: 0 });
     writeFileSync(archiveFile, compressed);
-    writeFileSync(sumFile, `${sha256(compressed)}  windows-stage0.checked.gz\n`);
+    writeFileSync(sumFile, `${sha256(compressed)}  stage0.checked.gz\n`);
     console.log(`Wrote ${archiveFile} (${compressed.length} bytes; checked SHA-256 ${sha256(normalized)})`);
   } else {
     const compressed = readFileSync(archiveFile);
     const expected = readFileSync(sumFile, "utf8").trim();
-    if (expected !== `${sha256(compressed)}  windows-stage0.checked.gz`) {
-      throw new Error("Windows stage 0 compressed artifact checksum mismatch");
+    if (expected !== `${sha256(compressed)}  stage0.checked.gz`) {
+      throw new Error("stage 0 compressed artifact checksum mismatch");
     }
     const stored = gunzipSync(compressed);
-    if (!stored.equals(normalized)) throw new Error("Windows stage 0 differs from pinned source emission");
-    console.log(`Windows stage 0 matches pinned source ${pin} (${stored.length} checked bytes)`);
+    if (!stored.equals(normalized)) throw new Error("stage 0 differs from pinned source emission");
+    console.log(`Stage 0 matches pinned source ${pin} (${stored.length} checked bytes)`);
   }
 } finally {
   rmSync(temporary, { recursive: true, force: true });

@@ -27,9 +27,9 @@ tool lowers checked programs and links native artifacts; it does not parse or
 check source again. Rust also supplies GC and narrow platform primitives. There
 is no maintained interpreter or legacy universal-value backend.
 
-An existing compiler builds the current source. Cold Unix bootstraps recover a
-pinned seed from history; Windows starts from source-bound checked input that
-Unix CI reproduces. Production compiler sources deliberately use a conservative
+An existing compiler builds the current source. Cold builds on all three hosts
+start from the same source-bound checked input, reproduced by Unix CI. No
+historical compiler/checkpoint chain is built. Production compiler sources deliberately use a conservative
 subset. Development uses a one-stage rebuild; CI retains the stage 2/3 gate.
 See [bootstrap instructions](../../compiler/README.md#build-and-try-it).
 
