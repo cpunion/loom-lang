@@ -1,5 +1,5 @@
 fn list_operation(name Text) Bool {
-    name == "list_new" || name == "list_len" || name == "list_get" ||
+    name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" ||
     name == "list_set" || name == "list_push" || name == "list_retain_range"
 }
 
@@ -88,7 +88,8 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
         }
     }
     state = interference(proof, state)
-    if name == "list_new" && length(inputs.values) == 0 {
+    if (name == "list_new" && length(inputs.values) == 0) ||
+    (name == "list_new_capacity" && length(inputs.values) == 1) {
         let value = record_parameter_value(proof, ty, 0)
         return match value {
             Value.List(identity) => Result.Ok(outcomes(

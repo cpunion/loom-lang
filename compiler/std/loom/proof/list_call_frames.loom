@@ -50,7 +50,7 @@ fn frame_function(program Program, function Function, inputs List[Value], entry 
         if function.runtime_name == "list_set" && length(inputs) == 3 {
             return frame_write(inputs, writes)
         }
-        return function.runtime_name == "list_new" ||
+        return function.runtime_name == "list_new" || function.runtime_name == "list_new_capacity" ||
         intrinsic_operation(function.runtime_name, function.result, length(function.params)).arity >= 0
     }
     let locals = new[Value]()
