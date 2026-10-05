@@ -1,3 +1,9 @@
+record Reading {
+    amount Int
+    valid Bool
+    label Text
+}
+
 concept Measurement {
     fn measure(self Self) Int
     ensures result >= 0
@@ -11,6 +17,17 @@ concept Measurement {
     fn nonnegative(self Self, input Int) Bool
     ensures result == (input >= 0) {
         input >= 0
+    }
+
+    fn inspect[Tag](self Self, input Int) (Int, Bool)
+    requires input >= 0
+    ensures result.0 == input && result.1 {
+        (input, true)
+    }
+
+    fn echo[Tag](self Self, input Text, comptime marker Int) Text
+    ensures result == input {
+        input
     }
 }
 
@@ -59,6 +76,25 @@ ensures result >= 0 {
     total
 }
 
+fn inspected[Tag, Ts...Measurement](input Int, label Text, values Ts...) Reading
+requires input >= 0
+ensures result.amount >= input && result.valid && result.label == label {
+    var state = Reading {
+        amount = input
+        valid = true
+        label = label
+    }
+    comptime for item in values {
+        let pair = item.inspect[Tag](item.measure())
+        state = Reading {
+            amount = state.amount + pair.0
+            valid = state.valid && pair.1
+            label = item.echo[Tag](state.label, 7)
+        }
+    }
+    state
+}
+
 concept Measured {
     fn pairs[As...Measurement, Bs...Measurement](self Self, left (As...), right (Bs...)) (Int, Int)
     ensures result.0 >= 0 && result.1 >= 0
@@ -100,6 +136,14 @@ fn exercise_pack_observations() {
     } == 7
     let callback fn(Int, Bool, Weight) Int = measured
     assert callback(2, true, weight) == 7
+    let empty = inspected[Bool](2, "empty")
+    assert empty.amount == 2 && empty.valid && empty.label == "empty"
+    let inspect fn(Int, Text, Int, Bool, Weight) Reading = inspected[Bool, Int, Bool, Weight]
+    let reading = inspect(2, "mixed", 2, true, weight)
+    assert reading.amount == 9 && reading.valid && reading.label == "mixed"
+    assert comptime {
+        inspected[Int, Bool](3, "static", true)
+    }.amount == 4
 
     let source dyn Measured = true
     assert source.total() == 0 && source.total(2, true, weight) == 7

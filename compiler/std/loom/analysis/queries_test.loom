@@ -315,6 +315,31 @@ test fn inspections_navigate_static_methods_and_dynamic_concept_signatures() {
     only_type(inspection(analysis, text, "view.read()"), "dyn app.Read")
 }
 
+test fn inspections_resolve_explicit_generic_and_pack_function_references() {
+    let text = """
+        fn identity[T](value T) T {
+            value
+        }
+        fn packed[Tag, Ts...](input Tag, values Ts...) (Tag, Ts...) {
+            (input, values...)
+        }
+        fn main() {
+            let scalar = identity[Int]
+            let callback fn(Int, Bool, Text) (Int, Bool, Text) = packed[Int, Bool, Text]
+            assert scalar(3) == 3 && callback(3, true, "three").2 == "three"
+        }
+        """
+    let analysis = accepted(input(text))
+    let scalar = inspection(analysis, text, "identity[Int]")
+    only_type(scalar, "fn(Int) Int")
+    let identity = query_offset(text, "identity[T]")
+    only_definition(scalar, identity, identity + 8)
+    let pack = inspection(analysis, text, "packed[Int, Bool, Text]")
+    only_type(pack, "fn(Int, Bool, Text) (Int, Bool, Text)")
+    let packed = query_offset(text, "packed[Tag")
+    only_definition(pack, packed, packed + 6)
+}
+
 test fn dynamic_method_family_arities_navigate_to_one_source_declaration() {
     let text = """
         concept Packing {

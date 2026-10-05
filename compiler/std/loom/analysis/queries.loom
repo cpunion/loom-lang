@@ -523,7 +523,12 @@ fn path_depth(analysis CheckedQuery, value Expr) Int {
 }
 
 fn inspect_expression(analysis CheckedQuery, report Inspection, function Function, target Query, value Expr, parent_type Int) {
-    if !same_span(value.span, target.node.span) {
+    // A checked named specialization spans name[type arguments], while its
+    // source Name ends before '['. Use only the resolved FunctionRef evidence;
+    // ordinary indexing and the argument type names do not satisfy this rule.
+    let specialized = value.kind == ExprKind.FunctionRef && target.node.kind == NodeKind.Name &&
+    value.span.start == target.node.span.start && value.span.end > target.node.span.end
+    if !same_span(value.span, target.node.span) && !specialized {
         return
     }
     let kind = target.node.kind

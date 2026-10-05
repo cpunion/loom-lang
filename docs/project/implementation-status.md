@@ -201,13 +201,17 @@ iteration now reuses scalar/List loop induction over symbolic widths, including
 zero iterations, indices, independent nested packs and inherited methods. The
 [induction example](../../compiler/examples/variadics/induction.loom) covers CTFE,
 shared List updates and native/dyn defaults. Direct elements now compose declared
-`Int`/`Bool` concept method guarantees through the same loop rules. The
+scalar/inline aggregate concept method guarantees through the same loop rules. The
 [observation example](../../compiler/examples/variadics/observations.loom) covers
-mixed/empty packs, inherited bounds, nested independent packs, CTFE and native/dyn
-dispatch. Observations cannot be generic or depend on receiver identity/types;
+mixed/empty packs, generic methods, Text/tuple/record guarantees, inherited bounds,
+nested independent packs, CTFE, function references and native/dyn dispatch.
+Ordinary generic parameters and static arguments reuse existing method checking;
+unknown static values cannot supply proof facts. Observations cannot depend on
+receiver identity/types;
 repeated calls remain independent and opaque effects invalidate heap facts.
 Type-dependent induction, opaque element escape, pack-dependent results and
-broader structural sources still reject. A single type pack can
+variadic observation methods and broader structural sources still reject. A
+single type pack can
 have fixed parameters before and after it, including concept methods and impl
 families; the same ordered expansion and width rule applies to each.
 Functions and concept methods now select independent sequence widths through
@@ -227,7 +231,7 @@ recursive data, CTFE, shared graphs and Task payloads. Independent impl headers
 reuse these shape equations, abstract checks and nominal group boundaries. The
 [independent impl example](../../compiler/examples/data_packs/independent_impls.loom)
 also exercises associated bindings, dyn defaults/overrides and shared values
-through suspension. General content/type induction beyond declared scalar
+through suspension. General content/type induction beyond declared method
 observations remains unsupported.
 Compile-time execution is not proof by sampling.
 

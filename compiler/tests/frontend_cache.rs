@@ -38,16 +38,20 @@ fn pack_observations_reprove_changed_concept_guarantees_after_body_reuse() {
     let path = package.join("main.loom");
     let source = r#"
 concept Amount {
-    fn amount(self Self) Int
-    ensures result >= 0 {
-        1
+    fn amount[Tag](self Self) (Int, Text)
+    ensures result.0 >= 0 && result.1 == "checked" {
+        (1, "checked")
     }
 }
 impl Amount for Bool {}
 fn total[Ts... Amount](values Ts...) Int
 ensures result >= 0 {
     var sum = 0
-    comptime for item in values { sum = sum + item.amount() }
+    comptime for item in values {
+        let report = item.amount[Bool]()
+        assert report.1 == "checked"
+        sum = sum + report.0
+    }
     sum
 }
 fn main() {
@@ -65,13 +69,9 @@ fn main() {
         "{trace}"
     );
     checked(&cached("run", &package, &cache, &[]), true);
-    // Bool's implementation still returns 1, but that is not the guarantee for
+    // Bool's implementation still returns (1, "checked"), but not as a guarantee for
     // every heterogeneous element. Cached callers cannot use a weakened bound.
-    fs::write(
-        &path,
-        source.replacen("ensures result >= 0", "ensures result >= -1", 1),
-    )
-    .unwrap();
+    fs::write(&path, source.replacen("result.0 >= 0", "result.0 >= -1", 1)).unwrap();
     let invalid = cached("check", &package, &cache, &[]);
     assert!(!invalid.status.success());
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("postcondition"));
