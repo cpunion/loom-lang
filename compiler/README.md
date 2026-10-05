@@ -5,7 +5,7 @@ binding, type checking, bounded required proofs, and checked program emission.
 It builds further compiler stages using one retained Rust LLVM/platform tool.
 The [roadmap](../ROADMAP.md) distinguishes the native bootstrap from completion
 of the accepted language. A previous Loom compiler is the bootstrap input;
-the frozen historical Rust seed is only a fallback for producing that input.
+a fresh checkout produces that input from the source-bound portable checked seed.
 
 The native tool consumes a checked program, not source that it parses or
 type-checks again. It uses LLVM 22 through Inkwell; there is no second language
@@ -62,24 +62,21 @@ target/loom run hello
 
 The [bootstrap script](../scripts/bootstrap.sh) builds the current Rust tool
 and runtime, then Loom stages 1, 2, and 3. It compares stages 2/3 byte-for-byte
-and publishes `target/loom`. On macOS/Linux, a cold build starts with the frozen
-Rust seed in `compiler/bootstrap/seed`, then builds the ordered Loom source
-commits in `compiler/bootstrap/checkpoints`. Each checkpoint implements a
-capability before the next compiler uses it: native Float before evaluator
-storage, function values before higher-order `std.list`, and native I/O
-primitives before their public wrappers. The current checkpoint batches
-explicit List capacity with direct list-literal construction in compiler
-sources; variable-size syntax builders retain ordinary growth. These immutable inputs are
-cached in `target/bootstrap/<commit>/`; no preinstalled Loom compiler is required.
-Pinned commits must be available in Git history; the script reports an exact
-fetch command when one is missing. The cache is disposable, not another
-maintained frontend.
+and publishes `target/loom`. On every host, a cold build verifies and decompresses
+`compiler/bootstrap/stage0.checked.gz`, then compiles that portable checked
+program with the current native bridge. This source-bound stage 0 builds the
+current Loom source directly: no historical Rust frontend or checkpoint chain
+is built. A fresh or shallow checkout needs no installed Loom compiler and no
+historical commits for bootstrapping. LLVM 22 serves every stage.
 
-The frozen source seed also uses LLVM 22. Its toolchain-only update changes the
-Inkwell feature and lockfile, not the historical compiler source. A cold build
-does not require LLVM 19, rewrite dependency files, or resolve an unlocked build.
+The seed is checked IR, not a host-specific machine executable. Unix CI
+reproduces its bytes from the immutable source pin; that
+verification requires the pinned commit's Git history. See the seed maintenance
+commands in [bootstrap seed maintenance](#bootstrap-seed-maintenance).
+The seed is a trusted bootstrap input: self-hosting agreement and source
+reproduction are consistency checks, not compiler correctness proofs.
 
-An existing compatible Loom compiler bypasses historical seed recovery:
+An existing compatible Loom compiler bypasses checked seed compilation:
 
 ```sh
 LOOM_BOOTSTRAP_COMPILER=/path/to/loom bash scripts/bootstrap.sh
@@ -94,7 +91,7 @@ bash scripts/bootstrap.sh --dev
 This builds the native tool/runtime, compiles one new Loom compiler, and
 publishes `target/loom`, using LLVM O1 for this development rebuild.
 `LOOM_BOOTSTRAP_COMPILER` overrides the preceding
-compiler; on macOS/Linux, a missing installed compiler uses the historical fallback. This
+compiler; a missing installed compiler uses the portable checked seed. This
 short path does not compare stages. The no-argument command retains the full
 stage 1/2/3 verification at default O2 for CI and bootstrap-boundary changes.
 `LOOM_OPT_LEVEL=0..3` explicitly selects the native optimization level; this
@@ -204,9 +201,8 @@ to make those paths available to Rust's static-library packaging as well.
 Native executables reserve an 8 MiB main stack, with the default commit size,
 so bounded compiler recursion does not inherit MSVC's smaller 1 MiB default.
 
-Windows cannot use the frozen historical Unix seed directly. A fresh checkout
-contains a compressed, source-bound checked stage 0 in
-[`compiler/bootstrap`](bootstrap/windows-stage0.source). Git Bash verifies its
+A fresh checkout contains the same compressed, source-bound checked stage 0
+used on Unix in [`compiler/bootstrap`](bootstrap/stage0.source). Git Bash verifies its
 SHA-256 before decompression, and the current native bridge builds the first
 Windows Loom compiler from it. No existing Windows compiler or cross-platform
 file transfer is required. In Git Bash with the Visual Studio environment
@@ -224,17 +220,19 @@ builds stages 1/2/3 and compares 2/3. The result is `target/loom.exe`; default
 program/test outputs use `.exe`, library objects `.obj`, and the runtime archive
 is `loom_runtime.lib`. Subsequent local edits use `bash scripts/bootstrap.sh --dev`.
 
+## Bootstrap seed maintenance
+
 The checked stage 0 is generated from the immutable source commit recorded in
-`compiler/bootstrap/windows-stage0.source`. The generator normalizes only
+`compiler/bootstrap/stage0.source`. The generator normalizes only
 source-location prefixes, preserving every encoded byte length. macOS and Linux
-CI independently emit it from that pinned source with the normal Loom type and
+CI emit it from that pinned source with the normal Loom type and
 proof checker, then compare every byte with the committed input. To verify or
 intentionally refresh it after a checked-artifact/backend ABI change, run on
 macOS or Linux with a working compiler:
 
 ```sh
-node scripts/windows-bootstrap-seed.mjs --check target/loom
-node scripts/windows-bootstrap-seed.mjs --write target/loom
+node scripts/bootstrap-seed.mjs --check target/loom
+node scripts/bootstrap-seed.mjs --write target/loom
 ```
 
 Refresh the pin only when the seed's source must change; ordinary edits to the
@@ -3637,8 +3635,8 @@ resource cleanup is described separately above; neither mechanism uses GC finali
 The N0 source-to-native gate is exercised by the examples and integration tests.
 N1 now includes the complete source frontend for this subset and native staged
 bootstrap through the retained LLVM tool. Replaced Rust source-language stages
-are absent from the active tree; the pinned historical fallback is not an
-old-language support policy. Stage numbers denote bootstrap generations, not
+and historical checkpoint configuration are absent from the active tree.
+Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Broader proofs and mutable-alias preservation, general resource transfer into

@@ -57,16 +57,16 @@ share the implementation without requiring the CLI or native backend.
 
 Stages are bootstrap generations, not language versions:
 
-1. Obtain a validated existing compiler. Cold Unix builds recover it from the
-   pinned historical Rust seed and immutable Loom checkpoints; Windows uses a
-   source-bound checked stage 0 reproduced on Unix CI.
+1. Obtain a validated existing compiler. Cold builds recover it from the
+   portable, source-bound checked stage 0 reproduced on Unix CI; the current
+   Rust native bridge compiles it on macOS, Linux and Windows.
 2. Stage 0 builds stage 1; stage 1 builds stage 2; stage 2 builds stage 3.
 3. Compare stage 2/3 artifacts and selected diagnostics, then run native compiler,
    source `std`, and application tests. Agreement is evidence, not correctness proof.
 
 Daily development uses the single-stage `--dev` build. Compiler production
 sources remain on a conservative seed subset: a new user feature alone does
-not justify another checkpoint. Raise the minimum seed only for substantial
+not justify advancing the seed. Raise the minimum seed only for substantial
 simplification or measured benefit, batching necessary changes.
 
 CI stages and tests relocatable toolchain archives for all three hosts. Published
