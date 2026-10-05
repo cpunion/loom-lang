@@ -244,6 +244,197 @@ test fn variadic_induction_rejects_sampling_shadowing_and_changed_control() {
         """)
 }
 
+fn pack_observation_contracts() Text {
+    """
+    concept Value {
+        fn value(self Self) Int
+        ensures result >= 0 {
+            1
+        }
+        fn keep(self Self, input Int) Int
+        requires input >= 0
+        ensures result == old(input) {
+            input
+        }
+        fn positive(self Self, input Int) Bool
+        ensures result == (input > 0) {
+            input > 0
+        }
+    }
+    impl Value for Bool {}
+    impl Value for Int {
+        fn value(self Int) Int {
+            if self < 0 { 0 } else { self }
+        }
+    }
+    """
+}
+
+test fn variadic_element_observations_compose_declared_contracts_for_all_widths() {
+    discard accepted(concat(pack_observation_contracts(), """
+        fn total[Ts... Value](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for index, item in values {
+                let amount = item.value()
+                sum = sum + item.keep(amount) + index
+            }
+            sum
+        }
+        fn keep[Ts... Value](input Int, values (Ts...)) Int
+        requires input >= 0
+        ensures result == input {
+            var current = input
+            comptime for item in values {
+                current = item.keep(current)
+            }
+            current
+        }
+        fn positive[Ts... Value](input Int, values Ts...) Bool
+        ensures result {
+            var valid = true
+            comptime for item in values {
+                valid = valid && (item.positive(input) == (input > 0))
+            }
+            valid
+        }
+        concept Totals {
+            fn total[Ts... Value](self Self, values (Ts...)) Int
+            ensures result >= 0
+        }
+        impl Totals for Bool {
+            fn total[Us...](self Bool, items (Us...)) Int {
+                var sum = 0
+                comptime for item in items {
+                    sum = sum + item.value()
+                }
+                sum
+            }
+        }
+        fn main() {
+            assert total() == 0 && total(true, 2) == 4
+            assert keep(7, (true, 2)) == 7
+            assert positive(0, true, 2)
+            let receiver dyn Totals = true
+            assert receiver.total((true, 2)) == 3
+        }
+        """))
+}
+
+test fn variadic_element_observations_do_not_guess_values_types_or_identity() {
+    let definitions = pack_observation_contracts()
+    rejects(concat(definitions, """
+        fn wrong[Ts... Value](values Ts...) Int
+        ensures result == 0 {
+            var sum = 0
+            comptime for item in values { sum = sum + item.value() }
+            sum
+        }
+        fn main() {
+            assert wrong() == 0
+        }
+        """))
+    rejects(concat(definitions, """
+        fn wrong[Ts... Value](values Ts...) Bool
+        ensures result {
+            var same = true
+            comptime for item in values {
+                same = same && (item.value() == item.value())
+            }
+            same
+        }
+        fn main() {
+            assert wrong(true)
+        }
+        """))
+    rejects(concat(definitions, """
+        fn wrong[Ts... Value](values Ts...) Int
+        ensures result >= 0 {
+            comptime for index, item in values {
+                discard item.value()
+                if index >= 4 { return -1 }
+            }
+            0
+        }
+        fn main() {
+            assert wrong(true, 2) == 0
+        }
+        """))
+    rejects(concat(definitions, """
+        fn helper[T Value](item T) Int {
+            item.value()
+        }
+        fn unsupported[Ts... Value](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values { sum = sum + helper(item) }
+            sum
+        }
+        """))
+    rejects("""
+        concept C {
+            fn value(self Self) Int
+        }
+        fn unsupported[Ts... C](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values { sum = sum + item.value() }
+            sum
+        }
+        """)
+    rejects("""
+        concept C {
+            fn same(self Self, other Self) Bool
+            ensures result
+        }
+        fn unsupported[Ts... C](values Ts...) Bool
+        ensures result {
+            comptime for item in values { assert item.same(item) }
+            true
+        }
+        """)
+    rejects("""
+        concept C {
+            fn value[T](self Self) Int
+            ensures result >= 0
+        }
+        fn unsupported[Ts... C](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values { sum = sum + item.value[Bool]() }
+            sum
+        }
+        """)
+    rejects("""
+        concept C {
+            fn value(self Self) Int
+            ensures comptime if Self implements C { result >= 0 } else { result == 0 }
+        }
+        fn unsupported[Ts... C](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values { sum = sum + item.value() }
+            sum
+        }
+        """)
+}
+
+test fn variadic_element_observations_invalidate_opaque_shared_effects() {
+    list_length_contract("""
+        import std.list.length
+        concept C {
+            fn value(self Self) Int
+            ensures result >= 0
+        }
+        fn wrong[Ts... C](shared List[Int], values Ts...) Int
+        ensures result == old(length(shared)) {
+            let before = length(shared)
+            comptime for item in values { discard item.value() }
+            length(shared)
+        }
+        """, false)
+}
+
 test fn variadic_method_contracts_check_defaults_and_inherited_implementations() {
     let definitions = """
         concept Keeping {

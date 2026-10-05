@@ -39,6 +39,7 @@ fn exercise() {
     exercise_pack_positions()
     exercise_contracts()
     exercise_pack_induction()
+    exercise_pack_observations()
     exercise_methods()
     exercise_static()
     exercise_mixed()

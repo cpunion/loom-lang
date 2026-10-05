@@ -1,9 +1,22 @@
-// A proof-only family erases opaque inputs. Element-independent iterations
-// become ordinary counted loops over symbolic nonnegative widths, so the
-// existing invariant prover checks zero and arbitrary-many iterations. Native
-// specializations still expand and check every element, resource and effect.
+// Proof-only families use counted loops over symbolic nonnegative widths.
+// Opaque elements can only be observed through declared scalar method summaries:
+// each call supplies a fresh result, never element identity or type equality.
+// Native specializations still check every element, resource and effect.
+record PackProofElement {
+    name Text
+    pack Int
+}
+
 fn pack_proof_width(index Int) Text {
     concat("$packwidth#", std.int.to_text(index))
+}
+
+fn pack_proof_element_type(index Int) Text {
+    concat("$packelement#", std.int.to_text(index))
+}
+
+fn pack_proof_element_value(index Int) Text {
+    concat("$packvalue#", std.int.to_text(index))
 }
 
 fn pack_proof_sources(node Node) List[Text] {
@@ -70,17 +83,143 @@ fn pack_proof_control(node Node) Bool {
     false
 }
 
-fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, erased List[Text], elements List[Text], count List[Int], depth Int) Result[Node, Failure] {
+// Type iteration and structural element patterns are not opaque value inputs.
+fn pack_proof_value_pack(declaration Node, source Node, width Int) Int {
+    let parameters = group(declaration, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if parameter.value == source.value {
+            let ty = child(parameter, 0)
+            let spread = if ty.kind == NodeKind.TupleType {
+                child(ty, 0)
+            } else {
+                ty
+            }
+            let pattern = child(spread, 0)
+            if pattern.kind == NodeKind.Type && pattern.value == get(declared_packs(declaration), width).value {
+                return width
+            }
+            return -1
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn pack_proof_opaque_contract(node Node, name Text) Bool {
+    if pack_root(node, name) ||
+    ((node.kind == NodeKind.Call || node.kind == NodeKind.Construct || node.kind == NodeKind.RecordPattern) && slice(node.value, 0, first_dot(node.value)) == name) {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if pack_proof_opaque_contract(child(node, index), name) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn pack_proof_observation(env Environment, owner Int, pack Int, node Node) Result[Bool, Failure] {
+    let inherited = method_pack_source(env, owner)
+    let source = if inherited >= 0 {
+        inherited
+    } else {
+        owner
+    }
+    let bounds = get(declared_packs(symbol(env, source).node), pack).children
+    var found = false
+    var index = 0
+    while index < length(bounds) {
+        let capability = required_concept(env, source, get(bounds, index))?
+        let methods = symbol(env, capability).node.children
+        var member = 0
+        while member < length(methods) {
+            let method = get(methods, member)
+            let parameters = group(method, NodeKind.Parameters)
+            if method.kind == NodeKind.Function && method.value == node.value &&
+            length(parameters) == length(child(node, 2).children) + 1 {
+                let returns = group(method, NodeKind.ReturnType)
+                var supported = length(group(method, NodeKind.TypeParameters)) == 0 &&
+                length(child(node, 1).children) == 0 && !has(method, NodeKind.Async) &&
+                has(method, NodeKind.Ensures) && length(returns) == 1
+                if supported {
+                    let output = get(returns, 0)
+                    supported = output.kind == NodeKind.Type && length(output.children) == 0 &&
+                    (output.value == "Int" || output.value == "Bool")
+                }
+                var argument = 1
+                while argument < length(parameters) {
+                    supported = supported && !mentions_pack(child(get(parameters, argument), 0), "Self")
+                    argument = argument + 1
+                }
+                var clause = 0
+                while clause < length(method.children) {
+                    let condition = child(method, clause)
+                    if condition.kind == NodeKind.Requires || condition.kind == NodeKind.Ensures {
+                        supported = supported && !pack_proof_opaque_contract(condition, "Self") &&
+                        !pack_proof_opaque_contract(condition, get(parameters, 0).value)
+                    }
+                    clause = clause + 1
+                }
+                if !supported {
+                    return Result.Err(failure(env, owner, node,
+                            "variadic element observations require a non-generic concept method with an Int or Bool postcondition and no receiver-dependent contracts or arguments"))
+                }
+                found = true
+            }
+            member = member + 1
+        }
+        index = index + 1
+    }
+    if !found {
+        return Result.Err(failure(env, owner, node, "variadic element observation needs a declared pack concept requirement"))
+    }
+    Result.Ok(true)
+}
+
+fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, erased List[Text], elements List[PackProofElement], count List[Int], depth Int) Result[Node, Failure] {
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "variadic contract proof depth exceeded"))
+    }
+    // The parser retains a dotted named call; computed receivers use MethodCall.
+    if node.kind == NodeKind.Call && first_dot(node.value) < length(node.value) {
+        let split = first_dot(node.value)
+        let name = slice(node.value, 0, split)
+        var element = 0
+        while element < length(elements) {
+            if get(elements, element).name == name && get(elements, element).pack >= 0 {
+                let member = slice(node.value, split + 1, length(node.value))
+                let receiver = pack_node(node, NodeKind.Name, name, new[Node]())
+                let call = pack_node(node, NodeKind.MethodCall, member, [receiver, child(node, 0), child(node, 1)])
+                return pack_proof_tree(env, owner, declaration, call, erased, elements, count, depth + 1)
+            }
+            element = element + 1
+        }
     }
     if node.kind == NodeKind.Discard && child(node, 0).kind == NodeKind.Name {
         var index = 0
         while index < length(elements) {
-            if child(node, 0).value == get(elements, index) {
+            if child(node, 0).value == get(elements, index).name {
                 return Result.Ok(pack_node(node, NodeKind.Block, "", new[Node]()))
             }
             index = index + 1
+        }
+    }
+    if node.kind == NodeKind.MethodCall && child(node, 0).kind == NodeKind.Name {
+        var element = 0
+        while element < length(elements) {
+            let selected = get(elements, element)
+            if child(node, 0).value == selected.name && selected.pack >= 0 {
+                discard pack_proof_observation(env, owner, selected.pack, node)?
+                let receiver = pack_node(child(node, 0), NodeKind.Name, pack_proof_element_value(selected.pack), new[Node]())
+                let types = pack_proof_tree(env, owner, declaration, child(node, 1), erased, elements, count, depth + 1)?
+                let arguments = pack_proof_tree(env, owner, declaration, child(node, 2), erased, elements, count, depth + 1)?
+                return Result.Ok(pack_node(node, node.kind, node.value, [receiver, types, arguments]))
+            }
+            element = element + 1
         }
     }
     var index = 0
@@ -93,7 +232,7 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
         (node.kind == NodeKind.Arm && pack_pattern_binds(child(node, 0), name)) ||
         ((node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) && iteration_binds(node, name)) {
             return Result.Err(failure(env, owner, node,
-                    "variadic contract proof requires element-independent iteration; pack content and type induction are not supported"))
+                    "variadic contract proof permits pack elements only as declared scalar method receivers or discarded values; type-dependent induction is not supported"))
         }
         index = index + 1
     }
@@ -110,13 +249,16 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
                 index = index + 1
             }
             push(nested, node.value)
-            let ignored = new[Text]()
+            let ignored = new[PackProofElement]()
             index = 0
             while index < length(elements) {
                 push(ignored, get(elements, index))
                 index = index + 1
             }
-            push(ignored, node.value)
+            push(ignored, PackProofElement {
+                    name = node.value
+                    pack = pack_proof_value_pack(declaration, child(node, 0), width)
+                })
             let identity = get(count, 0)
             set(count, 0, identity + 1)
             let cursor = concat("$packindex#", std.int.to_text(identity))
@@ -163,16 +305,20 @@ fn pack_contract_declaration(env Environment, owner Int) Result[Node, Failure] {
                 }
                 selected = selected + 1
             }
-            if member.kind == NodeKind.Parameters {
-                selected = 0
-                while selected < length(packs) {
+            selected = 0
+            while selected < length(packs) {
+                if member.kind == NodeKind.TypeParameters {
+                    let pack = get(packs, selected)
+                    push(members, pack_node(pack, NodeKind.Name, pack_proof_element_type(selected), pack.children))
+                } else {
+                    push(members, pack_node(member, NodeKind.Parameter, pack_proof_element_value(selected), source_nodes(pack_node(member, NodeKind.Type, pack_proof_element_type(selected), new[Node]()))))
                     push(members, pack_node(member, NodeKind.Parameter, pack_proof_width(selected), source_nodes(pack_node(member, NodeKind.Type, "Int", new[Node]()))))
-                    selected = selected + 1
                 }
+                selected = selected + 1
             }
             push(children, pack_node(member, member.kind, member.value, members))
         } else {
-            push(children, pack_proof_tree(env, owner, node, member, erased, new[Text](), count, 0)?)
+            push(children, pack_proof_tree(env, owner, node, member, erased, new[PackProofElement](), count, 0)?)
         }
         index = index + 1
     }
