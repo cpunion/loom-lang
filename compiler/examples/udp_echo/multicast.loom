@@ -25,15 +25,15 @@ async fn exercise_multicast() Result[Bool, UdpError] {
         discard close(socket)
     }
     discard set_multicast(socket, MulticastV4 {
-            interface = "0.0.0.0"
+            interface = "127.0.0.1"
             loopback = true
             hops = 0
         })?
-    discard join_multicast(socket, "239.255.0.1", "0.0.0.0")?
+    discard join_multicast(socket, "239.255.0.1", "127.0.0.1")?
     let parts = split(local_address(socket)?, ":")
     let destination = concat("239.255.0.1:", parts[1])
-    let outcome = after_ns(multicast_exchange(socket, destination), 1000000000).await
-    discard leave_multicast(socket, "239.255.0.1", "0.0.0.0")?
+    let outcome = after_ns(multicast_exchange(socket, destination), 10000000000).await
+    discard leave_multicast(socket, "239.255.0.1", "127.0.0.1")?
     match outcome {
         Outcome.Completed(value) => value
         _ => Result.Ok(false)

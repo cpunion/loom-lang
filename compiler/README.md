@@ -3465,7 +3465,7 @@ not promised idempotent. `set_multicast(socket, MulticastV4 { ... })` or
 IPv6 hop limit), separately from membership. Configuration is shared and does
 not retire waits. The OS can reject valid requests, including default-interface
 selection; failure can leave options partly applied. Close if exact policy is
-required. The example uses TTL zero for a real local IPv4 multicast exchange,
+required. The example uses an explicit loopback interface and TTL zero for a real local IPv4 multicast exchange,
 including delayed readiness and a draining deadline. This does not establish
 routed multicast delivery or IPv6 delivery under host interface policy.
 `connect(host, port).await` uses the existing async DNS resolver and chooses the
