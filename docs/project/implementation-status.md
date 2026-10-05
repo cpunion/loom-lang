@@ -541,8 +541,10 @@ encoding is source-library policy and returns an independent buffer.
 UDP preserves datagram boundaries and numeric senders, including empty packets;
 oversized receives consume the packet and return an explicit truncation error.
 Source policy uses the existing reactor, cancellation and explicit close/abort,
-tested on IPv4/available IPv6 at O0/O2 with moving GC. Connected datagrams,
-multicast and broadcast configuration remain open.
+tested on IPv4/available IPv6 at O0/O2 with moving GC. Fixed-peer UDP Connections
+reuse the same identities and waits; kernel peer filtering, empty sends, numeric
+endpoints and alias revocation have source tests. Creation is not a remote
+handshake or delivery guarantee. Multicast and broadcast configuration remain open.
 Hostname connections interleave address families with configurable bounded
 concurrency, stagger and a total cancellation deadline. Numeric address races
 share that source policy. Sockets are registered before suspension, so completed

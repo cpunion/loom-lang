@@ -76,6 +76,64 @@ test async fn datagrams_keep_packet_boundaries_senders_and_empty_payloads() {
     }
 }
 
+async fn connected_fixture(binding Text) Result[Bool, UdpError] {
+    let server = bind(binding).await?
+    defer {
+        discard close(server)
+    }
+    let address = local_address(server)?
+    let client = connect(address).await?
+    defer {
+        discard close(client)
+    }
+    assert peer_address(client)? == address
+    assert send(client, new()).await? == 0
+    let packet = receive(server, 0).await?
+    let local = local_address(client)?
+    assert length(packet.data) == 0 && packet.sender == local
+    let unrelated = bind(binding).await?
+    defer {
+        discard close(unrelated)
+    }
+    discard send(unrelated, to_bytes("wrong peer"), local).await?
+    discard send(server, to_bytes("fixed peer"), local).await?
+    let reply = receive(client).await?
+    assert reply.sender == address && to_text(reply.data) == "fixed peer"
+    let alias = client
+    discard close(client)?
+    assert match peer_address(alias) {
+        Result.Err(UdpError.Address) => true
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+test async fn connected_datagrams_filter_senders_and_share_close_identity() {
+    assert match connected_fixture("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+    match bind("[::1]:0").await {
+        Result.Ok(probe) => {
+            discard close(probe)
+            assert match connected_fixture("[::1]:0").await {
+                Result.Ok(value) => value
+                Result.Err(_) => false
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    assert match connect("localhost:1234").await {
+        Result.Err(UdpError.Connect) => true
+        _ => false
+    }
+    assert match connect("127.0.0.1:0").await {
+        Result.Err(UdpError.Connect) => true
+        _ => false
+    }
+}
+
 async fn truncated_fixture() Result[Bool, UdpError] {
     let server = bind("127.0.0.1:0").await?
     defer {

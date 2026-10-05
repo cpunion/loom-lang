@@ -174,6 +174,27 @@ impl Sockets {
         self.insert(Socket::Datagram(socket))
     }
 
+    fn connect_datagram(&self, address: &str) -> i64 {
+        let Ok(address) = address.parse::<SocketAddr>() else {
+            return -1;
+        };
+        if address.port() == 0 {
+            return -1;
+        }
+        let binding = if address.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        };
+        let Ok(socket) = UdpSocket::bind(binding) else {
+            return -1;
+        };
+        if socket.set_nonblocking(true).is_err() || socket.connect(address).is_err() {
+            return -1;
+        }
+        self.insert(Socket::Datagram(socket))
+    }
+
     fn connect(&self, address: &str) -> i64 {
         // Numeric addresses only: creating and initiating a nonblocking socket
         // cannot resolve a name or wait for a remote handshake on this owner.
@@ -269,7 +290,13 @@ impl Sockets {
         let socket = self.get(token)?;
         match socket.as_ref() {
             Socket::Listener(listener) if !peer => listener.local_addr().ok(),
-            Socket::Datagram(socket) if !peer => socket.local_addr().ok(),
+            Socket::Datagram(socket) => {
+                if peer {
+                    socket.peer_addr().ok()
+                } else {
+                    socket.local_addr().ok()
+                }
+            }
             Socket::Stream { stream, connection } if connection.get() == Connection::Connected => {
                 if peer {
                     stream.peer_addr().ok()
@@ -345,6 +372,13 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_bind_datagram(address: *co
     // SAFETY: Generated code supplies rooted UTF-8 Text; no GC allocation here.
     let address = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(address)) };
     edit(|owner, _| Ok(owner.sockets().bind_datagram(address)))
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_connect_datagram(address: *const u8) -> i64 {
+    // SAFETY: Generated code supplies rooted UTF-8 Text; no managed allocation.
+    let address = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(address)) };
+    edit(|owner, _| Ok(owner.sockets().connect_datagram(address)))
 }
 
 #[unsafe(no_mangle)]
@@ -606,6 +640,33 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_send_to(
         return -1;
     };
     match socket.send_to(bytes, address) {
+        Ok(count) => count as i64,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => -2,
+        Err(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_send_datagram(
+    token: i64,
+    bytes: *const u8,
+    end: i64,
+) -> i64 {
+    let Ok(end) = usize::try_from(end) else {
+        return -1;
+    };
+    // SAFETY: Generated code roots Bytes. This nonblocking send neither
+    // allocates managed data nor retains an interior pointer.
+    let Some(bytes) = (unsafe { buffer_bytes(bytes) }).get(..end) else {
+        return -1;
+    };
+    let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {
+        return -1;
+    };
+    let Socket::Datagram(socket) = socket.as_ref() else {
+        return -1;
+    };
+    match socket.send(bytes) {
         Ok(count) => count as i64,
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => -2,
         Err(_) => -1,

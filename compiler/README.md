@@ -3446,8 +3446,13 @@ callers synchronize aliases that can modify those bytes. UDP does not guarantee
 delivery or ordering, and the OS may reject large payloads. Copies share an
 owner-local socket identity. Drain pending I/O before `close`; `abort` revokes
 aliases and wakes waits to fail. This uses the same reactor and Task cancellation
-as TCP, without DNS or a separate executor. Connected datagrams, multicast and
-broadcast configuration remain open. See the [UDP example](examples/udp_echo).
+as TCP, without DNS or a separate executor. `connect(numeric_peer).await` returns
+a `Connection` with an ephemeral local port and fixed peer. It has no handshake
+or reachability/delivery guarantee. `send(connection, bytes)` sends one packet
+to that peer; `receive` uses kernel peer filtering. Connection copies share the
+same close/abort identity; `peer_address` and `local_address` expose numeric
+endpoints, not descriptors. Multicast and broadcast configuration remain open.
+See the [UDP example](examples/udp_echo).
 
 `std.net.dns.resolve(host, port).await` returns numeric socket addresses in OS
 resolver order, including hosts-file entries, as `Result[List[Text], ResolveError]`.

@@ -237,11 +237,13 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::Close
         | Primitive::SocketListen
         | Primitive::SocketBindDatagram
+        | Primitive::SocketConnectDatagram
         | Primitive::SocketConnect
         | Primitive::SocketConnectStatus
         | Primitive::SocketAccept
         | Primitive::SocketWriteBytes
         | Primitive::SocketSendTo
+        | Primitive::SocketSendDatagram
         | Primitive::SocketClose
         | Primitive::SocketLocalPort
         | Primitive::SocketSetNodelay
