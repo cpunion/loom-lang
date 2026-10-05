@@ -1112,7 +1112,7 @@ fn main() {
     assert_eq!(reused.stdout, fresh.stdout);
     checked(&cached("run", &package, &cache, &[]), true);
 
-    let snapshot = fs::read_dir(cache.join("definitions-v1"))
+    let snapshot = fs::read_dir(cache.join("definitions-v2"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .find(|path| {
@@ -1337,7 +1337,7 @@ fn frontend_rechecks_damaged_bundles_and_never_publishes_failed_checks() {
         &cached("emit-checked", directory.path(), &cache, &[]),
         false,
     );
-    let entries: Vec<_> = fs::read_dir(cache.join("checked-v2"))
+    let entries: Vec<_> = fs::read_dir(cache.join("checked-v3"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
@@ -1345,7 +1345,7 @@ fn frontend_rechecks_damaged_bundles_and_never_publishes_failed_checks() {
     let bundle = &entries[0];
     let original = fs::read(bundle).unwrap();
     let mut damaged = original.clone();
-    let position = damaged.len() - 33;
+    let position = damaged.len() - 65;
     damaged[position] ^= 1;
     fs::write(bundle, damaged).unwrap();
     checked(
@@ -1366,7 +1366,7 @@ fn frontend_rechecks_damaged_bundles_and_never_publishes_failed_checks() {
                 .success()
         );
     }
-    assert_eq!(fs::read_dir(cache.join("checked-v2")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(cache.join("checked-v3")).unwrap().count(), 1);
     for extra in [
         vec!["--frontend-cache", ""],
         vec!["--frontend-cache", "other"],

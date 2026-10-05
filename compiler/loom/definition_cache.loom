@@ -44,10 +44,10 @@ fn definition_load(path Text, prefix Text, project Project, inputs BuildInputs) 
 }
 
 fn prepare_incremental(options Options, project Project, inputs BuildInputs, identity Text) Result[Prepared, Text] {
-    let root = join_path(options.frontend_cache, "definitions-v1")
+    let root = join_path(options.frontend_cache, "definitions-v2")
     discard cache_directory(root)?
     let key = definition_key(options, project, identity)
-    let prefix = concat("loom-definition-cache 1\n", concat(key, "\n"))
+    let prefix = concat("loom-definition-cache 2\n", concat(key, "\n"))
     let path = join_path(root, concat(key, ".ldef"))
     let cache = definition_load(path, prefix, project, inputs)
     let checked = match check_project_snapshot(project, options.command == "test", inputs, cache) {

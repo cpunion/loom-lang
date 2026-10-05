@@ -5,6 +5,8 @@ import std.bytes.set
 import std.bytes.push
 import std.text.byte
 import std.text.length
+import std.list.get
+import std.list.length
 
 fn input(text Text) Bytes {
     let bytes = new()
@@ -23,8 +25,10 @@ test fn empty_and_nist_message_vectors() {
     // NIST's two-block example, including the padding block:
     // https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Standards-and-Guidelines/documents/examples/SHA256.pdf
     assert hex(input("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")) ==
-        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-    let folded = comptime { digest(input("abc")) }
+    "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+    let folded = comptime {
+        digest(input("abc"))
+    }
     assert length(folded) == 32 && get(folded, 0) == 186 && get(folded, 31) == 173
     let runtime = digest(abc)
     var index = 0
@@ -46,7 +50,9 @@ test fn padding_boundary_and_complete_binary_range() {
     assert hex(repeated) == "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"
     push(repeated, 97)
     assert hex(repeated) == "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"
-    while length(repeated) < 64 { push(repeated, 97) }
+    while length(repeated) < 64 {
+        push(repeated, 97)
+    }
     assert hex(repeated) == "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"
     let binary = new()
     index = 0
@@ -55,4 +61,48 @@ test fn padding_boundary_and_complete_binary_range() {
         index = index + 1
     }
     assert hex(binary) == "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880"
+}
+
+test fn selected_ranges_cover_unaligned_blocks_padding_and_shared_inputs() {
+    let sizes = [0, 1, 55, 56, 63, 64, 65, 119, 120, 127, 128, 129, 1024]
+    let expected = [
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+        "463eb28e72f82e0a96c0a4cc53690c571281131f672aa229e0d45ae59b598b59",
+        "da2ae4d6b36748f2a318f23e7ab1dfdf45acdc9d049bd80e59de82a60895f562",
+        "29af2686fd53374a36b0846694cc342177e428d1647515f078784d69cdb9e488",
+        "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+        "4bfd2c8b6f1eec7a2afeb48b934ee4b2694182027e6d0fc075074f2fabb31781",
+        "da18797ed7c3a777f0847f429724a2d8cd5138e6ed2895c3fa1a6d39d18f7ec6",
+        "f52b23db1fbb6ded89ef42a23ce0c8922c45f25c50b568a93bf1c075420bbb7c",
+        "92ca0fa6651ee2f97b884b7246a562fa71250fedefe5ebf270d31c546bfea976",
+        "471fb943aa23c511f6f72f8d1652d9c880cfa392ad80503120547703e56a2be5",
+        "5099c6a56203f9687f7d33f4bfdf576d31dc91f6b695ecea38b2770c87631135",
+        "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9",
+    ]
+    let value = input("prefix:")
+    var index = 0
+    while index < 1024 {
+        push(value, index % 256)
+        index = index + 1
+    }
+    push(value, 255)
+    let alias = value
+    index = 0
+    while index < std.list.length(sizes) {
+        let size = std.list.get(sizes, index)
+        assert hex(value, 7, 7 + size) == std.list.get(expected, index)
+        index = index + 1
+    }
+    assert length(alias) == 1032 && get(alias, 7) == 0 && get(alias, 1031) == 255
+    assert hex(alias, length(alias), length(alias)) == std.list.get(expected, 0)
+    let selected = comptime {
+        hex(input("!abc?"), 1, 4)
+    }
+    assert selected == hex(input("abc"))
+    let hashed = digest(alias, 7, 71)
+    set(hashed, 0, 0)
+    assert get(alias, 7) == 0 && hex(alias, 7, 71) == std.list.get(expected, 5)
+    set(alias, 7, 1)
+    assert hex(value, 7, 71) != std.list.get(expected, 5)
 }

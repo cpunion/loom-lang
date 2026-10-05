@@ -16,10 +16,16 @@ fn rotate(value Int, count Int) Int {
     ((value >> count) | (value << (32 - count))) & 4294967295
 }
 
-fn padded_byte(value Bytes, index Int, size Int, end Int) Int {
-    if index < size { return get(value, index) }
-    if index == size { return 128 }
-    if index < end - 8 { return 0 }
+fn padded_byte(value Bytes, start Int, index Int, size Int, end Int) Int {
+    if index < size {
+        return get(value, start + index)
+    }
+    if index == size {
+        return 128
+    }
+    if index < end - 8 {
+        return 0
+    }
     // Shift rather than multiply: the 64-bit length may have its high bit set.
     ((size << 3) >> ((end - 1 - index) * 8)) & 255
 }
@@ -35,9 +41,20 @@ fn write_word(output Bytes, index Int, value Int) {
 // virtually; scratch storage stays fixed-size regardless of message length.
 // SHA-256 accepts fewer than 2^61 bytes; a larger input faults.
 pub fn digest(value Bytes) Bytes {
-    let size = length(value)
+    digest(value, 0, length(value))
+}
+
+// Hashes [start, end) without allocating a copy of the selected input.
+// Callers synchronize shared input just as for the whole-buffer overload.
+pub fn digest(value Bytes, start Int, end Int) Bytes {
+    assert start >= 0 && end >= start && end <= length(value)
+    let size = end - start
     assert size < 2305843009213693952
-    let end = (size / 64 + if size % 64 < 56 { 1 } else { 2 }) * 64
+    let padded_end = (size / 64 + if size % 64 < 56 {
+            1
+        } else {
+            2
+        }) * 64
     let k = constants()
     let words = new[Int]()
     var index = 0
@@ -54,17 +71,29 @@ pub fn digest(value Bytes) Bytes {
     var h6 = 528734635
     var h7 = 1541459225
     var offset = 0
-    while offset < end {
+    while offset < padded_end {
         index = 0
-        while index < 16 {
-            var word = 0
-            var part = 0
-            while part < 4 {
-                word = (word << 8) | padded_byte(value, offset + index * 4 + part, size, end)
-                part = part + 1
+        if offset + 64 <= size {
+            // Complete blocks need neither virtual padding nor a byte loop.
+            while index < 16 {
+                let position = start + offset + index * 4
+                let word = (get(value, position) << 24) |
+                (get(value, position + 1) << 16) |
+                (get(value, position + 2) << 8) | get(value, position + 3)
+                set(words, index, word)
+                index = index + 1
             }
-            set(words, index, word)
-            index = index + 1
+        } else {
+            while index < 16 {
+                var word = 0
+                var part = 0
+                while part < 4 {
+                    word = (word << 8) | padded_byte(value, start, offset + index * 4 + part, size, padded_end)
+                    part = part + 1
+                }
+                set(words, index, word)
+                index = index + 1
+            }
         }
         while index < 64 {
             let x = get(words, index - 15)
@@ -129,7 +158,11 @@ pub fn digest(value Bytes) Bytes {
 
 // Hashes the input, then encodes its digest as 64 lowercase hexadecimal digits.
 pub fn hex(value Bytes) Text {
-    let hashed = digest(value)
+    hex(value, 0, length(value))
+}
+
+pub fn hex(value Bytes, start Int, end Int) Text {
+    let hashed = digest(value, start, end)
     let output = std.bytes.new()
     var index = 0
     while index < 32 {

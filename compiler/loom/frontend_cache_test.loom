@@ -38,7 +38,7 @@ test fn frontend_bundles_bind_metadata_and_artifact_bytes() {
     let checked = Prepared {
         inputs = new[BuildInput]()
         targets = new[BuildOption]()
-        input = "loom-checked-1\nartifact\n"
+        input = "loom-checked-1\nartifact\0🧵\n"
         entry = 2
         tests = 3
         project = project
@@ -81,9 +81,21 @@ test fn frontend_bundles_bind_metadata_and_artifact_bytes() {
         Option.None => true
         Option.Some(_) => false
     }
-    // The checksum covers metadata as well as the complete artifact payload.
-    std.bytes.set(bundle, length(prefix), 48)
-    assert match frontend_decode(bundle, prefix, project, false, inputs) {
+    // Every byte, including the textual checksum, participates in validation.
+    var position = 0
+    while position < std.bytes.length(bundle) {
+        let damaged = cache_copy(bundle, 0, std.bytes.length(bundle))
+        std.bytes.set(damaged, position, std.bytes.get(damaged, position) ^ 1)
+        assert match frontend_decode(damaged, prefix, project, false, inputs) {
+            Option.None => true,
+            _ => false
+        }
+        position = position + 1
+    }
+    let malformed = cache_bytes(concat(prefix, "64\n"))
+    cache_append(malformed, hex(malformed))
+    // A valid checksum cannot supply bytes to a truncated metadata field.
+    assert match frontend_decode(malformed, prefix, project, false, inputs) {
         Option.None => true,
         _ => false
     }
