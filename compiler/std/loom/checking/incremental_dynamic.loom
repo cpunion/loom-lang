@@ -21,10 +21,10 @@ fn body_copy_interfaces(env Environment) List[BodyInterface] {
                     } else {
                         get(env.packs, pack).source
                     }
-                    arity = if pack < 0 {
-                        -1
+                    widths = if pack < 0 {
+                        new[Int]()
                     } else {
-                        get(env.packs, pack).arity
+                        copy_indices(get(env.packs, pack).widths)
                     }
                     implementation_arity = -1
                     prototype = -1
@@ -91,12 +91,12 @@ fn body_dynamic_expression(env Environment, reuse BodyReuse, value Expr, owner I
     }
     let slot = body_dynamic_slot(reuse, value)
     let method = body_symbol(reuse, slot.symbol)
-    var signature = if slot.arity < 0 {
+    var signature = if length(slot.widths) == 0 {
         0
     } else {
-        selected_pack_signature(env, method, slot.arity)?
+        selected_pack_signature(env, method, slot.widths)?
     }
-    if slot.arity < 0 {
+    if length(slot.widths) == 0 {
         while signature < length(env.signatures) && get(env.signatures, signature).symbol != method {
             signature = signature + 1
         }
@@ -125,7 +125,7 @@ fn cache_interfaces(output Bytes, values List[BodyInterface]) Result[Bool, Text]
         while slot < length(value.slots) {
             let target = get(value.slots, slot)
             cache_int(output, target.symbol)
-            cache_int(output, target.arity)
+            cache_ints(output, target.widths)
             cache_ints(output, target.arguments)
             discard cache_constants(output, target.constants)?
             slot = slot + 1
@@ -147,8 +147,8 @@ fn cache_read_interfaces(reader CacheReader) Result[List[BodyInterface], Text] {
         while slot < slot_count {
             push(slots, BodyTarget {
                     symbol = cache_read_int(reader)?
-                arity = cache_read_int(reader)?
-                implementation_arity = -1
+                    widths = cache_read_ints(reader)?
+                    implementation_arity = -1
                     prototype = -1
                     arguments = cache_read_ints(reader)?
                     constants = cache_read_constants(reader)?

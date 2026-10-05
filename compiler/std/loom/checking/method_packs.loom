@@ -5,7 +5,7 @@ fn method_pack_source(env Environment, source Int) Int {
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.source == source && pack.arity == -1 {
+        if pack.source == source && pack_family(pack) {
             return pack.declaration
         }
         index = index + 1
@@ -17,7 +17,7 @@ fn method_pack_binding(env Environment, implementation Int, declaration Int) Int
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity == -1 && pack.declaration == declaration && symbol(env, pack.source).owner == implementation {
+        if pack_family(pack) && pack.declaration == declaration && symbol(env, pack.source).owner == implementation {
             return pack.source
         }
         index = index + 1
@@ -34,9 +34,13 @@ fn method_pack_schema(env Environment, owner Int, node Node, arguments List[Int]
         return Result.Ok(pack_node(node, NodeKind.Spread, "", source_nodes(pattern)))
     }
     if !has_type_expansion(node) {
-        let pack = get(group(symbol(env, owner).node, NodeKind.TypeParameters), pack_parameter(symbol(env, owner).node))
-        if !element && mentions_pack(node, pack.value) {
-            return Result.Err(failure(env, owner, node, "expand a type pack with ...; it is not one type"))
+        let packs = declared_packs(symbol(env, owner).node)
+        var pack = 0
+        while !element && pack < length(packs) {
+            if mentions_pack(node, get(packs, pack).value) {
+                return Result.Err(failure(env, owner, node, "expand a type pack with ...; it is not one type"))
+            }
+            pack = pack + 1
         }
         let ty = resolve_bound(env, owner, node, arguments, obligations, depth + 1)?
         return Result.Ok(pack_node(node, NodeKind.Type, std.int.to_text(ty), new[Node]()))
@@ -134,7 +138,7 @@ fn validate_method_pack_declarations(env Environment, capability Int) Result[Boo
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity == -1 && symbol(env, pack.source).owner == capability {
+        if pack_family(pack) && symbol(env, pack.source).owner == capability {
             let node = symbol(env, pack.source).node
             let parameters = group(node, NodeKind.Parameters)
             if length(parameters) == 0 || child(get(parameters, 0), 0).value != "Self" ||
@@ -169,7 +173,7 @@ fn validate_method_pack_implementation(env Environment, header Implementation) R
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity == -1 && symbol(env, pack.source).owner == header.symbol {
+        if pack_family(pack) && symbol(env, pack.source).owner == header.symbol {
             let item = symbol(env, pack.source)
             if has(item.node, NodeKind.Requires) {
                 return Result.Err(failure(env, pack.source, item.node, "an implementation cannot add an undeclared precondition"))
@@ -180,7 +184,7 @@ fn validate_method_pack_implementation(env Environment, header Implementation) R
             var candidate = 0
             while candidate < length(env.packs) {
                 let source = get(env.packs, candidate)
-                if source.arity == -1 && symbol(env, source.source).owner == header.capability &&
+                if pack_family(source) && symbol(env, source.source).owner == header.capability &&
                 symbol(env, source.source).name == item.name &&
                 method_parameter_count(env, source.source) == method_parameter_count(env, pack.source) &&
                 method_bounds_match(env, source.source, pack.source)? {
@@ -221,7 +225,7 @@ fn validate_method_pack_implementation(env Environment, header Implementation) R
             set(env.packs, index, PackInstance {
                     source = pack.source
                     declaration = selected
-                    arity = pack.arity
+                    widths = pack.widths
                     signature = pack.signature
                     state = pack.state
                     depth = pack.depth
@@ -232,7 +236,7 @@ fn validate_method_pack_implementation(env Environment, header Implementation) R
     index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity == -1 && symbol(env, pack.source).owner == header.capability &&
+        if pack_family(pack) && symbol(env, pack.source).owner == header.capability &&
         method_pack_binding(env, header.symbol, pack.source) < 0 && !has(symbol(env, pack.source).node, NodeKind.Block) {
             return Result.Err(failure(env, header.symbol, symbol(env, header.symbol).node, "implementation is missing a required variadic concept method"))
         }
@@ -241,8 +245,8 @@ fn validate_method_pack_implementation(env Environment, header Implementation) R
     Result.Ok(true)
 }
 
-fn materialize_method_pack(env Environment, owner Int, arity Int) Result[Int, Failure] {
-    let selected = pack_signature(env, owner, arity)?
+fn materialize_method_pack(env Environment, owner Int, widths List[Int]) Result[Int, Failure] {
+    let selected = pack_signature(env, owner, widths)?
     let capability = symbol(env, owner).owner
     let methods = get(env.concepts, concept_index(env, capability)).methods
     var slot = 0
@@ -267,7 +271,7 @@ fn materialize_method_pack(env Environment, owner Int, arity Int) Result[Int, Fa
             let implementation = if binding < 0 {
                 selected
             } else {
-                pack_signature(env, binding, arity)?
+                pack_signature(env, binding, widths)?
             }
             push(bindings, implementation)
         }
@@ -306,15 +310,15 @@ fn check_method_pack_instance(env Environment, selected Int, slot Int, capabilit
     Result.Ok(true)
 }
 
-fn selected_pack_signature(env Environment, owner Int, arity Int) Result[Int, Failure] {
+fn selected_pack_signature(env Environment, owner Int, widths List[Int]) Result[Int, Failure] {
     if prototype(env, owner) {
-        return materialize_method_pack(env, owner, arity)
+        return materialize_method_pack(env, owner, widths)
     }
     let declaration = method_pack_source(env, owner)
     if declaration >= 0 && declaration != owner {
-        discard materialize_method_pack(env, declaration, arity)?
+        discard materialize_method_pack(env, declaration, widths)?
     }
-    pack_signature(env, owner, arity)
+    pack_signature(env, owner, widths)
 }
 
 fn method_pack_selections(context Context, source Node, receiver Expr, member Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[List[Int], Failure] {
@@ -326,7 +330,7 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
     while index < count {
         let pack = get(context.env.packs, index)
         let item = symbol(context.env, pack.source)
-        if pack.arity == -1 && prototype(context.env, pack.source) && item.name == member &&
+        if pack_family(pack) && prototype(context.env, pack.source) && item.name == member &&
         ((selected >= 0 && selected == item.owner) || (selected < 0 && visible_concept(context, item.owner))) {
             let admitted = if shape.kind == TypeKind.Dyn {
                 get(context.env.interfaces, shape.symbol).symbol == item.owner
@@ -334,6 +338,14 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
                 satisfies(context, receiver.ty, item.owner)?
             }
             if admitted {
+                if !one_type_pack(item.node) {
+                    let widths = structural_call_shapes(context, all_inputs, item.node, types, expected)
+                    if length(widths) != 0 {
+                        push(choices, materialize_method_pack(context.env, pack.source, widths)?)
+                    }
+                    index = index + 1
+                    continue
+                }
                 let parameters = group(item.node, NodeKind.Parameters)
                 let fixed = fixed_pack_parameters(item.node)
                 let arity = if variadic_parameters(parameters) {
@@ -355,7 +367,7 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
                     }
                 }
                 if arity >= 0 && (length(types) == 0 || length(types) == fixed + arity) {
-                    push(choices, materialize_method_pack(context.env, pack.source, arity)?)
+                    push(choices, materialize_method_pack(context.env, pack.source, ints(arity))?)
                 }
             }
         }
@@ -402,7 +414,7 @@ fn dynamic_method_pack_headers(env Environment, capability Int) Result[Bool, Fai
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity == -1 && symbol(env, pack.source).owner == capability {
+        if pack_family(pack) && symbol(env, pack.source).owner == capability {
             let arguments = abstract_arguments(env, function_parameter_count(env, pack.source))
             let schema = method_pack_header(header_environment(env), pack.source, arguments, requirements(env, pack.source, arguments)?, true)?
             var member = 1

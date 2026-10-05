@@ -39,7 +39,7 @@ fn method_declaration(env Environment, owner Int) Int {
     var pack = 0
     while pack < length(env.packs) {
         let erased = get(env.packs, pack)
-        if erased.arity == -2 && get(env.signatures, erased.signature).symbol == owner {
+        if erased_pack(erased) && get(env.signatures, erased.signature).symbol == owner {
             return erased.declaration
         }
         pack = pack + 1
@@ -91,7 +91,7 @@ fn register_signature(env Environment, current Signature) Result[Int, Failure] {
         if item.owner == declaration.owner && item.name == declaration.name && get(env.source.files, item.file).package == get(env.source.files, declaration.file).package &&
             current.parameters == other.parameters && same(current.params, other.params) {
             let proof = pack_instance(env, index)
-            if proof < 0 || get(env.packs, proof).arity != -2 {
+            if proof < 0 || !erased_pack(get(env.packs, proof)) {
                 return Result.Err(failure(env, current.symbol, item.node, "duplicate overload signature"))
             }
         }

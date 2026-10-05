@@ -475,6 +475,14 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         let declaration = symbol(context.env, owner).node
         let pack = pack_parameter(declaration)
         if declaration.kind == NodeKind.Function && pack >= 0 {
+            if !one_type_pack(declaration) {
+                let widths = structural_call_shapes(context, inputs, declaration, types, expected)
+                if length(widths) != 0 {
+                    push(options, pack_signature(context.env, owner, widths)?)
+                }
+                index = index + 1
+                continue
+            }
             let fixed = fixed_pack_parameters(declaration)
             let parameters = group(declaration, NodeKind.Parameters)
             var arity = sequence_pack_arity(parameters, length(inputs.nodes))
@@ -502,7 +510,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                 }
             }
             if arity >= 0 && (length(types) == 0 || length(types) == fixed + arity) {
-                push(options, pack_signature(context.env, owner, arity)?)
+                push(options, pack_signature(context.env, owner, ints(arity))?)
             }
         }
         index = index + 1

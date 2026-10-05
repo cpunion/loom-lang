@@ -27,7 +27,6 @@ test fn variadic_arity_checks_keep_declared_bounds_and_required_proofs() {
     rejects("fn growing[Ts...](values Ts...) { growing(values..., 1) }\nfn main() { growing() }")
     rejects("fn f[Ts...](values Ts...) Ts { values }\nfn main() { discard f(1) }")
     rejects("fn f[Ts...](values Ts...) (Ts...) { values }\nfn main() { f(1) }")
-    rejects("fn f[Ts..., Us...](values Ts...) {}")
     rejects("record Bad[Ts...] { values Ts }\nfn main() { discard Bad[Int] { values = 1 } }")
     rejects("fn f(values Int...) {}")
     rejects("fn f[Ts... Missing](values Ts...) {}\nfn main() { f() }")

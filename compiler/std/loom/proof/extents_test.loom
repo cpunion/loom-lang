@@ -1,0 +1,39 @@
+test fn shape_equations_require_unique_integral_nonnegative_solutions() {
+    assert match unique_extents([[1, 1, 0]], 2) {
+        Result.Ok(widths) => get(widths, 0) == 0 && get(widths, 1) == 0
+        Result.Err(_) => false
+    }
+    assert match known_extents([[1, 0, 2]], 2) {
+        Result.Ok(widths) => get(widths, 0) == 2 && get(widths, 1) == -1
+        Result.Err(_) => false
+    }
+    assert match unique_extents([[1, 1, 5], [2, 1, 7]], 2) {
+        Result.Ok(widths) => get(widths, 0) == 2 && get(widths, 1) == 3
+        Result.Err(_) => false
+    }
+    assert match unique_extents([[1, 1, 5]], 2) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match unique_extents([[2, 1]], 1) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match unique_extents([[1, -1]], 1) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match unique_extents([[1, 2], [1, 3]], 1) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let factor = product(integer(9223372036854775807), integer(2))
+    assert match extent_ratio(product(factor, integer(42)), factor) {
+        Result.Ok(width) => width == 42
+        Result.Err(_) => false
+    }
+    assert match extent_ratio(sum(product(factor, integer(42)), integer(1)), factor) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

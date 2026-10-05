@@ -337,6 +337,9 @@ fn paired[Ts...](left Ts..., marker Bool, right Ts...) (Ts..., Ts...) {
     assert !marker
     (left..., right...)
 }
+fn independent[As..., Bs...](left (As...), right (Bs...)) ((As...), (Bs...)) {
+    (left, right)
+}
 fn main() {
     let packet = Packet { values = pack(40, 2, true) }
     let values = packet.values
@@ -350,6 +353,10 @@ fn main() {
     let pairs = paired(40, true, false, 2, false)
     assert pairs.0 + pairs.2 == 42 && pairs.1 && !pairs.3
     discard paired(false)
+    let first = independent((40, 1), (1,))
+    let second = independent((40,), (1, 1))
+    assert first.0.0 + first.0.1 + first.1.0 == 42
+    assert second.0.0 + second.1.0 + second.1.1 == 42
 }
 "#,
     )

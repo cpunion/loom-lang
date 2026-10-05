@@ -483,7 +483,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, conc
                     } else {
                         -1
                     }
-                    arity = -1
+                    widths = new[Int]()
                     signature = -1
                     state = -1
                     depth = 0

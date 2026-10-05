@@ -1,0 +1,319 @@
+import std.loom.proof.unique_extents
+import std.loom.proof.known_extents
+
+fn shape_pattern(node Node) Node {
+    if node.kind == NodeKind.Parameter {
+        child(node, 0)
+    } else {
+        node
+    }
+}
+
+fn known_expansion_width(pattern Node, names List[Text], widths List[Int]) Int {
+    if length(widths) != length(names) {
+        return -1
+    }
+    let selected = expansion_packs(pattern, names)
+    if length(selected) == 0 {
+        return -1
+    }
+    let width = get(widths, get(selected, 0))
+    var index = 1
+    while index < length(selected) {
+        if get(widths, get(selected, index)) != width {
+            return -1
+        }
+        index = index + 1
+    }
+    width
+}
+
+fn shape_positions(patterns List[Node], count Int, names List[Text], widths List[Int]) List[Int] {
+    let positions = new[Int]()
+    var index = 0
+    while index < length(patterns) {
+        push(positions, -1)
+        index = index + 1
+    }
+    index = 0
+    var offset = 0
+    while index < length(patterns) {
+        let pattern = shape_pattern(get(patterns, index))
+        let width = if pattern.kind == NodeKind.Spread {
+            known_expansion_width(child(pattern, 0), names, widths)
+        } else {
+            1
+        }
+        if width < 0 || width > count - offset {
+            break
+        }
+        set(positions, index, offset)
+        offset = offset + width
+        index = index + 1
+    }
+    let prefix = index
+    index = length(patterns)
+    offset = count
+    while index > prefix {
+        let pattern = shape_pattern(get(patterns, index - 1))
+        let width = if pattern.kind == NodeKind.Spread {
+            known_expansion_width(child(pattern, 0), names, widths)
+        } else {
+            1
+        }
+        if width < 0 || width > offset {
+            break
+        }
+        index = index - 1
+        offset = offset - width
+        set(positions, index, offset)
+    }
+    positions
+}
+
+fn shape_equation(dimensions Int, total Int) List[Int] {
+    let row = new[Int]()
+    var index = 0
+    while index < dimensions {
+        push(row, 0)
+        index = index + 1
+    }
+    push(row, total)
+    row
+}
+
+fn shape_sequence_equations(patterns List[Node], count Int, names List[Text], rows List[List[Int]]) {
+    let row = shape_equation(length(names), count)
+    var index = 0
+    while index < length(patterns) {
+        let source = get(patterns, index)
+        let pattern = shape_pattern(source)
+        if pattern.kind == NodeKind.Spread {
+            let selected = expansion_packs(child(pattern, 0), names)
+            if length(selected) == 0 {
+                return
+            }
+            let pack = get(selected, 0)
+            set(row, pack, get(row, pack) + 1)
+            var other = 1
+            while other < length(selected) {
+                let equal = shape_equation(length(names), 0)
+                set(equal, pack, 1)
+                set(equal, get(selected, other), -1)
+                push(rows, equal)
+                other = other + 1
+            }
+        } else {
+            set(row, length(names), get(row, length(names)) - 1)
+        }
+        index = index + 1
+    }
+    push(rows, row)
+}
+
+fn shape_type_equations(env Environment, pattern Node, ty Int, names List[Text], rows List[List[Int]], widths List[Int], depth Int) {
+    if depth >= 64 || !has_type_expansion(pattern) {
+        return
+    }
+    let shape = get(env.types, base_type(env, ty))
+    if (pattern.kind == NodeKind.TupleType && shape.kind != TypeKind.Tuple) ||
+    (pattern.kind == NodeKind.FunctionType && shape.kind != TypeKind.Function) {
+        return
+    }
+    if pattern.kind != NodeKind.TupleType && pattern.kind != NodeKind.FunctionType && pattern.kind != NodeKind.Type {
+        return
+    }
+    let patterns = if pattern.kind == NodeKind.FunctionType {
+        group(pattern, NodeKind.Parameters)
+    } else {
+        pattern.children
+    }
+    let count = length(shape.arguments) - if pattern.kind == NodeKind.FunctionType {
+        1
+    } else {
+        0
+    }
+    if count < 0 {
+        return
+    }
+    shape_sequence_equations(patterns, count, names, rows)
+    let positions = shape_positions(patterns, count, names, widths)
+    var index = 0
+    while index < length(patterns) {
+        let offset = get(positions, index)
+        if offset >= 0 {
+            let member = get(patterns, index)
+            if member.kind == NodeKind.Spread {
+                let expanded = child(member, 0)
+                let width = known_expansion_width(expanded, names, widths)
+                var element = 0
+                while element < width {
+                    shape_type_equations(env, expanded, get(shape.arguments, offset + element), names, rows, widths, depth + 1)
+                    element = element + 1
+                }
+            } else {
+                shape_type_equations(env, member, get(shape.arguments, offset), names, rows, widths, depth + 1)
+            }
+        }
+        index = index + 1
+    }
+    if pattern.kind == NodeKind.FunctionType {
+        let returns = group(pattern, NodeKind.ReturnType)
+        if length(returns) != 0 {
+            shape_type_equations(env, get(returns, 0), get(shape.arguments, count), names, rows, widths, depth + 1)
+        }
+    }
+}
+
+fn shape_result_equations(env Environment, declaration Node, expected Int, names List[Text], rows List[List[Int]], widths List[Int]) {
+    if expected < 0 {
+        return
+    }
+    var output = expected
+    if has(declaration, NodeKind.Async) {
+        let shape = get(env.types, output)
+        if shape.kind != TypeKind.Task {
+            return
+        }
+        output = get(shape.arguments, 0)
+    }
+    let returns = group(declaration, NodeKind.ReturnType)
+    if length(returns) != 0 {
+        shape_type_equations(env, get(returns, 0), output, names, rows, widths, 0)
+    }
+}
+
+fn shape_explicit_equations(declaration Node, count Int, names List[Text], rows List[List[Int]]) {
+    if count == 0 {
+        return
+    }
+    let row = shape_equation(length(names), count - fixed_pack_parameters(declaration))
+    var index = 0
+    while index < length(names) {
+        set(row, index, 1)
+        index = index + 1
+    }
+    push(rows, row)
+}
+
+fn solved_pack_shape(rows List[List[Int]], dimensions Int) List[Int] {
+    match unique_extents(rows, dimensions) {
+        Result.Ok(widths) => widths
+        Result.Err(_) => new[Int]()
+    }
+}
+
+fn partial_pack_shape(rows List[List[Int]], dimensions Int) List[Int] {
+    match known_extents(rows, dimensions) {
+        Result.Ok(widths) => widths
+        Result.Err(_) => new[Int]()
+    }
+}
+
+fn structural_call_shapes(context Context, inputs CallInputs, declaration Node, types List[Node], expected Int) List[Int] {
+    let names = pack_names(declared_packs(declaration))
+    let parameters = group(declaration, NodeKind.Parameters)
+    let rows = new[List[Int]]()
+    shape_sequence_equations(parameters, length(inputs.nodes), names, rows)
+    shape_explicit_equations(declaration, length(types), names, rows)
+    var widths = new[Int]()
+    var round = 0
+    while round <= length(names) {
+        shape_result_equations(context.env, declaration, expected, names, rows, widths)
+        let positions = shape_positions(parameters, length(inputs.nodes), names, widths)
+        var index = 0
+        while index < length(parameters) {
+            let offset = get(positions, index)
+            if offset >= 0 {
+                let pattern = child(get(parameters, index), 0)
+                if pattern.kind == NodeKind.Spread {
+                    let expanded = child(pattern, 0)
+                    let width = known_expansion_width(expanded, names, widths)
+                    var element = 0
+                    while element < width {
+                        probe_shape_equations(context, inputs, offset + element, expanded, names, rows, widths)
+                        element = element + 1
+                    }
+                } else {
+                    probe_shape_equations(context, inputs, offset, pattern, names, rows, widths)
+                }
+            }
+            index = index + 1
+        }
+        let next = partial_pack_shape(rows, length(names))
+        if length(next) == 0 {
+            return next
+        }
+        if same(next, widths) {
+            return solved_pack_shape(rows, length(names))
+        }
+        widths = next
+        round = round + 1
+    }
+    solved_pack_shape(rows, length(names))
+}
+
+fn probe_shape_equations(context Context, inputs CallInputs, index Int, pattern Node, names List[Text], rows List[List[Int]], widths List[Int]) {
+    if !has_type_expansion(pattern) {
+        return
+    }
+    let value Result[Expr, Failure] = match saved_input(inputs, index) {
+        Option.Some(saved) => Result.Ok(saved)
+        Option.None => static_probe(context, get(inputs.nodes, index), -1)
+    }
+    match value {
+        Result.Ok(value) => shape_type_equations(context.env, pattern, value.ty, names, rows, widths, 0)
+        Result.Err(_) => {
+        }
+    }
+}
+
+fn structural_reference_shapes(env Environment, declaration Node, types List[Node], desired Int) List[Int] {
+    let names = pack_names(declared_packs(declaration))
+    let parameters = group(declaration, NodeKind.Parameters)
+    let rows = new[List[Int]]()
+    shape_explicit_equations(declaration, length(types), names, rows)
+    if desired >= 0 {
+        let shape = get(env.types, desired)
+        if shape.kind != TypeKind.Function {
+            return new[Int]()
+        }
+        let count = length(shape.arguments) - 1
+        shape_sequence_equations(parameters, count, names, rows)
+        var widths = new[Int]()
+        var round = 0
+        while round <= length(names) {
+            shape_result_equations(env, declaration, get(shape.arguments, count), names, rows, widths)
+            let positions = shape_positions(parameters, count, names, widths)
+            var index = 0
+            while index < length(parameters) {
+                let offset = get(positions, index)
+                if offset >= 0 {
+                    let pattern = child(get(parameters, index), 0)
+                    if pattern.kind == NodeKind.Spread {
+                        let expanded = child(pattern, 0)
+                        let width = known_expansion_width(expanded, names, widths)
+                        var element = 0
+                        while element < width {
+                            shape_type_equations(env, expanded, get(shape.arguments, offset + element), names, rows, widths, 0)
+                            element = element + 1
+                        }
+                    } else {
+                        shape_type_equations(env, pattern, get(shape.arguments, offset), names, rows, widths, 0)
+                    }
+                }
+                index = index + 1
+            }
+            let next = partial_pack_shape(rows, length(names))
+            if length(next) == 0 {
+                return next
+            }
+            if same(next, widths) {
+                return solved_pack_shape(rows, length(names))
+            }
+            widths = next
+            round = round + 1
+        }
+    }
+    solved_pack_shape(rows, length(names))
+}

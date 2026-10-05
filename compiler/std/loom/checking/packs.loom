@@ -1,22 +1,29 @@
 import std.loom.binding.Symbol
 import std.loom.typed.TypeKind
 
-// Arity selects a normal generic declaration, not concrete element types.
+// Sequence widths select a normal generic declaration, not concrete types.
 // These entries share the signature table across private CTFE/proof queues.
-// An arity of -1 registers a source declaration, without a signature or proof.
+// Empty widths register a source family or an erased proof-only header.
 record PackInstance {
     source Int
     // A method's concept declaration; erased proofs use the erased header.
     // Ordinary packs use their own source. This is not a runtime slot.
     declaration Int
-    // -1 = source family; -2 = erased proof, never a callable specialization.
-    arity Int
+    widths List[Int]
     signature Int
     // -2 = method header expansion; 0 = unvisited, 1 = checking,
     // 2 = proved, 3 = queued, 4 =
     // checked in the current batch but not yet proved with its callees.
     state Int
     depth Int
+}
+
+fn pack_family(pack PackInstance) Bool {
+    length(pack.widths) == 0 && pack.signature < 0
+}
+
+fn erased_pack(pack PackInstance) Bool {
+    length(pack.widths) == 0 && pack.signature >= 0
 }
 
 fn pack_parameter(node Node) Int {
@@ -32,6 +39,10 @@ fn pack_parameter(node Node) Int {
 }
 
 fn one_type_pack(node Node) Bool {
+    type_pack_count(node) == 1
+}
+
+fn type_pack_count(node Node) Int {
     let parameters = group(node, NodeKind.TypeParameters)
     var count = 0
     var index = 0
@@ -41,27 +52,56 @@ fn one_type_pack(node Node) Bool {
         }
         index = index + 1
     }
-    count == 1
+    count
+}
+
+fn declared_packs(node Node) List[Node] {
+    let packs = new[Node]()
+    let parameters = group(node, NodeKind.TypeParameters)
+    var index = 0
+    while index < length(parameters) {
+        if get(parameters, index).kind == NodeKind.TypePack {
+            push(packs, get(parameters, index))
+        }
+        index = index + 1
+    }
+    packs
+}
+
+fn pack_names(packs List[Node]) List[Text] {
+    let names = new[Text]()
+    var index = 0
+    while index < length(packs) {
+        push(names, get(packs, index).value)
+        index = index + 1
+    }
+    names
 }
 
 fn fixed_pack_parameters(node Node) Int {
-    length(group(node, NodeKind.TypeParameters)) - 1
+    length(group(node, NodeKind.TypeParameters)) - type_pack_count(node)
 }
 
 // Fixed parameters retain declaration order on both sides of one sequence.
 // Its width is total arguments minus fixed parameters, not its source index.
 fn expand_pack_parameters(parameters List[Node], arity Int) List[Node] {
+    expand_family_parameters(parameters, ints(arity))
+}
+
+fn expand_family_parameters(parameters List[Node], widths List[Int]) List[Node] {
     let expanded = new[Node]()
     var index = 0
+    var pack = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)
         if parameter.kind == NodeKind.TypePack {
             var element = 0
-            while element < arity {
+            while element < get(widths, pack) {
                 push(expanded, pack_node(parameter, NodeKind.Name,
                         pack_name(parameter.value, element), parameter.children))
                 element = element + 1
             }
+            pack = pack + 1
         } else {
             push(expanded, parameter)
         }
@@ -172,8 +212,8 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         discard validate_pack_contract(env, owner)?
     }
     let types = group(item.node, NodeKind.TypeParameters)
-    if !one_type_pack(item.node) {
-        return Result.Err(failure(env, owner, get(types, selected), "declare only one type pack in a type parameter list"))
+    if data_pack(item.node) && !one_type_pack(item.node) {
+        return Result.Err(failure(env, owner, get(types, selected), "independent nominal type packs are not supported yet"))
     }
     var clause = 0
     while clause < length(item.node.children) {
@@ -190,18 +230,23 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         }
         clause = clause + 1
     }
-    let pack = get(types, selected)
-    var bound = 0
-    while bound < length(pack.children) {
-        discard required_concept(env, owner, child(pack, bound))?
-        var previous = 0
-        while previous < bound {
-            if required_concept(env, owner, child(pack, previous))? == required_concept(env, owner, child(pack, bound))? {
-                return Result.Err(failure(env, owner, child(pack, bound), "duplicate concept requirement"))
+    let packs = declared_packs(item.node)
+    var selected_pack = 0
+    while selected_pack < length(packs) {
+        let pack = get(packs, selected_pack)
+        var bound = 0
+        while bound < length(pack.children) {
+            discard required_concept(env, owner, child(pack, bound))?
+            var previous = 0
+            while previous < bound {
+                if required_concept(env, owner, child(pack, previous))? == required_concept(env, owner, child(pack, bound))? {
+                    return Result.Err(failure(env, owner, child(pack, bound), "duplicate concept requirement"))
+                }
+                previous = previous + 1
             }
-            previous = previous + 1
+            bound = bound + 1
         }
-        bound = bound + 1
+        selected_pack = selected_pack + 1
     }
     if data_pack(item.node) {
         return Result.Ok(false)
@@ -210,7 +255,7 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
     while index < length(parameters) {
         let parameter = get(parameters, index)
         let spread = child(parameter, 0).kind == NodeKind.Spread
-        if spread && !mentions_pack(child(parameter, 0), pack.value) {
+        if spread && length(expansion_packs(child(child(parameter, 0), 0), pack_names(packs))) == 0 {
             return Result.Err(failure(env, owner, parameter, "the variadic parameter type must use the declared pack"))
         }
         if tuple_pack_parameter(parameter) {
@@ -218,7 +263,7 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
             var field = 0
             while field < length(shape.children) {
                 let pattern = child(shape, field)
-                if pattern.kind == NodeKind.Spread && !mentions_pack(pattern, pack.value) {
+                if pattern.kind == NodeKind.Spread && length(expansion_packs(child(pattern, 0), pack_names(packs))) == 0 {
                     return Result.Err(failure(env, owner, pattern, "the tuple expansion type must use the declared pack"))
                 }
                 field = field + 1
@@ -252,36 +297,112 @@ fn expand_pack_type(env Environment, owner Int, node Node, pack Text, arity Int,
 }
 
 fn expand_pack_type_in(env Environment, owner Int, node Node, pack Text, arity Int, element Int, types Bool, depth Int, preserve_other_packs Bool) Result[Node, Failure] {
+    let names = new[Text]()
+    push(names, pack)
+    expand_family_type(env, owner, node, names, ints(arity), ints(element), types, depth, preserve_other_packs)
+}
+
+fn pack_root_index(node Node, names List[Text]) Int {
+    var index = 0
+    while index < length(names) {
+        if pack_root(node, get(names, index)) {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+// Free pack references determine this expansion's width. Nested ... nodes
+// have their own expansion scope, rather than contributing another dimension.
+fn collect_expansion_packs(node Node, names List[Text], selected List[Int]) {
+    if node.kind == NodeKind.Spread {
+        return
+    }
+    let pack = pack_root_index(node, names)
+    if pack >= 0 {
+        var index = 0
+        while index < length(selected) {
+            if get(selected, index) == pack {
+                return
+            }
+            index = index + 1
+        }
+        push(selected, pack)
+    }
+    var index = 0
+    while index < length(node.children) {
+        collect_expansion_packs(child(node, index), names, selected)
+        index = index + 1
+    }
+}
+
+fn expansion_packs(node Node, names List[Text]) List[Int] {
+    let selected = new[Int]()
+    collect_expansion_packs(node, names, selected)
+    selected
+}
+
+fn expansion_width(env Environment, owner Int, node Node, names List[Text], widths List[Int]) Result[Int, Failure] {
+    let selected = expansion_packs(node, names)
+    if length(selected) == 0 {
+        return Result.Err(failure(env, owner, node, "type expansion must use a declared pack"))
+    }
+    let width = get(widths, get(selected, 0))
+    var index = 1
+    while index < length(selected) {
+        if get(widths, get(selected, index)) != width {
+            return Result.Err(failure(env, owner, node, "packs in one elementwise expansion must have equal widths"))
+        }
+        index = index + 1
+    }
+    Result.Ok(width)
+}
+
+fn expansion_elements(node Node, names List[Text], current List[Int], element Int) List[Int] {
+    let elements = copy_indices(current)
+    let selected = expansion_packs(node, names)
+    var index = 0
+    while index < length(selected) {
+        set(elements, get(selected, index), element)
+        index = index + 1
+    }
+    elements
+}
+
+fn expand_family_type(env Environment, owner Int, node Node, names List[Text], widths List[Int], elements List[Int], types Bool, depth Int, preserve_other_packs Bool) Result[Node, Failure] {
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "type pack expansion nesting limit exceeded"))
     }
     let type_context = types || node.kind == NodeKind.Type || node.kind == NodeKind.TupleType || node.kind == NodeKind.FunctionType || node.kind == NodeKind.TypeArguments
     var value = node.value
-    if type_context && pack_root(node, pack) {
+    let pack = pack_root_index(node, names)
+    if type_context && pack >= 0 {
+        let element = get(elements, pack)
         if element < 0 {
             return Result.Err(failure(env, owner, node, "expand a type pack with ...; it is not one type"))
         }
         // Preserve a projection's concept qualifier and expand its family
         // arguments below, e.g. Ts.C.Family[Ts] becomes $Ts0.C.Family[$Ts0].
-        value = concat(pack_name(pack, element), slice(node.value, length(pack), length(node.value)))
+        value = concat(pack_name(get(names, pack), element), slice(node.value, length(get(names, pack)), length(node.value)))
     }
     let children = new[Node]()
     var index = 0
     while index < length(node.children) {
         let child = child(node, index)
         let child_types = type_context || (node.kind == NodeKind.Parameter && index == 0)
-        if child_types && child.kind == NodeKind.Spread && (!preserve_other_packs || mentions_pack(get(child.children, 0), pack)) {
+        if child_types && child.kind == NodeKind.Spread &&
+        (!preserve_other_packs || length(expansion_packs(get(child.children, 0), names)) != 0) {
             let pattern = get(child.children, 0)
-            if !mentions_pack(pattern, pack) {
-                return Result.Err(failure(env, owner, child, "type expansion must use this declaration's pack"))
-            }
+            let arity = expansion_width(env, owner, pattern, names, widths)?
             var selected = 0
             while selected < arity {
-                push(children, expand_pack_type_in(env, owner, pattern, pack, arity, selected, true, depth + 1, preserve_other_packs)?)
+                push(children, expand_family_type(env, owner, pattern, names, widths,
+                        expansion_elements(pattern, names, elements, selected), true, depth + 1, preserve_other_packs)?)
                 selected = selected + 1
             }
         } else {
-            push(children, expand_pack_type_in(env, owner, child, pack, arity, element, child_types, depth + 1, preserve_other_packs)?)
+            push(children, expand_family_type(env, owner, child, names, widths, elements, child_types, depth + 1, preserve_other_packs)?)
         }
         index = index + 1
     }
@@ -308,13 +429,18 @@ fn pack_contract(node Node, name Text) Bool {
 // inputs. Selected arities still check bounds, resource use and native types.
 fn validate_pack_contract(env Environment, owner Int) Result[Bool, Failure] {
     let node = symbol(env, owner).node
-    let pack = get(group(node, NodeKind.TypeParameters), pack_parameter(node))
+    let packs = declared_packs(node)
     let parameters = group(node, NodeKind.Parameters)
     var index = 0
     while index < length(node.children) {
         let member = child(node, index)
         if member.kind != NodeKind.TypeParameters && member.kind != NodeKind.Parameters {
-            var dependent = mentions_pack(member, pack.value)
+            var dependent = false
+            var pack = 0
+            while pack < length(packs) {
+                dependent = dependent || mentions_pack(member, get(packs, pack).value)
+                pack = pack + 1
+            }
             var parameter = 0
             while parameter < length(parameters) {
                 let input = get(parameters, parameter)
@@ -344,7 +470,7 @@ fn check_pack_contracts(env Environment) Result[Bool, Failure] {
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack.arity == -1 && pack_has_postcondition(env, pack) {
+        if pack_family(pack) && pack_has_postcondition(env, pack) {
             discard check_pack_arity(env, erased_pack_signature(env, pack.source)?)?
         }
         index = index + 1
@@ -356,7 +482,7 @@ fn erased_pack_signature(env Environment, owner Int) Result[Int, Failure] {
     var index = 0
     while index < length(env.packs) {
         let previous = get(env.packs, index)
-        if previous.source == owner && previous.arity == -2 {
+        if previous.source == owner && erased_pack(previous) {
             return Result.Ok(previous.signature)
         }
         index = index + 1
@@ -415,7 +541,7 @@ fn erased_pack_signature(env Environment, owner Int) Result[Int, Failure] {
     push(env.packs, PackInstance {
             source = owner
             declaration = inherited
-            arity = -2
+            widths = new[Int]()
             signature = signature
             state = 0
             depth = 0
@@ -719,38 +845,49 @@ fn expand_type_iteration(env Environment, owner Int, node Node, pack Text, arity
     Result.Ok(pack_node(node, node.kind, node.value, children))
 }
 
-fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure] {
+fn pack_declaration(env Environment, owner Int, widths List[Int]) Result[Node, Failure] {
     let declaration = symbol(env, owner).node
     let types = group(declaration, NodeKind.TypeParameters)
-    let pack = get(types, pack_parameter(declaration))
+    let packs = declared_packs(declaration)
+    let names = pack_names(packs)
+    if length(widths) != length(packs) {
+        return Result.Err(failure(env, owner, declaration, "type pack shape does not match its declaration"))
+    }
+    let elements = new[Int]()
+    var pack = 0
+    while pack < length(packs) {
+        push(elements, -1)
+        pack = pack + 1
+    }
     let parameters = group(declaration, NodeKind.Parameters)
-    let expanded_types = expand_pack_parameters(types, arity)
+    let expanded_types = expand_family_parameters(types, widths)
     let expanded_params = new[Node]()
     let bindings = new[Node]()
     var index = 0
-    var type_shadowed = false
     while index < length(parameters) {
         let parameter = get(parameters, index)
-        type_shadowed = type_shadowed || parameter.value == pack.value
         if child(parameter, 0).kind == NodeKind.Spread {
             let static_values = has(parameter, NodeKind.Comptime)
-            let elements = new[Node]()
+            let values = new[Node]()
+            let pattern = child(child(parameter, 0), 0)
+            let arity = expansion_width(env, owner, pattern, names, widths)?
             var element = 0
             while element < arity {
                 let name = pack_name(parameter.value, element)
-                let ty = expand_pack_type(env, owner, child(child(parameter, 0), 0), pack.value, arity, element, true, 0)?
+                let ty = expand_family_type(env, owner, pattern, names, widths,
+                    expansion_elements(pattern, names, elements, element), true, 0, false)?
                 let parts = source_nodes(ty)
                 if static_values {
                     push(parts, pack_node(parameter, NodeKind.Comptime, "", new[Node]()))
                 }
                 push(expanded_params, pack_node(parameter, NodeKind.Parameter, name, parts))
-                push(elements, pack_node(parameter, NodeKind.Name, name, new[Node]()))
+                push(values, pack_node(parameter, NodeKind.Name, name, new[Node]()))
                 element = element + 1
             }
             push(bindings, pack_binding(parameter, parameter.value,
-                    pack_node(parameter, NodeKind.Tuple, "", elements), static_values))
+                    pack_node(parameter, NodeKind.Tuple, "", values), static_values))
         } else {
-            push(expanded_params, expand_pack_type(env, owner, parameter, pack.value, arity, -1, false, 0)?)
+            push(expanded_params, expand_family_type(env, owner, parameter, names, widths, elements, false, 0, false)?)
         }
         index = index + 1
     }
@@ -764,12 +901,13 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
             if member.kind == NodeKind.Parameters {
                 push(children, pack_node(member, member.kind, "", expanded_params))
             } else {
-                let typed = expand_pack_type(env, owner, member, pack.value, arity, -1, false, 0)?
+                let typed = expand_family_type(env, owner, member, names, widths, elements, false, 0, false)?
                 var expanded = typed
                 var parameter = 0
                 while has_pack_iteration(expanded) && parameter < length(parameters) {
                     let values = get(parameters, parameter)
                     if child(values, 0).kind == NodeKind.Spread {
+                        let arity = expansion_width(env, owner, child(child(values, 0), 0), names, widths)?
                         let count = new[Int]()
                         push(count, 0)
                         expanded = expand_pack_iteration(env, owner, expanded, values.value,
@@ -777,12 +915,23 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                     }
                     parameter = parameter + 1
                 }
-                let type_expanded = if has_pack_iteration(expanded) && !type_shadowed {
-                    let count = new[Int]()
-                    push(count, 0)
-                    expand_type_iteration(env, owner, expanded, pack.value, arity, false, false, 0, count)?
-                } else {
-                    expanded
+                var type_expanded = expanded
+                pack = 0
+                while has_pack_iteration(type_expanded) && pack < length(packs) {
+                    let name = get(names, pack)
+                    var shadowed = false
+                    parameter = 0
+                    while parameter < length(parameters) {
+                        shadowed = shadowed || get(parameters, parameter).value == name
+                        parameter = parameter + 1
+                    }
+                    if !shadowed {
+                        let count = new[Int]()
+                        push(count, 0)
+                        type_expanded = expand_type_iteration(env, owner, type_expanded,
+                            name, get(widths, pack), false, false, 0, count)?
+                    }
+                    pack = pack + 1
                 }
                 if member.kind == NodeKind.Block {
                     let body = new[Node]()
@@ -816,26 +965,33 @@ fn pack_instance(env Environment, signature Int) Int {
     -1
 }
 
-fn pack_signature(env Environment, owner Int, arity Int) Result[Int, Failure] {
+fn pack_signature(env Environment, owner Int, widths List[Int]) Result[Int, Failure] {
     var count = 0
     var index = 0
     while index < length(env.packs) {
         let existing = get(env.packs, index)
         if existing.source == owner {
-            if existing.arity == arity {
+            if same(existing.widths, widths) {
                 return Result.Ok(existing.signature)
             }
-            if existing.arity >= 0 {
+            if length(existing.widths) != 0 {
                 count = count + 1
             }
         }
         index = index + 1
     }
     let item = symbol(env, owner)
-    if count >= 1024 || arity > 1024 {
+    if count >= 1024 {
         return Result.Err(failure(env, owner, item.node, "type pack specialization budget exceeded; expansion must be finite"))
     }
-    let expanded = pack_declaration(env, owner, arity)?
+    var width = 0
+    while width < length(widths) {
+        if get(widths, width) < 0 || get(widths, width) > 1024 {
+            return Result.Err(failure(env, owner, item.node, "type pack specialization budget exceeded; expansion must be finite"))
+        }
+        width = width + 1
+    }
+    let expanded = pack_declaration(env, owner, widths)?
     let source = length(env.source.symbols)
     push(env.source.symbols, Symbol {
             file = item.file
@@ -853,7 +1009,7 @@ fn pack_signature(env Environment, owner Int, arity Int) Result[Int, Failure] {
     let obligations = requirements(env, source, arguments)?
     let declaration = method_pack_source(env, owner)
     if declaration >= 0 && declaration != owner {
-        let declared = pack_signature(env, declaration, arity)?
+        let declared = pack_signature(env, declaration, widths)?
         discard inherit_member_requirements(env, get(env.signatures, declared).symbol,
             argument_tail(arguments, method_parameter_prefix(env, source)), obligations)?
     }
@@ -870,7 +1026,7 @@ fn pack_signature(env Environment, owner Int, arity Int) Result[Int, Failure] {
             } else {
                 declaration
             }
-            arity = arity
+            widths = copy_indices(widths)
             signature = selected
             state = 0
             depth = 0
@@ -883,7 +1039,7 @@ fn pack_state(env Environment, index Int, state Int, depth Int) {
     set(env.packs, index, PackInstance {
             source = pack.source
             declaration = pack.declaration
-            arity = pack.arity
+            widths = pack.widths
             signature = pack.signature
             state = state
             depth = depth
@@ -977,7 +1133,7 @@ fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
         // An implementation inherits its declaration's clauses even when it
         // does not repeat ensures. Its own body must meet the erasure rule.
         discard validate_pack_contract(env, pack.source)?
-        if pack.arity >= 0 {
+        if length(pack.widths) != 0 {
             discard check_pack_arity(env, erased_pack_signature(env, pack.source)?)?
         }
     }
@@ -1045,6 +1201,14 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
         } else {
             let owner = -1 - id
             let declaration = symbol(context.env, owner).node
+            if !one_type_pack(declaration) {
+                let widths = structural_reference_shapes(context.env, declaration, types, desired)
+                if length(widths) != 0 {
+                    push(choices, selected_pack_signature(context.env, owner, widths)?)
+                }
+                index = index + 1
+                continue
+            }
             let parameters = group(declaration, NodeKind.Parameters)
             let variadic = variadic_parameters(parameters)
             let arity = if length(types) != 0 {
@@ -1067,7 +1231,7 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
                 -1
             }
             if arity >= 0 {
-                push(choices, selected_pack_signature(context.env, owner, arity)?)
+                push(choices, selected_pack_signature(context.env, owner, ints(arity))?)
             }
         }
         index = index + 1

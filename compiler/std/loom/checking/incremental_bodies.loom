@@ -2,7 +2,7 @@
 // back from the mutable Program returned by the public checking API.
 record BodyTarget {
     symbol Int
-    arity Int
+    widths List[Int]
     implementation_arity Int
     prototype Int
     arguments List[Int]
@@ -395,8 +395,8 @@ fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure
 fn body_schedule_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure] {
     let prior = get(get(reuse.prior, 0).targets, target)
     let owner = impl_member_instance(env, body_symbol(reuse, prior.symbol), prior.implementation_arity)?
-    if prior.arity >= 0 {
-        let selected = selected_pack_signature(env, owner, prior.arity)?
+    if length(prior.widths) != 0 {
+        let selected = selected_pack_signature(env, owner, prior.widths)?
         discard check_pack_arity(env, selected)?
         return schedule(env, selected, body_types(env, reuse, prior.arguments)?, body_constants(env, reuse, prior.constants, owner)?, symbol(env, owner).node)
     }
@@ -489,10 +489,10 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         concrete_owner
     }
     let owner = impl_member_source(env, source)
-    let arity = if pack >= 0 {
-        get(env.packs, pack).arity
+    let widths = if pack >= 0 {
+        get(env.packs, pack).widths
     } else {
-        -1
+        new[Int]()
     }
     let implementation_arity = impl_member_arity(env, source)
     if owner >= length(reuse.allowed) || !get(reuse.allowed, owner) {
@@ -511,12 +511,12 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         let candidate = get(candidates, index)
         let value = get(prior.functions, candidate)
         let target = get(prior.targets, candidate)
-        if target.arity == arity && target.implementation_arity == implementation_arity && body_symbol(reuse, target.symbol) == owner &&
+        if same(target.widths, widths) && target.implementation_arity == implementation_arity && body_symbol(reuse, target.symbol) == owner &&
         (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
             (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_eligible(reuse, candidate) &&
         same(body_types(env, reuse, value.arguments)?, instance.arguments) &&
         same_constants(body_constants(env, reuse, target.constants, owner)?, instance.constants) {
-            if arity >= 0 {
+            if length(widths) != 0 {
                 discard check_pack_arity(env, instance.signature)?
             }
             let offset = current.span.start - value.span.start

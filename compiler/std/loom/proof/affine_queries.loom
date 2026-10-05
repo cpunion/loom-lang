@@ -85,6 +85,16 @@ fn affine_consequence(relation Text, value Linear, operator Text, premise Linear
     interval(relation, range(goal, predicates(known)))
 }
 
+fn insert_affine_row(basis List[Linear], row Linear) {
+    var position = length(basis)
+    push(basis, row)
+    while position > 0 && get(get(basis, position - 1).terms, 0).id > get(row.terms, 0).id {
+        set(basis, position, get(basis, position - 1))
+        position = position - 1
+    }
+    set(basis, position, row)
+}
+
 fn affine_query(relation Text, value Linear, facts List[Predicate]) Result[Bool, Text] {
     let basis = new[Linear]()
     let budget = new[Int]()
@@ -110,13 +120,7 @@ fn affine_query(relation Text, value Linear, facts List[Predicate]) Result[Bool,
                         }
                         // Keep pivots sorted. Later rows cannot reintroduce a
                         // smaller pivot eliminated earlier in a reduction.
-                        var position = length(basis)
-                        push(basis, row)
-                        while position > 0 && get(get(basis, position - 1).terms, 0).id > get(row.terms, 0).id {
-                            set(basis, position, get(basis, position - 1))
-                            position = position - 1
-                        }
-                        set(basis, position, row)
+                        insert_affine_row(basis, row)
                     }
                 }
             }

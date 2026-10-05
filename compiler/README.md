@@ -816,7 +816,7 @@ runtime evaluation. A tuple of Tasks can be awaited directly; this uses
 
 ### Variadic functions
 
-An ordinary top-level function can declare one type pack among fixed type
+The common single-pack form declares one type pack among fixed type
 parameters. Its width is the total type argument count minus all fixed
 parameters; explicit arguments retain declaration order. Structural
 tuple, function and nominal parameters may expand it at any parameter position;
@@ -831,8 +831,21 @@ function values and static/dyn methods; they keep source-order input effects and
 ordinary Task obligations. See the [position example](examples/variadics/positions.loom).
 The [repeated example](examples/variadics/repeated.loom) also exercises repeated
 direct values, mixed static/runtime packs, nested iteration and Task frames.
-Independent type packs remain unsupported; repeating one sequence does not
-infer unrelated sequence widths.
+Functions and concept methods also support independent type packs. Tuple,
+callback and nominal input shapes, argument counts and expected results supply
+affine width equations; only a unique nonnegative integral solution selects an
+instance. Known widths locate middle parameters and nested expansions. Packs
+used together in one elementwise expansion must have equal widths. Ordinary
+inference still checks every element type and declared capability. Unresolved
+partitions reject: group inputs in tuples or provide an expected result rather
+than relying on a guessed split. See the
+[independent example](examples/variadics/independent.loom), including coupled
+equations, empty packs, dyn methods, CTFE and typed suspension.
+Instance and body-cache keys retain every width, not just their sum. Shape
+reasoning remains bounded; it does not enumerate specializations or solve all
+integer feasibility problems. Independent packs in nominal declarations and
+impl headers, and sequence-dependent universal postcondition proofs, remain
+unsupported.
 
 ```loom
 pub fn pack[Ts...](values Ts...) (Ts...) {
@@ -1156,8 +1169,8 @@ intersections reject conservatively. Bounds or sampled arities do not prove
 disjointness. An impl family's ordinary method contracts are proved at each
 selected arity; unselected arities have not had their bodies verified.
 
-Multiple independent packs in one parameter list and sequence-dependent
-universal proofs remain open. This implementation does not complete the accepted
+Independent packs in nominal declarations and impl headers, and sequence-dependent
+universal proofs, remain open. This implementation does not complete the accepted
 metaprogramming design.
 
 Records and enums accept one type pack among fixed type parameters too:

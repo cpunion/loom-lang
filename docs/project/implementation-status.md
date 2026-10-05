@@ -199,8 +199,17 @@ proofs, including uncalled families and inherited method contracts; the
 constrained construction, CTFE and dyn dispatch. Bodies, return types or clauses
 reading a type pack or pack-bearing input still reject. A single type pack can
 have fixed parameters before and after it, including concept methods and impl
-families; the same ordered expansion and width rule applies to each. Multiple
-independent type packs and sequence-dependent universal proofs remain unsupported.
+families; the same ordered expansion and width rule applies to each.
+Functions and concept methods now select independent sequence widths through
+bounded mathematical affine equations over input/contextual shapes. Known
+widths locate middle parameters and nested expansions; elementwise combinations
+require equal widths. Empty zero totals, coupled equations, ordinary inference,
+CTFE, dyn defaults/overrides and Task frames have checker/native evidence in the
+[independent example](../../compiler/examples/variadics/independent.loom).
+Restored body/dyn recipes retain the complete width vector, so equal totals do
+not merge different groups. Ambiguous, inconsistent, nonintegral or exhausted
+inference rejects, without specialization sampling. Independent nominal/impl
+header packs and sequence-dependent universal proofs remain unsupported.
 Compile-time execution is not proof by sampling.
 
 Independent nominal declarations do not share a global type-count budget.
