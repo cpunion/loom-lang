@@ -27,6 +27,14 @@ fn first_nested_value(values List[List[Int]]) Int {
     values[0][0]
 }
 
+fn first_value[T](values List[T]) T {
+    values[0]
+}
+
+fn first[T](values Nonempty[T]) T {
+    first_value(values)
+}
+
 async fn exercise_generic_extents() {
     let inner = [1]
     let outer = singleton(inner)
@@ -49,7 +57,10 @@ async fn exercise_generic_extents() {
             push(input, [9])
             inner[0] = 7
             assert length(value) == 1
-            first_nested_value(value) == 7
+            let row = first(value)
+            row[0] = 8
+            assert inner[0] == 8
+            first_nested_value(value) == 8
         }
         Result.Err(_) => false
     }
