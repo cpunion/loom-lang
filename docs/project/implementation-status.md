@@ -230,10 +230,12 @@ whitelist; such inputs contribute no tag, payload or finiteness assumptions.
 The [shared view example](../../compiler/examples/shared_views) uses `Pair[T]`
 with Int, Text and Bool elements. Extent-only List constraints accept generic and
 shared elements; the [native example](../../compiler/examples/list_contracts/refinements.loom)
-checks generic replacement, append and suspension, plus checked Int copying. Content
+checks generic replacement, append, checked copying and suspension. Fresh factories
+may retain shared elements while proving an independent, unpublished outer header;
+input resizing cannot change the copy's extent, and nested updates remain visible.
+Content
 constraints still require immutable inline elements, and raw writable aliases
-cannot escape. Shared-element factory results still use conservative whole-graph
-alias checks. Cyclic invariant construction rejects
+cannot escape. Cyclic invariant construction rejects
 before recursive expansion exhausts the compiler stack.
 
 Every declared `ensures` requires a static proof. The CLI submits remaining

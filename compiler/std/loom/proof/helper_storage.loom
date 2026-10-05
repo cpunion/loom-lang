@@ -68,6 +68,14 @@ fn private_factory(program Program, function Function) Bool {
     returned && get(effects, 0)
 }
 
+// A fresh outer List may retain shared elements. This checks its header and
+// publication separately; callers still validate purity and element constraints.
+pub fn fresh_list_factory(program Program, target Int) Bool {
+    target >= 0 && target < length(program.functions) &&
+    proof_list_type(program, get(program.functions, target).result) &&
+    private_factory(program, get(program.functions, target))
+}
+
 fn storage_leaves(value Value) Int {
     match value {
         Value.List(_) => 1

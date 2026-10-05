@@ -21,10 +21,13 @@ Later unknown handles and opaque calls can still reach those allocations.
 observes only the outer length, so inner mutations do not invalidate it. Outer
 replacement and append preserve nonemptiness through generic helpers and
 suspension. Fresh construction proves a singleton directly; copying unknown
-Int input retains checked `Result` construction, including rejection of empty input.
+input retains checked `Result` construction, including rejection of empty input.
+The copy shares nested elements but not the outer header: resizing the input
+does not change its length, while nested updates remain visible through a
+non-escaping read helper.
 Raw writable outer aliases still cannot escape, and predicates observing shared
-element contents remain unsupported. Factory construction containing shared
-elements still uses conservative whole-result alias analysis.
+element contents remain unsupported. The factory must prove fresh, unpublished
+outer storage; purity or a method named `clone` is not sufficient.
 
 `entry.loom` proves append against `old(length(values))`, without an explicit
 size parameter. Two consecutive calls use different invocation-entry lengths;

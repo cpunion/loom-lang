@@ -1,3 +1,5 @@
+import std.loom.proof.fresh_list_factory
+
 // A constrained List has no pre-existing writable outer aliases. Content
 // predicates require immutable elements; extent predicates can ignore them.
 // Copies retain the constrained type and ordinary sharing.
@@ -122,15 +124,7 @@ fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool 
     } {
         return false
     }
-    let reads = invariant_reads(env, functions, value, true, 0)
-    let inputs = new[InputOrigin]()
-    var index = 0
-    while index < length(value.children) {
-        push(inputs, origin_input())
-        index = index + 1
-    }
-    let output = invariant_call(reads, value.index, inputs, 0)
-    get(reads.valid, 0) && !origin_shared(output)
+    std.loom.proof.fresh_list_factory(program, value.index)
 }
 
 fn constraint_operation(env Environment, functions List[Function], value Expr) Bool {
