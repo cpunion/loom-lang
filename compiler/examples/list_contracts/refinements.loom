@@ -88,6 +88,51 @@ fn positive_accounts(values List[Account]) Bool {
 
 type PositiveAccounts = List[Account] where positive_accounts(self)
 
+// Put the per-value invariant on the element type when replacement is needed.
+type PositiveAccount = Account where self.amount > 0
+
+fn first_amount(values Nonempty[PositiveAccount]) Int
+ensures result > 0
+{
+    values[0].amount
+}
+
+fn checked_account(amount Int, notes List[Int]) Result[PositiveAccount, ConstraintError] {
+    PositiveAccount(Account {
+            amount = amount
+            notes = notes
+        })
+}
+
+async fn exercise_element_invariants() {
+    let notes = [1]
+    let initial = PositiveAccount(Account {
+            amount = 10
+            notes = notes
+        })
+    let values = singleton(initial)
+    let alias = values
+    assert first_amount(values) == 10
+    let replacement = PositiveAccount(Account {
+            amount = 20
+            notes = notes
+        })
+    replace_first(alias, replacement)
+    append_value(values, initial)
+    notes[0] = -1
+    sleep_ms(1).await
+    assert first_amount(values) == 20 && length(alias) == 2
+    assert first(values).notes[0] == -1
+    assert match checked_account(0, notes) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
+
+test async fn constrained_elements_preserve_invariants_through_replacement() {
+    exercise_element_invariants().await
+}
+
 fn checked_accounts(values List[Account]) Result[PositiveAccounts, ConstraintError] {
     PositiveAccounts(clone(values))
 }
