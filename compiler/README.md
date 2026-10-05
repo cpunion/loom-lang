@@ -1296,8 +1296,9 @@ List; repetition syntax is not implemented.
 the no-argument overload retains ordinary on-demand growth. Reserved capacity
 is not length or an observable part of List identity. The List can grow beyond
 the reservation, and its aliases keep observing the same elements. Negative
-capacity raises a process-level RuntimeFault; allocation failure is not a
-recoverable Result. Source `clone` and `map` reserve their known output lengths.
+capacity raises a RuntimeFault with ordinary Task fault handling. OOM remains
+an uncatchable process-level fault, not a recoverable Result. Source `clone`
+and `map` reserve their known output lengths.
 An element block currently needs a value-producing path: an unconditional
 `[{ return }]` is rejected even with a List type context. General typing of
 non-returning expressions remains incomplete, as it is for tuples and bindings.
