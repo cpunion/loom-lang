@@ -230,21 +230,15 @@ fn same(a List[Int], b List[Int]) Bool {
 }
 
 fn ints(value Int) List[Int] {
-    let values = new[Int]()
-    push(values, value)
-    values
+    [value]
 }
 
 fn expressions(value Expr) List[Expr] {
-    let values = new[Expr]()
-    push(values, value)
-    values
+    [value]
 }
 
 fn pair(a Expr, b Expr) List[Expr] {
-    let values = expressions(a)
-    push(values, b)
-    values
+    [a, b]
 }
 
 fn expression(kind ExprKind, ty Int, node Node, text Text, index Int, children List[Expr], falls Bool) Expr {

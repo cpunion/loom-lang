@@ -3,7 +3,7 @@
 // map/filter create a fresh outer List; elements retain normal sharing.
 pub fn map[T, U](values List[T], transform fn(T) U) List[U] {
     let count = length(values)
-    let output = new[U]()
+    let output = new[U](count)
     var index = 0
     while index < count {
         push(output, transform(get(values, index)))
@@ -18,7 +18,9 @@ pub fn filter[T](values List[T], predicate fn(T) Bool) List[T] {
     var index = 0
     while index < count {
         let value = get(values, index)
-        if predicate(value) { push(output, value) }
+        if predicate(value) {
+            push(output, value)
+        }
         index = index + 1
     }
     output

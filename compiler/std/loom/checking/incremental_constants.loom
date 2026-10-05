@@ -1,7 +1,7 @@
 // Instance keys never retain a previous check's computation/environment index.
 // Immutable values are detached; captured callbacks recheck normally.
 fn body_copy_value(value Value) Value {
-    let items = new[Value]()
+    let items = new[Value](length(value.items))
     var index = 0
     while index < length(value.items) {
         push(items, body_copy_value(get(value.items, index)))
@@ -17,7 +17,7 @@ fn body_copy_value(value Value) Value {
 }
 
 fn body_copy_constants(env Environment, constants List[StaticValue]) List[BodyConstant] {
-    let copied = new[BodyConstant]()
+    let copied = new[BodyConstant](length(constants))
     var index = 0
     while index < length(constants) {
         let value = get(constants, index)
@@ -32,7 +32,13 @@ fn body_copy_constants(env Environment, constants List[StaticValue]) List[BodyCo
                     number = value.number
                     text = value.text
                     arguments = copy_indices(value.arguments)
-                    storage = if value.storage < -1 { -2 } else if value.storage >= 0 { 0 } else { -1 }
+                    storage = if value.storage < -1 {
+                        -2
+                    } else if value.storage >= 0 {
+                        0
+                    } else {
+                        -1
+                    }
                 }
                 stored = stored
             })
@@ -94,7 +100,7 @@ fn body_constants_supported(reuse BodyReuse, values List[BodyConstant], seen Lis
 }
 
 fn body_value(env Environment, reuse BodyReuse, value Value) Result[Value, Failure] {
-    let items = new[Value]()
+    let items = new[Value](length(value.items))
     var index = 0
     while index < length(value.items) {
         push(items, body_value(env, reuse, get(value.items, index))?)
@@ -114,7 +120,7 @@ fn body_value(env Environment, reuse BodyReuse, value Value) Result[Value, Failu
 }
 
 fn body_constants(env Environment, reuse BodyReuse, values List[BodyConstant], owner Int) Result[List[StaticValue], Failure] {
-    let mapped = new[StaticValue]()
+    let mapped = new[StaticValue](length(values))
     var index = 0
     while index < length(values) {
         let saved = get(values, index)

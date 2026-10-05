@@ -165,15 +165,11 @@ fn runtime(parameters Int, params List[Int], returns Int) RuntimeSignature {
 }
 
 fn two_types(a Int, b Int) List[Int] {
-    let values = ints(a)
-    push(values, b)
-    values
+    [a, b]
 }
 
 fn three_types(a Int, b Int, c Int) List[Int] {
-    let values = two_types(a, b)
-    push(values, c)
-    values
+    [a, b, c]
 }
 
 fn runtime_signature(env Environment, name Text) RuntimeSignature {

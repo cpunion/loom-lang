@@ -81,7 +81,9 @@ fn impl_decl(cursor Cursor) Result[Step, Diagnostic] {
         return Result.Err(error(separator, "expected 'for' after the implemented concept"))
     }
     let target = type_ref(newlines(next(separator)))?
-    let children = two(concept_type.node, target.node)
+    let children = new[Node]()
+    push(children, concept_type.node)
+    push(children, target.node)
     push(children, parameters.node)
     var rest = newlines(expect(newlines(target.rest), Kind.LBrace, "'{' after the implementation target")?)
     while !at(rest, Kind.RBrace) {

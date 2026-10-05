@@ -3,7 +3,7 @@
 // Nominal type definitions will be rebuilt in the next environment; snapshots
 // retain only the shape needed to validate and rekey a cached concrete body.
 fn body_copy_expressions(values List[Expr]) List[Expr] {
-    let copied = new[Expr]()
+    let copied = new[Expr](length(values))
     var index = 0
     while index < length(values) {
         push(copied, body_copy_expression(get(values, index)))
@@ -13,7 +13,7 @@ fn body_copy_expressions(values List[Expr]) List[Expr] {
 }
 
 fn body_copy_expression(value Expr) Expr {
-    let arms = new[Arm]()
+    let arms = new[Arm](length(value.arms))
     var index = 0
     while index < length(value.arms) {
         let arm = get(value.arms, index)
@@ -38,7 +38,7 @@ fn body_copy_expression(value Expr) Expr {
 }
 
 fn body_copy_function(value Function) Function {
-    let locals = new[Local]()
+    let locals = new[Local](length(value.locals))
     var index = 0
     while index < length(value.locals) {
         push(locals, get(value.locals, index))
@@ -61,17 +61,17 @@ fn body_copy_function(value Function) Function {
 }
 
 fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, program std.loom.typed.Program, detach Bool) {
-    let types = new[Type]()
+    let types = new[Type](length(program.types))
     var index = 0
     while index < length(program.types) {
         let ty = get(program.types, index)
-        let fields = new[Field]()
+        let fields = new[Field](length(ty.fields))
         var field = 0
         while field < length(ty.fields) {
             push(fields, get(ty.fields, field))
             field = field + 1
         }
-        let variants = new[Variant]()
+        let variants = new[Variant](length(ty.variants))
         var variant = 0
         while variant < length(ty.variants) {
             let member = get(ty.variants, variant)
@@ -91,8 +91,8 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
             })
         index = index + 1
     }
-    let functions = new[Function]()
-    let targets = new[BodyTarget]()
+    let functions = new[Function](length(program.functions))
+    let targets = new[BodyTarget](length(program.functions))
     // Checking and rekeying succeeded before entering this private snapshot
     // builder. Retire the previous concrete IR before cloning its replacement;
     // no caller can observe or mutate these lists while the snapshot is built.

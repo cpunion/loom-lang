@@ -67,7 +67,9 @@ Rust seed in `compiler/bootstrap/seed`, then builds the ordered Loom source
 commits in `compiler/bootstrap/checkpoints`. Each checkpoint implements a
 capability before the next compiler uses it: native Float before evaluator
 storage, function values before higher-order `std.list`, and native I/O
-primitives before their public wrappers. These immutable inputs are
+primitives before their public wrappers. The current checkpoint batches
+explicit List capacity with direct list-literal construction in compiler
+sources; variable-size syntax builders retain ordinary growth. These immutable inputs are
 cached in `target/bootstrap/<commit>/`; no preinstalled Loom compiler is required.
 Pinned commits must be available in Git history; the script reports an exact
 fetch command when one is missing. The cache is disposable, not another
@@ -1290,6 +1292,12 @@ push/growth check per element. Compile-time literals use the same sharing rules;
 materializing general compile-time object graphs still uses the existing
 allocate-then-fill path to preserve aliases and cycles. `std.list.push` grows a
 List; repetition syntax is not implemented.
+`std.list.new[T](capacity)` creates an empty List with reserved element storage;
+the no-argument overload retains ordinary on-demand growth. Reserved capacity
+is not length or an observable part of List identity. The List can grow beyond
+the reservation, and its aliases keep observing the same elements. Negative
+capacity raises a process-level RuntimeFault; allocation failure is not a
+recoverable Result. Source `clone` and `map` reserve their known output lengths.
 An element block currently needs a value-producing path: an unconditional
 `[{ return }]` is rejected even with a List type context. General typing of
 non-returning expressions remains incomplete, as it is for tuples and bindings.

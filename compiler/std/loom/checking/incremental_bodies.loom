@@ -51,7 +51,7 @@ fn no_body_reuse() BodyReuse {
 }
 
 fn copy_indices(values List[Int]) List[Int] {
-    let copied = new[Int]()
+    let copied = new[Int](length(values))
     var index = 0
     while index < length(values) {
         push(copied, get(values, index))
@@ -371,7 +371,7 @@ fn body_type(env Environment, reuse BodyReuse, ty Int) Result[Int, Failure] {
 }
 
 fn body_types(env Environment, reuse BodyReuse, types List[Int]) Result[List[Int], Failure] {
-    let mapped = new[Int]()
+    let mapped = new[Int](length(types))
     var index = 0
     while index < length(types) {
         push(mapped, body_type(env, reuse, get(types, index))?)
@@ -412,7 +412,7 @@ fn body_schedule_target(env Environment, reuse BodyReuse, target Int) Result[Int
 
 fn body_expression(env Environment, reuse BodyReuse, value Expr, owner Int, offset Int) Result[Expr, Failure] {
     let children = body_expressions(env, reuse, value.children, owner, offset)?
-    let arms = new[Arm]()
+    let arms = new[Arm](length(value.arms))
     var index = 0
     while index < length(value.arms) {
         let arm = get(value.arms, index)
@@ -468,7 +468,7 @@ fn body_expression(env Environment, reuse BodyReuse, value Expr, owner Int, offs
 }
 
 fn body_expressions(env Environment, reuse BodyReuse, values List[Expr], owner Int, offset Int) Result[List[Expr], Failure] {
-    let mapped = new[Expr]()
+    let mapped = new[Expr](length(values))
     var index = 0
     while index < length(values) {
         push(mapped, body_expression(env, reuse, get(values, index), owner, offset)?)
@@ -520,7 +520,7 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
                 discard check_pack_arity(env, instance.signature)?
             }
             let offset = current.span.start - value.span.start
-            let locals = new[Local]()
+            let locals = new[Local](length(value.locals))
             var local = 0
             while local < length(value.locals) {
                 let item = get(value.locals, local)

@@ -452,6 +452,9 @@ broader gates. Exact supported rules and examples are in the
 Source `std` includes text/numeric/byte operations, List algorithms, Map/Set,
 Option/Result, typed JSON, storage descriptors/codecs, reflection, environment,
 filesystem, process and I/O APIs. JSON has no special runtime implementation.
+`std.list.new[T](capacity)` reserves storage for an empty, normally shared List;
+source copies and fixed-size maps avoid repeated growth without changing the
+default allocator policy. Compiler cache copies use the same source API.
 Source [`std.iter`](../../compiler/std/iter/README.md) provides an associated-type
 pull protocol, shared-view List/range sources, lazy map/filter/take and
 collect/fold/try_fold/any/all consumers, including dynamic iterators. Fallible

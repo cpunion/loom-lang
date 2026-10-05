@@ -197,7 +197,9 @@ fn block(context Context, node Node, expected Int, enforce Bool) Result[Expr, Fa
 fn conditional(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let condition = expr(context, child(node, 0), 2)?
     let yes = block(assuming(context, condition, true, 0), child(node, 1), expected, enforce)?
-    let values = pair(condition, yes)
+    let values = new[Expr](3)
+    push(values, condition)
+    push(values, yes)
     let hint = if enforce && expected >= 0 {
         expected
     } else {
