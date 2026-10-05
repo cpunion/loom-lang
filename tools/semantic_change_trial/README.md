@@ -93,8 +93,13 @@ published by rename from a private stage; refresh leaves the prior sidecar
 there as a recovery copy. Source files are never rewritten. `init` uses the
 same lowercase package-name rule as `loom init`. These commands maintain
 identity metadata for parseable source; they do not prove a successful build.
-`--move` can record a rename, but this prototype's merge preview still rejects
-any declaration-name change relative to its base revision.
+`--move` can also record a private, nongeneric function rename. Merge composes
+that explicit identity change with an independent move/body edit by normalizing
+declaration and checked reference tokens, then comparing bindings in production
+and test views. Comments and unrelated strings are retained. A local shadow
+that captures a renamed call rejects even if it still type-checks. Conflicting
+renames, overload/name collisions, public API renames, generic targets and
+reference forms without complete evidence still need explicit resolution.
 Keep `.loom-ids-stage-*` recovery directories out of source commits.
 `scan DIR` lists current kind/name/file/key locators without writing metadata;
 use its exact key to resolve a move or parameter-type change.

@@ -671,8 +671,11 @@ latency is not interpreter or application runtime performance.
 ## Semantic changes, deployment and delivery
 
 The [semantic change trial](../../tools/semantic_change_trial/README.md) uses
-explicit stable-ID sidecars and directory/Git snapshots for reviewed move-plus-edit
-and one-sided additions. Pinned contexts and checked type, initializer and
+explicit stable-ID sidecars and directory/Git snapshots for reviewed move-plus-edit,
+private nongeneric function rename-plus-edit and one-sided additions. Rename
+normalization compares checked references through exact token edits in production
+and test views; local shadows, conflicting names and incomplete evidence reject.
+Public/generic rename composition remains unsupported. Pinned contexts and checked type, initializer and
 value-path targets prevent silent nominal or intermediate-field binding drift.
 Applying creates a new tree; arbitrary edits, cross-package
 merges and automatic identity tracking are not implemented.

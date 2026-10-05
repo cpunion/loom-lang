@@ -1,0 +1,167 @@
+fn renamed_case(name Text, path Text, body Text, caller Text) Revision {
+    let files = new[File]()
+    push(files, File {
+            path = "value.loom"
+            text = if path == "value.loom" {
+                body
+            } else {
+                ""
+            }
+        })
+    push(files, File {
+            path = "app.loom"
+            text = if path == "app.loom" {
+                concat(body, concat("\n", caller))
+            } else {
+                caller
+            }
+        })
+    let ids = new[Identity]()
+    push(ids, Identity {
+            id = "amount-id"
+            path = path
+            kind = NodeKind.Function
+            name = name
+            key = "-"
+        })
+    push(ids, Identity {
+            id = "entry-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "entry"
+            key = "-"
+        })
+    Revision {
+        package_name = "sample"
+        files = files
+        identities = ids
+    }
+}
+
+fn rename_base() Revision {
+    renamed_case("amount", "value.loom", """
+        fn amount() Int {
+            1
+        }
+        """, """
+        fn entry() Int {
+            amount()
+        }
+        """)
+}
+
+fn rename_context(base Revision) Project {
+    let project = match project_of(base) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            rename_context(base)
+        }
+    }
+    match contextual(project, "pkg", base) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            project
+        }
+    }
+}
+
+test fn private_function_rename_move_and_body_edit_compose_by_identity() {
+    let base = rename_base()
+    let renamed = renamed_case("balance", "app.loom", """
+        fn balance() Int {
+            1
+        }
+        """, """
+        fn entry() Int {
+            balance()
+        }
+        """)
+    let edited = renamed_case("amount", "value.loom", """
+        fn amount() Int {
+            // independent explanation
+            2
+        }
+        """, """
+        fn entry() Int {
+            amount()
+        }
+        """)
+    let branches = new[Revision]()
+    push(branches, renamed)
+    push(branches, edited)
+    var order = 0
+    while order < 2 {
+        match merge(base, get(branches, order), get(branches, 1 - order)) {
+            Result.Ok(merged) => {
+                assert get(merged.files, 0).text == ""
+                let source = get(merged.files, 1).text
+                assert contains(source, "fn balance()")
+                assert contains(source, "// independent explanation")
+                assert !contains(source, "amount")
+                assert get(merged.identities, 0).name == "balance"
+                assert get(merged.identities, 0).id == "amount-id"
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        let context = rename_context(base)
+        match merge_with_context(base, get(branches, order), get(branches, 1 - order), context, context, "pkg") {
+            Result.Ok(merged) => {
+                assert contains(get(merged.files, 1).text, "fn balance()")
+                assert contains(get(merged.files, 1).text, "// independent explanation")
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        order = order + 1
+    }
+}
+
+test fn conflicting_renames_and_local_binding_drift_require_resolution() {
+    let base = rename_base()
+    let renamed = renamed_case("balance", "value.loom", """
+        fn balance() Int {
+            1
+        }
+        """, """
+        fn entry() Int {
+            balance()
+        }
+        """)
+    let conflicting = renamed_case("total", "value.loom", """
+        fn total() Int {
+            1
+        }
+        """, """
+        fn entry() Int {
+            total()
+        }
+        """)
+    assert match merge(base, renamed, conflicting) {
+        Result.Err(message) => contains(message, "conflicting declaration renames")
+        Result.Ok(_) => false
+    }
+    let shadowed = renamed_case("amount", "value.loom", """
+        fn amount() Int {
+            2
+        }
+        """, """
+        fn entry() Int {
+            let balance = fn() Int {
+                7
+            }
+            discard balance
+            amount()
+        }
+        """)
+    assert match merge(base, renamed, shadowed) {
+        Result.Err(message) => contains(message, "reference binding")
+        Result.Ok(_) => false
+    }
+}

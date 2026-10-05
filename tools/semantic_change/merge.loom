@@ -1196,6 +1196,12 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
 }
 
 pub fn merge(base Revision, left Revision, right Revision) Result[Revision, Text] {
+    let project = project_of(base)?
+    let normalized = normalize_renames(base, left, right, "", project, project)?
+    merge_same_names(normalized.original, normalized.left, normalized.right)
+}
+
+fn merge_same_names(base Revision, left Revision, right Revision) Result[Revision, Text] {
     let merged = proposed(base, left, right)?
     if has_imports(base)? || has_imports(left)? || has_imports(right)? ||
     needs_result_import(base, true)? || needs_result_import(left, true)? ||
@@ -1211,6 +1217,17 @@ pub fn merge(base Revision, left Revision, right Revision) Result[Revision, Text
 }
 
 pub fn merge_with_context(base Revision, left Revision, right Revision,
+    production Project, tests Project, directory Text) Result[Revision, Text] {
+    let normalized = normalize_renames(base, left, right, directory, production, tests)?
+    if same_revision_names(base, normalized.original) {
+        return merge_same_names_with_context(base, left, right, production, tests, directory)
+    }
+    merge_same_names_with_context(normalized.original, normalized.left, normalized.right,
+        contextual(production, directory, normalized.original)?,
+        contextual(tests, directory, normalized.original)?, directory)
+}
+
+fn merge_same_names_with_context(base Revision, left Revision, right Revision,
     production Project, tests Project, directory Text) Result[Revision, Text] {
     if !same_imports(base, left)? || !same_imports(base, right)? ||
     !same_implicit_imports(base, left)? || !same_implicit_imports(base, right)? {
