@@ -208,8 +208,14 @@ CTFE, dyn defaults/overrides and Task frames have checker/native evidence in the
 [independent example](../../compiler/examples/variadics/independent.loom).
 Restored body/dyn recipes retain the complete width vector, so equal totals do
 not merge different groups. Ambiguous, inconsistent, nonintegral or exhausted
-inference rejects, without specialization sampling. Independent nominal/impl
-header packs and sequence-dependent universal proofs remain unsupported.
+inference rejects, without specialization sampling. Records/enums also retain
+independent widths in nominal identity and cache recipes. Explicit `...` groups
+distinguish a sequence of types from a single tuple type; field/payload and
+contextual inference remain structural. The
+[group example](../../compiler/examples/data_packs/groups.loom) covers overloads,
+recursive data, CTFE, shared graphs, existing single-pack impls and Task payloads.
+Independent impl-header packs and sequence-dependent universal proofs remain
+unsupported.
 Compile-time execution is not proof by sampling.
 
 Independent nominal declarations do not share a global type-count budget.

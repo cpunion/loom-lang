@@ -1,0 +1,191 @@
+record DataSelection {
+    count Int
+    widths List[Int]
+    supplied List[Node]
+}
+
+// Explicit groups occupy declared pack slots; an unmarked tuple remains one
+// ordinary type. Flatten only after recording every boundary, including zero.
+fn data_type_groups(env Environment, owner Int, node Node, declaration Int, types List[Node]) Result[DataSelection, Failure] {
+    let source = symbol(env, declaration).node
+    let parameters = group(source, NodeKind.TypeParameters)
+    var grouped = false
+    var index = 0
+    while index < length(types) {
+        grouped = grouped || get(types, index).kind == NodeKind.Spread
+        index = index + 1
+    }
+    if !grouped {
+        if data_pack(source) && !one_type_pack(source) {
+            return Result.Err(failure(env, owner, node, "independent data packs need explicit ... groups or construction inference"))
+        }
+        return Result.Ok(DataSelection {
+                count = length(types)
+                widths = if data_pack(source) {
+                    ints(length(types) - fixed_pack_parameters(source))
+                } else {
+                    new[Int]()
+                }
+                supplied = types
+            })
+    }
+    if length(types) != length(parameters) {
+        return Result.Err(failure(env, owner, node, "explicit groups must match declared type parameter slots"))
+    }
+    let flat = new[Node]()
+    let widths = new[Int]()
+    index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        let argument = get(types, index)
+        if parameter.kind == NodeKind.TypePack {
+            if argument.kind != NodeKind.Spread ||
+            (child(argument, 0).kind != NodeKind.TupleType && child(argument, 0).kind != NodeKind.Tuple) {
+                return Result.Err(failure(env, owner, argument, "write a pack group as (types...)..."))
+            }
+            let elements = child(argument, 0).children
+            push(widths, length(elements))
+            var element = 0
+            while element < length(elements) {
+                push(flat, get(elements, element))
+                element = element + 1
+            }
+        } else {
+            if argument.kind == NodeKind.Spread {
+                return Result.Err(failure(env, owner, argument, "a fixed type parameter takes one type, not a group"))
+            }
+            push(flat, argument)
+        }
+        index = index + 1
+    }
+    Result.Ok(DataSelection {
+            count = length(flat)
+            widths = widths
+            supplied = flat
+        })
+}
+
+fn data_selection(context Context, node Node, declaration Int, types List[Node], expected Int, inputs CallInputs) Result[DataSelection, Failure] {
+    let source = symbol(context.env, declaration).node
+    if length(types) != 0 {
+        return data_type_groups(context.env, context.signature.symbol, node, declaration, types)
+    }
+    if !data_pack(source) || one_type_pack(source) {
+        let count = if data_pack(source) {
+            data_argument_count(context, node, declaration, types, expected, inputs)?
+        } else {
+            length(group(source, NodeKind.TypeParameters))
+        }
+        return Result.Ok(DataSelection {
+                count = count
+                widths = if data_pack(source) {
+                    ints(count - fixed_pack_parameters(source))
+                } else {
+                    new[Int]()
+                }
+                supplied = types
+            })
+    }
+    if expected >= 0 {
+        let shape = get(context.env.types, expected)
+        if shape.symbol == declaration && (shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum) {
+            return Result.Ok(DataSelection {
+                    count = length(shape.arguments)
+                    widths = shape.pack_widths
+                    supplied = types
+                })
+        }
+    }
+    let packs = declared_packs(source)
+    let names = pack_names(packs)
+    let rows = new[List[Int]]()
+    var base_type_id = -1
+    if node.kind == NodeKind.Construct {
+        let base = child(node, length(node.children) - 1)
+        if base.kind == NodeKind.Spread {
+            let probed = static_probe(context, child(base, 0), -1)?
+            let selected = base_type(context.env, probed.ty)
+            let shape = get(context.env.types, selected)
+            if shape.kind == TypeKind.Record && shape.symbol == declaration {
+                base_type_id = selected
+            }
+        }
+    }
+    var widths = new[Int]()
+    var round = 0
+    while round <= length(packs) {
+        var member = 0
+        while member < length(source.children) {
+            let field = child(source, member)
+            if field.kind == NodeKind.Field {
+                var initialized = false
+                var input = 1
+                while input < length(node.children) {
+                    let value = child(node, input)
+                    if value.kind == NodeKind.Field && value.value == field.value {
+                        initialized = true
+                        if has_type_expansion(child(field, 0)) {
+                            let probed = static_probe(context, child(value, 0), -1)?
+                            shape_type_equations(context.env, child(field, 0), probed.ty, names, rows, widths, 0)
+                        }
+                    }
+                    input = input + 1
+                }
+                if !initialized && base_type_id >= 0 && has_type_expansion(child(field, 0)) {
+                    let base = get(context.env.types, base_type_id)
+                    var retained = 0
+                    while retained < length(base.fields) {
+                        let previous = get(base.fields, retained)
+                        if previous.name == field.value {
+                            shape_type_equations(context.env, child(field, 0), previous.ty, names, rows, widths, 0)
+                        }
+                        retained = retained + 1
+                    }
+                }
+            }
+            if field.kind == NodeKind.Variant && field.value == name(node.value) {
+                shape_sequence_equations(field.children, length(inputs.nodes), names, rows)
+                let positions = shape_positions(field.children, length(inputs.nodes), names, widths)
+                var payload = 0
+                while payload < length(field.children) {
+                    let offset = get(positions, payload)
+                    let pattern = child(field, payload)
+                    if offset >= 0 && pattern.kind != NodeKind.Spread && offset < length(inputs.nodes) {
+                        probe_shape_equations(context, inputs, offset, pattern, names, rows, widths)
+                    }
+                    payload = payload + 1
+                }
+            }
+            member = member + 1
+        }
+        let solved = solved_pack_shape(rows, length(packs))
+        if length(solved) == length(packs) {
+            var count = fixed_pack_parameters(source)
+            var index = 0
+            while index < length(solved) {
+                count = count + get(solved, index)
+                index = index + 1
+            }
+            return Result.Ok(DataSelection {
+                    count = count
+                    widths = solved
+                    supplied = types
+                })
+        }
+        let next = partial_pack_shape(rows, length(packs))
+        if same(next, widths) {
+            break
+        }
+        widths = next
+        round = round + 1
+    }
+    if base_type_id >= 0 {
+        let shape = get(context.env.types, base_type_id)
+        return Result.Ok(DataSelection {
+                count = length(shape.arguments)
+                widths = shape.pack_widths
+                supplied = types
+            })
+    }
+    Result.Err(error(context, node, "cannot infer a unique integral data pack shape; provide explicit ... groups or an expected type"))
+}

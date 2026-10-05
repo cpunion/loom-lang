@@ -129,6 +129,7 @@ test fn captured_pattern_bindings_enter_the_frame_before_dispatching_the_arm() {
             kind = TypeKind.Enum
             symbol = -1
             arguments = new[Int]()
+            pack_widths = new[Int]()
             fields = new[Field]()
             variants = variants
             constraint = new[Expr]()

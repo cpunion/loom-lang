@@ -34,6 +34,7 @@ fn dynamic_program() Program {
     while index < 6 { push(program.types, shape(TypeKind.Int))
         index = index + 1 }
     push(program.types, Type { kind = TypeKind.Dyn symbol = 0 arguments = new[Int]()
+    pack_widths = new[Int]()
         fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() })
     let params = new[Int]()
     push(params, 1)

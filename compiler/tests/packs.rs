@@ -340,6 +340,13 @@ fn paired[Ts...](left Ts..., marker Bool, right Ts...) (Ts..., Ts...) {
 fn independent[As..., Bs...](left (As...), right (Bs...)) ((As...), (Bs...)) {
     (left, right)
 }
+record Groups[As..., Bs...] {
+    left (As...)
+    right (Bs...)
+}
+concept Shape {}
+impl Shape for Groups[(Int, Int)..., (Int,)...] {}
+impl Shape for Groups[(Int,)..., (Int, Int)...] {}
 fn main() {
     let packet = Packet { values = pack(40, 2, true) }
     let values = packet.values
@@ -357,6 +364,10 @@ fn main() {
     let second = independent((40,), (1, 1))
     assert first.0.0 + first.0.1 + first.1.0 == 42
     assert second.0.0 + second.1.0 + second.1.1 == 42
+    let wide Groups[(Int, Int)..., (Int,)...] = Groups { left = (40, 1), right = (1,) }
+    let narrow Groups[(Int,)..., (Int, Int)...] = Groups { left = (40,), right = (1, 1) }
+    assert wide.left.0 + wide.left.1 + wide.right.0 == 42
+    assert narrow.left.0 + narrow.right.0 + narrow.right.1 == 42
 }
 "#,
     )

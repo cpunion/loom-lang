@@ -19,6 +19,7 @@ fn worker_parking(graph Graph, source Expr, start Int, loop Loop) Value {
             kind = TypeKind.Frame
             symbol = -1
             arguments = new[Int]()
+            pack_widths = new[Int]()
             fields = fields
             variants = new[Variant]()
             constraint = new[Expr]()

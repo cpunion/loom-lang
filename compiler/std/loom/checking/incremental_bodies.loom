@@ -357,7 +357,7 @@ fn body_type(env Environment, reuse BodyReuse, ty Int) Result[Int, Failure] {
         index = index + 1
     }
     let mapped = if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
-        data_type(env, body_symbol(reuse, shape.symbol), arguments, 0)?
+        data_type_grouped(env, body_symbol(reuse, shape.symbol), arguments, shape.pack_widths, 0)?
     } else if shape.kind == TypeKind.Dyn {
         let capability = body_symbol(reuse, get(get(reuse.prior, 0).interfaces, shape.symbol).symbol)
         let dynamic = dynamic_instance(env, capability, capability, arguments, symbol(env, capability).node)?

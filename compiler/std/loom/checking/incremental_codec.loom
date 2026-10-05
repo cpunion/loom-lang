@@ -181,6 +181,7 @@ fn cache_type(output Bytes, value Type) {
     cache_int(output, cache_type_tag(value.kind))
     cache_int(output, value.symbol)
     cache_ints(output, value.arguments)
+    cache_ints(output, value.pack_widths)
     cache_int(output, length(value.fields))
     var index = 0
     while index < length(value.fields) {
@@ -203,6 +204,7 @@ fn cache_read_type(reader CacheReader) Result[Type, Text] {
     let kind = cache_type_kind(cache_read_int(reader)?)?
     let symbol = cache_read_int(reader)?
     let arguments = cache_read_ints(reader)?
+    let widths = cache_read_ints(reader)?
     let count = cache_read_count(reader)?
     let fields = new[Field](cache_capacity(count))
     var index = 0
@@ -227,6 +229,7 @@ fn cache_read_type(reader CacheReader) Result[Type, Text] {
             kind = kind
             symbol = symbol
             arguments = arguments
+            pack_widths = widths
             fields = fields
             variants = variants
             constraint = reader.expressions

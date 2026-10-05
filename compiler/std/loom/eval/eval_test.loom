@@ -95,7 +95,7 @@ test fn calls_have_frames_preconditions_and_return_flow() {
     assert rejected(program, node(ExprKind.Call, 1, "", 2, new[Expr]()), 0).message == "compile-time call depth exhausted"
 }
 
-fn shape(kind TypeKind) Type { Type { kind = kind symbol = -1 arguments = new[Int]() fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() } }
+fn shape(kind TypeKind) Type { Type { kind = kind symbol = -1 arguments = new[Int]() pack_widths = new[Int]() fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() } }
 
 test fn symbolic_type_equality_never_guesses_a_branch() {
     let program = empty()
@@ -130,7 +130,7 @@ test fn fresh_lists_preserve_aliases_and_records_preserve_field_order() {
     let fields = new[Field]()
     push(fields, Field { name = "first" ty = 1 })
     push(fields, Field { name = "second" ty = 1 })
-    push(program.types, Type { kind = TypeKind.Record symbol = 0 arguments = new[Int]() fields = fields variants = new[Variant]() constraint = new[Expr]() })
+    push(program.types, Type { kind = TypeKind.Record symbol = 0 arguments = new[Int]() pack_widths = new[Int]() fields = fields variants = new[Variant]() constraint = new[Expr]() })
     let statements = two(node(ExprKind.Let, 0, "", 0, one(node(ExprKind.Intrinsic, 5, "list_new", -1, new[Expr]()))),
         node(ExprKind.Let, 0, "", 1, one(local(0, 5))))
     push(statements, node(ExprKind.Intrinsic, 0, "list_push", -1, two(local(1, 5), literal(4))))
@@ -146,7 +146,7 @@ test fn fresh_lists_preserve_aliases_and_records_preserve_field_order() {
     push(payload, 6)
     let variants = new[Variant]()
     push(variants, Variant { name = "Pair" fields = payload })
-    push(program.types, Type { kind = TypeKind.Enum symbol = 1 arguments = new[Int]() fields = new[Field]() variants = variants constraint = new[Expr]() })
+    push(program.types, Type { kind = TypeKind.Enum symbol = 1 arguments = new[Int]() pack_widths = new[Int]() fields = new[Field]() variants = variants constraint = new[Expr]() })
     let bindings = new[Int]()
     push(bindings, 0)
     let arms = new[Arm]()

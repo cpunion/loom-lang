@@ -156,6 +156,7 @@ fn expanded_invariant_types(env Environment, function Function) Result[List[Type
                 kind = shape.kind
                 symbol = shape.symbol
                 arguments = shape.arguments
+                pack_widths = shape.pack_widths
                 fields = shape.fields
                 variants = shape.variants
                 constraint = expanded

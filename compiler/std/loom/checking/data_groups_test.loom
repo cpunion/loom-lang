@@ -1,0 +1,90 @@
+test fn independent_nominal_groups_keep_boundaries_through_inference_and_cache() {
+    let source = """
+        record Groups[As..., Bs...] {
+            left (As...)
+            right (Bs...)
+        }
+        fn left[As..., Bs...](value Groups[As..., Bs...]) (As...) {
+            value.left
+        }
+        pub fn answer() Int {
+            let a Groups[(Int, Int)..., (Int,)...] = Groups { left = (40, 2), right = (1,) }
+            let b Groups[(Int,)..., (Int, Int)...] = Groups { left = (3,), right = (4, 5) }
+            assert left(a).1 == 2 && b.right.1 == 5
+            a.left.0 + a.left.1
+        }
+        """
+    discard accepted(source)
+    discard accepted("""
+        record Framed[Head, As..., Tag, Bs..., Tail] {
+            head Head
+            left (As...)
+            tag Tag
+            right (Bs...)
+            tail Tail
+        }
+        fn main() {
+            let value Framed[Text, (Int,)..., Bool, (Text, Int)..., Int] = Framed {
+                head = "head",
+                left = (1,),
+                tag = true,
+                right = ("right", 2),
+                tail = 3
+            }
+            assert value.tag && value.right.1 == 2
+        }
+        """)
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, concat("fn unrelated() {}\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+}
+
+test fn nominal_groups_do_not_guess_partitions_or_admit_concrete_capabilities() {
+    let prefix = """
+        record Groups[As..., Bs...] {
+            left (As...)
+            right (Bs...)
+        }
+        """
+    rejects(concat(prefix, "fn use(value Groups[Int, Int, Int]) { discard value }"))
+    rejects(concat(prefix, "fn use(value Groups[(Int, Int), (Int,)]) { discard value }"))
+    rejects(concat(prefix, """
+        fn main() {
+            let a Groups[(Int,)..., (Int, Int)...] = Groups { left = (1, 2), right = (3,) }
+            discard a
+        }
+        """))
+    rejects(concat(prefix, """
+        fn main() {
+            let a = Groups { left = (1, 2), right = (3,) }
+            let b Groups[(Int,)..., (Int, Int)...] = a
+            discard b
+        }
+        """))
+    rejects("""
+        enum Split[As..., Bs...] {
+            Values(As..., Bs...)
+        }
+        fn main() {
+            discard Split.Values(1, true)
+        }
+        """)
+    rejects("""
+        concept Tagged {}
+        impl Tagged for Int {}
+        record Bounded[T Tagged] { value T }
+        record Bad[As..., Bs...] {
+            left (Bounded[As]...)
+            right (Bs...)
+        }
+        fn main() { discard Bad { left = (Bounded { value = 1 },), right = (true,) } }
+        """)
+}

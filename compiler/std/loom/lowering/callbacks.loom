@@ -72,6 +72,7 @@ fn native_callbacks(types List[Type], count Int) {
                     kind = ty.kind
                     symbol = ty.symbol
                     arguments = arguments
+                    pack_widths = ty.pack_widths
                     fields = ty.fields
                     variants = ty.variants
                     constraint = ty.constraint

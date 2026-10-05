@@ -212,9 +212,6 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         discard validate_pack_contract(env, owner)?
     }
     let types = group(item.node, NodeKind.TypeParameters)
-    if data_pack(item.node) && !one_type_pack(item.node) {
-        return Result.Err(failure(env, owner, get(types, selected), "independent nominal type packs are not supported yet"))
-    }
     var clause = 0
     while clause < length(item.node.children) {
         let condition = child(item.node, clause)
@@ -394,12 +391,29 @@ fn expand_family_type(env Environment, owner Int, node Node, names List[Text], w
         if child_types && child.kind == NodeKind.Spread &&
         (!preserve_other_packs || length(expansion_packs(get(child.children, 0), names)) != 0) {
             let pattern = get(child.children, 0)
+            if node.kind == NodeKind.Type && (pattern.kind == NodeKind.TupleType || pattern.kind == NodeKind.Tuple) {
+                push(children, pack_node(child, NodeKind.Spread, "", source_nodes(
+                    expand_family_type(env, owner, pattern, names, widths, elements, true, depth + 1, preserve_other_packs)?)))
+                index = index + 1
+                continue
+            }
             let arity = expansion_width(env, owner, pattern, names, widths)?
+            let expanded = new[Node]()
             var selected = 0
             while selected < arity {
-                push(children, expand_family_type(env, owner, pattern, names, widths,
+                push(expanded, expand_family_type(env, owner, pattern, names, widths,
                         expansion_elements(pattern, names, elements, selected), true, depth + 1, preserve_other_packs)?)
                 selected = selected + 1
+            }
+            let nominal = if node.kind == NodeKind.Type { find_data(env, owner, node, node.value)? } else { -1 }
+            if nominal >= 0 && type_pack_count(symbol(env, nominal).node) > 1 {
+                push(children, pack_node(child, NodeKind.Spread, "", source_nodes(pack_node(pattern, NodeKind.TupleType, "", expanded))))
+            } else {
+                selected = 0
+                while selected < length(expanded) {
+                    push(children, get(expanded, selected))
+                    selected = selected + 1
+                }
             }
         } else {
             push(children, expand_family_type(env, owner, child, names, widths, elements, child_types, depth + 1, preserve_other_packs)?)

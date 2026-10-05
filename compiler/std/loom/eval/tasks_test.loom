@@ -42,6 +42,7 @@ test fn compile_time_purity_rejects_synchronous_task_parameters_and_results() {
     let arguments = new[Int]()
     push(arguments, 1)
     push(program.types, Type { kind = TypeKind.Task symbol = -1 arguments = arguments
+    pack_widths = new[Int]()
         fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() })
     let params = new[Int]()
     push(params, 6)
