@@ -412,8 +412,8 @@ Scoped bodies reuse typed cleanup, while current transitive resource flow checks
 still run. Implicit Dispose dependencies invalidate reuse just like explicit calls.
 Build receipts use the freshly loaded project and actual artifact; requested IR,
 linking and test execution still run.
-Only successful checks are published. Each `checked-v2` entry contains metadata
-and checked bytes under one SHA-256 checksum; `definitions-v1` binds its source,
+Only successful checks are published. Each `checked-v3` entry contains metadata
+and checked bytes under one SHA-256 checksum; `definitions-v2` binds its source,
 private checked bodies and input metadata the same way. Damage causes a miss.
 Snapshots preserve the loader's embedded-test selection: production builds omit
 `test fn` bodies without losing definition reuse or importing test-only code.
@@ -692,6 +692,8 @@ timings; local variables remain conservatively rooted for the function.
   closing stdin. See the [binary filter](examples/binary_streams/main.loom).
 - Source `std.hash.sha256.digest(Bytes) Bytes` produces a fresh 32-byte digest;
   `hex(Bytes) Text` hashes input and returns its 64 lowercase hexadecimal digits.
+  Both also accept `(value Bytes, start Int, end Int)` to hash `[start, end)`
+  without copying that input range. Empty ranges are valid; invalid bounds fault.
   The one-shot implementation uses fixed scratch storage and virtual padding,
   leaves the input unchanged, and also works at compile time within evaluator
   limits. Inputs must be shorter than 2^61 bytes. No hashing runtime operation

@@ -12,7 +12,7 @@ fn frontend_number(output Bytes, value Int) {
 }
 
 fn frontend_key(options Options, project Project, identity Text) Text {
-    let output = cache_bytes("loom-frontend-key 2\n")
+    let output = cache_bytes("loom-frontend-key 3\n")
     frontend_field(output, identity)
     frontend_number(output, length(options.build_options))
     var option = 0
@@ -99,7 +99,7 @@ fn frontend_identity() Option[Text] {
 }
 
 fn frontend_prefix(key Text) Text {
-    concat("loom-frontend-cache 2\n", concat(key, "\n"))
+    concat("loom-frontend-cache 3\n", concat(key, "\n"))
 }
 
 fn frontend_bundle(prefix Text, value Prepared) Bytes {
@@ -126,7 +126,10 @@ fn frontend_bundle(prefix Text, value Prepared) Bytes {
         index = index + 1
     }
     cache_append(output, value.input)
-    cache_seal(output)
+    // The complete bundle stays UTF-8, including its checksum. After in-place
+    // validation it needs one Text copy, not an intermediate full Bytes copy.
+    cache_append(output, hex(output))
+    output
 }
 
 fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool, inputs BuildInputs) Option[Prepared] {
@@ -138,19 +141,16 @@ fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool, inp
 }
 
 fn frontend_decode_kind(bytes Bytes, prefix Text, project Project, format Text, inputs BuildInputs) Option[Prepared] {
-    let body = match cache_unseal(bytes, prefix) {
-        Option.Some(value) => value,
-        Option.None => {
-            return Option.None
-        }
+    if cache_payload_end(bytes, prefix, true) < 0 {
+        return Option.None
     }
-    let text = match decode_utf8(body) {
+    let text = match decode_utf8(bytes) {
         Result.Ok(value) => value,
         Result.Err(_) => {
             return Option.None
         }
     }
-    match frontend_payload(text, length(prefix), project, format, inputs) {
+    match frontend_payload(text, length(prefix), length(text) - 64, project, format, inputs) {
         Result.Ok(value) => Option.Some(value)
         Result.Err(_) => Option.None
     }
@@ -159,12 +159,13 @@ fn frontend_decode_kind(bytes Bytes, prefix Text, project Project, format Text, 
 record FrontendReader {
     text Text
     cursor List[Int]
+    end Int
 }
 
 fn frontend_read(reader FrontendReader) Result[Text, Text] {
     let start = get(reader.cursor, 0)
     var end = start
-    while end < length(reader.text) && byte(reader.text, end) != 10 {
+    while end < reader.end && byte(reader.text, end) != 10 {
         end = end + 1
     }
     let size = match std.int.parse(slice(reader.text, start, end)) {
@@ -173,7 +174,7 @@ fn frontend_read(reader FrontendReader) Result[Text, Text] {
             return Result.Err("invalid cache field size")
         }
     }
-    if size < 0 || end >= length(reader.text) || size > length(reader.text) - end - 1 {
+    if size < 0 || end >= reader.end || size > reader.end - end - 1 {
         return Result.Err("truncated cache field")
     }
     std.list.set(reader.cursor, 0, end + 1 + size)
@@ -187,12 +188,13 @@ fn frontend_read_number(reader FrontendReader) Result[Int, Text] {
     }
 }
 
-fn frontend_payload(text Text, start Int, project Project, format Text, context BuildInputs) Result[Prepared, Text] {
+fn frontend_payload(text Text, start Int, end Int, project Project, format Text, context BuildInputs) Result[Prepared, Text] {
     let cursor = new[Int]()
     push(cursor, start)
     let reader = FrontendReader {
         text = text
         cursor = cursor
+        end = end
     }
     let entry = frontend_read_number(reader)?
     let tests = frontend_read_number(reader)?
@@ -250,7 +252,7 @@ fn frontend_payload(text Text, start Int, project Project, format Text, context 
             })
         index = index + 1
     }
-    let input = slice(text, get(cursor, 0), length(text))
+    let input = slice(text, get(cursor, 0), end)
     if entry < -1 || tests < 0 || (format == "check" && input != "") ||
     (format == "native" && !std.text.starts_with(input, "loom-checked-1\n")) {
         return Result.Err("invalid cached artifact")
@@ -276,7 +278,7 @@ fn frontend_cached(options Options, project Project, inputs BuildInputs) Result[
     let key = frontend_key(options, project, identity)
     let prefix = frontend_prefix(key)
     discard cache_directory(options.frontend_cache)?
-    let root = join_path(options.frontend_cache, "checked-v2")
+    let root = join_path(options.frontend_cache, "checked-v3")
     discard cache_directory(root)?
     let path = join_path(root, concat(key, ".lchecked"))
     if match entry_kind(path) {

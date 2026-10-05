@@ -118,6 +118,29 @@ fn source_std_under_forced_collection() {
 }
 
 #[test]
+fn source_sha256_ranges_fault_before_reading_invalid_bounds() {
+    for bounds in ["-1, 0", "1, 0", "0, 2", "9223372036854775807, 0"] {
+        let directory = source(&format!(
+            r#"
+import std.bytes.new
+import std.bytes.push
+import std.hash.sha256.hex
+fn main() {{
+    let value = new()
+    push(value, 97)
+    discard hex(value, {bounds})
+}}
+"#
+        ));
+        let output = loom(&["run", path(directory.path())]);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("assertion failed"), "{stderr}");
+        assert!(!stderr.contains("overflow"), "{stderr}");
+    }
+}
+
+#[test]
 fn source_process_run_preserves_arguments_and_nonzero_exit_codes() {
     let child = source(
         "import std.process.arguments\nimport std.process.exit_code\n\

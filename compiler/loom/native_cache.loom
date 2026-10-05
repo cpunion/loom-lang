@@ -36,11 +36,13 @@ fn cache_append(output Bytes, value Text) {
         index = index + 1
     }
 }
+
 fn cache_bytes(value Text) Bytes {
     let output = std.bytes.new()
     cache_append(output, value)
     output
 }
+
 fn cache_copy(value Bytes, start Int, end Int) Bytes {
     let output = std.bytes.new()
     var index = start
@@ -50,45 +52,84 @@ fn cache_copy(value Bytes, start Int, end Int) Bytes {
     }
     output
 }
+
 fn cache_hex(value Text) Bool {
-    if length(value) != 64 { return false }
+    if length(value) != 64 {
+        return false
+    }
     var index = 0
     while index < length(value) {
         let digit = byte(value, index)
-        if !((digit >= 48 && digit <= 57) || (digit >= 97 && digit <= 102)) { return false }
+        if !((digit >= 48 && digit <= 57) || (digit >= 97 && digit <= 102)) {
+            return false
+        }
         index = index + 1
     }
     true
 }
+
 fn cache_trace(message Text) {
     let enabled = match std.env.get("LOOM_NATIVE_TIMINGS") {
-        Result.Ok(value) => match value { Option.Some(_) => true, Option.None => false }
+        Result.Ok(value) => match value {
+            Option.Some(_) => true,
+            Option.None => false
+        }
         Result.Err(_) => false
     }
     if enabled {
         discard write_error(concat("loom cache: ", concat(message, "\n")))
     }
 }
+
 fn cache_success(output Output) Bool {
-    match output.status { ExitStatus.Exited(code) => code == 0, _ => false }
-}
-fn cache_diagnostics(output Output) {
-    match decode_utf8(output.stderr) {
-        Result.Ok(text) => { if text != "" { discard write_error(text) } }
-        Result.Err(_) => { discard write_error("native tool returned non-UTF-8 diagnostics\n") }
+    match output.status {
+        ExitStatus.Exited(code) => code == 0,
+        _ => false
     }
 }
+
+fn cache_diagnostics(output Output) {
+    match decode_utf8(output.stderr) {
+        Result.Ok(text) => {
+            if text != "" {
+                discard write_error(text)
+            }
+        }
+        Result.Err(_) => {
+            discard write_error("native tool returned non-UTF-8 diagnostics\n")
+        }
+    }
+}
+
 fn cache_identity(options Options) Option[Text] {
     let arguments = new[Text]()
     push(arguments, options.native_tool)
     push(arguments, "--cache-identity")
-    if options.command == "test" { push(arguments, "--test") }
-    let output = match capture(arguments) { Result.Ok(value) => value, Result.Err(_) => { return Option.None } }
-    if !cache_success(output) { return Option.None }
-    let text = match decode_utf8(output.stdout) { Result.Ok(value) => value, Result.Err(_) => { return Option.None } }
+    if options.command == "test" {
+        push(arguments, "--test")
+    }
+    let output = match capture(arguments) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    if !cache_success(output) {
+        return Option.None
+    }
+    let text = match decode_utf8(output.stdout) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
     let fields = split(text, "\n")
-    if length(fields) != 3 { return Option.None }
-    if get(fields, 0) != "loom-native-cache 1" || get(fields, 2) != "" || !cache_hex(get(fields, 1)) { return Option.None }
+    if length(fields) != 3 {
+        return Option.None
+    }
+    if get(fields, 0) != "loom-native-cache 1" || get(fields, 2) != "" || !cache_hex(get(fields, 1)) {
+        return Option.None
+    }
     Option.Some(get(fields, 1))
 }
 
@@ -96,11 +137,20 @@ fn cache_identity(options Options) Option[Text] {
 // detect corruption, not a malicious writer able to replace executable code.
 fn cache_prefix(key Text, identity Text, library Bool) Text {
     concat("loom-native-object-cache 1\n", concat(key, concat("\n", concat(identity,
-        concat("\n", if library { "1\n" } else { "0\n" })))))
+                    concat("\n", if library {
+                            "1\n"
+                        } else {
+                            "0\n"
+                        })))))
 }
+
 fn cache_bundle(prefix Text, object CachedObject) Bytes {
     let output = cache_bytes(prefix)
-    cache_append(output, if object.uses_runtime { "1\n" } else { "0\n" })
+    cache_append(output, if object.uses_runtime {
+            "1\n"
+        } else {
+            "0\n"
+        })
     var index = 0
     while index < length(object.bytes) {
         std.bytes.push(output, std.bytes.get(object.bytes, index))
@@ -108,6 +158,7 @@ fn cache_bundle(prefix Text, object CachedObject) Bytes {
     }
     cache_seal(output)
 }
+
 fn cache_seal(output Bytes) Bytes {
     let checksum = digest(output)
     var index = 0
@@ -117,72 +168,135 @@ fn cache_seal(output Bytes) Bytes {
     }
     output
 }
-fn cache_unseal(value Bytes, prefix Text) Option[Bytes] {
+
+// Validate in place before allocating payload storage. The checksum covers
+// metadata and payload, not its own trailing bytes.
+fn cache_payload_end(value Bytes, prefix Text, hexadecimal Bool) Int {
     let offset = length(prefix)
-    let end = length(value) - 32
-    if end < offset { return Option.None }
+    let end = length(value) - if hexadecimal {
+        64
+    } else {
+        32
+    }
+    if end < offset {
+        return -1
+    }
     var index = 0
     while index < offset {
-        if std.bytes.get(value, index) != byte(prefix, index) { return Option.None }
+        if std.bytes.get(value, index) != byte(prefix, index) {
+            return -1
+        }
         index = index + 1
     }
-    let body = cache_copy(value, 0, end)
-    let checksum = digest(body)
+    let checksum = digest(value, 0, end)
     index = 0
     while index < 32 {
-        if std.bytes.get(checksum, index) != std.bytes.get(value, end + index) { return Option.None }
+        let expected = std.bytes.get(checksum, index)
+        if hexadecimal {
+            if std.bytes.get(value, end + index * 2) != byte("0123456789abcdef", expected >> 4) ||
+            std.bytes.get(value, end + index * 2 + 1) != byte("0123456789abcdef", expected & 15) {
+                return -1
+            }
+        } else {
+            if expected != std.bytes.get(value, end + index) {
+                return -1
+            }
+        }
         index = index + 1
     }
-    Option.Some(body)
+    end
 }
+
 fn cache_decode(value Bytes, prefix Text) Option[CachedObject] {
-    let body = match cache_unseal(value, prefix) { Option.Some(value) => value, Option.None => { return Option.None } }
+    let end = cache_payload_end(value, prefix, false)
     let offset = length(prefix)
-    if length(body) <= offset + 2 { return Option.None }
-    let runtime = std.bytes.get(body, offset)
-    if (runtime != 48 && runtime != 49) || std.bytes.get(body, offset + 1) != 10 { return Option.None }
-    Option.Some(CachedObject { bytes = cache_copy(body, offset + 2, length(body)) uses_runtime = runtime == 49 })
+    if end <= offset + 2 {
+        return Option.None
+    }
+    let runtime = std.bytes.get(value, offset)
+    if (runtime != 48 && runtime != 49) || std.bytes.get(value, offset + 1) != 10 {
+        return Option.None
+    }
+    Option.Some(CachedObject {
+            bytes = cache_copy(value, offset + 2, end)
+            uses_runtime = runtime == 49
+        })
 }
+
 fn cache_read(path Text, prefix Text) Option[CachedObject] {
-    if !match entry_kind(path) { Result.Ok(value) => value == FileKind.File, _ => false } { return Option.None }
-    match read_bytes(path) { Result.Ok(value) => cache_decode(value, prefix), Result.Err(_) => Option.None }
+    if !match entry_kind(path) {
+        Result.Ok(value) => value == FileKind.File,
+        _ => false
+    } {
+        return Option.None
+    }
+    match read_bytes(path) {
+        Result.Ok(value) => cache_decode(value, prefix),
+        Result.Err(_) => Option.None
+    }
 }
+
 fn cache_directory(path Text) Result[Bool, Text] {
     match create_dir(path) {
         Result.Ok(_) => Result.Ok(true)
         Result.Err(error) => {
-            if error == FsError.AlreadyExists && match entry_kind(path) { Result.Ok(value) => value == FileKind.Directory, _ => false } {
+            if error == FsError.AlreadyExists && match entry_kind(path) {
+                Result.Ok(value) => value == FileKind.Directory,
+                _ => false
+            } {
                 return Result.Ok(true)
             }
             Result.Err("compiler cache requires a writable directory with an existing parent")
         }
     }
 }
+
 fn cache_staging(root Text) Result[Text, Text] {
     var index = 0
     while index < 1024 {
         let path = join_path(root, concat("stage-", to_text(index)))
         match create_dir(path) {
-            Result.Ok(_) => { return Result.Ok(path) }
-            Result.Err(error) => { if error != FsError.AlreadyExists { return Result.Err("cannot create compiler cache staging directory") } }
+            Result.Ok(_) => {
+                return Result.Ok(path)
+            }
+            Result.Err(error) => {
+                if error != FsError.AlreadyExists {
+                    return Result.Err("cannot create compiler cache staging directory")
+                }
+            }
         }
         index = index + 1
     }
     Result.Err("compiler cache staging directories are exhausted")
 }
+
 fn cache_cleanup(stage Text) {
     discard remove_file(join_path(stage, "object"))
     discard remove_file(join_path(stage, "bundle"))
     discard remove_empty_dir(stage)
 }
+
 fn cache_emission(output Output, identity Text, library Bool) Result[Bool, Text] {
     cache_diagnostics(output)
-    if !cache_success(output) { return Result.Err("native object compilation failed") }
-    let text = match decode_utf8(output.stdout) { Result.Ok(value) => value, Result.Err(_) => { return Result.Err("invalid native object receipt") } }
+    if !cache_success(output) {
+        return Result.Err("native object compilation failed")
+    }
+    let text = match decode_utf8(output.stdout) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("invalid native object receipt")
+        }
+    }
     let fields = split(text, "\n")
-    if length(fields) != 5 { return Result.Err("invalid native object receipt") }
+    if length(fields) != 5 {
+        return Result.Err("invalid native object receipt")
+    }
     let runtime = get(fields, 3)
-    let expected_library = if library { "1" } else { "0" }
+    let expected_library = if library {
+        "1"
+    } else {
+        "0"
+    }
     if get(fields, 0) != "loom-native-object 1" || get(fields, 1) != identity || get(fields, 2) != expected_library || (runtime != "0" && runtime != "1") || get(fields, 4) != "" {
         return Result.Err("invalid native object receipt")
     }
@@ -194,24 +308,39 @@ fn cache_emission(output Output, identity Text, library Bool) Result[Bool, Text]
 fn compile_cached(options Options, input Text, library Bool, output Text) Result[Bool, Text] {
     let identity = match cache_identity(options) {
         Option.Some(value) => value
-        Option.None => { cache_trace("unavailable")
-            return Result.Ok(false) }
+        Option.None => {
+            cache_trace("unavailable")
+            return Result.Ok(false)
+        }
     }
     let input_bytes = cache_bytes(input)
     let key = hex(cache_bytes(concat("loom-object-key 1\n", concat(identity, concat("\n", hex(input_bytes))))))
     let prefix = cache_prefix(key, identity, library)
     discard cache_directory(options.object_cache)?
-    let root = match canonicalize(options.object_cache) { Result.Ok(value) => value, Result.Err(_) => { return Result.Err("cannot resolve object cache directory") } }
+    let root = match canonicalize(options.object_cache) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("cannot resolve object cache directory")
+        }
+    }
     let objects = join_path(root, "objects-v1")
     discard cache_directory(objects)?
     let path = join_path(objects, concat(key, ".lobj"))
     let stage = cache_staging(objects)?
-    defer { cache_cleanup(stage) }
+    defer {
+        cache_cleanup(stage)
+    }
     let object_path = join_path(stage, "object")
     let uses_runtime = match cache_read(path, prefix) {
         Option.Some(object) => {
             cache_trace("hit")
-            match write_bytes(object_path, object.bytes) { Result.Ok(_) => {}, Result.Err(_) => { return Result.Err("cannot stage cached object") } }
+            match write_bytes(object_path, object.bytes) {
+                Result.Ok(_) => {
+                },
+                Result.Err(_) => {
+                    return Result.Err("cannot stage cached object")
+                }
+            }
             object.uses_runtime
         }
         Option.None => {
@@ -224,16 +353,37 @@ fn compile_cached(options Options, input Text, library Bool, output Text) Result
             push(arguments, "--object-only")
             push(arguments, "--expect-cache-identity")
             push(arguments, identity)
-            if options.command == "test" { push(arguments, "--test") }
-            let emitted = match capture_input(arguments, input_bytes) { Result.Ok(value) => value, Result.Err(_) => { return Result.Err("cannot invoke native object compilation") } }
+            if options.command == "test" {
+                push(arguments, "--test")
+            }
+            let emitted = match capture_input(arguments, input_bytes) {
+                Result.Ok(value) => value,
+                Result.Err(_) => {
+                    return Result.Err("cannot invoke native object compilation")
+                }
+            }
             let uses_runtime = cache_emission(emitted, identity, library)?
-            let bytes = match read_bytes(object_path) { Result.Ok(value) => value, Result.Err(_) => { return Result.Err("cannot read emitted native object") } }
-            let bundle = cache_bundle(prefix, CachedObject { bytes = bytes uses_runtime = uses_runtime })
+            let bytes = match read_bytes(object_path) {
+                Result.Ok(value) => value,
+                Result.Err(_) => {
+                    return Result.Err("cannot read emitted native object")
+                }
+            }
+            let bundle = cache_bundle(prefix, CachedObject {
+                    bytes = bytes
+                    uses_runtime = uses_runtime
+                })
             let staged_bundle = join_path(stage, "bundle")
             // Cache publication is optional. Never remove or recursively traverse
             // an unexpected entry; a failed write still leaves a usable object.
-            if match write_bytes(staged_bundle, bundle) { Result.Ok(_) => true, _ => false } {
-                if match entry_kind(path) { Result.Ok(value) => value == FileKind.File, Result.Err(error) => error == FsError.NotFound } {
+            if match write_bytes(staged_bundle, bundle) {
+                Result.Ok(_) => true,
+                _ => false
+            } {
+                if match entry_kind(path) {
+                    Result.Ok(value) => value == FileKind.File,
+                    Result.Err(error) => error == FsError.NotFound
+                } {
                     discard rename(staged_bundle, path)
                 }
             }
@@ -248,9 +398,20 @@ fn compile_cached(options Options, input Text, library Bool, output Text) Result
     push(arguments, output)
     push(arguments, "--protect-directory")
     push(arguments, objects)
-    if library { push(arguments, "--library") }
-    if uses_runtime { push(arguments, "--uses-runtime") }
-    let status = match run(arguments) { Result.Ok(code) => code, Result.Err(_) => { return Result.Err("cannot invoke native object linking") } }
-    if status != 0 { return Result.Err("native object linking failed") }
+    if library {
+        push(arguments, "--library")
+    }
+    if uses_runtime {
+        push(arguments, "--uses-runtime")
+    }
+    let status = match run(arguments) {
+        Result.Ok(code) => code,
+        Result.Err(_) => {
+            return Result.Err("cannot invoke native object linking")
+        }
+    }
+    if status != 0 {
+        return Result.Err("native object linking failed")
+    }
     Result.Ok(true)
 }

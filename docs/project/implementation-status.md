@@ -626,6 +626,16 @@ trusted `Result` discovery and package-label allocations. No incremental cache
 was enabled. Verified source shapes are reused only within the current check;
 an edited binding snapshot validates them again. This is one macOS workload,
 not a latency or memory guarantee for other projects.
+Trusted bundles hash their existing payload range before decoding. Text snapshots
+use a UTF-8 checksum trailer to avoid an intermediate full-buffer copy; native
+object bundles copy only the validated object, not a second metadata buffer.
+The source `std.hash.sha256` range overloads retain fixed scratch storage and
+compile-time execution. Integrity and observed-input validation remain mandatory;
+these changes do not make local snapshots portable proof artifacts.
+Private decoded IR shares empty lists only within its read-only snapshot. Replay
+and resident-cache detachment still create independent mutable public lists.
+Raw bundle buffers and decoded metadata retire before restoring cached IR; only
+the authenticated snapshot text remains live across that phase boundary.
 See [native benchmarks](../../benchmarks/basic/README.md) separately; compiler
 latency is not interpreter or application runtime performance.
 

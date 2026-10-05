@@ -1,6 +1,49 @@
 import std.text.join
 import std.text.split
 
+test fn restored_private_empty_lists_do_not_alias_public_replayed_expressions() {
+    let source = """
+        pub fn left() Int {
+            7
+        }
+        pub fn right() Int {
+            8
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    let checked = match cached_source(cache, concat("fn unrelated() {}\n", source)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert bodies_reused(cache) >= 2
+    let left = get(checked.program.functions, cached_function(checked, "left"))
+    let right = get(checked.program.functions, cached_function(checked, "right"))
+    let leaf = get(left.body.children, 0)
+    assert length(leaf.children) == 0 && length(leaf.arms) == 0
+    push(leaf.children, get(right.body.children, 0))
+    assert length(get(right.body.children, 0).children) == 0
+    push(left.preconditions, leaf)
+    assert length(right.preconditions) == 0
+    let next = match cached_source(restored_definition_cache(cache), source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let replayed = get(next.program.functions, cached_function(next, "left"))
+    assert length(replayed.preconditions) == 0
+    assert length(get(replayed.body.children, 0).children) == 0
+}
+
 test fn one_shot_snapshots_serialize_before_public_mutation_and_retire_body_aliases() {
     let source = """
         pub fn answer() Int
@@ -256,7 +299,7 @@ test fn definition_snapshots_require_source_backed_syntax_and_complete_encoding(
     assert match check_project_snapshot(source, false, build_inputs(no_input_reader), one_shot) {
         Result.Ok(value) => match value.snapshot {
             Option.None => length(definition_state(one_shot).basis) == 0 &&
-                length(definition_state(one_shot).bodies) == 0
+            length(definition_state(one_shot).bodies) == 0
             Option.Some(_) => false
         }
         Result.Err(_) => false
