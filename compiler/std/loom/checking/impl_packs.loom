@@ -502,7 +502,7 @@ fn materialize_impl_pack(env Environment, template Int, arity Int) Result[Int, F
             push(env.packs, PackInstance {
                     source = index
                     declaration = -1
-                    arity = -1
+                    widths = new[Int]()
                     signature = -1
                     state = -1
                     depth = 0

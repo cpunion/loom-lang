@@ -219,7 +219,7 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
     }
     let saved = get(definition_state(cache).bodies, 0)
     let output = std.bytes.new()
-    cache_text(output, "loom-definition-snapshot 9")
+    cache_text(output, "loom-definition-snapshot 10")
     cache_bool(output, saved.definitions.tests)
     discard cache_definition_source(output, saved.definitions)?
     cache_int(output, length(saved.definitions.reusable))
@@ -239,7 +239,7 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
     while index < length(saved.functions) {
         let target = get(saved.targets, index)
         cache_int(output, target.symbol)
-        cache_int(output, target.arity)
+        cache_ints(output, target.widths)
         cache_int(output, target.implementation_arity)
         cache_int(output, target.prototype)
         cache_ints(output, target.arguments)
@@ -259,7 +259,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
     // Decoded IR is private and read-only. Empty lists can share storage;
     // replay and resident snapshots detach every mutable public list.
     let reader = cache_reader(text)
-    if cache_read_text(reader)? != "loom-definition-snapshot 9" {
+    if cache_read_text(reader)? != "loom-definition-snapshot 10" {
         return Result.Err("invalid definition snapshot")
     }
     let tests = cache_read_bool(reader)?
@@ -309,7 +309,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
     while index < function_count {
         push(targets, BodyTarget {
                 symbol = cache_read_int(reader)?
-                arity = cache_read_int(reader)?
+                widths = cache_read_ints(reader)?
                 implementation_arity = cache_read_int(reader)?
                 prototype = cache_read_int(reader)?
                 arguments = cache_read_ints(reader)?

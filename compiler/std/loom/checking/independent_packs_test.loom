@@ -1,0 +1,93 @@
+test fn independent_pack_widths_keep_equal_total_instances_distinct_in_cache_replay() {
+    let source = """
+        fn groups[As..., Bs...](left (As...), right (Bs...)) ((As...), (Bs...)) {
+            (left, right)
+        }
+        fn coupled[As..., Bs...](values (As..., Bs...), repeated (As..., As..., Bs...)) (As..., Bs...) {
+            discard repeated
+            values
+        }
+        fn bounded[As..., Bs...](a (As...), b (Bs...), value Int) Int
+            requires value >= 0
+            ensures result == value && result >= 0 {
+            value
+        }
+        fn placed[As..., Bs...](left As..., middle (Bs...), right As...) ((As...), (Bs...), (As...)) {
+            (left, middle, right)
+        }
+        fn frame[Head, As..., Bs..., Tail](head Head, left (As...), right (Bs...), tail Tail) (Head, (As...), (Bs...), Tail) {
+            (head, left, right, tail)
+        }
+        concept Packing {
+            fn keep[As..., Bs...](self Self, left (As...), right (Bs...)) ((As...), (Bs...)) {
+                groups(left, right)
+            }
+        }
+        impl Packing for Bool {
+        }
+        pub fn answer() Int {
+            let first = groups((1, 2), (3,))
+            let second = groups((4,), (5, 6))
+            assert first.0.1 == 2 && second.1.1 == 6
+            let receiver dyn Packing = true
+            assert receiver.keep((1, 2), (3,)).0.1 == 2
+            assert receiver.keep((4,), (5, 6)).1.1 == 6
+            let callback fn((Int, Bool), (Text,)) ((Int, Bool), (Text,)) = groups
+            assert callback((7, true), ("callback",)).1.0 == "callback"
+            assert groups[Int, Bool, Text]((8, false), ("explicit",)).0.0 == 8
+            assert comptime { groups((9,), ("ctfe", true)).1.1 }
+            let derived = coupled((10, true, "a"), (11, false, 12, true, "b"))
+            assert derived.0 == 10 && derived.2 == "a"
+            let middle = placed(11, true, ("middle",), 12, false)
+            assert middle.1.0 == "middle" && middle.2.0 == 12
+            assert frame[Text, Int, Bool, Text]("head", (13,), (true,), "tail").2.0
+            bounded((1,), (true, "ignored"), 42)
+        }
+        """
+    discard accepted(source)
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, concat(source, "\nfn unrelated() {}\n")) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+}
+
+test fn independent_packs_reject_ambiguous_inconsistent_and_nonintegral_shapes() {
+    rejects("""
+        fn split[As..., Bs...](left As..., right Bs...) ((As...), (Bs...)) {
+            (left, right)
+        }
+        fn main() {
+            discard split(1, true, "ambiguous")
+        }
+        """)
+    rejects("""
+        fn coupled[As..., Bs...](values (As..., Bs...), repeated (As..., As..., Bs...)) (As..., Bs...) {
+            discard repeated
+            values
+        }
+        fn main() {
+            discard coupled((1,), (1, 2, 3))
+        }
+        """)
+    rejects("""
+        fn widths[As..., Bs...](left (As..., As...), right (Bs...)) ((As...), (Bs...)) {
+            (left, right)
+        }
+        fn main() {
+            discard widths((1, 2, 3), (true,))
+        }
+        """)
+    rejects("""
+        fn required[As..., Bs...](left (As...), right (Bs...)) Bool
+            ensures result == left.0 {
+            true
+        }
+        """)
+}

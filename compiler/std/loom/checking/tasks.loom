@@ -62,7 +62,7 @@ fn tuple_await_signature(context Context, node Node, arity Int) Result[Int, Fail
     var index = 0
     while index < length(context.env.packs) {
         let pack = get(context.env.packs, index)
-        if pack.arity == -1 {
+        if pack_family(pack) {
             let item = symbol(context.env, pack.source)
             let file = get(context.env.source.files, item.file)
             let parameters = group(item.node, NodeKind.Parameters)
@@ -76,7 +76,7 @@ fn tuple_await_signature(context Context, node Node, arity Int) Result[Int, Fail
         index = index + 1
     }
     if owner < 0 { return Result.Err(error(context, node, "tuple await requires trusted std.task.all")) }
-    pack_signature(context.env, owner, arity)
+    pack_signature(context.env, owner, ints(arity))
 }
 
 fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {

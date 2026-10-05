@@ -1,0 +1,149 @@
+// Solve declared shape equations, not sampled specializations. Rows contain
+// coefficients followed by the total. Ambiguous, inconsistent or nonintegral
+// solutions reject; all elimination uses the existing mathematical integers.
+pub fn unique_extents(equations List[List[Int]], dimensions Int) Result[List[Int], Text] {
+    let widths = known_extents(equations, dimensions)?
+    var index = 0
+    while index < length(widths) {
+        if get(widths, index) < 0 {
+            return Result.Err("cannot infer independent pack widths uniquely")
+        }
+        index = index + 1
+    }
+    Result.Ok(widths)
+}
+
+pub fn known_extents(equations List[List[Int]], dimensions Int) Result[List[Int], Text] {
+    if dimensions <= 0 || dimensions > 32 || length(equations) > 256 {
+        return Result.Err("shape equation budget exhausted")
+    }
+    let basis = new[Linear]()
+    let budget = new[Int]()
+    push(budget, 4096)
+    var index = 0
+    while index < length(equations) {
+        let equation = get(equations, index)
+        if length(equation) != dimensions + 1 {
+            return Result.Err("invalid shape equation")
+        }
+        let terms = new[Term]()
+        var dimension = 0
+        while dimension < dimensions {
+            let factor = get(equation, dimension)
+            if factor != 0 {
+                push(terms, Term {
+                        id = dimension
+                        factor = integer(factor)
+                    })
+            }
+            dimension = dimension + 1
+        }
+        var row = affine_reduce(Linear {
+                constant = negate(integer(get(equation, dimensions)))
+                terms = terms
+            }, basis, budget)?
+        if length(row.terms) == 0 {
+            if length(row.constant.digits) != 0 {
+                return Result.Err("inconsistent shape equations")
+            }
+        } else {
+            if get(row.terms, 0).factor.negative {
+                row = scale(row, integer(-1))
+            }
+            insert_affine_row(basis, row)
+        }
+        index = index + 1
+    }
+    let widths = new[Int]()
+    index = 0
+    while index < dimensions {
+        push(widths, -1)
+        index = index + 1
+    }
+    // A zero sum of nonnegative widths with positive coefficients forces
+    // each participating width to zero, even without full linear rank.
+    index = 0
+    while index < length(equations) {
+        let row = get(equations, index)
+        var positive = get(row, dimensions) == 0
+        var dimension = 0
+        while dimension < dimensions {
+            positive = positive && get(row, dimension) >= 0
+            dimension = dimension + 1
+        }
+        dimension = 0
+        while positive && dimension < dimensions {
+            if get(row, dimension) > 0 {
+                set(widths, dimension, 0)
+            }
+            dimension = dimension + 1
+        }
+        index = index + 1
+    }
+    index = length(basis)
+    while index > 0 {
+        index = index - 1
+        let row = get(basis, index)
+        let pivot = get(row.terms, 0)
+        var total = row.constant
+        var known = true
+        var term = 1
+        while term < length(row.terms) {
+            let current = get(row.terms, term)
+            known = known && get(widths, current.id) >= 0
+            total = sum(total, product(current.factor, integer(get(widths, current.id))))
+            term = term + 1
+        }
+        if known {
+            let width = extent_ratio(negate(total), pivot.factor)?
+            if get(widths, pivot.id) >= 0 && get(widths, pivot.id) != width {
+                return Result.Err("inconsistent nonnegative shape equations")
+            }
+            set(widths, pivot.id, width)
+        }
+    }
+    Result.Ok(widths)
+}
+
+fn extent_ratio(total Number, factor Number) Result[Int, Text] {
+    if total.negative || factor.negative || length(factor.digits) == 0 {
+        return Result.Err("shape widths must be nonnegative integers")
+    }
+    let numerator = machine(total)
+    let denominator = machine(factor)
+    match numerator {
+        Result.Ok(value) => match denominator {
+            Result.Ok(divisor) => {
+                if value % divisor == 0 {
+                    return Result.Ok(value / divisor)
+                }
+                return Result.Err("shape width is not integral")
+            }
+            Result.Err(_) => {
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    let maximum = 9223372036854775807
+    if compare(total, product(factor, integer(maximum))) > 0 {
+        return Result.Err("shape width is out of range")
+    }
+    // Exact integer division when elimination coefficients exceed machine
+    // range. This never constructs or checks a candidate specialization.
+    var low = 0
+    var high = maximum
+    while low <= high {
+        let middle = low + (high - low) / 2
+        let order = compare(product(factor, integer(middle)), total)
+        if order == 0 {
+            return Result.Ok(middle)
+        }
+        if order > 0 {
+            high = middle - 1
+        } else {
+            low = middle + 1
+        }
+    }
+    Result.Err("shape width is not integral")
+}

@@ -247,7 +247,7 @@ fn implementation_methods(env Environment, position Int) Result[Bool, Failure] {
                 method_pack_binding(env, owner, get(env.packs, pack).source)
             }
             if binding >= 0 {
-                set(methods, index, pack_signature(env, binding, get(env.packs, pack).arity)?)
+                set(methods, index, pack_signature(env, binding, get(env.packs, pack).widths)?)
             } else if !has(symbol(env, get(env.signatures, declaration).symbol).node, NodeKind.Block) {
                 return Result.Err(failure(env, owner, item.node, "implementation is missing a required concept method"))
             } else {

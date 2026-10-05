@@ -1,0 +1,98 @@
+fn independent[As..., Bs...](left (As...), right (Bs...)) ((As...), (Bs...)) {
+    (left, right)
+}
+
+fn coupled[As..., Bs...](values (As..., Bs...), repeated (As..., As..., Bs...)) (As..., Bs...) {
+    discard repeated
+    values
+}
+
+fn selected_groups[As..., Bs...](left As..., right Bs...) ((As...), (Bs...)) {
+    (left, right)
+}
+
+fn middle_groups[As..., Bs...](left As..., middle (Bs...), right As...) ((As...), (Bs...), (As...)) {
+    (left, middle, right)
+}
+
+record ShapePair[A, B] {
+    first A
+    second B
+}
+
+fn zipped_groups[As..., Bs...](values ShapePair[As, Bs]...) (ShapePair[As, Bs]...) {
+    values
+}
+
+concept IndependentPacking {
+    fn keep[As..., Bs...](self Self, left (As...), right (Bs...)) ((As...), (Bs...)) {
+        independent(left, right)
+    }
+}
+
+impl IndependentPacking for Bool {
+}
+
+impl IndependentPacking for Int {
+    fn keep[Xs..., Ys...](self Int, first (Xs...), second (Ys...)) ((Xs...), (Ys...)) {
+        assert self == 1
+        independent(first, second)
+    }
+}
+
+fn exercise_independent_packs() {
+    let first = independent((1, 2), (3,))
+    let second = independent((4,), (5, 6))
+    assert first.0.1 == 2 && second.1.1 == 6
+    assert independent((7, true), ("text",)).1.0 == "text"
+    let callback fn((Int, Bool), (Text,)) ((Int, Bool), (Text,)) = independent
+    assert callback((8, false), ("callback",)).0.0 == 8
+    assert independent[Int, Bool, Text]((9, true), ("explicit",)).0.1
+    assert comptime {
+        independent((10,), (false, "ctfe")).1.1
+    } == "ctfe"
+    discard independent(pack(), pack())
+    discard selected_groups()
+    let middle = middle_groups(20, true, ("middle",), 21, false)
+    assert middle.1.0 == "middle" && middle.2.0 == 21
+    let middle_callback fn(Int, (Text, Bool), Int) ((Int,), (Text, Bool), (Int,)) = middle_groups
+    assert middle_callback(22, ("callback", true), 23).1.1
+    let zipped = zipped_groups(ShapePair {
+            first = 24,
+            second = true
+        }, ShapePair {
+            first = "text",
+            second = 25
+        })
+    assert zipped.0.second && zipped.1.first == "text"
+    discard zipped_groups()
+    let log List[Int] = []
+    let ordered = independent((mark(log, 1), mark(log, 2)), (mark(log, 3),))
+    assert ordered.0.1 == 2 && ordered.1.0 == 3
+    assert length(log) == 3 && log[0] == 1 && log[1] == 2 && log[2] == 3
+    let derived = coupled((11, true, "a", 12, false), (13, false, 14, true, "b", 15, true))
+    assert derived.0 == 11 && derived.2 == "a"
+    let selected ((Int,), (Text, Bool)) = selected_groups(16, "selected", true)
+    assert selected.1.0 == "selected" && selected.1.1
+    let defaulted dyn IndependentPacking = true
+    assert defaulted.keep((17,), ("default", false)).1.0 == "default"
+    let overridden dyn IndependentPacking = 1
+    assert overridden.keep((18, true), ("override",)).0.0 == 18
+    discard overridden.keep(pack(), pack())
+}
+
+async fn independent_tasks[As..., Bs...](left (Task[As]...), right (Task[Bs]...)) ((As...), (Bs...)) {
+    let first = comptime map task in left {
+        task.await
+    }
+    let second = comptime map task in right {
+        task.await
+    }
+    (first, second)
+}
+
+async fn exercise_independent_tasks() {
+    let values = independent_tasks((item(19), item(true)), (item("async"),)).await
+    assert values.0.0 == 19 && values.0.1 && values.1.0 == "async"
+    discard independent_tasks(pack(), pack()).await
+}
