@@ -1957,8 +1957,10 @@ retain the `Result` boundary.
 See the [record refinement example](examples/record_refinement/main.loom).
 
 List-backed constraints can observe lengths independently of their element
-type, including generic or shared elements. Predicates observing element
-contents still require immutable scalars, Text, or inline records/tuples/enums.
+type, including generic or shared elements. Content predicates may observe
+immutable element fields even beside unobserved shared fields. Reads through
+those fields into nested mutable Lists or Bytes reject, including a recursive
+List with the same stored type as the outer header.
 Construction must use a fresh List literal or a pure factory proved to return a
 fresh, unpublished outer header. Elements may retain their specified sharing;
 the existing header cannot be returned through a nested input either.
@@ -1978,6 +1980,8 @@ Here `all_positive` is an ordinary pure function; see the complete
 literal returns `PositiveValues` directly; other inputs keep the checked Result
 boundary. Immutable aggregate elements use the same rule, including Text and
 enum payloads; see the [literal example](examples/record_refinement/literals.loom).
+The [shared-field example](examples/list_contracts/refinements.loom) constrains
+account amounts while allowing their unobserved notes to remain shared and mutable.
 `PositiveValues(existing_list)` rejects: construction cannot silently
 change that List's existing writable aliases. No automatic copy or runtime
 monitor is installed. Copies of a constrained value keep sharing its storage.

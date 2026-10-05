@@ -1,21 +1,30 @@
 // Paths identify mutable input storage reachable through immutable aggregate
 // fields. An empty path means any reachable storage; no paths means fresh data.
 // Negative path entries tag a known closure target and its captured environment.
+// Indirect origins crossed an element read; they cannot identify the controlled
+// outer header when checking a persistent List predicate.
 record InputOrigin {
     paths List[List[Int]]
+    indirect Bool
 }
 
 fn origin_empty() InputOrigin {
     InputOrigin {
         paths = new[List[Int]]()
+        indirect = false
     }
 }
 
 fn origin_input() InputOrigin {
+    origin_input(false)
+}
+
+fn origin_input(indirect Bool) InputOrigin {
     let paths = new[List[Int]]()
     push(paths, new[Int]())
     InputOrigin {
         paths = paths
+        indirect = indirect
     }
 }
 
@@ -60,6 +69,9 @@ fn origin_covers_path(origin InputOrigin, path List[Int]) Bool {
 }
 
 fn origin_covers(outer InputOrigin, inner InputOrigin) Bool {
+    if origin_shared(inner) && inner.indirect && !outer.indirect {
+        return false
+    }
     var index = 0
     while index < length(inner.paths) {
         if !origin_covers_path(outer, get(inner.paths, index)) {
@@ -93,10 +105,11 @@ fn origin_union(left InputOrigin, right InputOrigin) InputOrigin {
     }
     // Exceeding the analysis budget loses precision, never an input origin.
     if length(paths) > 256 {
-        origin_input()
+        origin_input(left.indirect || right.indirect)
     } else {
         InputOrigin {
             paths = paths
+            indirect = left.indirect || right.indirect
         }
     }
 }
@@ -107,7 +120,7 @@ fn origin_field(origin InputOrigin, field Int) InputOrigin {
     while index < length(origin.paths) {
         let source = get(origin.paths, index)
         if length(source) >= 64 {
-            return origin_input()
+            return origin_input(origin.indirect)
         }
         let path = ints(field)
         var item = 0
@@ -120,6 +133,7 @@ fn origin_field(origin InputOrigin, field Int) InputOrigin {
     }
     InputOrigin {
         paths = paths
+        indirect = origin_shared(origin) && origin.indirect
     }
 }
 
@@ -129,7 +143,7 @@ fn origin_project(origin InputOrigin, field Int) InputOrigin {
     while index < length(origin.paths) {
         let source = get(origin.paths, index)
         if length(source) == 0 {
-            return origin_input()
+            return origin_input(origin.indirect)
         }
         if get(source, 0) == field {
             let path = new[Int]()
@@ -144,5 +158,13 @@ fn origin_project(origin InputOrigin, field Int) InputOrigin {
     }
     InputOrigin {
         paths = paths
+        indirect = length(paths) != 0 && origin.indirect
+    }
+}
+
+fn origin_indirect(origin InputOrigin) InputOrigin {
+    InputOrigin {
+        paths = origin.paths
+        indirect = origin_shared(origin)
     }
 }

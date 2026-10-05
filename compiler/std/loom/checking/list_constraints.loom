@@ -1,7 +1,7 @@
 import std.loom.proof.fresh_list_factory
 
 // A constrained List has no pre-existing writable outer aliases. Content
-// predicates require immutable elements; extent predicates can ignore them.
+// predicates may observe immutable fields, not nested shared mutable storage.
 // Copies retain the constrained type and ordinary sharing.
 // Plain List borrows must not escape. Element writes additionally require a
 // predicate proved independent of those elements; no runtime monitor is needed.
@@ -154,7 +154,7 @@ fn constraint_operation(env Environment, functions List[Function], value Expr) B
     if value.kind != ExprKind.Call {
         return false
     }
-    let reads = invariant_reads(env, functions, value, true, writes)
+    let reads = invariant_reads(env, functions, value, true, writes, -1)
     let output = invariant_call(reads, value.index, inputs, 0)
     get(reads.valid, 0) && (!origin_shared(output) || constraint_output_independent(env, value))
 }
