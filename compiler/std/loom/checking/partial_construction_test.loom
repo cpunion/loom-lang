@@ -144,3 +144,40 @@ test fn partial_record_snapshots_do_not_invent_evidence_or_replay_calls() {
         }
         """))
 }
+
+test fn verified_factories_ignore_unmodeled_inputs_without_type_kind_permissions() {
+    let program = accepted_result(concat(partial_construction_source(), """
+        enum Payload {
+            Number(Int)
+        }
+
+        fn raw[T](value T, count Int) State[T]
+        ensures result.count == count
+        {
+            State {
+                value = value
+                count = count
+            }
+        }
+
+        pub fn enumeration(value Payload) Nonnegative[Payload] {
+            Nonnegative(raw(value, 1))
+        }
+
+        pub fn floating(value Float) Nonnegative[Float] {
+            Nonnegative(raw(value, 1))
+        }
+
+        pub fn closed() Nonnegative[Payload] {
+            Nonnegative(raw(Payload.Number(7), 1))
+        }
+
+        pub fn unknown(value Payload, count Int) Result[Nonnegative[Payload], ConstraintError] {
+            Nonnegative(raw(value, count))
+        }
+        """))
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 3).body, ExprKind.If) == 1
+}

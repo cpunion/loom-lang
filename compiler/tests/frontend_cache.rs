@@ -701,6 +701,10 @@ record State[T] {
     count Int
 }
 
+enum Payload {
+    Number(Int)
+}
+
 fn valid[T](value State[T]) Bool {
     value.count >= 0
 }
@@ -744,6 +748,12 @@ fn main() {
     assert length(trace) == 1 && trace[0] == 7
     values[0] = -1
     assert shared.value[0] == -1 && count(shared) == 0
+    let payload = proven(Payload.Number(4), 0)
+    assert match payload.value {
+        Payload.Number(value) => value == 4
+    }
+    let floating = proven(0.0 / 0.0, 0)
+    assert floating.value != floating.value && count(floating) == 0
     assert count(Valid(State {
         value = 7
         count = 0

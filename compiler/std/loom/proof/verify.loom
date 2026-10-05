@@ -158,11 +158,6 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Text {
         return Result.Ok(Value.Text(TextValue.Variable(id)))
     }
-    // An abstract receiver may be present without contributing any proof
-    // fact. A scalar operation or field projection on Empty still rejects.
-    if opaque_argument(proof.program, ty, 0) {
-        return Result.Ok(Value.Empty)
-    }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
         return Result.Ok(Value.Number(variable(id)))
     }

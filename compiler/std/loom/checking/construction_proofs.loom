@@ -110,9 +110,6 @@ fn construction_fact(context Context, value Expr, bindings List[Int],
 // identify separate observations of mutable storage.
 fn construction_input(context Context, value Expr, bindings List[Int],
     params List[Int], locals List[Local], depth Int) Expr {
-    if closed_inline_value(value, 0) {
-        return value
-    }
     if fact_size(context, value, 0) > 0 {
         return construction_fact(context, value, bindings, params, locals)
     }
@@ -141,6 +138,24 @@ fn construction_input(context Context, value Expr, bindings List[Int],
             text = value.text
             index = value.index
             children = fields
+            arms = value.arms
+            falls = value.falls
+        }
+    }
+    if depth < 64 && value.kind != ExprKind.Variant && closed_inline_value(value, 0) {
+        let children = new[Expr]()
+        var index = 0
+        while index < length(value.children) {
+            push(children, construction_input(context, get(value.children, index), bindings, params, locals, depth + 1))
+            index = index + 1
+        }
+        return Expr {
+            kind = value.kind
+            ty = value.ty
+            span = value.span
+            text = value.text
+            index = value.index
+            children = children
             arms = value.arms
             falls = value.falls
         }
