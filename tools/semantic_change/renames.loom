@@ -1,0 +1,369 @@
+import std.loom.ast.has
+
+record FunctionRename {
+    id Text
+    name Text
+}
+
+record RenameEdit {
+    id Text
+    start Int
+    end Int
+    text Text
+}
+
+record RenamedRevisions {
+    original Revision
+    left Revision
+    right Revision
+}
+
+fn rename_name(entry Entry) Result[Token, Text] {
+    let tree = match parse(entry.body) {
+        Result.Ok(value) => value
+        Result.Err(problem) => {
+            return Result.Err(problem.message)
+        }
+    }
+    let declaration = get(tree.children, 0)
+    if entry.kind != NodeKind.Function || has(declaration, NodeKind.Public) {
+        return Result.Err("rename composition requires a private function")
+    }
+    var index = 0
+    while index < length(declaration.children) {
+        let group = get(declaration.children, index)
+        if group.kind == NodeKind.TypeParameters && length(group.children) != 0 {
+            return Result.Err("generic rename composition requires explicit resolution")
+        }
+        index = index + 1
+    }
+    let tokens = match lex(entry.body) {
+        Result.Ok(value) => value
+        Result.Err(problem) => {
+            return Result.Err(problem.message)
+        }
+    }
+    index = 0
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if token.kind == Kind.Name && token.value == entry.name {
+            return Result.Ok(token)
+        }
+        index = index + 1
+    }
+    Result.Err("renamed function has no declaration token")
+}
+
+fn function_renames(base Indexed, left Indexed, right Indexed) Result[List[FunctionRename], Text] {
+    let renames = new[FunctionRename]()
+    var index = 0
+    while index < length(base.entries) {
+        let original = get(base.entries, index)
+        let l = entry_index(left.entries, original.id)
+        let r = entry_index(right.entries, original.id)
+        if l >= 0 && r >= 0 {
+            let a = get(left.entries, l)
+            let b = get(right.entries, r)
+            if a.name != original.name || b.name != original.name {
+                if a.name != original.name && b.name != original.name && a.name != b.name {
+                    return Result.Err("conflicting declaration renames require explicit resolution")
+                }
+                discard rename_name(original)?
+                discard rename_name(a)?
+                discard rename_name(b)?
+                let name = if a.name != original.name {
+                    a.name
+                } else {
+                    b.name
+                }
+                let revisions = new[Indexed]()
+                push(revisions, base)
+                push(revisions, left)
+                push(revisions, right)
+                var revision = 0
+                while revision < length(revisions) {
+                    let entries = get(revisions, revision).entries
+                    var other = 0
+                    while other < length(entries) {
+                        let entry = get(entries, other)
+                        if entry.id != original.id && (entry.name == original.name || entry.name == name) {
+                            return Result.Err("rename overlaps another declaration name; explicit resolution required")
+                        }
+                        other = other + 1
+                    }
+                    revision = revision + 1
+                }
+                push(renames, FunctionRename {
+                        id = original.id
+                        name = name
+                    })
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(renames)
+}
+
+fn rename_requested(renames List[FunctionRename], id Text) Text {
+    var index = 0
+    while index < length(renames) {
+        let rename = get(renames, index)
+        if rename.id == id {
+            return rename.name
+        }
+        index = index + 1
+    }
+    ""
+}
+
+fn same_revision_names(before Revision, after Revision) Bool {
+    var index = 0
+    while index < length(before.identities) {
+        if get(before.identities, index).name != get(after.identities, index).name {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn rename_site(sites List[Int], offset Int) Bool {
+    var index = 0
+    while index < length(sites) {
+        if get(sites, index) == offset {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn rename_edits(revision Indexed, renames List[FunctionRename], analysis Analysis, directory Text) Result[List[RenameEdit], Text] {
+    let edits = new[RenameEdit]()
+    var index = 0
+    while index < length(revision.entries) {
+        let entry = get(revision.entries, index)
+        let sites = reference_sites(entry)?
+        let requested = rename_requested(renames, entry.id)
+        let declaration = if requested != "" {
+            rename_name(entry)?.span.start
+        } else {
+            -1
+        }
+        let tokens = match lex(entry.body) {
+            Result.Ok(value) => value
+            Result.Err(problem) => {
+                return Result.Err(problem.message)
+            }
+        }
+        var token_index = 0
+        while token_index < length(tokens) {
+            let token = get(tokens, token_index)
+            var name = if token.span.start == declaration {
+                requested
+            } else {
+                ""
+            }
+            if rename_site(sites, token.span.start) {
+                let target = target_at(analysis, revision, directory, entry, token.span.start)?
+                let selected = rename_requested(renames, target.id)
+                if selected != "" {
+                    let owner = get(revision.entries, entry_index(revision.entries, target.id))
+                    let defined = rename_name(owner)?.span
+                    if target.start == defined.start && target.end == defined.end {
+                        name = selected
+                    }
+                }
+            }
+            if name != "" && token.value != name {
+                push(edits, RenameEdit {
+                        id = entry.id
+                        start = token.span.start
+                        end = token.span.end
+                        text = name
+                    })
+            }
+            token_index = token_index + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(edits)
+}
+
+fn rename_body(entry Entry, edits List[RenameEdit]) Text {
+    var output = ""
+    var offset = 0
+    var index = 0
+    while index < length(edits) {
+        let edit = get(edits, index)
+        if edit.id == entry.id {
+            output = concat(output, concat(slice(entry.body, offset, edit.start), edit.text))
+            offset = edit.end
+        }
+        index = index + 1
+    }
+    concat(output, slice(entry.body, offset, length(entry.body)))
+}
+
+fn renamed_revision(revision Indexed, renames List[FunctionRename], edits List[RenameEdit]) Revision {
+    let files = new[File]()
+    var index = 0
+    while index < length(revision.revision.files) {
+        let file = get(revision.revision.files, index)
+        var output = ""
+        var offset = 0
+        var ordinal = 0
+        while true {
+            let position = entry_in_file(revision.entries, file.path, ordinal)
+            if position < 0 {
+                break
+            }
+            let entry = get(revision.entries, position)
+            output = concat(output, concat(slice(file.text, offset, entry.start), rename_body(entry, edits)))
+            offset = entry.end
+            ordinal = ordinal + 1
+        }
+        push(files, File {
+                path = file.path
+                text = concat(output, slice(file.text, offset, length(file.text)))
+            })
+        index = index + 1
+    }
+    let identities = new[Identity]()
+    index = 0
+    while index < length(revision.revision.identities) {
+        let identity = get(revision.revision.identities, index)
+        let name = rename_requested(renames, identity.id)
+        push(identities, Identity {
+                id = identity.id
+                path = identity.path
+                kind = identity.kind
+                name = if name == "" {
+                    identity.name
+                } else {
+                    name
+                }
+                key = identity.key
+            })
+        index = index + 1
+    }
+    Revision {
+        package_name = revision.revision.package_name
+        files = files
+        identities = identities
+    }
+}
+
+// Translate checked definition spans back through the exact token edits. A
+// partial/generated definition inside a replaced token is not guessed.
+fn rename_original_offset(edits List[RenameEdit], id Text, offset Int) Result[Int, Text] {
+    var delta = 0
+    var index = 0
+    while index < length(edits) {
+        let edit = get(edits, index)
+        if edit.id == id {
+            let start = edit.start + delta
+            let end = start + length(edit.text)
+            if offset <= start {
+                return Result.Ok(offset - delta)
+            }
+            if offset < end {
+                return Result.Err("renamed binding has a partial token definition")
+            }
+            delta = delta + length(edit.text) - (edit.end - edit.start)
+        }
+        index = index + 1
+    }
+    Result.Ok(offset - delta)
+}
+
+fn compare_renamed(before Analysis, original Indexed, after Analysis, updated Indexed, directory Text, edits List[RenameEdit]) Result[Bool, Text] {
+    var index = 0
+    while index < length(original.entries) {
+        let entry = get(original.entries, index)
+        if !before.bindings.tests && ends_with(entry.path, "_test.loom") {
+            index = index + 1
+            continue
+        }
+        let changed = get(updated.entries, entry_index(updated.entries, entry.id))
+        let sites = reference_sites(entry)?
+        let current = reference_sites(changed)?
+        if length(sites) != length(current) {
+            return Result.Err("rename changed the reference structure")
+        }
+        var site = 0
+        while site < length(sites) {
+            let expected = target_at(before, original, directory, entry, get(sites, site))?
+            let target = target_at(after, updated, directory, changed, get(current, site))?
+            let restored = BindingTarget {
+                id = target.id
+                package = target.package
+                path = target.path
+                start = rename_original_offset(edits, target.id, target.start)?
+                end = rename_original_offset(edits, target.id, target.end)?
+            }
+            if !same_target(expected, restored) {
+                return Result.Err("rename changed a checked reference binding")
+            }
+            site = site + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn rename_analysis(revision Revision, directory Text, production Project, tests Project, testing Bool) Result[Analysis, Text] {
+    let project = if directory == "" {
+        project_of(revision)?
+    } else {
+        contextual(if testing {
+                tests
+            } else {
+                production
+            }, directory, revision)?
+    }
+    match analyze(project, testing) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(problem) => Result.Err(concat("rename requires checked source: ", problem.diagnostic.message))
+    }
+}
+
+fn normalize_rename(revision Revision, renames List[FunctionRename], directory Text, production Project, tests Project) Result[Revision, Text] {
+    let original = indexed(revision)?
+    let before = rename_analysis(revision, directory, production, tests, true)?
+    let edits = rename_edits(original, renames, before, directory)?
+    let renamed = renamed_revision(original, renames, edits)
+    let updated = indexed(renamed)?
+    discard compare_renamed(before, original, rename_analysis(renamed, directory, production, tests, true)?, updated, directory, edits)?
+    discard compare_renamed(rename_analysis(revision, directory, production, tests, false)?, original,
+        rename_analysis(renamed, directory, production, tests, false)?, updated, directory, edits)?
+    Result.Ok(renamed)
+}
+
+fn normalize_renames(base Revision, left Revision, right Revision, directory Text, production Project, tests Project) Result[RenamedRevisions, Text] {
+    if base.package_name != left.package_name || base.package_name != right.package_name {
+        return Result.Err("semantic merge cannot cross package identities")
+    }
+    let renames = function_renames(indexed(base)?, indexed(left)?, indexed(right)?)?
+    if length(renames) != 0 && directory == "" &&
+    (has_imports(base)? || has_imports(left)? || has_imports(right)? ||
+        needs_result_import(base, true)? || needs_result_import(left, true)? || needs_result_import(right, true)?) {
+        return Result.Err("import-bearing merges require an explicit pinned project context")
+    }
+    if length(renames) != 0 && directory != "" {
+        discard checked_context(base, base, production, tests, directory)?
+    }
+    Result.Ok(if length(renames) == 0 {
+            RenamedRevisions {
+                original = base
+                left = left
+                right = right
+            }
+        } else {
+            RenamedRevisions {
+                original = normalize_rename(base, renames, directory, production, tests)?
+                left = normalize_rename(left, renames, directory, production, tests)?
+                right = normalize_rename(right, renames, directory, production, tests)?
+            }
+        })
+}
