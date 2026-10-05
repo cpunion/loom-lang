@@ -1,10 +1,10 @@
-fn wrap[R, Ts...](callback fn(Ts...) R) Callback[R, Ts...] {
+fn wrap[Ts..., R](callback fn(Ts...) R) Callback[Ts..., R] {
     Callback {
         call = callback
     }
 }
 
-fn apply_callback[R, Ts...](callback Callback[R, Ts...], arguments (Ts...)) R {
+fn apply_callback[Ts..., R](callback Callback[Ts..., R], arguments (Ts...)) R {
     callback.call(arguments...)
 }
 
@@ -36,9 +36,9 @@ fn nested_callback[R, Ts...](callbacks (Bool, fn(Ts...) R), arguments (Ts...)) R
 fn exercise_functions() {
     let callback = wrap(format)
     assert apply_callback(callback, (42, "wrapped")) == "wrapped"
-    let explicit = wrap[Text, Int, Text]
+    let explicit = wrap[Int, Text, Text]
     assert explicit(format).call(42, "explicit") == "explicit"
-    let contextual fn(fn(Int, Text) Text) Callback[Text, Int, Text] = wrap
+    let contextual fn(fn(Int, Text) Text) Callback[Int, Text, Text] = wrap
     assert contextual(format).call(42, "contextual") == "contextual"
 
     let framed = framed_callback(format)

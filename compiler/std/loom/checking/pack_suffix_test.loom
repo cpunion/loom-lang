@@ -1,0 +1,154 @@
+test fn pack_width_excludes_fixed_type_parameters_on_both_sides() {
+    discard accepted("""
+        fn forward[Ts..., R](callback fn(Ts...) R, values Ts...) R {
+            callback(values...)
+        }
+        fn text(number Int, label Text) Text {
+            label
+        }
+        fn ready() Bool {
+            true
+        }
+        fn identity[Head, Ts..., Tail](head Head, values (Ts...), tail Tail) (Head, Ts..., Tail) {
+            (head, values..., tail)
+        }
+        fn main() {
+            assert forward(text, 1, "tail") == "tail"
+            assert forward[Int, Text, Text](text, 2, "explicit") == "explicit"
+            assert forward[Bool](ready)
+            let callback fn(fn(Int, Text) Text, Int, Text) Text = forward
+            assert callback(text, 3, "callback") == "callback"
+            assert identity("head", (1, true), "tail").3 == "tail"
+            assert comptime { forward(text, 4, "static") } == "static"
+        }
+        """)
+    rejects("""
+        fn keep[Ts..., R](values (Ts...), result R) R {
+            result
+        }
+        fn main() {
+            discard keep[Int, Text]((true,), "wrong pack type")
+        }
+        """)
+    rejects("""
+        fn keep[Ts..., R](values (Ts...), result R) R {
+            result
+        }
+        fn main() {
+            discard keep[Int, Text]((1,), false)
+        }
+        """)
+}
+
+test fn data_and_impl_packs_preserve_fixed_suffix_identity_and_bounds() {
+    discard accepted("""
+        record Packet[Ts..., Tail] {
+            values (Ts...)
+            tail Tail
+        }
+        enum Reply[Ts..., Tail] {
+            Values(Ts..., Tail)
+        }
+        concept Last {
+            type End
+            fn last(self Self) Self.End
+        }
+        impl[Ts..., Tail] Last for Packet[Ts..., Tail] {
+            type End = Tail
+            fn last(self Self) Self.End {
+                self.tail
+            }
+        }
+        fn empty[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn main() {
+            let packet = Packet { values = (1, true), tail = "tail" }
+            let same Packet[Int, Bool, Text] = packet
+            assert same.last() == "tail"
+            let changed = Packet { tail = false, ..same }
+            assert !changed.last() && changed.values.1
+            let blank Packet[Text] = Packet { values = empty(), tail = "empty" }
+            assert blank.last() == "empty"
+            let reply = Reply.Values(1, true, "tail")
+            assert match reply {
+                Reply.Values(number, flag, label) => number == 1 && flag && label == "tail"
+            }
+        }
+        """)
+    let prefix = """
+        concept Tagged {}
+        impl Tagged for Int {}
+        record Packet[Ts... Tagged, Tail] {
+            values (Ts...)
+            tail Tail
+        }
+        fn main() {
+
+        """
+    discard accepted(concat(prefix, "discard Packet { values = (1,), tail = true }\n}"))
+    rejects(concat(prefix, "discard Packet { values = (true,), tail = 1 }\n}"))
+    rejects("""
+        concept Tagged {}
+        impl Tagged for Int {}
+        record Packet[Ts..., Tail Tagged] {
+            values (Ts...)
+            tail Tail
+        }
+        fn main() {
+            discard Packet { values = (1,), tail = true }
+        }
+        """)
+}
+
+test fn method_pack_suffix_and_erased_proof_restore_after_an_edit() {
+    let source = """
+        concept Picker {
+            fn pick[Ts..., R](self Self, values (Ts...), fallback R) R
+        }
+        impl Picker for Int {
+            fn pick[Us..., End](self Int, values (Us...), fallback End) End {
+                fallback
+            }
+        }
+        fn checked[Ts..., R](seed Int, ignored (Ts...), extra R) Int
+            requires seed >= 0
+            ensures result >= 0 {
+            seed
+        }
+        pub fn answer() Int {
+            let receiver dyn Picker = 1
+            assert receiver.pick((true, "input"), 42) == 42
+            assert receiver.pick[Bool, Int]((false,), 7) == 7
+            checked(42, (true,), "suffix")
+        }
+        """
+    discard accepted(source)
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat(source, "\nfn unrelated() {}\n")) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(cache) >= 1
+    discard restored_definition_cache(cache)
+    rejects("""
+        fn wrong[Ts..., R](value R, ignored (Ts...)) Int ensures result > 0 {
+            0
+        }
+        """)
+    rejects("""
+        concept Picker {
+            fn pick[Ts..., R](self Self, values (Ts...), fallback R) R
+        }
+        impl Picker for Int {
+            fn pick[R, Us...](self Int, values (Us...), fallback R) R {
+                fallback
+            }
+        }
+        """)
+}

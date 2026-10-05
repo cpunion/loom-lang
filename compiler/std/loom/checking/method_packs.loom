@@ -335,13 +335,13 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
             }
             if admitted {
                 let parameters = group(item.node, NodeKind.Parameters)
-                let prefix = pack_parameter(item.node)
+                let fixed = fixed_pack_parameters(item.node)
                 let arity = if variadic_parameters(parameters) {
                     length(all_inputs.nodes) - length(parameters) + 1
                 } else {
                     if length(all_inputs.nodes) == length(parameters) {
                         if length(types) != 0 {
-                            length(types) - prefix
+                            length(types) - fixed
                         } else {
                             let inferred = structural_call_arity(context, all_inputs, parameters)
                             if inferred >= 0 {
@@ -354,7 +354,7 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
                         -1
                     }
                 }
-                if arity >= 0 && (length(types) == 0 || length(types) == prefix + arity) {
+                if arity >= 0 && (length(types) == 0 || length(types) == fixed + arity) {
                     push(choices, materialize_method_pack(context.env, pack.source, arity)?)
                 }
             }

@@ -10,19 +10,7 @@ fn expanded_parameters(env Environment, owner Int, count Int) List[Node] {
     if !data_pack(symbol(env, owner).node) {
         return parameters
     }
-    let expanded = new[Node]()
-    let prefix = length(parameters) - 1
-    let pack = get(parameters, prefix)
-    var index = 0
-    while index < prefix {
-        push(expanded, get(parameters, index))
-        index = index + 1
-    }
-    while index < count {
-        push(expanded, pack_node(pack, NodeKind.Name, pack_name(pack.value, index - prefix), pack.children))
-        index = index + 1
-    }
-    expanded
+    expand_pack_parameters(parameters, count - length(parameters) + 1)
 }
 
 fn sequence_pack_arity(patterns List[Node], count Int) Int {
@@ -132,8 +120,9 @@ fn data_argument_count(context Context, node Node, declaration Int, types List[N
     if prefix < 0 {
         return Result.Ok(length(group(source, NodeKind.TypeParameters)))
     }
+    let fixed = fixed_pack_parameters(source)
     if length(types) != 0 {
-        if length(types) < prefix {
+        if length(types) < fixed {
             return Result.Err(error(context, node, "wrong number of type arguments"))
         }
         return Result.Ok(length(types))
@@ -158,7 +147,7 @@ fn data_argument_count(context Context, node Node, declaration Int, types List[N
                     let probed = static_probe(context, child(value, 0), -1)?
                     let arity = shape_pack_arity(context.env, child(field, 0), probed.ty, 0)
                     if arity >= 0 {
-                        return Result.Ok(prefix + arity)
+                        return Result.Ok(fixed + arity)
                     }
                 }
                 input = input + 1
@@ -167,7 +156,7 @@ fn data_argument_count(context Context, node Node, declaration Int, types List[N
         if field.kind == NodeKind.Variant && field.value == std.loom.project.name(node.value) {
             let direct = sequence_pack_arity(field.children, length(inputs.nodes))
             if direct >= 0 {
-                return Result.Ok(prefix + direct)
+                return Result.Ok(fixed + direct)
             }
             var payload = 0
             while length(field.children) == length(inputs.nodes) && payload < length(field.children) {
@@ -179,7 +168,7 @@ fn data_argument_count(context Context, node Node, declaration Int, types List[N
                     }
                     let arity = shape_pack_arity(context.env, pattern, probed.ty, 0)
                     if arity >= 0 {
-                        return Result.Ok(prefix + arity)
+                        return Result.Ok(fixed + arity)
                     }
                 }
                 payload = payload + 1

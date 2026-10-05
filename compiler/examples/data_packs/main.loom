@@ -16,7 +16,7 @@ record Pending[Ts...] {
     tasks (Task[Ts]...)
 }
 
-record Callback[R, Ts...] {
+record Callback[Ts..., R] {
     call fn(Ts...) R
 }
 

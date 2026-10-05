@@ -31,6 +31,45 @@ fn pack_parameter(node Node) Int {
     -1
 }
 
+fn one_type_pack(node Node) Bool {
+    let parameters = group(node, NodeKind.TypeParameters)
+    var count = 0
+    var index = 0
+    while index < length(parameters) {
+        if get(parameters, index).kind == NodeKind.TypePack {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    count == 1
+}
+
+fn fixed_pack_parameters(node Node) Int {
+    length(group(node, NodeKind.TypeParameters)) - 1
+}
+
+// Fixed parameters retain declaration order on both sides of one sequence.
+// Its width is total arguments minus fixed parameters, not its source index.
+fn expand_pack_parameters(parameters List[Node], arity Int) List[Node] {
+    let expanded = new[Node]()
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if parameter.kind == NodeKind.TypePack {
+            var element = 0
+            while element < arity {
+                push(expanded, pack_node(parameter, NodeKind.Name,
+                        pack_name(parameter.value, element), parameter.children))
+                element = element + 1
+            }
+        } else {
+            push(expanded, parameter)
+        }
+        index = index + 1
+    }
+    expanded
+}
+
 fn pack_root(node Node, name Text) Bool {
     (node.kind == NodeKind.Type || node.kind == NodeKind.Name) &&
     (node.value == name || (first_dot(node.value) == length(name) && std.text.starts_with(node.value, name)))
@@ -126,8 +165,8 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         discard validate_pack_contract(env, owner)?
     }
     let types = group(item.node, NodeKind.TypeParameters)
-    if selected + 1 != length(types) {
-        return Result.Err(failure(env, owner, get(types, selected), "declare one type pack, last in the type parameter list"))
+    if !one_type_pack(item.node) {
+        return Result.Err(failure(env, owner, get(types, selected), "declare only one type pack in a type parameter list"))
     }
     var clause = 0
     while clause < length(item.node.children) {
@@ -679,7 +718,7 @@ fn expand_type_iteration(env Environment, owner Int, node Node, pack Text, arity
 fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure] {
     let declaration = symbol(env, owner).node
     let types = group(declaration, NodeKind.TypeParameters)
-    let pack = get(types, length(types) - 1)
+    let pack = get(types, pack_parameter(declaration))
     let parameters = group(declaration, NodeKind.Parameters)
     let values = if length(parameters) == 0 {
         declaration
@@ -688,19 +727,9 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
     }
     let variadic = variadic_parameters(parameters)
     let static_values = variadic && has(values, NodeKind.Comptime)
-    let expanded_types = new[Node]()
-    var index = 0
-    while index + 1 < length(types) {
-        push(expanded_types, get(types, index))
-        index = index + 1
-    }
-    index = 0
-    while index < arity {
-        push(expanded_types, pack_node(pack, NodeKind.Name, pack_name(pack.value, index), pack.children))
-        index = index + 1
-    }
+    let expanded_types = expand_pack_parameters(types, arity)
     let expanded_params = new[Node]()
-    index = 0
+    var index = 0
     var type_shadowed = false
     while index < length(parameters) - if variadic {
         1
@@ -1016,7 +1045,7 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
             let parameters = group(declaration, NodeKind.Parameters)
             let variadic = variadic_parameters(parameters)
             let arity = if length(types) != 0 {
-                length(types) - pack_parameter(declaration)
+                length(types) - fixed_pack_parameters(declaration)
             } else if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
                 if !variadic {
