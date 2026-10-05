@@ -1,0 +1,114 @@
+concept Measurement {
+    fn measure(self Self) Int
+    ensures result >= 0
+
+    fn preserve(self Self, input Int) Int
+    requires input >= 0
+    ensures result == old(input) {
+        input
+    }
+
+    fn nonnegative(self Self, input Int) Bool
+    ensures result == (input >= 0) {
+        input >= 0
+    }
+}
+
+impl Measurement for Bool {
+    fn measure(self Bool) Int {
+        if self {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+impl Measurement for Int {
+    fn measure(self Int) Int {
+        if self < 0 {
+            0
+        } else {
+            self
+        }
+    }
+}
+
+record Weight {
+    amount Int
+}
+
+impl Measurement for Weight {
+    fn measure(self Weight) Int {
+        if self.amount < 0 {
+            0
+        } else {
+            self.amount
+        }
+    }
+}
+
+fn measured[Ts...Measurement](values Ts...) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        let amount = item.measure()
+        assert item.nonnegative(amount)
+        total = total + item.preserve(amount)
+    }
+    total
+}
+
+concept Measured {
+    fn pairs[As...Measurement, Bs...Measurement](self Self, left (As...), right (Bs...)) (Int, Int)
+    ensures result.0 >= 0 && result.1 >= 0
+
+    fn total[Ts...Measurement](self Self, values Ts...) Int
+    ensures result >= 0 {
+        var total = 0
+        comptime for item in values {
+            total = total + item.measure()
+        }
+        total
+    }
+}
+
+impl Measured for Bool {
+    fn pairs[Us..., Vs...](self Bool, first (Us...), second (Vs...)) (Int, Int) {
+        var a = 0
+        var b = 0
+        comptime for item in first {
+            a = a + item.measure()
+            comptime for other in second {
+                b = b + other.preserve(other.measure())
+            }
+        }
+        (a, b)
+    }
+}
+
+fn exercise_pack_observations() {
+    assert measured() == 0
+    let weight = Weight {
+        amount = 4
+    }
+    assert measured(2, true, weight, -1) == 7
+    assert comptime {
+        measured(2, true, Weight {
+                amount = 4
+            })
+    } == 7
+    let callback fn(Int, Bool, Weight) Int = measured
+    assert callback(2, true, weight) == 7
+
+    let source dyn Measured = true
+    assert source.total() == 0 && source.total(2, true, weight) == 7
+    let pair = source.pairs((true, 2), (weight, false))
+    assert pair.0 == 3 && pair.1 == 8
+    assert source.pairs(pack(), (weight,)).1 == 0
+    assert source.pairs((weight,), pack()).0 == 4
+
+    let log List[Int] = []
+    assert measured(mark(log, 2), mark(log, 3), true) == 6
+    assert length(log) == 2 && log[0] == 2 && log[1] == 3
+}

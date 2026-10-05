@@ -85,6 +85,38 @@ fn logical(operator Text, a Predicate, b Predicate) Result[Value, Text] {
         return Result.Ok(Value.Boolean(Predicate.Or(predicates(a, b))))
     }
     if operator == "==" || operator == "!=" {
+        match a {
+            Predicate.Constant(value) => {
+                let equal = if value {
+                    b
+                } else {
+                    not(b)
+                }
+                return Result.Ok(Value.Boolean(if operator == "==" {
+                            equal
+                        } else {
+                            not(equal)
+                        }))
+            }
+            _ => {
+            }
+        }
+        match b {
+            Predicate.Constant(value) => {
+                let equal = if value {
+                    a
+                } else {
+                    not(a)
+                }
+                return Result.Ok(Value.Boolean(if operator == "==" {
+                            equal
+                        } else {
+                            not(equal)
+                        }))
+            }
+            _ => {
+            }
+        }
         let equal = if same(a, b) {
             Predicate.Constant(true)
         } else {

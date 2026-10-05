@@ -30,6 +30,54 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn pack_observations_reprove_changed_concept_guarantees_after_body_reuse() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+concept Amount {
+    fn amount(self Self) Int
+    ensures result >= 0 {
+        1
+    }
+}
+impl Amount for Bool {}
+fn total[Ts... Amount](values Ts...) Int
+ensures result >= 0 {
+    var sum = 0
+    comptime for item in values { sum = sum + item.amount() }
+    sum
+}
+fn main() {
+    assert total(true, false) == 2
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("run", &package, &cache, &[]), false);
+    fs::write(package.join("aaa.loom"), "fn unrelated() {}\n").unwrap();
+    let reused = cached("run", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(
+        trace.contains("bodies reused ") && !trace.contains("bodies reused 0"),
+        "{trace}"
+    );
+    checked(&cached("run", &package, &cache, &[]), true);
+    // Bool's implementation still returns 1, but that is not the guarantee for
+    // every heterogeneous element. Cached callers cannot use a weakened bound.
+    fs::write(
+        &path,
+        source.replacen("ensures result >= 0", "ensures result >= -1", 1),
+    )
+    .unwrap();
+    let invalid = cached("check", &package, &cache, &[]);
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("postcondition"));
+}
+
+#[test]
 fn independent_impl_groups_replay_native_methods_from_current_source() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

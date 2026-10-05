@@ -314,9 +314,10 @@ fn scalar_packs_do_not_introduce_runtime_storage_or_task_machinery() {
         r#"
 concept Number {
     fn number(self Self) Int
+    ensures result >= 0
 }
 impl Number for Int {
-    fn number(self Int) Int { self }
+    fn number(self Int) Int { if self < 0 { 0 } else { self } }
 }
 impl Number for Bool {
     fn number(self Bool) Int { if self { 1 } else { 0 } }
@@ -324,7 +325,8 @@ impl Number for Bool {
 record Packet[Ts...] {
     values (Ts...)
 }
-fn sum[Ts... Number](values Ts...) Int {
+fn sum[Ts... Number](values Ts...) Int
+ensures result >= 0 {
     var total = 0
     comptime for value in values {
         total = total + value.number()

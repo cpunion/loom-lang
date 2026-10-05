@@ -844,8 +844,10 @@ equations, empty packs, dyn methods, CTFE and typed suspension.
 Instance and body-cache keys retain every width, not just their sum. Shape
 reasoning remains bounded; it does not enumerate specializations or solve all
 integer feasibility problems. Impl headers use the same shape equations.
-Element-independent iteration contracts use symbolic-width induction;
-universal element-content/type proofs remain unsupported.
+Iteration contracts use symbolic-width induction. Direct pack elements can also
+supply declared `Int`/`Bool` concept method guarantees, without assuming common
+concrete types or equal results from repeated calls. General type-dependent
+induction remains unsupported.
 
 ```loom
 pub fn pack[Ts...](values Ts...) (Ts...) {
@@ -908,7 +910,8 @@ ensures result >= 0 {
 ```
 
 The [induction example](examples/variadics/induction.loom) also exercises shared
-List updates, CTFE and dyn defaults/overrides. Element content, type reflection,
+List updates, CTFE and dyn defaults/overrides. Element observations through
+declared scalar method contracts are described below; type reflection,
 pack-dependent result shapes and broader structural sources remain unsupported
 in family proofs. Shadowed erased sources and loop control that would change
 its target reject. Executing a few selected arities is never a universal proof.
@@ -1141,9 +1144,18 @@ and closure capture. See the [static pack example](examples/variadics/static.loo
 and [aggregate parameter example](examples/comptime_parameters/aggregates.loom).
 
 Unselected arities have not had their bodies verified, except for required
-postconditions in the dependency-erasure and element-independent induction
-fragments above. Content/type-dependent family proofs reject even when uncalled:
-proving selected arities is not a proof for every arity. Preconditions use fixed scalar
+postconditions in the dependency-erasure and induction fragments above. Direct
+`Ts... C` and `(Ts...)` element receivers may call non-generic synchronous concept
+methods with an explicitly declared `Int` or `Bool` result and postcondition.
+Their arguments and contracts cannot depend on `Self` or receiver identity.
+Scalar results compose through ordinary arithmetic, helpers and loop invariants;
+each observation is fresh and opaque effects invalidate shared-storage facts.
+There is no homogeneous-element assumption, sampling, or runtime proof object.
+See the [observation example](examples/variadics/observations.loom), including
+empty/mixed packs, inherited bounds, nested independent packs, CTFE and dyn calls.
+Type inspection, opaque element escape, generic observations and structural
+element patterns remain unsupported for family proofs and reject even when
+uncalled: proving selected arities is not a proof for every arity. Preconditions use fixed scalar
 parameters, not the tuple pack, and retain ordinary checked/runtime boundaries.
 Concept methods accept the same type pack, including defaults, overrides,
 ordinary generic implementation parameters, structural inference and `async`.
@@ -1218,8 +1230,9 @@ intersections reject conservatively. Bounds or sampled arities do not prove
 disjointness. An impl family's ordinary method contracts are proved at each
 selected arity; unselected arities have not had their bodies verified.
 
-Universal element-content/type proofs remain open. This implementation does not
-complete the accepted metaprogramming design.
+General element-content/type induction remains open beyond declared scalar
+observations. This implementation does not complete the accepted metaprogramming
+design.
 
 Records and enums accept type packs among fixed type parameters too. Independent
 groups infer uniquely from structural fields/payloads or an expected type.
