@@ -108,6 +108,32 @@ async fn connected_fixture(binding Text) Result[Bool, UdpError] {
     Result.Ok(true)
 }
 
+async fn broadcast_fixture() Result[Bool, UdpError] {
+    let socket = bind("127.0.0.1:0").await?
+    defer {
+        discard close(socket)
+    }
+    let alias = socket
+    assert !broadcast(alias)?
+    discard set_broadcast(socket, true)?
+    assert broadcast(alias)?
+    discard set_broadcast(alias, false)?
+    assert !broadcast(socket)?
+    discard close(socket)?
+    assert match set_broadcast(alias, true) {
+        Result.Err(UdpError.Option) => true
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+test async fn broadcast_permission_is_explicit_shared_and_revoked_on_close() {
+    assert match broadcast_fixture().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
+
 test async fn connected_datagrams_filter_senders_and_share_close_identity() {
     assert match connected_fixture("127.0.0.1:0").await {
         Result.Ok(value) => value

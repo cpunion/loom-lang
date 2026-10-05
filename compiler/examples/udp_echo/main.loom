@@ -5,6 +5,8 @@ import std.net.udp.UdpError
 import std.net.udp.bind
 import std.net.udp.connect
 import std.net.udp.peer_address
+import std.net.udp.set_broadcast
+import std.net.udp.broadcast
 import std.net.udp.local_address
 import std.net.udp.receive
 import std.net.udp.send
@@ -31,6 +33,10 @@ async fn exercise() Result[Bool, UdpError] {
     defer {
         discard close(server)
     }
+    assert !broadcast(server)?
+    discard set_broadcast(server, true)?
+    assert broadcast(server)?
+    discard set_broadcast(server, false)?
     let address = local_address(server)?
     let client = connect(address).await?
     defer {

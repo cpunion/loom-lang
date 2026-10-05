@@ -25,6 +25,7 @@ pub record Datagram {
 pub enum UdpError {
     Bind
     Connect
+    Option
     Address
     Limit
     Receive
@@ -36,6 +37,9 @@ pub enum UdpError {
 intrinsic fn socket_bind_datagram(address Text) Int
 
 intrinsic fn socket_connect_datagram(address Text) Int
+
+// Private mode: -1 queries, 0 disables, 1 enables SO_BROADCAST.
+intrinsic fn socket_datagram_broadcast(token Int, mode Int) Int
 
 intrinsic fn socket_send_datagram(token Int, value Bytes, end Int) Int
 
@@ -81,6 +85,29 @@ pub async fn connect(address Text) Result[Connection, UdpError] {
 fn as_socket(connection Connection) Socket {
     Socket {
         state = connection.state
+    }
+}
+
+// IPv4 broadcast permission is shared by Socket aliases and defaults off.
+// Routing/firewall policy still determines whether a packet can be delivered.
+pub fn set_broadcast(socket Socket, enabled Bool) Result[Int, UdpError] {
+    if socket_datagram_broadcast(socket.state.token, if enabled {
+            1
+        } else {
+            0
+        }) < 0 {
+        Result.Err(UdpError.Option)
+    } else {
+        Result.Ok(0)
+    }
+}
+
+pub fn broadcast(socket Socket) Result[Bool, UdpError] {
+    let enabled = socket_datagram_broadcast(socket.state.token, -1)
+    if enabled < 0 {
+        Result.Err(UdpError.Option)
+    } else {
+        Result.Ok(enabled != 0)
     }
 }
 

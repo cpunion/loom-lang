@@ -544,7 +544,10 @@ Source policy uses the existing reactor, cancellation and explicit close/abort,
 tested on IPv4/available IPv6 at O0/O2 with moving GC. Fixed-peer UDP Connections
 reuse the same identities and waits; kernel peer filtering, empty sends, numeric
 endpoints and alias revocation have source tests. Creation is not a remote
-handshake or delivery guarantee. Multicast and broadcast configuration remain open.
+handshake or delivery guarantee. Unconnected IPv4 sockets expose explicit
+default-off broadcast configuration/query with alias and stale-token tests;
+configuration does not prove delivery under host routing/firewall policy.
+Multicast configuration remains open.
 Hostname connections interleave address families with configurable bounded
 concurrency, stagger and a total cancellation deadline. Numeric address races
 share that source policy. Sockets are registered before suspension, so completed
