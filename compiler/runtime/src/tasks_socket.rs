@@ -11,7 +11,7 @@ use socket2::{
 };
 use std::io::{Read, Write};
 use std::mem::MaybeUninit;
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -300,6 +300,50 @@ impl Sockets {
         }
     }
 
+    fn membership_v4(&self, token: i64, group: &str, interface: &str, join: i64) -> i64 {
+        let (Ok(group), Ok(interface)) = (group.parse::<Ipv4Addr>(), interface.parse::<Ipv4Addr>())
+        else {
+            return -1;
+        };
+        let Some(socket) = self.get(token) else {
+            return -1;
+        };
+        let Socket::Datagram(socket) = socket.as_ref() else {
+            return -1;
+        };
+        if !group.is_multicast() || !socket.local_addr().is_ok_and(|address| address.is_ipv4()) {
+            return -1;
+        }
+        match join {
+            0 => socket.leave_multicast_v4(&group, &interface),
+            1 => socket.join_multicast_v4(&group, &interface),
+            _ => return -1,
+        }
+        .map_or(-1, |()| 0)
+    }
+
+    fn membership_v6(&self, token: i64, group: &str, interface: i64, join: i64) -> i64 {
+        let (Ok(group), Ok(interface)) = (group.parse::<Ipv6Addr>(), u32::try_from(interface))
+        else {
+            return -1;
+        };
+        let Some(socket) = self.get(token) else {
+            return -1;
+        };
+        let Socket::Datagram(socket) = socket.as_ref() else {
+            return -1;
+        };
+        if !group.is_multicast() || !socket.local_addr().is_ok_and(|address| address.is_ipv6()) {
+            return -1;
+        }
+        match join {
+            0 => socket.leave_multicast_v6(&group, interface),
+            1 => socket.join_multicast_v6(&group, interface),
+            _ => return -1,
+        }
+        .map_or(-1, |()| 0)
+    }
+
     fn address(&self, token: i64, peer: bool) -> Option<SocketAddr> {
         let socket = self.get(token)?;
         match socket.as_ref() {
@@ -443,6 +487,32 @@ pub(super) extern "C-unwind" fn loom_rt_socket_local_port(token: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_socket_datagram_broadcast(token: i64, mode: i64) -> i64 {
     edit(|owner, _| Ok(owner.sockets().datagram_broadcast(token, mode)))
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_membership_v4(
+    token: i64,
+    group: *const u8,
+    interface: *const u8,
+    join: i64,
+) -> i64 {
+    // SAFETY: Generated code roots both UTF-8 Text values. This synchronous
+    // socket option neither collects managed data nor retains their pointers.
+    let group = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(group)) };
+    let interface = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(interface)) };
+    edit(|owner, _| Ok(owner.sockets().membership_v4(token, group, interface, join)))
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_membership_v6(
+    token: i64,
+    group: *const u8,
+    interface: i64,
+    join: i64,
+) -> i64 {
+    // SAFETY: The rooted Text is borrowed only during this non-collecting call.
+    let group = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(group)) };
+    edit(|owner, _| Ok(owner.sockets().membership_v6(token, group, interface, join)))
 }
 
 #[unsafe(no_mangle)]
@@ -728,6 +798,55 @@ pub(super) extern "C-unwind" fn loom_rt_task_wait_socket(token: i64, interests: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multicast_membership_preserves_identity_and_checks_native_inputs() {
+        let sockets = Sockets::default();
+        let token = sockets.bind_datagram("0.0.0.0:0");
+        assert!(token > 0);
+        let lease = sockets.get(token).unwrap();
+        assert_eq!(sockets.membership_v4(token, "239.255.0.1", "0.0.0.0", 1), 0);
+        assert!(!sockets.close(token));
+        assert_eq!(sockets.membership_v4(token, "239.255.0.1", "0.0.0.0", 0), 0);
+        for (group, interface, join) in [
+            ("127.0.0.1", "0.0.0.0", 1),
+            ("239.255.0.1:1234", "0.0.0.0", 1),
+            ("239.255.0.1", "localhost", 1),
+            ("239.255.0.1", "0.0.0.0", 2),
+        ] {
+            assert_eq!(sockets.membership_v4(token, group, interface, join), -1);
+        }
+        assert_eq!(sockets.membership_v6(token, "ff02::1", 0, 1), -1);
+        drop(lease);
+        assert!(sockets.close(token));
+        assert_eq!(
+            sockets.membership_v4(token, "239.255.0.1", "0.0.0.0", 1),
+            -1
+        );
+        let listener = sockets.listen("127.0.0.1:0");
+        assert_eq!(
+            sockets.membership_v4(listener, "239.255.0.1", "0.0.0.0", 1),
+            -1
+        );
+        assert!(sockets.close(listener));
+        let token = sockets.bind_datagram("[::]:0");
+        if token > 0 {
+            for (group, interface, join) in [
+                ("::1", 0, 1),
+                ("ff02::1", -1, 1),
+                ("ff02::1", i64::from(u32::MAX) + 1, 1),
+                ("ff02::1%1", 0, 1),
+                ("ff02::1", 0, 2),
+            ] {
+                assert_eq!(sockets.membership_v6(token, group, interface, join), -1);
+            }
+            assert_eq!(
+                sockets.membership_v4(token, "239.255.0.1", "0.0.0.0", 1),
+                -1
+            );
+            assert!(sockets.close(token));
+        }
+    }
 
     #[test]
     fn broadcast_options_share_identity_without_retiring_leases() {

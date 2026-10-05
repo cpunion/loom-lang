@@ -7,6 +7,8 @@ import std.net.udp.connect
 import std.net.udp.peer_address
 import std.net.udp.set_broadcast
 import std.net.udp.broadcast
+import std.net.udp.join_multicast
+import std.net.udp.leave_multicast
 import std.net.udp.local_address
 import std.net.udp.receive
 import std.net.udp.send
@@ -37,6 +39,8 @@ async fn exercise() Result[Bool, UdpError] {
     discard set_broadcast(server, true)?
     assert broadcast(server)?
     discard set_broadcast(server, false)?
+    discard join_multicast(server, "239.255.0.1", "0.0.0.0")?
+    discard leave_multicast(server, "239.255.0.1", "0.0.0.0")?
     let address = local_address(server)?
     let client = connect(address).await?
     defer {

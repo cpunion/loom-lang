@@ -103,6 +103,8 @@ pub enum Primitive {
     SocketBindDatagram,
     SocketConnectDatagram,
     SocketDatagramBroadcast,
+    SocketMembershipV4,
+    SocketMembershipV6,
     SocketConnect,
     SocketConnectStatus,
     SocketAccept,
