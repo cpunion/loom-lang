@@ -1147,6 +1147,12 @@ impl Converter<'_> {
                     Primitive::SocketSetNodelay | Primitive::SocketDatagramBroadcast => {
                         Some((&[Type::Int, Type::Int], Type::Int))
                     }
+                    Primitive::SocketMembershipV4 => {
+                        Some((&[Type::Int, Type::Text, Type::Text, Type::Int], Type::Int))
+                    }
+                    Primitive::SocketMembershipV6 => {
+                        Some((&[Type::Int, Type::Text, Type::Int, Type::Int], Type::Int))
+                    }
                     Primitive::SocketSetKeepalive => Some((
                         &[Type::Int, Type::Int, Type::Int, Type::Int, Type::Int],
                         Type::Int,
@@ -1513,6 +1519,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "socket_bind_datagram" => P::SocketBindDatagram,
         "socket_connect_datagram" => P::SocketConnectDatagram,
         "socket_datagram_broadcast" => P::SocketDatagramBroadcast,
+        "socket_membership_v4" => P::SocketMembershipV4,
+        "socket_membership_v6" => P::SocketMembershipV6,
         "socket_connect" => P::SocketConnect,
         "socket_connect_status" => P::SocketConnectStatus,
         "socket_accept" => P::SocketAccept,
@@ -1702,6 +1710,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::CleanupEach => 3,
         P::ListRetainRange | P::SocketWriteBytes | P::SocketReceiveFrom | P::SocketSendTo => 4,
         P::TlsWrite => 4,
+        P::SocketMembershipV4 | P::SocketMembershipV6 => 4,
         P::TlsClient => 6,
         P::TlsServer => 5,
         P::TaskWaitProcessCapture => 5,
@@ -2005,6 +2014,8 @@ mod tests {
             ("socket_bind_datagram", &[2][..]),
             ("socket_connect_datagram", &[2][..]),
             ("socket_datagram_broadcast", &[1, 1][..]),
+            ("socket_membership_v4", &[1, 2, 2, 1][..]),
+            ("socket_membership_v6", &[1, 2, 1, 1][..]),
             ("socket_send_datagram", &[1, 3, 1][..]),
             ("socket_receive_from", &[1, 3, 1, 3][..]),
             ("socket_send_to", &[1, 3, 1, 2][..]),

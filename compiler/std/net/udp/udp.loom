@@ -26,6 +26,7 @@ pub enum UdpError {
     Bind
     Connect
     Option
+    Membership
     Address
     Limit
     Receive

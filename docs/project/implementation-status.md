@@ -547,7 +547,10 @@ endpoints and alias revocation have source tests. Creation is not a remote
 handshake or delivery guarantee. Unconnected IPv4 sockets expose explicit
 default-off broadcast configuration/query with alias and stale-token tests;
 configuration does not prove delivery under host routing/firewall policy.
-Multicast configuration remains open.
+Explicit multicast join/leave accepts IPv4 interface addresses or IPv6 indices,
+with family, range and stale-identity checks. Native and source tests exercise
+membership, not routed multicast delivery; IPv6 default-interface support is
+host-dependent. Outbound interface, loop and hop-limit controls remain open.
 Hostname connections interleave address families with configurable bounded
 concurrency, stagger and a total cancellation deadline. Numeric address races
 share that source policy. Sockets are registered before suspension, so completed
