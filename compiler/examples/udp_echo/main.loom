@@ -62,4 +62,8 @@ async fn main() {
         Result.Ok(value) => value
         Result.Err(_) => false
     }
+    assert match exercise_multicast().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
 }

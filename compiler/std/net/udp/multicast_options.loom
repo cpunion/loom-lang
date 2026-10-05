@@ -1,0 +1,52 @@
+pub record MulticastV4 {
+    interface Text
+    loopback Bool
+    hops Int
+}
+
+pub record MulticastV6 {
+    interface Int
+    loopback Bool
+    hops Int
+}
+
+intrinsic fn socket_multicast_v4(token Int, interface Text, loopback Int, hops Int) Int
+
+intrinsic fn socket_multicast_v6(token Int, interface Int, loopback Int, hops Int) Int
+
+fn multicast_result(status Int) Result[Int, UdpError] {
+    if status < 0 {
+        Result.Err(UdpError.Option)
+    } else {
+        Result.Ok(0)
+    }
+}
+
+// Outbound policy, not group membership. Interface uses the same family-specific
+// form as join_multicast; hops is 0..255 (IPv4 TTL or IPv6 hop limit).
+// OS failure can leave a partially applied policy: close if exact policy is
+// required. Configuration is shared by aliases and does not retire I/O waits.
+pub fn set_multicast(socket Socket, options MulticastV4) Result[Int, UdpError] {
+    if options.hops < 0 || options.hops > 255 {
+        return Result.Err(UdpError.Option)
+    }
+    multicast_result(socket_multicast_v4(socket.state.token, options.interface,
+            if options.loopback {
+                1
+            } else {
+                0
+            }, options.hops))
+}
+
+pub fn set_multicast(socket Socket, options MulticastV6) Result[Int, UdpError] {
+    if options.interface < 0 || options.interface > 4294967295 ||
+    options.hops < 0 || options.hops > 255 {
+        return Result.Err(UdpError.Option)
+    }
+    multicast_result(socket_multicast_v6(socket.state.token, options.interface,
+            if options.loopback {
+                1
+            } else {
+                0
+            }, options.hops))
+}

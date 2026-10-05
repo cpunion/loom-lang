@@ -38,8 +38,15 @@ numeric address without a zone, and the interface is an index (0 for OS choice).
 Invalid groups, indices, family mismatches and closed sockets return
 `UdpError.Membership`; repeated joins/leaves retain OS error semantics, not an
 idempotency promise. Closing releases memberships. The example and source tests
-check OS membership operations, not multicast packet delivery. Host routes and
-interface policy still apply; outbound interface, loop and hop-limit controls
-remain future work.
+check OS membership operations. `set_multicast(socket, MulticastV4 { ... })`
+or `MulticastV6` explicitly sets the outbound interface, `loopback`, and `hops`
+(0–255: IPv4 TTL or IPv6 hop limit). This does not join a group. Copies share
+configuration; it does not retire pending I/O. The OS may reject an unavailable
+interface or default-interface request, and failures can leave part of the
+configuration applied; close the socket if exact policy is required.
+The [multicast exchange](multicast.loom) uses IPv4 TTL zero to send only to local
+multicast loopback, with a delayed sender, real readiness and a draining deadline.
+This is real packet evidence for the tested hosts, not routed delivery or IPv6
+multicast delivery evidence. Host routes and interface policy still apply.
 IPv6 numeric endpoints are supported when the host enables that family; DNS
 in the UDP convenience API remains future work.

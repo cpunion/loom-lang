@@ -1,0 +1,41 @@
+import std.net.udp.MulticastV4
+import std.net.udp.set_multicast
+import std.text.concat
+import std.text.split
+import std.task.Outcome
+import std.task.deadline.after_ns
+
+async fn multicast_send(socket Socket, address Text) Result[Int, UdpError] {
+    sleep_ms(2).await
+    send(socket, to_bytes("local multicast 🧵"), address).await
+}
+
+async fn multicast_exchange(socket Socket, address Text) Result[Bool, UdpError] {
+    let incoming, written = (receive(socket, 64), multicast_send(socket, address)).await
+    let packet = incoming?
+    assert written? > 0
+    assert to_text(packet.data) == "local multicast 🧵"
+    Result.Ok(true)
+}
+
+// TTL zero confines the packet to local multicast loopback, not another host.
+async fn exercise_multicast() Result[Bool, UdpError] {
+    let socket = bind("0.0.0.0:0").await?
+    defer {
+        discard close(socket)
+    }
+    discard set_multicast(socket, MulticastV4 {
+            interface = "0.0.0.0"
+            loopback = true
+            hops = 0
+        })?
+    discard join_multicast(socket, "239.255.0.1", "0.0.0.0")?
+    let parts = split(local_address(socket)?, ":")
+    let destination = concat("239.255.0.1:", parts[1])
+    let outcome = after_ns(multicast_exchange(socket, destination), 1000000000).await
+    discard leave_multicast(socket, "239.255.0.1", "0.0.0.0")?
+    match outcome {
+        Outcome.Completed(value) => value
+        _ => Result.Ok(false)
+    }
+}
