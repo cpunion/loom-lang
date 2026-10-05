@@ -515,7 +515,7 @@ preserving completed results and draining both work and timer subtrees. It
 requests cancellation, not a hard return-time guarantee for blocking OS calls.
 
 Real timer/readiness/completion registration wakes the owner without per-Task
-threads or busy polling. Nonblocking TCP, OS DNS, asynchronous files and process
+threads or busy polling. Nonblocking TCP/UDP, OS DNS, asynchronous files and process
 capture are implemented; blocking I/O uses bounded native workers with copied native data,
 not managed pointers. Cancellation of a running OS call waits for completion.
 Process capture adds native pipe-drain threads and unbounded output buffering;
@@ -524,6 +524,11 @@ TCP exposes numeric local/peer endpoints, TCP_NODELAY, explicit keepalive
 idle/interval/retry configuration and write half-close,
 preserving pending receive registrations for EOF-delimited exchanges. Text-to-Bytes
 encoding is source-library policy and returns an independent buffer.
+UDP preserves datagram boundaries and numeric senders, including empty packets;
+oversized receives consume the packet and return an explicit truncation error.
+Source policy uses the existing reactor, cancellation and explicit close/abort,
+tested on IPv4/available IPv6 at O0/O2 with moving GC. Connected datagrams,
+multicast and broadcast configuration remain open.
 Hostname connections interleave address families with configurable bounded
 concurrency, stagger and a total cancellation deadline. Numeric address races
 share that source policy. Sockets are registered before suspension, so completed

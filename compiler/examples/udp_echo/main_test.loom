@@ -1,0 +1,6 @@
+test async fn datagram_echo_uses_the_native_reactor() {
+    assert match exercise().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}

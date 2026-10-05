@@ -1,0 +1,131 @@
+import std.result.Result
+import std.bytes.new
+import std.bytes.length
+import std.bytes.to_text
+
+record State {
+    token Int
+}
+
+// Copies share the same owner-local socket identity, not a new native socket.
+pub record Socket {
+    state State
+}
+
+pub record Datagram {
+    sender Text
+    data Bytes
+}
+
+pub enum UdpError {
+    Bind
+    Address
+    Limit
+    Receive
+    Truncated
+    Send
+    Close
+}
+
+intrinsic fn socket_bind_datagram(address Text) Int
+
+intrinsic fn socket_receive_from(token Int, buffer Bytes, limit Int, sender Bytes) Int
+
+intrinsic fn socket_send_to(token Int, value Bytes, end Int, address Text) Int
+
+intrinsic fn socket_address(token Int, peer Int) Text
+
+intrinsic fn socket_close(token Int) Int
+
+intrinsic fn socket_abort(token Int) Int
+
+async intrinsic fn socket_wait(token Int, interest Int)
+
+// Numeric IPv4/IPv6 endpoints only; no implicit blocking DNS lookup.
+pub async fn bind(address Text) Result[Socket, UdpError] {
+    let token = socket_bind_datagram(address)
+    if token < 0 {
+        return Result.Err(UdpError.Bind)
+    }
+    Result.Ok(Socket {
+            state = State {
+                token = token
+            }
+        })
+}
+
+pub fn local_address(socket Socket) Result[Text, UdpError] {
+    let address = socket_address(socket.state.token, 0)
+    if address == "" {
+        Result.Err(UdpError.Address)
+    } else {
+        Result.Ok(address)
+    }
+}
+
+// Receive exactly one packet. Empty packets are data, never EOF. Oversized
+// packets are consumed and report Truncated, without exposing a partial packet.
+pub async fn receive(socket Socket, limit Int) Result[Datagram, UdpError] {
+    if limit < 0 || limit > 65535 {
+        return Result.Err(UdpError.Limit)
+    }
+    let buffer = new()
+    let sender = new()
+    while true {
+        let count = socket_receive_from(socket.state.token, buffer, limit, sender)
+        if count >= 0 {
+            return Result.Ok(Datagram {
+                    sender = to_text(sender),
+                    data = buffer
+                })
+        }
+        if count == -3 {
+            return Result.Err(UdpError.Truncated)
+        }
+        if count != -2 {
+            return Result.Err(UdpError.Receive)
+        }
+        socket_wait(socket.state.token, 1).await
+    }
+}
+
+pub async fn receive(socket Socket) Result[Datagram, UdpError] {
+    receive(socket, 65535).await
+}
+
+// The initial extent is retained across readiness retries. A packet is never
+// split into stream-like partial sends. Use caller synchronization for aliases
+// that could modify the existing bytes while this Task is pending.
+pub async fn send(socket Socket, value Bytes, address Text) Result[Int, UdpError] {
+    let end = length(value)
+    while true {
+        let count = socket_send_to(socket.state.token, value, end, address)
+        if count == end {
+            return Result.Ok(count)
+        }
+        if count != -2 {
+            return Result.Err(UdpError.Send)
+        }
+        socket_wait(socket.state.token, 2).await
+    }
+}
+
+// Finish or cancel outstanding I/O before close. A pending readiness lease
+// rejects close; successful close makes every copied wrapper stale.
+pub fn close(socket Socket) Result[Int, UdpError] {
+    if socket_close(socket.state.token) < 0 {
+        Result.Err(UdpError.Close)
+    } else {
+        Result.Ok(0)
+    }
+}
+
+// Revokes aliases and wakes pending receives/sends. Already delivered packets
+// are not rolled back. Drain those Tasks before leaving their enclosing scope.
+pub fn abort(socket Socket) Result[Int, UdpError] {
+    if socket_abort(socket.state.token) < 0 {
+        Result.Err(UdpError.Close)
+    } else {
+        Result.Ok(0)
+    }
+}

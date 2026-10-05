@@ -3413,6 +3413,19 @@ the socket. Use `defer` to close after suspension, and cancel/drain child waits
 before closing a shared socket. The [loopback example](examples/tcp_loopback/main.loom)
 exercises O0/O2, forced GC, close, and cancellation.
 
+`std.net.udp` provides numeric IPv4/IPv6 `bind`, `local_address`, `receive` and
+`send`. Each received `Datagram` contains fresh Bytes and the numeric sender;
+empty packets are data, not EOF. `receive(socket, limit)` consumes one packet
+and reports `UdpError.Truncated` instead of returning a partial oversized packet.
+The default limit is 65535 bytes; limits outside 0–65535 reject. `send` retains
+the initial byte extent across readiness retries and never splits a packet;
+callers synchronize aliases that can modify those bytes. UDP does not guarantee
+delivery or ordering, and the OS may reject large payloads. Copies share an
+owner-local socket identity. Drain pending I/O before `close`; `abort` revokes
+aliases and wakes waits to fail. This uses the same reactor and Task cancellation
+as TCP, without DNS or a separate executor. Connected datagrams, multicast and
+broadcast configuration remain open. See the [UDP example](examples/udp_echo).
+
 `std.net.dns.resolve(host, port).await` returns numeric socket addresses in OS
 resolver order, including hosts-file entries, as `Result[List[Text], ResolveError]`.
 `std.net.tcp.connect(host, port).await` interleaves address families, preserving

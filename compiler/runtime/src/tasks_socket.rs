@@ -5,9 +5,13 @@
 use super::*;
 use crate::wait::{ERROR, KIND_READINESS, READABLE, WRITABLE};
 use crate::{buffer_bytes, reserve};
-use socket2::{Domain, Protocol, SockAddr, SockRef, Socket as NativeSocket, TcpKeepalive, Type};
+use socket2::{
+    Domain, MaybeUninitSlice, Protocol, SockAddr, SockRef, Socket as NativeSocket, TcpKeepalive,
+    Type,
+};
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::mem::MaybeUninit;
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -36,6 +40,7 @@ pub(super) enum Connection {
 
 pub(super) enum Socket {
     Listener(TcpListener),
+    Datagram(UdpSocket),
     Stream {
         stream: TcpStream,
         connection: Cell<Connection>,
@@ -62,6 +67,7 @@ impl Socket {
         {
             match self {
                 Self::Listener(socket) => socket.as_raw_fd() as u64,
+                Self::Datagram(socket) => socket.as_raw_fd() as u64,
                 Self::Stream { stream, .. } => stream.as_raw_fd() as u64,
             }
         }
@@ -69,6 +75,7 @@ impl Socket {
         {
             match self {
                 Self::Listener(socket) => raw_handle(socket),
+                Self::Datagram(socket) => raw_handle(socket),
                 Self::Stream { stream, .. } => raw_handle(stream),
             }
         }
@@ -154,6 +161,19 @@ impl Sockets {
         }
     }
 
+    fn bind_datagram(&self, address: &str) -> i64 {
+        let Ok(address) = address.parse::<SocketAddr>() else {
+            return -1;
+        };
+        let Ok(socket) = UdpSocket::bind(address) else {
+            return -1;
+        };
+        if socket.set_nonblocking(true).is_err() {
+            return -1;
+        }
+        self.insert(Socket::Datagram(socket))
+    }
+
     fn connect(&self, address: &str) -> i64 {
         // Numeric addresses only: creating and initiating a nonblocking socket
         // cannot resolve a name or wait for a remote handshake on this owner.
@@ -229,9 +249,12 @@ impl Sockets {
         true
     }
 
-    fn retire_stream(&self, token: i64) -> Option<Rc<Socket>> {
+    fn retire_io(&self, token: i64) -> Option<Rc<Socket>> {
         let mut handles = self.handles.borrow_mut();
-        if !matches!(handles.get(&token)?.as_ref(), Socket::Stream { .. }) {
+        if !matches!(
+            handles.get(&token)?.as_ref(),
+            Socket::Stream { .. } | Socket::Datagram(_)
+        ) {
             return None;
         }
         handles.remove(&token)
@@ -246,6 +269,7 @@ impl Sockets {
         let socket = self.get(token)?;
         match socket.as_ref() {
             Socket::Listener(listener) if !peer => listener.local_addr().ok(),
+            Socket::Datagram(socket) if !peer => socket.local_addr().ok(),
             Socket::Stream { stream, connection } if connection.get() == Connection::Connected => {
                 if peer {
                     stream.peer_addr().ok()
@@ -317,6 +341,13 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_listen(address: *const u8)
 }
 
 #[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_bind_datagram(address: *const u8) -> i64 {
+    // SAFETY: Generated code supplies rooted UTF-8 Text; no GC allocation here.
+    let address = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(address)) };
+    edit(|owner, _| Ok(owner.sockets().bind_datagram(address)))
+}
+
+#[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_socket_accept(token: i64) -> i64 {
     // -2 means a nonblocking accept would block; other failures return -1.
     edit(|owner, _| Ok(owner.sockets().accept(token)))
@@ -342,7 +373,7 @@ pub(super) extern "C-unwind" fn loom_rt_socket_close(token: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_socket_abort(token: i64) -> i64 {
     edit(|owner, _| {
-        let Some(socket) = owner.sockets().retire_stream(token) else {
+        let Some(socket) = owner.sockets().retire_io(token) else {
             return Ok(-1);
         };
         // Revoke the token first, remove native interest while its Rc leases
@@ -485,6 +516,96 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_write_bytes(
     }
     let mut stream = stream;
     match stream.write(bytes) {
+        Ok(count) => count as i64,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => -2,
+        Err(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_receive_from(
+    token: i64,
+    bytes: *mut u8,
+    limit: i64,
+    sender: *mut u8,
+) -> i64 {
+    let Ok(limit) = usize::try_from(limit) else {
+        return -1;
+    };
+    if limit > 65_535 || bytes == sender {
+        return -1;
+    }
+    let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {
+        return -1;
+    };
+    let Socket::Datagram(socket) = socket.as_ref() else {
+        return -1;
+    };
+    // No movable managed pointer crosses the OS read. socket2 reports Unix
+    // MSG_TRUNC and Windows WSAEMSGSIZE through the same received flags.
+    let mut scratch = vec![MaybeUninit::<u8>::uninit(); limit + 1];
+    let mut buffers = [MaybeUninitSlice::new(&mut scratch)];
+    let (count, flags, address) = match SockRef::from(socket).recv_from_vectored(&mut buffers) {
+        Ok(value) => value,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return -2,
+        Err(_) => return -1,
+    };
+    if flags.is_truncated() || count > limit {
+        // The datagram is consumed, but neither output receives a partial packet.
+        return -3;
+    }
+    let Some(address) = address.as_socket() else {
+        return -1;
+    };
+    let address = address.to_string();
+    crate::rooted([bytes, sender], |slots| unsafe {
+        // Reload each argument after allocations; reserving the second output
+        // can move the first header. Both input handles stay rooted throughout.
+        let buffer = reserve(*slots, count, 1);
+        ptr::copy_nonoverlapping(
+            scratch.as_ptr().cast::<u8>(),
+            (*buffer).data.add((*buffer).len),
+            count,
+        );
+        (*buffer).len += count;
+        let peer = reserve(*slots.add(1), address.len(), 1);
+        ptr::copy_nonoverlapping(
+            address.as_ptr(),
+            (*peer).data.add((*peer).len),
+            address.len(),
+        );
+        (*peer).len += address.len();
+    });
+    count as i64
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_send_to(
+    token: i64,
+    bytes: *const u8,
+    end: i64,
+    address: *const u8,
+) -> i64 {
+    let Ok(end) = usize::try_from(end) else {
+        return -1;
+    };
+    // SAFETY: Generated code roots both inputs. This nonblocking operation
+    // neither allocates managed data nor retains a managed interior pointer.
+    let bytes = unsafe { buffer_bytes(bytes) };
+    let Some(bytes) = bytes.get(..end) else {
+        return -1;
+    };
+    let address = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(address)) };
+    let Ok(address) = address.parse::<SocketAddr>() else {
+        return -1;
+    };
+    let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {
+        return -1;
+    };
+    let Socket::Datagram(socket) = socket.as_ref() else {
+        return -1;
+    };
+    match socket.send_to(bytes, address) {
         Ok(count) => count as i64,
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => -2,
         Err(_) => -1,

@@ -1124,9 +1124,9 @@ impl Converter<'_> {
                     Primitive::WriteBytes => {
                         Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
                     }
-                    Primitive::SocketListen | Primitive::SocketConnect => {
-                        Some((&[Type::Text], Type::Int))
-                    }
+                    Primitive::SocketListen
+                    | Primitive::SocketConnect
+                    | Primitive::SocketBindDatagram => Some((&[Type::Text], Type::Int)),
                     Primitive::SocketAccept
                     | Primitive::SocketConnectStatus
                     | Primitive::SocketClose
@@ -1153,6 +1153,12 @@ impl Converter<'_> {
                     }
                     Primitive::SocketWriteBytes | Primitive::TlsWrite => {
                         Some((&[Type::Int, Type::Bytes, Type::Int, Type::Int], Type::Int))
+                    }
+                    Primitive::SocketReceiveFrom => {
+                        Some((&[Type::Int, Type::Bytes, Type::Int, Type::Bytes], Type::Int))
+                    }
+                    Primitive::SocketSendTo => {
+                        Some((&[Type::Int, Type::Bytes, Type::Int, Type::Text], Type::Int))
                     }
                     Primitive::DirectoryCreate
                     | Primitive::FileRemove
@@ -1498,11 +1504,14 @@ fn primitive(value: &str) -> Result<Primitive> {
         "write_bytes" => P::WriteBytes,
         "close" => P::Close,
         "socket_listen" => P::SocketListen,
+        "socket_bind_datagram" => P::SocketBindDatagram,
         "socket_connect" => P::SocketConnect,
         "socket_connect_status" => P::SocketConnectStatus,
         "socket_accept" => P::SocketAccept,
         "socket_read" => P::SocketRead,
         "socket_write_bytes" => P::SocketWriteBytes,
+        "socket_receive_from" => P::SocketReceiveFrom,
+        "socket_send_to" => P::SocketSendTo,
         "socket_close" => P::SocketClose,
         "socket_local_port" => P::SocketLocalPort,
         "socket_address" => P::SocketAddress,
@@ -1609,6 +1618,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Create
         | P::Close
         | P::SocketListen
+        | P::SocketBindDatagram
         | P::SocketConnect
         | P::SocketConnectStatus
         | P::SocketAccept
@@ -1679,7 +1689,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitFileWriteBytes
         | P::TaskCreate
         | P::CleanupEach => 3,
-        P::ListRetainRange | P::SocketWriteBytes => 4,
+        P::ListRetainRange | P::SocketWriteBytes | P::SocketReceiveFrom | P::SocketSendTo => 4,
         P::TlsWrite => 4,
         P::TlsClient => 6,
         P::TlsServer => 5,
@@ -1981,6 +1991,9 @@ mod tests {
             ("tls_generation", &[1][..]),
             ("tls_notify", &[1][..]),
             ("socket_abort", &[1][..]),
+            ("socket_bind_datagram", &[2][..]),
+            ("socket_receive_from", &[1, 3, 1, 3][..]),
+            ("socket_send_to", &[1, 3, 1, 2][..]),
             ("socket_set_keepalive", &[1, 1, 1, 1, 1][..]),
         ] {
             let operation = primitive(name).unwrap();
