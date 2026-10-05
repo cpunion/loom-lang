@@ -123,6 +123,10 @@ fn shape_type_equations(env Environment, pattern Node, ty Int, names List[Text],
     if pattern.kind != NodeKind.TupleType && pattern.kind != NodeKind.FunctionType && pattern.kind != NodeKind.Type {
         return
     }
+    if pattern.kind == NodeKind.Type && length(shape.pack_widths) > 1 {
+        shape_data_group_equations(env, pattern, shape, names, rows, widths, depth)
+        return
+    }
     let patterns = if pattern.kind == NodeKind.FunctionType {
         group(pattern, NodeKind.Parameters)
     } else {
@@ -162,6 +166,36 @@ fn shape_type_equations(env Environment, pattern Node, ty Int, names List[Text],
         if length(returns) != 0 {
             shape_type_equations(env, get(returns, 0), get(shape.arguments, count), names, rows, widths, depth + 1)
         }
+    }
+}
+
+fn shape_data_group_equations(env Environment, pattern Node, shape Type, names List[Text], rows List[List[Int]], widths List[Int], depth Int) {
+    let parameters = group(symbol(env, shape.symbol).node, NodeKind.TypeParameters)
+    if length(parameters) != length(pattern.children) { return }
+    var index = 0
+    var pack = 0
+    var offset = 0
+    while index < length(parameters) {
+        let member = child(pattern, index)
+        if get(parameters, index).kind == NodeKind.TypePack {
+            let count = get(shape.pack_widths, pack)
+            if member.kind == NodeKind.Spread {
+                let tuple = type_group_pattern(member)
+                let elements = new[Int]()
+                var element = 0
+                while element < count {
+                    push(elements, get(shape.arguments, offset + element))
+                    element = element + 1
+                }
+                shape_type_equations(env, tuple, intern(env, TypeKind.Tuple, -1, elements), names, rows, widths, depth + 1)
+            }
+            offset = offset + count
+            pack = pack + 1
+        } else {
+            shape_type_equations(env, member, get(shape.arguments, offset), names, rows, widths, depth + 1)
+            offset = offset + 1
+        }
+        index = index + 1
     }
 }
 

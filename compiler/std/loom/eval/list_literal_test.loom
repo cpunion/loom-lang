@@ -34,6 +34,7 @@ fn list_fixture() Program {
             kind = TypeKind.Record
             symbol = 0
             arguments = new[Int]()
+            pack_widths = new[Int]()
             fields = fields
             variants = new[Variant]()
             constraint = new[Expr]()

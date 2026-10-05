@@ -66,7 +66,7 @@ fn family_argument_admitted(env Environment, owner Int, ty Int, obligations List
         }
     }
     if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
-        let bounds = requirements(env, shape.symbol, shape.arguments)?
+        let bounds = data_requirements(env, shape)?
         index = 0
         while index < length(bounds) {
             let bound = get(bounds, index)

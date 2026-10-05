@@ -46,6 +46,7 @@ fn shape(types List[Type], kind TypeKind, arguments List[Int]) Int {
             kind = kind
             symbol = -1
             arguments = arguments
+            pack_widths = new[Int]()
             fields = new[Field]()
             variants = new[Variant]()
             constraint = new[Expr]()
@@ -104,6 +105,7 @@ fn async_function(program Program, callbacks List[Int], visits TaskVisits, id In
             kind = TypeKind.Frame
             symbol = -1
             arguments = new[Int]()
+            pack_widths = new[Int]()
             fields = new[Field]()
             variants = new[Variant]()
             constraint = new[Expr]()
@@ -206,6 +208,7 @@ fn async_function(program Program, callbacks List[Int], visits TaskVisits, id In
             kind = TypeKind.Frame
             symbol = -1
             arguments = new[Int]()
+            pack_widths = new[Int]()
             fields = fields
             variants = new[Variant]()
             constraint = new[Expr]()

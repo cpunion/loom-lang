@@ -29,7 +29,7 @@ fn updated_record(context Context, node Node, declaration Int, shape Type, argum
         }
         index = index + 1
     }
-    let ty = constructed_type(context, declaration, arguments, node)?
+    let ty = constructed_group_type(context, declaration, arguments, shape.pack_widths, node)?
     if must_scope(context, ty)? {
         return Result.Err(error(context, node, "record updates cannot construct a MustScope resource"))
     }

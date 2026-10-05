@@ -46,6 +46,29 @@ fn method_pack_schema(env Environment, owner Int, node Node, arguments List[Int]
         return Result.Ok(pack_node(node, NodeKind.Type, std.int.to_text(ty), new[Node]()))
     }
     let children = new[Node]()
+    if node.kind == NodeKind.Type && node.value != "List" && node.value != "Task" {
+        let nominal = find_data(env, owner, node, node.value)?
+        if nominal >= 0 && type_pack_count(symbol(env, nominal).node) > 1 {
+            let parameters = group(symbol(env, nominal).node, NodeKind.TypeParameters)
+            if length(parameters) != length(node.children) {
+                return Result.Err(failure(env, owner, node, "independent data packs need one group per declared slot"))
+            }
+            var index = 0
+            while index < length(parameters) {
+                let member = child(node, index)
+                if get(parameters, index).kind == NodeKind.TypePack {
+                    if member.kind != NodeKind.Spread {
+                        return Result.Err(failure(env, owner, member, "expand each nominal pack group with ..."))
+                    }
+                    push(children, method_pack_schema(env, owner, type_group_pattern(member), arguments, obligations, element, depth + 1)?)
+                } else {
+                    push(children, method_pack_schema(env, owner, member, arguments, obligations, element, depth + 1)?)
+                }
+                index = index + 1
+            }
+            return Result.Ok(pack_node(node, NodeKind.TypeArguments, concat("nominal#", std.int.to_text(nominal)), children))
+        }
+    }
     if node.kind == NodeKind.FunctionType {
         let inputs = new[Node]()
         let parameters = group(node, NodeKind.Parameters)

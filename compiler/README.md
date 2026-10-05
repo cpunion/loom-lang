@@ -843,8 +843,8 @@ than relying on a guessed split. See the
 equations, empty packs, dyn methods, CTFE and typed suspension.
 Instance and body-cache keys retain every width, not just their sum. Shape
 reasoning remains bounded; it does not enumerate specializations or solve all
-integer feasibility problems. Independent packs in nominal declarations and
-impl headers, and sequence-dependent universal postcondition proofs, remain
+integer feasibility problems. Independent packs in impl headers and
+sequence-dependent universal postcondition proofs remain
 unsupported.
 
 ```loom
@@ -1169,11 +1169,38 @@ intersections reject conservatively. Bounds or sampled arities do not prove
 disjointness. An impl family's ordinary method contracts are proved at each
 selected arity; unselected arities have not had their bodies verified.
 
-Independent packs in nominal declarations and impl headers, and sequence-dependent
+Independent packs in impl headers and sequence-dependent
 universal proofs, remain open. This implementation does not complete the accepted
 metaprogramming design.
 
-Records and enums accept one type pack among fixed type parameters too:
+Records and enums accept type packs among fixed type parameters too. Independent
+groups infer uniquely from structural fields/payloads or an expected type.
+Explicit annotations preserve each declared pack slot with `...`:
+
+```loom
+record Groups[As..., Bs...] {
+    left (As...)
+    right (Bs...)
+}
+
+fn example() {
+    let groups Groups[(Int, Text)..., (Bool,)...] = Groups {
+        left = (42, "answer"),
+        right = (true,)
+    }
+    discard groups
+}
+```
+
+An unmarked tuple is one type; `((Int, Text),)...` is a group containing that
+one tuple type. `()...` denotes an empty type group, not a source empty-tuple
+value. Flat arguments cannot guess independent boundaries. Distinct width
+vectors retain distinct nominal instances even when their flattened arguments
+match. Cache replay, overloads, type comparison, recursive List-backed data,
+existing single-pack impl families and Tasks retain those boundaries without a
+runtime pack object. See the [group example](examples/data_packs/groups.loom).
+
+The common single-pack form also accepts flat explicit arguments:
 
 ```loom
 record Packet[Tag, Ts...] {

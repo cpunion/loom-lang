@@ -114,6 +114,7 @@ fn test_types() List[Type] {
                 kind = get(kinds, index)
                 symbol = -1
                 arguments = new[Int]()
+                pack_widths = new[Int]()
                 fields = new[Field]()
                 variants = new[Variant]()
                 constraint = new[Expr]()

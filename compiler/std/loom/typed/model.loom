@@ -47,6 +47,9 @@ pub record Type {
     // its symbol identifies the exact concept-and-bindings interface instance.
     symbol Int
     arguments List[Int]
+    // Nominal pack widths in declaration order. Arguments remain flat;
+    // equal flattened arguments with different groups are distinct types.
+    pack_widths List[Int]
     fields List[Field]
     variants List[Variant]
     // Predicate template: self is local 0; calls have index -1 until rebound

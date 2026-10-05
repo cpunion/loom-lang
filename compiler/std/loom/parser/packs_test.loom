@@ -9,6 +9,26 @@ test fn variadic_types_retain_pack_bounds_and_type_patterns() {
     discard rejected("fn f[Ts....](values Ts...) {}")
 }
 
+test fn explicit_type_groups_preserve_tuple_elements_and_empty_boundaries() {
+    let declaration = child(parsed("""
+        fn use(value Groups[((Int, Text),)..., ()...]) {
+            discard value
+        }
+        """), 0)
+    let ty = child(child(child(declaration, 1), 0), 0)
+    assert child(ty, 0).kind == NodeKind.Spread
+    assert child(child(ty, 0), 0).kind == NodeKind.TupleType
+    assert child(child(child(ty, 0), 0), 0).kind == NodeKind.TupleType
+    assert length(child(child(ty, 1), 0).children) == 0
+    discard parsed("""
+        fn main() {
+            discard Groups[()..., (Int,)...] { left = empty(), right = (1,) }
+        }
+        """)
+    discard rejected("fn use(value ()) {}")
+    discard rejected("fn main() { discard () }")
+}
+
 test fn static_pack_iteration_retains_binding_target_and_body() {
     let declaration = child(parsed("fn visit[Ts...](values Ts...) { comptime for item in values { discard item } }"), 0)
     let loop = child(body(declaration), 0)

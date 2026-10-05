@@ -85,6 +85,7 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
                 kind = ty.kind
                 symbol = ty.symbol
                 arguments = copy_indices(ty.arguments)
+                pack_widths = copy_indices(ty.pack_widths)
                 fields = fields
                 variants = variants
                 constraint = new[Expr]()

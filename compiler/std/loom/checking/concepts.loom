@@ -74,11 +74,13 @@ fn required_concept(env Environment, owner Int, node Node) Result[Int, Failure] 
     Result.Ok(selected)
 }
 fn requirements(env Environment, owner Int, arguments List[Int]) Result[List[Requirement], Failure] {
+    requirements_parameters(env, owner, arguments, expanded_parameters(env, owner, length(arguments)))
+}
+fn requirements_parameters(env Environment, owner Int, arguments List[Int], parameters List[Node]) Result[List[Requirement], Failure] {
     let obligations = new[Requirement]()
     if prototype(env, owner) {
         push(obligations, Requirement { ty = get(arguments, 0) capability = symbol(env, owner).owner })
     }
-    let parameters = expanded_parameters(env, owner, length(arguments))
     var index = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)

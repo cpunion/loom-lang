@@ -197,17 +197,13 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     } else {
         expected
     }
-    let source = symbol(context.env, declaration).node
-    let count = if data_pack(source) {
-        data_argument_count(context, node, declaration, child(node, 0).children, desired, plain_inputs(new[Node]()))?
-    } else {
-        length(group(source, NodeKind.TypeParameters))
-    }
-    let shape = get(context.env.types, template(context, declaration, count)?)
+    let selection = data_selection(context, node, declaration, child(node, 0).children, desired, plain_inputs(new[Node]()))?
+    let shape = get(context.env.types, data_type_grouped(context.env, declaration,
+        abstract_arguments(context.env, selection.count), selection.widths, 0)?)
     if shape.kind != TypeKind.Record {
         return Result.Err(error(context, node, "construction requires a record type"))
     }
-    let arguments = data_arguments(context, node, declaration, child(node, 0).children, desired, count)?
+    let arguments = data_arguments(context, node, declaration, selection.supplied, desired, selection.count)?
     let seen = new[Bool]()
     var index = 0
     while index < length(shape.fields) {
@@ -263,7 +259,7 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
         set(fields, index, expression(ExprKind.Field, target, member, "", field.index, expressions(value), value.falls))
         index = index + 1
     }
-    let ty = constructed_type(context, declaration, arguments, node)?
+    let ty = constructed_group_type(context, declaration, arguments, shape.pack_widths, node)?
     var resources = 0
     var last = -1
     index = 0
@@ -298,13 +294,9 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     } else {
         expected
     }
-    let source = symbol(context.env, declaration).node
-    let count = if data_pack(source) {
-        data_argument_count(context, node, declaration, types, desired, inputs)?
-    } else {
-        length(group(source, NodeKind.TypeParameters))
-    }
-    let shape = get(context.env.types, template(context, declaration, count)?)
+    let selection = data_selection(context, node, declaration, types, desired, inputs)?
+    let shape = get(context.env.types, data_type_grouped(context.env, declaration,
+        abstract_arguments(context.env, selection.count), selection.widths, 0)?)
     if shape.kind != TypeKind.Enum {
         return Result.Err(error(context, node, "variant construction requires an enum"))
     }
@@ -323,7 +315,7 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     if length(patterns) != length(inputs.nodes) {
         return Result.Err(error(context, node, "enum payload count does not match"))
     }
-    let arguments = data_arguments(context, node, declaration, types, desired, count)?
+    let arguments = data_arguments(context, node, declaration, selection.supplied, desired, selection.count)?
     let values = new[Expr]()
     index = 0
     while index < length(inputs.nodes) {
@@ -343,7 +335,7 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
         set(values, index, typed(context, get(inputs.nodes, index), get(values, index), target)?)
         index = index + 1
     }
-    let ty = constructed_type(context, declaration, arguments, node)?
+    let ty = constructed_group_type(context, declaration, arguments, shape.pack_widths, node)?
     index = 0
     while index + 1 < length(values) {
         if must_scope(context, get(values, index).ty)? {

@@ -96,7 +96,7 @@ fn relation_in(types List[Type], left Int, right Int, seen List[TypeComparison],
             0
         }
     }
-    if length(a.arguments) != length(b.arguments) {
+    if length(a.arguments) != length(b.arguments) || !same_arguments(a.pack_widths, b.pack_widths) {
         return 0
     }
     var index = 0

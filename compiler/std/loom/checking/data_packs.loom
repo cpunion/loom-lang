@@ -1,6 +1,5 @@
-// Data instances keep their original nominal symbol and ordinary flat type
-// arguments. Only declaration type syntax expands; no new runtime shape or
-// synthetic nominal identity is introduced for an arity.
+// Nominal symbols stay original. Width vectors distinguish partitions of the
+// flat arguments; there is no runtime pack object or synthetic nominal symbol.
 fn data_pack(node Node) Bool {
     (node.kind == NodeKind.Record || node.kind == NodeKind.Enum) && pack_parameter(node) >= 0
 }
@@ -10,7 +9,53 @@ fn expanded_parameters(env Environment, owner Int, count Int) List[Node] {
     if !data_pack(symbol(env, owner).node) {
         return parameters
     }
+    if !one_type_pack(symbol(env, owner).node) {
+        return new[Node]()
+    }
     expand_pack_parameters(parameters, count - length(parameters) + 1)
+}
+
+fn data_requirements(env Environment, shape Type) Result[List[Requirement], Failure] {
+    let parameters = if data_pack(symbol(env, shape.symbol).node) {
+        expand_family_parameters(type_parameters(env, shape.symbol), shape.pack_widths)
+    } else {
+        type_parameters(env, shape.symbol)
+    }
+    requirements_parameters(env, shape.symbol, shape.arguments, parameters)
+}
+
+fn unknown_extents(count Int) List[Int] {
+    let output = new[Int]()
+    var index = 0
+    while index < count {
+        push(output, -1)
+        index = index + 1
+    }
+    output
+}
+
+// Bind each selected declaration slot before recursive resolution. A flat
+// argument count cannot recover independent group boundaries.
+fn bind_data_parameters(node Node, parameters List[Node], arguments List[Int]) Node {
+    var value = node.value
+    if node.kind == NodeKind.Type || node.kind == NodeKind.Name {
+        let root = slice(value, 0, first_dot(value))
+        var index = 0
+        while index < length(parameters) {
+            if root == get(parameters, index).value {
+                value = concat(concat("$type#", to_text(get(arguments, index))), slice(value, length(root), length(value)))
+                break
+            }
+            index = index + 1
+        }
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, bind_data_parameters(child(node, index), parameters, arguments))
+        index = index + 1
+    }
+    pack_node(node, node.kind, value, children)
 }
 
 fn sequence_pack_arity(patterns List[Node], count Int) Int {
@@ -202,7 +247,7 @@ fn validate_data_packs(env Environment) Result[Bool, Failure] {
         let shape = get(env.types, index)
         if (shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum) && data_pack(symbol(env, shape.symbol).node) {
             let arguments = abstract_arguments(env, length(shape.arguments))
-            let id = data_type(env, shape.symbol, arguments, 0)?
+            let id = data_type_grouped(env, shape.symbol, arguments, shape.pack_widths, 0)?
             var seen = false
             var previous = 0
             while previous < length(checked) {
@@ -212,7 +257,7 @@ fn validate_data_packs(env Environment) Result[Bool, Failure] {
             if !seen {
                 push(checked, id)
                 let abstract = get(env.types, id)
-                let obligations = requirements(env, shape.symbol, arguments)?
+                let obligations = data_requirements(env, abstract)?
                 let node = symbol(env, shape.symbol).node
                 var field = 0
                 while field < length(abstract.fields) {

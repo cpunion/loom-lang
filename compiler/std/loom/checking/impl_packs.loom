@@ -122,6 +122,30 @@ fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth
         index = index + 1
     }
     let children = new[Node]()
+    if node.kind == NodeKind.Type && node.value != "List" && node.value != "Task" {
+        let nominal = find_data(env, owner, node, node.value)?
+        if nominal >= 0 && type_pack_count(symbol(env, nominal).node) > 1 {
+            let parameters = group(symbol(env, nominal).node, NodeKind.TypeParameters)
+            if length(node.children) != length(parameters) {
+                return Result.Err(failure(env, owner, node, "independent data packs need one explicit group per declared slot"))
+            }
+            index = 0
+            while index < length(parameters) {
+                let member = child(node, index)
+                if get(parameters, index).kind == NodeKind.TypePack {
+                    if member.kind != NodeKind.Spread {
+                        return Result.Err(failure(env, owner, member, "expand each nominal pack group with ..."))
+                    }
+                    let tuple = type_group_pattern(member)
+                    push(children, impl_target_schema(env, owner, tuple, element, depth + 1)?)
+                } else {
+                    push(children, impl_target_schema(env, owner, member, element, depth + 1)?)
+                }
+                index = index + 1
+            }
+            return Result.Ok(pack_node(node, NodeKind.Type, concat("nominal#", std.int.to_text(nominal)), children))
+        }
+    }
     if node.kind == NodeKind.FunctionType {
         let inputs = group(node, NodeKind.Parameters)
         index = 0
@@ -264,6 +288,31 @@ fn implementation_overlap(env Environment, first Implementation, second Implemen
 fn impl_type_schema(env Environment, ty Int, node Node) Node {
     let shape = get(env.types, ty)
     let children = new[Node]()
+    if length(shape.pack_widths) > 1 {
+        let parameters = group(symbol(env, shape.symbol).node, NodeKind.TypeParameters)
+        var parameter = 0
+        var offset = 0
+        var pack = 0
+        while parameter < length(parameters) {
+            if get(parameters, parameter).kind == NodeKind.TypePack {
+                let width = get(shape.pack_widths, pack)
+                let elements = new[Node]()
+                var element = 0
+                while element < width {
+                    push(elements, impl_type_schema(env, get(shape.arguments, offset + element), node))
+                    element = element + 1
+                }
+                push(children, pack_node(node, NodeKind.TupleType, "tuple", elements))
+                offset = offset + width
+                pack = pack + 1
+            } else {
+                push(children, impl_type_schema(env, get(shape.arguments, offset), node))
+                offset = offset + 1
+            }
+            parameter = parameter + 1
+        }
+        return pack_node(node, NodeKind.Type, concat("nominal#", std.int.to_text(shape.symbol)), children)
+    }
     var index = 0
     while index < length(shape.arguments) {
         push(children, impl_type_schema(env, get(shape.arguments, index), node))
@@ -298,6 +347,15 @@ fn impl_pack_arity(env Environment, owner Int, node Node, ty Int, depth Int) Res
         return Result.Ok(-1)
     }
     let shape = get(env.types, ty)
+    if node.kind == NodeKind.Type && length(shape.pack_widths) > 1 {
+        let declaration = find_data(env, owner, node, node.value)?
+        if declaration != shape.symbol { return Result.Ok(-1) }
+        let names = pack_names(declared_packs(symbol(env, owner).node))
+        let rows = new[List[Int]]()
+        shape_type_equations(env, node, ty, names, rows, new[Int](), depth)
+        let widths = solved_pack_shape(rows, length(names))
+        return Result.Ok(if length(widths) == 1 { get(widths, 0) } else { -1 })
+    }
     if node.kind == NodeKind.TupleType && shape.kind != TypeKind.Tuple {
         return Result.Ok(-1)
     }

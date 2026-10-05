@@ -1,0 +1,120 @@
+record Groups[As..., Bs...] {
+    left (As...)
+    right (Bs...)
+}
+
+enum GroupTree[As..., Bs...] {
+    Leaf((As...), (Bs...))
+    Branch(List[GroupTree[As..., Bs...]])
+}
+
+concept FirstGroup {
+    fn first_width(self Self) Int
+}
+
+concept Keeping {
+    fn keep[As..., Bs...](self Self, value Groups[As..., Bs...]) Groups[As..., Bs...] {
+        value
+    }
+}
+
+impl Keeping for Bool {
+    fn keep[Xs..., Ys...](self Self, value Groups[(Xs...)..., (Ys...)...]) Groups[(Xs...)..., (Ys...)...] {
+        value
+    }
+}
+
+impl[As...] FirstGroup for Groups[(As...)..., (Int,)...] {
+    fn first_width(self Self) Int {
+        var count = 0
+        comptime for T in As {
+            count = count + 1
+        }
+        count
+    }
+}
+
+fn regroup[As..., Bs...](left (As...), right (Bs...)) Groups[As..., Bs...] {
+    Groups {
+        left = left,
+        right = right
+    }
+}
+
+fn first[As..., Bs...](value Groups[As..., Bs...]) (As...) {
+    value.left
+}
+
+fn selected(value Groups[(Int, Int)..., (Int,)...]) Int {
+    value.left.1
+}
+
+fn selected(value Groups[(Int,)..., (Int, Int)...]) Int {
+    value.right.1
+}
+
+async fn exercise_groups() {
+    let events List[Int] = []
+    let ordered = Groups {
+        left = (mark(events, 1), mark(events, 2)),
+        right = (mark(events, 3),)
+    }
+    assert ordered.right.0 == 3 && length(events) == 3
+    assert events[0] == 1 && events[1] == 2 && events[2] == 3
+    let wide Groups[(Int, Int)..., (Int,)...] = Groups {
+        left = (1, 2),
+        right = (3,)
+    }
+    let narrow Groups[(Int,)..., (Int, Int)...] = Groups {
+        left = (4,),
+        right = (5, 6)
+    }
+    assert wide.left.1 == 2 && narrow.right.1 == 6
+    assert selected(wide) == 2 && selected(narrow) == 6
+    let dynamic dyn FirstGroup = wide
+    assert dynamic.first_width() == 2
+    let keeper dyn Keeping = true
+    assert keeper.keep(wide).left.1 == 2 && keeper.keep(narrow).right.1 == 6
+    assert comptime {
+        Groups[(Int, Int)..., (Int,)...] != Groups[(Int,)..., (Int, Int)...]
+    }
+    assert first(echo(wide).await).1 == 2
+    let explicit = Groups[((Int, Text),)..., (Bool,)...] {
+        left = ((7, "nested"),),
+        right = (true,)
+    }
+    assert explicit.left.0.1 == "nested" && explicit.right.0
+    let changed = Groups {
+        right = ("changed",),
+        ..wide
+    }
+    assert changed.left.1 == 2 && changed.right.0 == "changed"
+    let resized = Groups {
+        left = (12,),
+        ..wide
+    }
+    assert resized.left.0 == 12 && resized.right.0 == 3
+    let empty Groups[()..., ()...] = regroup(packet().values, packet().values)
+    discard empty
+    let constant = comptime {
+        regroup((8, true), ("constant",))
+    }
+    assert constant.left.1 && constant.right.0 == "constant"
+    let shared = [10]
+    let aliases = regroup((shared,), (shared,))
+    aliases.left.0[0] = 42
+    assert echo(aliases).await.right.0[0] == 42
+    let tasks = regroup((echo(9),), (echo(true),))
+    let number = tasks.left.0.await
+    let flag = tasks.right.0.await
+    assert number == 9 && flag
+    let leaf = GroupTree.Leaf((11, "leaf"), (true,))
+    let tree = GroupTree.Branch([leaf])
+    assert match echo(tree).await {
+        GroupTree.Branch(children) => match children[0] {
+            GroupTree.Leaf(left, right) => left.0 == 11 && right.0
+            GroupTree.Branch(_) => false
+        }
+        GroupTree.Leaf(_, _) => false
+    }
+}

@@ -195,6 +195,7 @@ fn initialize_refinement(env Environment, ty Int) Result[Bool, Failure] {
             kind = shape.kind
             symbol = shape.symbol
             arguments = shape.arguments
+            pack_widths = shape.pack_widths
             fields = shape.fields
             variants = shape.variants
             constraint = expressions(predicate)
@@ -224,6 +225,7 @@ fn refinements(env Environment) Result[Bool, Failure] {
                         kind = ty.kind
                         symbol = ty.symbol
                         arguments = ty.arguments
+                        pack_widths = ty.pack_widths
                         fields = ty.fields
                         variants = ty.variants
                         constraint = expressions(predicate)

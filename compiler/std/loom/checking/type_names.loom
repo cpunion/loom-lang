@@ -30,25 +30,43 @@ fn qualified_type_name(bindings std.loom.binding.Program, file Int, name Text) T
 // abstract parameter labels are positional, not recovered source spellings.
 pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces List[Interface], ty Int) Text {
     let value = get(types, ty)
-    if value.kind == TypeKind.Unit { return "()" }
-    if value.kind == TypeKind.Int { return "Int" }
-    if value.kind == TypeKind.Bool { return "Bool" }
-    if value.kind == TypeKind.Text { return "Text" }
-    if value.kind == TypeKind.Bytes { return "Bytes" }
-    if value.kind == TypeKind.Float { return "Float" }
-    if value.kind == TypeKind.Meta { return "type" }
+    if value.kind == TypeKind.Unit {
+        return "()"
+    }
+    if value.kind == TypeKind.Int {
+        return "Int"
+    }
+    if value.kind == TypeKind.Bool {
+        return "Bool"
+    }
+    if value.kind == TypeKind.Text {
+        return "Text"
+    }
+    if value.kind == TypeKind.Bytes {
+        return "Bytes"
+    }
+    if value.kind == TypeKind.Float {
+        return "Float"
+    }
+    if value.kind == TypeKind.Meta {
+        return "type"
+    }
     if value.kind == TypeKind.Dyn {
         let interface = get(interfaces, value.symbol)
         let symbol = get(bindings.symbols, interface.symbol)
         var label = concat("dyn ", qualified_type_name(bindings, symbol.file, symbol.name))
-        if length(value.arguments) == 0 { return label }
+        if length(value.arguments) == 0 {
+            return label
+        }
         label = concat(label, "[")
         var index = 0
         var binding = 0
         while index < length(bindings.symbols) {
             let member = get(bindings.symbols, index)
             if member.owner == interface.symbol && member.node.kind == NodeKind.AssociatedType {
-                if binding > 0 { label = concat(label, ", ") }
+                if binding > 0 {
+                    label = concat(label, ", ")
+                }
                 label = concat(label, concat(member.name, concat(" = ", type_name(bindings, types, interfaces, get(value.arguments, binding)))))
                 binding = binding + 1
             }
@@ -56,18 +74,24 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
         }
         return concat(label, "]")
     }
-    if value.kind == TypeKind.Parameter { return concat("T", to_text(value.symbol)) }
+    if value.kind == TypeKind.Parameter {
+        return concat("T", to_text(value.symbol))
+    }
     if value.kind == TypeKind.Function {
         var label = "fn("
         var index = 0
         while index + 1 < length(value.arguments) {
-            if index > 0 { label = concat(label, ", ") }
+            if index > 0 {
+                label = concat(label, ", ")
+            }
             label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index)))
             index = index + 1
         }
         label = concat(label, ")")
         let output = get(value.arguments, index)
-        if output != 0 { label = concat(label, concat(" ", type_name(bindings, types, interfaces, output))) }
+        if output != 0 {
+            label = concat(label, concat(" ", type_name(bindings, types, interfaces, output)))
+        }
         return label
     }
     if value.kind == TypeKind.Associated {
@@ -79,7 +103,9 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
             label = concat(label, "[")
             var index = 1
             while index < length(value.arguments) {
-                if index > 1 { label = concat(label, ", ") }
+                if index > 1 {
+                    label = concat(label, ", ")
+                }
                 label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index)))
                 index = index + 1
             }
@@ -91,23 +117,68 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
         var label = "("
         var index = 0
         while index < length(value.arguments) {
-            if index > 0 { label = concat(label, ", ") }
+            if index > 0 {
+                label = concat(label, ", ")
+            }
             label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index)))
             index = index + 1
         }
-        if length(value.arguments) == 1 { label = concat(label, ",") }
+        if length(value.arguments) == 1 {
+            label = concat(label, ",")
+        }
         return concat(label, ")")
     }
-    var label = if value.kind == TypeKind.Task { "Task" } else { "List" }
+    var label = if value.kind == TypeKind.Task {
+        "Task"
+    } else {
+        "List"
+    }
     if value.kind != TypeKind.List && value.kind != TypeKind.Task {
         let symbol = get(bindings.symbols, value.symbol)
         label = qualified_type_name(bindings, symbol.file, symbol.name)
+    }
+    if length(value.pack_widths) > 1 {
+        label = concat(label, "[")
+        let parameters = group(get(bindings.symbols, value.symbol).node, NodeKind.TypeParameters)
+        var index = 0
+        var offset = 0
+        var pack = 0
+        while index < length(parameters) {
+            if index > 0 {
+                label = concat(label, ", ")
+            }
+            if get(parameters, index).kind == NodeKind.TypePack {
+                let width = get(value.pack_widths, pack)
+                label = concat(label, "(")
+                var element = 0
+                while element < width {
+                    if element > 0 {
+                        label = concat(label, ", ")
+                    }
+                    label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, offset + element)))
+                    element = element + 1
+                }
+                if width == 1 {
+                    label = concat(label, ",")
+                }
+                label = concat(label, ")...")
+                offset = offset + width
+                pack = pack + 1
+            } else {
+                label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, offset)))
+                offset = offset + 1
+            }
+            index = index + 1
+        }
+        return concat(label, "]")
     }
     if length(value.arguments) > 0 {
         label = concat(label, "[")
         var index = 0
         while index < length(value.arguments) {
-            if index > 0 { label = concat(label, ", ") }
+            if index > 0 {
+                label = concat(label, ", ")
+            }
             label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index)))
             index = index + 1
         }

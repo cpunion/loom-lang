@@ -24,7 +24,7 @@ pub fn structural_type(types List[Type], kind TypeKind, symbol Int, arguments Li
     var index = 0
     while index < length(types) {
         let existing = get(types, index)
-        if existing.kind == kind && existing.symbol == symbol && same_arguments(existing.arguments, arguments) {
+        if existing.kind == kind && existing.symbol == symbol && length(existing.pack_widths) == 0 && same_arguments(existing.arguments, arguments) {
             return index
         }
         index = index + 1
@@ -44,6 +44,7 @@ pub fn structural_type(types List[Type], kind TypeKind, symbol Int, arguments Li
             kind = kind
             symbol = symbol
             arguments = arguments
+            pack_widths = new[Int]()
             fields = fields
             variants = new[Variant]()
             constraint = new[Expr]()

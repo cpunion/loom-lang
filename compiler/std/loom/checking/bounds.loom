@@ -30,7 +30,7 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
         discard associated_bounds(env, owner, get(env.interfaces, shape.symbol).symbol, shape.arguments, obligations, node)?
     }
     if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
-        let bounds = requirements(env, shape.symbol, shape.arguments)?
+        let bounds = data_requirements(env, shape)?
         index = 0
         while index < length(bounds) {
             let bound = get(bounds, index)
@@ -52,6 +52,12 @@ fn context_type(context Context, node Node) Result[Int, Failure] {
 
 fn constructed_type(context Context, declaration Int, arguments List[Int], node Node) Result[Int, Failure] {
     let ty = data_type(context.env, declaration, arguments, 0)?
+    discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?
+    Result.Ok(ty)
+}
+
+fn constructed_group_type(context Context, declaration Int, arguments List[Int], widths List[Int], node Node) Result[Int, Failure] {
+    let ty = data_type_grouped(context.env, declaration, arguments, widths, 0)?
     discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?
     Result.Ok(ty)
 }

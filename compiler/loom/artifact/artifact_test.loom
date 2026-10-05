@@ -39,6 +39,7 @@ test fn abstract_associated_types_use_non_executable_placeholders() {
         kind = TypeKind.Associated
         symbol = 7
         arguments = receiver
+        pack_widths = std.list.new[Int]()
         fields = std.list.new[Field]()
         variants = std.list.new[Variant]()
         constraint = std.list.new[Expr]()
@@ -56,6 +57,7 @@ test fn function_signatures_are_structural_and_references_are_explicit() {
         kind = TypeKind.Function
         symbol = -1
         arguments = signature
+        pack_widths = std.list.new[Int]()
         fields = std.list.new[Field]()
         variants = std.list.new[Variant]()
         constraint = std.list.new[Expr]()
@@ -73,6 +75,7 @@ test fn lowered_tasks_and_frames_have_explicit_native_storage_tags() {
         kind = TypeKind.Task
         symbol = -1
         arguments = arguments
+        pack_widths = std.list.new[Int]()
         fields = std.list.new[Field]()
         variants = std.list.new[Variant]()
         constraint = std.list.new[Expr]()
@@ -93,6 +96,7 @@ test fn lowered_tasks_and_frames_have_explicit_native_storage_tags() {
         kind = TypeKind.Frame
         symbol = -1
         arguments = std.list.new[Int]()
+        pack_widths = std.list.new[Int]()
         fields = fields
         variants = std.list.new[Variant]()
         constraint = std.list.new[Expr]()
@@ -109,6 +113,7 @@ test fn dynamic_metadata_is_an_explicit_sparse_tail() {
             kind = TypeKind.Dyn
             symbol = 0
             arguments = std.list.new[Int]()
+            pack_widths = std.list.new[Int]()
             fields = std.list.new[Field]()
             variants = std.list.new[Variant]()
             constraint = std.list.new[Expr]()

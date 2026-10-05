@@ -19,7 +19,7 @@ record Step {
     rest Cursor
     node Node
 }
-enum Items { Types Names Arguments Parameters Bindings }
+enum Items { Types Names Arguments GenericArguments Parameters Bindings }
 
 fn token(cursor Cursor) Token { get(cursor.tokens, cursor.index) }
 fn at(cursor Cursor, kind Kind) Bool { token(cursor).kind == kind }
@@ -157,6 +157,16 @@ fn type_item(cursor Cursor) Result[Step, Diagnostic] {
 fn item(cursor Cursor, mode Items) Result[Step, Diagnostic] {
     match mode {
         Items.Types => type_item(cursor)
+        Items.GenericArguments => {
+            if at(cursor, Kind.LParen) {
+                let closing = newlines(next(cursor))
+                if at(closing, Kind.RParen) && ellipsis(next(closing)) {
+                    let empty = done(cursor, next(closing), NodeKind.TupleType, "", new[Node]())
+                    return Result.Ok(done(cursor, next(next(next(empty.rest))), NodeKind.Spread, "", one(empty.node)))
+                }
+            }
+            item(cursor, Items.Arguments)
+        }
         Items.Names => type_parameter(cursor)
         Items.Arguments => {
             let value = expr(cursor, 0, true, true)?
@@ -175,7 +185,12 @@ fn type_binding(cursor Cursor) Result[Step, Diagnostic] {
 }
 fn parenthesized(cursor Cursor, mode Items, tuple_kind NodeKind) Result[Step, Diagnostic] {
     let start = newlines(next(cursor))
-    if at(start, Kind.RParen) { return Result.Err(error(start, "empty tuples are not supported")) }
+    if at(start, Kind.RParen) {
+        if mode == Items.Types && ellipsis(next(start)) {
+            return Result.Ok(done(cursor, next(start), tuple_kind, "", new[Node]()))
+        }
+        return Result.Err(error(start, "empty tuples are not supported"))
+    }
     let first = item(start, mode)?
     var rest = newlines(first.rest)
     if !at(rest, Kind.Comma) {
@@ -227,7 +242,7 @@ fn type_args(cursor Cursor) Result[Step, Diagnostic] {
 // Parse their syntax once; the checker decides from the receiver's binding.
 fn expression_args(cursor Cursor) Result[Step, Diagnostic] {
     if at(cursor, Kind.LBracket) {
-        return sequence(cursor, Kind.LBracket, Kind.RBracket, NodeKind.TypeArguments, Items.Arguments, true)
+        return sequence(cursor, Kind.LBracket, Kind.RBracket, NodeKind.TypeArguments, Items.GenericArguments, true)
     }
     Result.Ok(done(cursor, cursor, NodeKind.TypeArguments, "", new[Node]()))
 }

@@ -15,7 +15,7 @@ import std.result.Result
 import std.int.to_text
 
 fn simple_type(kind TypeKind, symbol Int, arguments List[Int]) Type {
-    Type { kind = kind symbol = symbol arguments = arguments fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() }
+    Type { kind = kind symbol = symbol arguments = arguments pack_widths = new[Int]() fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() }
 }
 fn base_type(env Environment, ty Int) Int {
     let shape = get(env.types, ty)
@@ -175,10 +175,16 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
     }
     let projected = projection(env, owner, node, arguments, obligations, depth)?
     if projected >= 0 { return Result.Ok(projected) }
+    let declaration = if node.value == "List" || node.value == "Task" { -1 } else { find_data(env, owner, node, node.value)? }
+    let selected = if declaration >= 0 {
+        data_type_groups(env, owner, node, declaration, node.children)?
+    } else {
+        DataSelection { count = length(node.children) widths = new[Int]() supplied = node.children }
+    }
     let args = new[Int]()
     index = 0
-    while index < length(node.children) {
-        push(args, resolve_bound(env, owner, child(node, index), arguments, obligations, depth + 1)?)
+    while index < length(selected.supplied) {
+        push(args, resolve_bound(env, owner, get(selected.supplied, index), arguments, obligations, depth + 1)?)
         index = index + 1
     }
     if node.value == "Task" {
@@ -189,15 +195,33 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
         if length(args) != 1 { return Result.Err(failure(env, owner, node, "List requires one element type")) }
         return Result.Ok(intern(env, TypeKind.List, -1, args))
     }
-    let declaration = find_data(env, owner, node, node.value)?
     if declaration < 0 { return Result.Err(failure(env, owner, node, "unknown or inaccessible type")) }
-    data_type(env, declaration, args, depth + 1)
+    data_type_grouped(env, declaration, args, selected.widths, depth + 1)
 }
 fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) Result[Int, Failure] {
+    let node = symbol(env, declaration).node
+    let widths = if data_pack(node) && one_type_pack(node) {
+        ints(length(arguments) - fixed_pack_parameters(node))
+    } else {
+        new[Int]()
+    }
+    data_type_grouped(env, declaration, arguments, widths, depth)
+}
+fn data_type_grouped(env Environment, declaration Int, arguments List[Int], widths List[Int], depth Int) Result[Int, Failure] {
     let item = symbol(env, declaration)
     let pack = pack_parameter(item.node)
+    var count = fixed_pack_parameters(item.node)
+    var part = 0
+    while part < length(widths) {
+        let width = get(widths, part)
+        if width < 0 || width > 1024 {
+            return Result.Err(failure(env, declaration, item.node, "invalid data pack width"))
+        }
+        count = count + width
+        part = part + 1
+    }
     if (pack < 0 && length(arguments) != length(group(item.node, NodeKind.TypeParameters))) ||
-        (pack >= 0 && (length(arguments) < fixed_pack_parameters(item.node) || !one_type_pack(item.node))) {
+        (pack >= 0 && (length(widths) != type_pack_count(item.node) || length(arguments) != count)) {
         return Result.Err(failure(env, declaration, item.node, "wrong number of type arguments"))
     }
     var index = 0
@@ -210,7 +234,7 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
     index = 0
     while index < length(env.types) {
         let existing = get(env.types, index)
-        if existing.symbol == declaration && (existing.kind == TypeKind.Record || existing.kind == TypeKind.Enum || existing.kind == TypeKind.Refined) && same(existing.arguments, arguments) {
+        if existing.symbol == declaration && (existing.kind == TypeKind.Record || existing.kind == TypeKind.Enum || existing.kind == TypeKind.Refined) && same(existing.arguments, arguments) && same(existing.pack_widths, widths) {
             if env.expand_data && get(env.type_states, index).phase == 0 { discard expand_type(env, index, depth)? }
             return Result.Ok(index)
         }
@@ -224,7 +248,15 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
         if item.node.kind == NodeKind.Enum { TypeKind.Enum } else { TypeKind.Refined }
     }
     let id = length(env.types)
-    let placeholder = simple_type(kind, declaration, arguments)
+    let placeholder = Type {
+        kind = kind
+        symbol = declaration
+        arguments = arguments
+        pack_widths = copy_indices(widths)
+        fields = new[Field]()
+        variants = new[Variant]()
+        constraint = new[Expr]()
+    }
     push(env.types, placeholder)
     push(env.type_states, TypeState { phase = 0 task_width = -1 list_writes = 0 })
     if env.expand_data { discard expand_type(env, id, depth)? }
@@ -238,7 +270,12 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     let kind = shape.kind
     let arguments = shape.arguments
     let item = symbol(env, declaration)
-    let obligations = requirements(env, declaration, arguments)?
+    let parameters = if data_pack(item.node) {
+        expand_family_parameters(type_parameters(env, declaration), shape.pack_widths)
+    } else {
+        type_parameters(env, declaration)
+    }
+    let obligations = requirements_parameters(env, declaration, arguments, parameters)?
     let fields = new[Field]()
     let variants = new[Variant]()
     let constraints = new[Expr]()
@@ -247,17 +284,20 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     while index < length(item.node.children) {
         let original = child(item.node, index)
         let member = if pack >= 0 && (original.kind == NodeKind.Field || original.kind == NodeKind.Variant) {
-            let parameter = get(group(item.node, NodeKind.TypeParameters), pack)
-            expand_pack_type(env, declaration, original, parameter.value, length(arguments) - fixed_pack_parameters(item.node), -1, true, 0)?
+            expand_family_type(env, declaration, original, pack_names(declared_packs(item.node)), shape.pack_widths,
+                unknown_extents(length(shape.pack_widths)), true, 0, false)?
         } else { original }
+        let bound = if data_pack(item.node) && !one_type_pack(item.node) {
+            bind_data_parameters(member, parameters, arguments)
+        } else { member }
         if member.kind == NodeKind.Field {
-            push(fields, Field { name = member.value ty = resolve_bound(env, declaration, child(member, 0), arguments, obligations, depth + 1)? })
+            push(fields, Field { name = member.value ty = resolve_bound(env, declaration, child(bound, 0), arguments, obligations, depth + 1)? })
         }
         if member.kind == NodeKind.Variant {
             let payload = new[Int]()
             var field = 0
             while field < length(member.children) {
-                push(payload, resolve_bound(env, declaration, child(member, field), arguments, obligations, depth + 1)?)
+                push(payload, resolve_bound(env, declaration, child(bound, field), arguments, obligations, depth + 1)?)
                 field = field + 1
             }
             push(variants, Variant { name = member.value fields = payload })
@@ -274,7 +314,7 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
         push(fields, Field { name = "self" ty = base })
         // Predicates are validated after every function signature is available.
     }
-    set(env.types, id, Type { kind = kind symbol = declaration arguments = arguments fields = fields variants = variants constraint = constraints })
+    set(env.types, id, Type { kind = kind symbol = declaration arguments = arguments pack_widths = shape.pack_widths fields = fields variants = variants constraint = constraints })
     set(env.type_states, id, TypeState { phase = 2 task_width = -1 list_writes = 0 })
     if kind == TypeKind.Refined && length(arguments) != 0 {
         let template = data_type(env, declaration, abstract_arguments(env, length(arguments)), depth + 1)?
@@ -308,12 +348,12 @@ fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node
     if source.kind == TypeKind.Associated { return associated_type(env, owner, source.symbol, get(args, 0), argument_tail(args, 1), node, 0) }
     if source.kind == TypeKind.Tuple { return tuple_type(env, owner, node, args) }
     if source.kind == TypeKind.Record || source.kind == TypeKind.Enum || source.kind == TypeKind.Refined {
-        return data_type(env, source.symbol, args, 0)
+        return data_type_grouped(env, source.symbol, args, source.pack_widths, 0)
     }
     Result.Ok(ty)
 }
 fn same_constructor(env Environment, first Type, second Type) Bool {
-    if first.kind != second.kind || length(first.arguments) != length(second.arguments) { return false }
+    if first.kind != second.kind || length(first.arguments) != length(second.arguments) || !same(first.pack_widths, second.pack_widths) { return false }
     if first.kind == TypeKind.Dyn {
         return get(env.interfaces, first.symbol).symbol == get(env.interfaces, second.symbol).symbol
     }
