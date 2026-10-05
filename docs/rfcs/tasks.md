@@ -338,6 +338,14 @@ close the stream after child waits drain. The
 [half-close example](../../compiler/examples/tcp_half_close/README.md) exercises
 EOF-delimited requests and responses with the ordinary source Task machinery.
 
+`std.net.udp` binds numeric IPv4/IPv6 endpoints and uses the same readiness leases.
+Source `receive` returns one packet and its numeric sender, treats empty packets
+as data, and reports consumed oversized packets as `Truncated`. `send` never
+splits a packet. Copies share an owner-local socket; close rejects pending leases,
+and abort revokes aliases and wakes pending operations to fail. Task deadlines
+and cancellation need no UDP-specific executor. No delivery/order guarantee,
+implicit DNS, connected datagrams or multicast/broadcast policy is provided.
+
 `std.net.tls` composes TCP Tasks with a Rustls packet engine. Client construction
 always verifies the server's certificate chain, validity period and DNS/IP name.
 Default trust is a compiled Mozilla root set; applications can supply explicit

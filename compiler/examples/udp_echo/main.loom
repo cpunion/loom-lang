@@ -1,0 +1,51 @@
+import std.net.udp.Socket
+import std.net.udp.Datagram
+import std.net.udp.UdpError
+import std.net.udp.bind
+import std.net.udp.local_address
+import std.net.udp.receive
+import std.net.udp.send
+import std.net.udp.close
+import std.result.Result
+import std.text.to_bytes
+import std.bytes.to_text
+import std.time.sleep_ms
+
+async fn echo(server Socket) Result[Datagram, UdpError] {
+    let packet = receive(server, 1024).await?
+    discard send(server, packet.data, packet.sender).await?
+    Result.Ok(packet)
+}
+
+async fn request(client Socket, address Text) Result[Datagram, UdpError] {
+    sleep_ms(2).await
+    discard send(client, to_bytes("hello from Loom 🧵"), address).await?
+    receive(client, 1024).await
+}
+
+async fn exercise() Result[Bool, UdpError] {
+    let server = bind("127.0.0.1:0").await?
+    defer {
+        discard close(server)
+    }
+    let client = bind("127.0.0.1:0").await?
+    defer {
+        discard close(client)
+    }
+    let address = local_address(server)?
+    let incoming, outgoing = (echo(server), request(client, address)).await
+    let received = incoming?
+    let replied = outgoing?
+    assert received.sender == local_address(client)?
+    assert replied.sender == address
+    assert to_text(received.data) == "hello from Loom 🧵"
+    assert to_text(replied.data) == "hello from Loom 🧵"
+    Result.Ok(true)
+}
+
+async fn main() {
+    assert match exercise().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}

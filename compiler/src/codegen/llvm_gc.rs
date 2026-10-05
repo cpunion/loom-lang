@@ -167,6 +167,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::CleanupEach
         | Primitive::Read
         | Primitive::SocketRead
+        | Primitive::SocketReceiveFrom
         | Primitive::SocketAddress
         | Primitive::TlsRead
         | Primitive::TlsOutput
@@ -235,10 +236,12 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::WriteBytes
         | Primitive::Close
         | Primitive::SocketListen
+        | Primitive::SocketBindDatagram
         | Primitive::SocketConnect
         | Primitive::SocketConnectStatus
         | Primitive::SocketAccept
         | Primitive::SocketWriteBytes
+        | Primitive::SocketSendTo
         | Primitive::SocketClose
         | Primitive::SocketLocalPort
         | Primitive::SocketSetNodelay

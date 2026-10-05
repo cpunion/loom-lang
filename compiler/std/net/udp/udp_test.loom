@@ -1,0 +1,163 @@
+import std.text.to_bytes
+import std.bytes.get
+import std.bytes.set
+import std.time.sleep_ms
+import std.task.Outcome
+import std.task.deadline.after_ns
+
+async fn echo(socket Socket) Result[Datagram, UdpError] {
+    let packet = receive(socket, 64).await?
+    discard send(socket, packet.data, packet.sender).await?
+    Result.Ok(packet)
+}
+
+async fn request(socket Socket, address Text) Result[Datagram, UdpError] {
+    sleep_ms(2).await
+    discard send(socket, to_bytes("hello 🧵"), address).await?
+    receive(socket, 64).await
+}
+
+async fn round_trip(server Socket, binding Text) Result[Bool, UdpError] {
+    let client = bind(binding).await?
+    defer {
+        discard close(client)
+    }
+    let address = local_address(server)?
+    let received, replied = (echo(server), request(client, address)).await
+    let incoming = received?
+    let outgoing = replied?
+    assert incoming.sender == local_address(client)?
+    assert outgoing.sender == address
+    assert to_text(incoming.data) == "hello 🧵" && to_text(outgoing.data) == "hello 🧵"
+    set(incoming.data, 0, 88)
+    assert get(outgoing.data, 0) == 104
+    Result.Ok(true)
+}
+
+async fn packet_fixture(binding Text) Result[Bool, UdpError] {
+    let server = bind(binding).await?
+    defer {
+        discard close(server)
+    }
+    discard round_trip(server, binding).await?
+    let client = bind(binding).await?
+    defer {
+        discard close(client)
+    }
+    let address = local_address(server)?
+    assert send(client, new(), address).await? == 0
+    let empty = receive(server, 0).await?
+    assert length(empty.data) == 0 && empty.sender == local_address(client)?
+    discard send(client, to_bytes("first"), address).await?
+    discard send(client, to_bytes("second"), address).await?
+    let first = receive(server).await?
+    let second = receive(server).await?
+    assert to_text(first.data) == "first" && to_text(second.data) == "second"
+    Result.Ok(true)
+}
+
+test async fn datagrams_keep_packet_boundaries_senders_and_empty_payloads() {
+    assert match packet_fixture("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+    // An OS may disable IPv6. Once binding succeeds, the same complete
+    // receive/reply/empty/boundary checks must pass for that family too.
+    match bind("[::1]:0").await {
+        Result.Ok(probe) => {
+            discard close(probe)
+            assert match packet_fixture("[::1]:0").await {
+                Result.Ok(value) => value
+                Result.Err(_) => false
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+}
+
+async fn truncated_fixture() Result[Bool, UdpError] {
+    let server = bind("127.0.0.1:0").await?
+    defer {
+        discard close(server)
+    }
+    let client = bind("127.0.0.1:0").await?
+    defer {
+        discard close(client)
+    }
+    let address = local_address(server)?
+    discard send(client, to_bytes("oversized"), address).await?
+    assert match receive(server, 2).await {
+        Result.Err(UdpError.Truncated) => true
+        _ => false
+    }
+    discard send(client, to_bytes("next"), address).await?
+    let next = receive(server, 4).await?
+    assert to_text(next.data) == "next"
+    assert match receive(server, -1).await {
+        Result.Err(UdpError.Limit) => true
+        _ => false
+    }
+    assert match receive(server, 65536).await {
+        Result.Err(UdpError.Limit) => true
+        _ => false
+    }
+    assert match send(client, new(), "not an endpoint").await {
+        Result.Err(UdpError.Send) => true
+        _ => false
+    }
+    assert match bind("localhost:0").await {
+        Result.Err(UdpError.Bind) => true
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+test async fn truncated_packets_are_reported_and_do_not_poison_the_next_receive() {
+    assert match truncated_fixture().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
+
+async fn abort_pending(socket Socket) Result[Int, UdpError] {
+    sleep_ms(2).await
+    assert match close(socket) {
+        Result.Err(UdpError.Close) => true
+        _ => false
+    }
+    abort(socket)
+}
+
+async fn cancellation_fixture() Result[Bool, UdpError] {
+    let server = bind("127.0.0.1:0").await?
+    assert match after_ns(receive(server), 2000000).await {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    let alias = server
+    discard close(server)?
+    assert match local_address(alias) {
+        Result.Err(UdpError.Address) => true
+        _ => false
+    }
+    assert match close(alias) {
+        Result.Err(UdpError.Close) => true
+        _ => false
+    }
+    let pending = bind("127.0.0.1:0").await?
+    let received, ignored = (receive(pending), abort_pending(pending)).await
+    discard ignored?
+    assert match received {
+        Result.Err(UdpError.Receive) => true
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+test async fn cancellation_retires_leases_and_abort_wakes_pending_reads() {
+    assert match cancellation_fixture().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
