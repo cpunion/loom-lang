@@ -1,0 +1,50 @@
+import std.list.clone
+import std.list.length
+import std.list.push
+import std.result.Result
+import std.result.ConstraintError
+import std.time.sleep_ms
+
+type Nonempty[T] = List[T] where length(self) > 0
+
+fn singleton[T](value T) Nonempty[T] {
+    Nonempty([value])
+}
+
+fn copied_nonempty(input List[Int]) Result[Nonempty[Int], ConstraintError] {
+    Nonempty(clone(input))
+}
+
+fn replace_first[T](values Nonempty[T], value T) {
+    values[0] = value
+}
+
+fn append_value[T](values Nonempty[T], value T) {
+    push(values, value)
+}
+
+async fn exercise_generic_extents() {
+    let inner = [1]
+    let outer = singleton(inner)
+    let alias = outer
+    inner[0] = -1
+    push(inner, 2)
+    assert length(outer) == 1
+    replace_first(alias, [7, 8, 9])
+    append_value(outer, inner)
+    sleep_ms(1).await
+    assert length(alias) == 2
+    let empty List[Int] = []
+    assert match copied_nonempty(empty) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    assert match copied_nonempty([7]) {
+        Result.Ok(value) => length(value) == 1
+        Result.Err(_) => false
+    }
+}
+
+test async fn generic_extent_constraints_preserve_shared_nested_elements() {
+    exercise_generic_extents().await
+}

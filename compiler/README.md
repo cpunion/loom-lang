@@ -1956,9 +1956,10 @@ constant is a diagnostic. Unknown inputs, calls, and failed optional evaluation
 retain the `Result` boundary.
 See the [record refinement example](examples/record_refinement/main.loom).
 
-List-backed constraints can observe lengths and contents when their element
-values are immutable scalars, Text, or inline records/tuples/enums. Construction
-must use a fresh List literal or a pure factory proved not to return or publish
+List-backed constraints can observe lengths independently of their element
+type, including generic or shared elements. Predicates observing element
+contents still require immutable scalars, Text, or inline records/tuples/enums.
+Construction must use a fresh List literal or a pure factory proved not to return or publish
 input aliases. Explicit source `std.list.clone` is one such factory, not a
 compiler-recognized public name:
 
@@ -1980,12 +1981,14 @@ change that List's existing writable aliases. No automatic copy or runtime
 monitor is installed. Copies of a constrained value keep sharing its storage.
 
 Indexing, ordinary non-escaping read helpers and explicit copies are allowed.
+Shared element results currently cannot escape through a constrained borrow;
+extent-only predicates do not grant an unrestricted outer alias.
 When the predicate observes only length, element replacement is also permitted:
 
 ```loom
-type IntPair = List[Int] where length(self) == 2
+type Pair[T] = List[T] where length(self) == 2
 
-fn replace_first(pair IntPair, value Int) {
+fn replace_first[T](pair Pair[T], value T) {
     pair[0] = value
 }
 ```
@@ -2002,6 +2005,7 @@ publication into another aggregate reject at compile time. Factories
 and borrows are checked through helper bodies, not trusted annotations. These
 rules also run for compile-time code and unused concrete functions. The constrained
 List has the ordinary native List layout and survives moving GC and Task handoff.
+See the [generic extent example](examples/list_contracts/refinements.loom).
 Automatically proving that selected writes preserve an arbitrary predicate,
 and strengthening pre-existing writable aliases, remain later analysis work.
 

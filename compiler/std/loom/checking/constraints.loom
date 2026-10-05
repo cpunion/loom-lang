@@ -166,6 +166,12 @@ fn validate_refinement(env Environment, ty Int) Result[Int, Failure] {
         if !get(reads.valid, 0) {
             return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
         }
+        // Extent-only predicates do not observe T. Content predicates still
+        // need immutable elements: an external nested alias could change them.
+        if list && get(reads.element_reads, 0) &&
+        !inline_constraint_base(env, get(get(env.types, base).arguments, 0), 0) {
+            return Result.Err(failure(env, owner, predicate, "List content constraints require immutable inline elements"))
+        }
         if list && !get(reads.element_reads, 0) {
             writes = if std.loom.proof.preserves_list_append(program, value, get(env.inputs, 0).build.proof_backend) {
                 2

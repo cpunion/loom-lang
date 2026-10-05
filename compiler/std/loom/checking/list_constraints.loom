@@ -1,5 +1,6 @@
-// A content-constrained List has no pre-existing writable aliases. Its element
-// values are immutable; copies retain the constrained type and ordinary sharing.
+// A constrained List has no pre-existing writable outer aliases. Content
+// predicates require immutable elements; extent predicates can ignore them.
+// Copies retain the constrained type and ordinary sharing.
 // Plain List borrows must not escape. Element writes additionally require a
 // predicate proved independent of those elements; no runtime monitor is needed.
 fn constrained_list(env Environment, ty Int) Bool {

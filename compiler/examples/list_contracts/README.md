@@ -17,6 +17,15 @@ are distinct from earlier handles; inner elements retain sharing. The loop's
 output-length/index equality is checked inductively, including zero iterations.
 Later unknown handles and opaque calls can still reach those allocations.
 
+`refinements.loom` uses `Nonempty[T]` with shared nested Lists. Its predicate
+observes only the outer length, so inner mutations do not invalidate it. Outer
+replacement and append preserve nonemptiness through generic helpers and
+suspension. Fresh construction proves a singleton directly; copying unknown
+Int input retains checked `Result` construction, including rejection of empty input.
+Raw writable outer aliases still cannot escape, and predicates observing shared
+element contents remain unsupported. Factory construction containing shared
+elements still uses conservative whole-result alias analysis.
+
 `entry.loom` proves append against `old(length(values))`, without an explicit
 size parameter. Two consecutive calls use different invocation-entry lengths;
 the caller's own `old` remains unchanged. Pure helper observations retain their
