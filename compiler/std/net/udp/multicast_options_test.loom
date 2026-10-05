@@ -1,0 +1,125 @@
+import std.text.concat
+import std.text.split
+import std.io.write_error
+
+async fn send_multicast(socket Socket, address Text) Result[Int, UdpError] {
+    sleep_ms(2).await
+    send(socket, to_bytes("local multicast 🧵"), address).await
+}
+
+async fn multicast_exchange(socket Socket, address Text) Result[Bool, UdpError] {
+    let received, sent = (receive(socket, 64), send_multicast(socket, address)).await
+    let packet = received?
+    assert sent? == length(packet.data)
+    assert to_text(packet.data) == "local multicast 🧵"
+    Result.Ok(true)
+}
+
+async fn multicast_loop_fixture() Result[Bool, UdpError] {
+    let socket = bind("0.0.0.0:0").await?
+    defer {
+        discard close(socket)
+    }
+    let alias = socket
+    discard set_multicast(alias, MulticastV4 {
+            interface = "127.0.0.1"
+            loopback = true
+            hops = 0
+        })?
+    discard join_multicast(socket, "239.255.0.1", "127.0.0.1")?
+    let address = local_address(socket)?
+    let parts = split(address, ":")
+    let destination = concat("239.255.0.1:", parts[1])
+    let outcome = after_ns(multicast_exchange(socket, destination), 10000000000).await
+    discard leave_multicast(alias, "239.255.0.1", "127.0.0.1")?
+    match outcome {
+        Outcome.Completed(value) => value
+        _ => {
+            discard write_error("local multicast exchange did not complete before its draining deadline")
+            Result.Ok(false)
+        }
+    }
+}
+
+test async fn multicast_loop_delivers_a_real_local_packet_through_readiness() {
+    assert match multicast_loop_fixture().await {
+        Result.Ok(value) => value
+        Result.Err(UdpError.Option) => {
+            discard write_error("OS rejected local multicast configuration")
+            false
+        }
+        Result.Err(UdpError.Membership) => {
+            discard write_error("OS rejected local multicast membership")
+            false
+        }
+        Result.Err(UdpError.Send) => {
+            discard write_error("OS rejected local multicast send")
+            false
+        }
+        Result.Err(_) => {
+            discard write_error("local multicast setup or receive failed")
+            false
+        }
+    }
+}
+
+async fn multicast_configuration_fixture() Result[Bool, UdpError] {
+    let socket = bind("0.0.0.0:0").await?
+    defer {
+        discard close(socket)
+    }
+    assert match set_multicast(socket, MulticastV4 {
+            interface = "0.0.0.0"
+            loopback = true
+            hops = 256
+        }) {
+        Result.Err(UdpError.Option) => true
+        _ => false
+    }
+    assert match set_multicast(socket, MulticastV6 {
+            interface = -1
+            loopback = true
+            hops = 1
+        }) {
+        Result.Err(UdpError.Option) => true
+        _ => false
+    }
+    let alias = socket
+    discard close(socket)?
+    assert match set_multicast(alias, MulticastV4 {
+            interface = "0.0.0.0"
+            loopback = true
+            hops = 1
+        }) {
+        Result.Err(UdpError.Option) => true
+        _ => false
+    }
+    match bind("[::]:0").await {
+        Result.Ok(socket) => {
+            defer {
+                discard close(socket)
+            }
+            // A valid default-interface request may still fail under host
+            // interface policy; it must remain a typed OS error.
+            assert match set_multicast(socket, MulticastV6 {
+                    interface = 0
+                    loopback = true
+                    hops = 0
+                }) {
+                Result.Ok(_) => true
+                Result.Err(UdpError.Option) => true
+                _ => false
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    Result.Ok(true)
+}
+
+test async fn multicast_configuration_rejects_ranges_and_closed_aliases() {
+    assert match multicast_configuration_fixture().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}

@@ -13,7 +13,8 @@ it without changing its identity. The client uses a fixed-peer `Connection`; its
 register a read with the platform reactor.
 The source `std.net.udp` library retries readiness, preserves packet boundaries,
 returns each packet's numeric sender, and closes sockets through lexical `defer`.
-No blocking DNS lookup, polling coroutine or protocol-specific executor is added.
+The hostname overload uses the existing asynchronous OS resolver; no blocking
+lookup on the owner thread, polling coroutine or protocol-specific executor is added.
 
 `receive(socket, limit)` returns one fresh `Datagram`; an empty payload is valid
 data, not EOF. The default limit is 65535 bytes. Negative or larger limits reject;
@@ -38,8 +39,21 @@ numeric address without a zone, and the interface is an index (0 for OS choice).
 Invalid groups, indices, family mismatches and closed sockets return
 `UdpError.Membership`; repeated joins/leaves retain OS error semantics, not an
 idempotency promise. Closing releases memberships. The example and source tests
-check OS membership operations, not multicast packet delivery. Host routes and
-interface policy still apply; outbound interface, loop and hop-limit controls
-remain future work.
-IPv6 numeric endpoints are supported when the host enables that family; DNS
-in the UDP convenience API remains future work.
+check OS membership operations. `set_multicast(socket, MulticastV4 { ... })`
+or `MulticastV6` explicitly sets the outbound interface, `loopback`, and `hops`
+(0–255: IPv4 TTL or IPv6 hop limit). This does not join a group. Copies share
+configuration; it does not retire pending I/O. The OS may reject an unavailable
+interface or default-interface request, and failures can leave part of the
+configuration applied; close the socket if exact policy is required.
+The [multicast exchange](multicast.loom) uses an explicit loopback interface and
+IPv4 TTL zero, with a delayed sender, real readiness and a draining deadline.
+This is real packet evidence for the tested hosts, not routed delivery or IPv6
+multicast delivery evidence. Host routes and interface policy still apply.
+`connect(host, port).await` resolves the host, then selects the first numeric
+endpoint accepted by the OS in resolver order. It does not race or probe remote
+peers: UDP connect is not reachability evidence. Invalid/failed lookups return
+`UdpError.Resolve`; invalid peer ports or exhausted candidates return
+`UdpError.Connect`. Use Task deadline helpers for lookup deadlines; an active
+native lookup drains before cancellation completes. The numeric one-argument
+overload still bypasses DNS, and a numeric-only native program omits the resolver
+operation. IPv6 endpoints depend on host support.

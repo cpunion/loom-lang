@@ -25,6 +25,7 @@ pub record Datagram {
 pub enum UdpError {
     Bind
     Connect
+    Resolve
     Option
     Membership
     Address
@@ -72,6 +73,10 @@ pub async fn bind(address Text) Result[Socket, UdpError] {
 // Numeric endpoint, ephemeral local port. UDP has no handshake: success only
 // establishes the local peer/filter, not remote reachability or delivery.
 pub async fn connect(address Text) Result[Connection, UdpError] {
+    connect_address(address)
+}
+
+fn connect_address(address Text) Result[Connection, UdpError] {
     let token = socket_connect_datagram(address)
     if token < 0 {
         return Result.Err(UdpError.Connect)

@@ -1,0 +1,35 @@
+import std.net.dns.resolve
+import std.list.get
+import std.list.length
+
+fn connect_resolved(addresses List[Text]) Result[Connection, UdpError] {
+    var index = 0
+    while index < std.list.length(addresses) {
+        match connect_address(get(addresses, index)) {
+            Result.Ok(connection) => {
+                return Result.Ok(connection)
+            }
+            Result.Err(_) => {
+            }
+        }
+        index = index + 1
+    }
+    Result.Err(UdpError.Connect)
+}
+
+// Resolver order is preference, not remote reachability. UDP has no handshake:
+// choose the first endpoint accepted by the OS without TCP-style racing or
+// probing. Use Task deadline helpers when lookup needs a deadline; cancellation
+// drains an already-running OS lookup before the Task finishes.
+pub async fn connect(host Text, port Int) Result[Connection, UdpError] {
+    if port <= 0 || port > 65535 {
+        return Result.Err(UdpError.Connect)
+    }
+    let addresses = match resolve(host, port).await {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            return Result.Err(UdpError.Resolve)
+        }
+    }
+    connect_resolved(addresses)
+}

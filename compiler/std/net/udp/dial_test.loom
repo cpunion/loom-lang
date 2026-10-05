@@ -1,0 +1,66 @@
+import std.int.parse
+
+async fn resolved_fixture() Result[Bool, UdpError] {
+    let server = bind("127.0.0.1:0").await?
+    defer {
+        discard close(server)
+    }
+    let address = local_address(server)?
+    let parts = split(address, ":")
+    let port = match parse(parts[1]) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(UdpError.Address)
+        }
+    }
+    let client = connect("127.0.0.1", port).await?
+    defer {
+        discard close(client)
+    }
+    assert peer_address(client)? == address
+    let incoming, outgoing = (echo(server), resolved_request(client)).await
+    assert to_text(incoming?.data) == "resolved peer"
+    assert to_text(outgoing?.data) == "resolved peer"
+    let fallback = connect_resolved(["invalid", address])?
+    defer {
+        discard close(fallback)
+    }
+    assert peer_address(fallback)? == address
+    Result.Ok(true)
+}
+
+async fn resolved_request(client Connection) Result[Datagram, UdpError] {
+    sleep_ms(2).await
+    discard send(client, to_bytes("resolved peer")).await?
+    receive(client).await
+}
+
+test async fn resolved_udp_connect_uses_dns_and_preserves_fixed_peer_packets() {
+    assert match after_ns(resolved_fixture(), 10000000000).await {
+        Outcome.Completed(Result.Ok(value)) => value
+        _ => false
+    }
+}
+
+test async fn udp_resolution_rejects_invalid_and_exhausted_inputs() {
+    assert match connect("", 1234).await {
+        Result.Err(UdpError.Resolve) => true
+        _ => false
+    }
+    assert match connect("localhost", 0).await {
+        Result.Err(UdpError.Connect) => true
+        _ => false
+    }
+    assert match connect("localhost", 65536).await {
+        Result.Err(UdpError.Connect) => true
+        _ => false
+    }
+    assert match connect_resolved([]) {
+        Result.Err(UdpError.Connect) => true
+        _ => false
+    }
+    assert match connect_resolved(["invalid"]) {
+        Result.Err(UdpError.Connect) => true
+        _ => false
+    }
+}
