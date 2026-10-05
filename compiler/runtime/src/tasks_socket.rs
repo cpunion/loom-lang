@@ -305,21 +305,16 @@ impl Sockets {
         else {
             return -1;
         };
-        let Some(socket) = self.get(token) else {
-            return -1;
-        };
-        let Socket::Datagram(socket) = socket.as_ref() else {
-            return -1;
-        };
-        if !group.is_multicast() || !socket.local_addr().is_ok_and(|address| address.is_ipv4()) {
+        if !group.is_multicast() || !matches!(join, 0 | 1) {
             return -1;
         }
-        match join {
-            0 => socket.leave_multicast_v4(&group, &interface),
-            1 => socket.join_multicast_v4(&group, &interface),
-            _ => return -1,
-        }
-        .map_or(-1, |()| 0)
+        self.configure_datagram(token, false, |socket| {
+            if join == 1 {
+                socket.join_multicast_v4(&group, &interface)
+            } else {
+                socket.leave_multicast_v4(&group, &interface)
+            }
+        })
     }
 
     fn membership_v6(&self, token: i64, group: &str, interface: i64, join: i64) -> i64 {
@@ -327,21 +322,68 @@ impl Sockets {
         else {
             return -1;
         };
+        if !group.is_multicast() || !matches!(join, 0 | 1) {
+            return -1;
+        }
+        self.configure_datagram(token, true, |socket| {
+            if join == 1 {
+                socket.join_multicast_v6(&group, interface)
+            } else {
+                socket.leave_multicast_v6(&group, interface)
+            }
+        })
+    }
+
+    fn configure_datagram(
+        &self,
+        token: i64,
+        ipv6: bool,
+        apply: impl FnOnce(&UdpSocket) -> io::Result<()>,
+    ) -> i64 {
         let Some(socket) = self.get(token) else {
             return -1;
         };
         let Socket::Datagram(socket) = socket.as_ref() else {
             return -1;
         };
-        if !group.is_multicast() || !socket.local_addr().is_ok_and(|address| address.is_ipv6()) {
+        if !socket
+            .local_addr()
+            .is_ok_and(|address| address.is_ipv6() == ipv6)
+        {
             return -1;
         }
-        match join {
-            0 => socket.leave_multicast_v6(&group, interface),
-            1 => socket.join_multicast_v6(&group, interface),
-            _ => return -1,
+        // Configuration retains the exact native handle and outstanding leases.
+        apply(socket).map_or(-1, |()| 0)
+    }
+
+    fn multicast_v4(&self, token: i64, interface: &str, loopback: i64, hops: i64) -> i64 {
+        let (Ok(interface), Ok(hops)) = (interface.parse::<Ipv4Addr>(), u8::try_from(hops)) else {
+            return -1;
+        };
+        if !matches!(loopback, 0 | 1) {
+            return -1;
         }
-        .map_or(-1, |()| 0)
+        self.configure_datagram(token, false, |socket| {
+            let socket = SockRef::from(socket);
+            socket.set_multicast_if_v4(&interface)?;
+            socket.set_multicast_loop_v4(loopback == 1)?;
+            socket.set_multicast_ttl_v4(u32::from(hops))
+        })
+    }
+
+    fn multicast_v6(&self, token: i64, interface: i64, loopback: i64, hops: i64) -> i64 {
+        let (Ok(interface), Ok(hops)) = (u32::try_from(interface), u8::try_from(hops)) else {
+            return -1;
+        };
+        if !matches!(loopback, 0 | 1) {
+            return -1;
+        }
+        self.configure_datagram(token, true, |socket| {
+            let socket = SockRef::from(socket);
+            socket.set_multicast_if_v6(interface)?;
+            socket.set_multicast_loop_v6(loopback == 1)?;
+            socket.set_multicast_hops_v6(u32::from(hops))
+        })
     }
 
     fn address(&self, token: i64, peer: bool) -> Option<SocketAddr> {
@@ -513,6 +555,37 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_membership_v6(
     // SAFETY: The rooted Text is borrowed only during this non-collecting call.
     let group = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(group)) };
     edit(|owner, _| Ok(owner.sockets().membership_v6(token, group, interface, join)))
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_multicast_v4(
+    token: i64,
+    interface: *const u8,
+    loopback: i64,
+    hops: i64,
+) -> i64 {
+    // SAFETY: Generated code roots this UTF-8 Text; no managed allocation or
+    // retained pointer crosses these synchronous socket options.
+    let interface = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(interface)) };
+    edit(|owner, _| {
+        Ok(owner
+            .sockets()
+            .multicast_v4(token, interface, loopback, hops))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_socket_multicast_v6(
+    token: i64,
+    interface: i64,
+    loopback: i64,
+    hops: i64,
+) -> i64 {
+    edit(|owner, _| {
+        Ok(owner
+            .sockets()
+            .multicast_v6(token, interface, loopback, hops))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -798,6 +871,78 @@ pub(super) extern "C-unwind" fn loom_rt_task_wait_socket(token: i64, interests: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multicast_options_validate_before_changes_and_preserve_leases() {
+        let sockets = Sockets::default();
+        let token = sockets.bind_datagram("0.0.0.0:0");
+        let lease = sockets.get(token).unwrap();
+        let Socket::Datagram(socket) = lease.as_ref() else {
+            panic!("not a datagram")
+        };
+        let options = SockRef::from(socket);
+        for (loopback, hops) in [(0, 0), (1, 2)] {
+            assert_eq!(sockets.multicast_v4(token, "0.0.0.0", loopback, hops), 0);
+            assert_eq!(options.multicast_if_v4().unwrap(), Ipv4Addr::UNSPECIFIED);
+            assert_eq!(options.multicast_loop_v4().unwrap(), loopback == 1);
+            assert_eq!(options.multicast_ttl_v4().unwrap(), hops as u32);
+            assert!(!sockets.close(token));
+        }
+        for (interface, loopback, hops) in [
+            ("localhost", 0, 0),
+            ("0.0.0.0", 2, 0),
+            ("0.0.0.0", 0, -1),
+            ("0.0.0.0", 0, 256),
+        ] {
+            assert_eq!(sockets.multicast_v4(token, interface, loopback, hops), -1);
+            assert!(options.multicast_loop_v4().unwrap());
+            assert_eq!(options.multicast_ttl_v4().unwrap(), 2);
+        }
+        assert_eq!(sockets.multicast_v6(token, 0, 1, 1), -1);
+        drop(lease);
+        assert!(sockets.close(token));
+        assert_eq!(sockets.multicast_v4(token, "0.0.0.0", 1, 1), -1);
+        let listener = sockets.listen("127.0.0.1:0");
+        assert_eq!(sockets.multicast_v4(listener, "0.0.0.0", 1, 1), -1);
+        assert!(sockets.close(listener));
+        let token = sockets.bind_datagram("[::]:0");
+        if token > 0 {
+            let lease = sockets.get(token).unwrap();
+            let Socket::Datagram(socket) = lease.as_ref() else {
+                panic!("not a datagram")
+            };
+            let options = SockRef::from(socket);
+            #[cfg(unix)]
+            let interface = {
+                #[cfg(target_os = "macos")]
+                let name = c"lo0";
+                #[cfg(not(target_os = "macos"))]
+                let name = c"lo";
+                // SAFETY: The OS borrows this NUL-terminated interface name.
+                let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+                assert_ne!(index, 0);
+                i64::from(index)
+            };
+            #[cfg(windows)]
+            let interface = 0;
+            let status = sockets.multicast_v6(token, interface, 1, 2);
+            #[cfg(unix)]
+            assert_eq!(status, 0);
+            if status == 0 {
+                assert_eq!(options.multicast_if_v6().unwrap(), interface as u32);
+                assert!(options.multicast_loop_v6().unwrap());
+                assert_eq!(options.multicast_hops_v6().unwrap(), 2);
+            }
+            for (interface, loopback, hops) in
+                [(-1, 1, 1), (4294967296, 1, 1), (0, 2, 1), (0, 1, 256)]
+            {
+                assert_eq!(sockets.multicast_v6(token, interface, loopback, hops), -1);
+            }
+            assert_eq!(sockets.multicast_v4(token, "0.0.0.0", 1, 1), -1);
+            drop(lease);
+            assert!(sockets.close(token));
+        }
+    }
 
     #[test]
     fn multicast_membership_preserves_identity_and_checks_native_inputs() {

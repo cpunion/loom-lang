@@ -31,6 +31,8 @@ fn source_datagrams_use_real_readiness_packets_cancellation_and_moving_gc() {
         assert!(text.contains("loom_rt_socket_receive_from"));
         assert!(text.contains("loom_rt_socket_send_to"));
         assert!(text.contains("loom_rt_task_wait_socket"));
+        assert!(text.contains("loom_rt_socket_multicast_v4"));
+        assert!(text.contains("loom_rt_socket_membership_v4"));
         assert!(!text.contains("loom_rt_task_wait_resolve"));
         success(
             &common::command(&[

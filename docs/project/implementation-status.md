@@ -552,9 +552,13 @@ handshake or delivery guarantee. Unconnected IPv4 sockets expose explicit
 default-off broadcast configuration/query with alias and stale-token tests;
 configuration does not prove delivery under host routing/firewall policy.
 Explicit multicast join/leave accepts IPv4 interface addresses or IPv6 indices,
-with family, range and stale-identity checks. Native and source tests exercise
-membership, not routed multicast delivery; IPv6 default-interface support is
-host-dependent. Outbound interface, loop and hop-limit controls remain open.
+with family, range and stale-identity checks. Separate source configuration sets
+the outbound interface, loopback and hop limit over existing socket2 operations;
+OS failure may apply only part of that policy. Native tests query configured
+options and retain active leases. The native example/source tests use TTL zero
+for real local IPv4 multicast packets, delayed readiness, deadlines and moving
+GC. This is not routed or IPv6 multicast delivery evidence; default-interface
+support remains host-dependent.
 Hostname connections interleave address families with configurable bounded
 concurrency, stagger and a total cancellation deadline. Numeric address races
 share that source policy. Sockets are registered before suspension, so completed

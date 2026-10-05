@@ -105,6 +105,8 @@ pub enum Primitive {
     SocketDatagramBroadcast,
     SocketMembershipV4,
     SocketMembershipV6,
+    SocketMulticastV4,
+    SocketMulticastV6,
     SocketConnect,
     SocketConnectStatus,
     SocketAccept,

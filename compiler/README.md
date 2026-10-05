@@ -3467,9 +3467,14 @@ addresses ("0.0.0.0" for OS selection), while IPv6 takes an unbracketed group
 without a zone and an interface index (0 for OS selection). Socket/group families
 must match. Invalid input, stale identities and OS failures return
 `UdpError.Membership`. Closing releases memberships; repeated operations are
-not promised idempotent. Tests exercise membership configuration, not multicast
-delivery under arbitrary routes and interface policy. Outbound interface,
-multicast loop and hop-limit controls remain open.
+not promised idempotent. `set_multicast(socket, MulticastV4 { ... })` or
+`MulticastV6` configures `interface`, `loopback` and `hops` (0–255: IPv4 TTL or
+IPv6 hop limit), separately from membership. Configuration is shared and does
+not retire waits. The OS can reject valid requests, including default-interface
+selection; failure can leave options partly applied. Close if exact policy is
+required. The example uses an explicit loopback interface and TTL zero for a real local IPv4 multicast exchange,
+including delayed readiness and a draining deadline. This does not establish
+routed multicast delivery or IPv6 delivery under host interface policy.
 See the [UDP example](examples/udp_echo).
 
 `std.net.dns.resolve(host, port).await` returns numeric socket addresses in OS
