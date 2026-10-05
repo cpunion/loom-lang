@@ -477,7 +477,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         if declaration.kind == NodeKind.Function && pack >= 0 {
             let fixed = fixed_pack_parameters(declaration)
             let parameters = group(declaration, NodeKind.Parameters)
-            var arity = length(inputs.nodes) - length(parameters) + 1
+            var arity = sequence_pack_arity(parameters, length(inputs.nodes))
             if !variadic_parameters(parameters) {
                 arity = -1
                 if length(inputs.nodes) == length(parameters) {

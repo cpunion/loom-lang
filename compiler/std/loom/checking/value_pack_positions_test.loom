@@ -38,12 +38,6 @@ test fn value_pack_positions_keep_fixed_parameters_in_inference_and_cache_replay
 
 test fn nonfinal_value_packs_keep_arity_type_static_and_task_obligations() {
     rejects("""
-        fn ambiguous[Ts...](left Ts..., right Ts...) {
-            discard left
-            discard right
-        }
-        """)
-    rejects("""
         fn frame[Ts...](head Int, values Ts..., tail Text) (Ts...) {
             values
         }

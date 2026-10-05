@@ -178,11 +178,16 @@ also checks sharing and once-only effects. Impl-header packs infer arity from
 nominal, tuple and function target shapes, including nested/repeated expansions.
 Selected arities check methods and associated bindings with abstract elements;
 method-local packs retain their independent arity.
-One direct value pack retains ordinary parameter order between fixed
-parameters; argument count uniquely selects its width. Empty/static packs,
+Direct value packs retain ordinary parameter order between fixed
+parameters; all occurrences of the same type pack share a width, uniquely
+selected by the argument-count equation. Nonintegral widths and mismatched
+element types reject. Empty/static packs,
 contextual function references, fixed-scalar contracts, dyn defaults/overrides,
 Task suspension and restored cache recipes have native/checker evidence in the
 [position example](../../compiler/examples/variadics/positions.loom).
+Repeated direct values, mixed static/runtime packs, nested iteration and typed
+suspension reuse that expansion in the
+[repeated example](../../compiler/examples/variadics/repeated.loom).
 Overlap checking preserves
 expansions and conservatively rejects unknown intersections, without sampling.
 Private cache recipes retain the original member and both arities. The
@@ -194,8 +199,8 @@ proofs, including uncalled families and inherited method contracts; the
 constrained construction, CTFE and dyn dispatch. Bodies, return types or clauses
 reading a type pack or pack-bearing input still reject. A single type pack can
 have fixed parameters before and after it, including concept methods and impl
-families; the same ordered expansion and width rule applies to each. Multiple packs in one
-parameter list and sequence-dependent universal proofs remain unsupported.
+families; the same ordered expansion and width rule applies to each. Multiple
+independent type packs and sequence-dependent universal proofs remain unsupported.
 Compile-time execution is not proof by sampling.
 
 Independent nominal declarations do not share a global type-count budget.

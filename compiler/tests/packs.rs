@@ -333,6 +333,10 @@ fn sum[Ts... Number](values Ts...) Int {
 }
 fn pack[Ts...](values Ts...) (Ts...) { values }
 fn repeat[Ts...](values (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) { values }
+fn paired[Ts...](left Ts..., marker Bool, right Ts...) (Ts..., Ts...) {
+    assert !marker
+    (left..., right...)
+}
 fn main() {
     let packet = Packet { values = pack(40, 2, true) }
     let values = packet.values
@@ -343,6 +347,9 @@ fn main() {
     discard pack(pack()...)
     let repeated = repeat((40, true, 2))
     assert repeated.0 + repeated.2 == 42 && repeated.1
+    let pairs = paired(40, true, false, 2, false)
+    assert pairs.0 + pairs.2 == 42 && pairs.1 && !pairs.3
+    discard paired(false)
 }
 "#,
     )
