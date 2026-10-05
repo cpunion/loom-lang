@@ -177,7 +177,9 @@ Fields of public records use the same module-wide test-inclusive edit check;
 private records stay within their package. Distinct checked locals and other
 records' fields are not edited. Unchecked same-spelled accesses or constructor
 labels refuse edits, even in a module package that has not imported the owner.
-Concept references use an on-demand, snapshot-local checker trace, including
+Function, concept and associated-member references share an on-demand,
+snapshot-local checker trace. It preserves checked calls and named callbacks
+inside folded compile-time code, including generic and pack specializations, plus
 generic and associated-type bounds, `impl`, `dyn`, qualified associated types,
 `implements` conditions and explicit concept method calls. It distinguishes
 local receivers from concept qualifiers before lowering erases those names.
@@ -195,7 +197,7 @@ Checked runtime parameter and match-binding declarations have hover and
 definition evidence even when unused. Concrete type annotations use checked
 signature and data types; generic/comptime parameters never navigate to a
 same-spelled nominal declaration. Imports navigate through package bindings.
-Uninstantiated bodies and folded code without source identity still have no result.
+Unobserved branches and generated code without source identity still have no result.
 Dynamic calls navigate to concept declarations, not a guessed runtime
 implementation; ambiguous concept overloads omit the definition.
 Closure parameters and captured bindings navigate through checked source

@@ -51,7 +51,7 @@ test fn concept_queries_keep_checked_headers_templates_dyn_and_qualified_calls()
         index = index + 1
     }
     // The trace is snapshot-local, reused and does not append to public bindings.
-    assert length(analysis.concepts) == 1
+    assert length(analysis.declarations) == 1
     assert length(analysis.bindings.symbols) == symbols
     let local = query_offset(text, "Read =")
     only_definition(inspection(analysis, text, "Read.read()"), local, local + 4)

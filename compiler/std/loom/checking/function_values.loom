@@ -107,6 +107,7 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
     if async_signature(context.env, selected_signature) && has(symbol(context.env, selected_signature.symbol).node, NodeKind.Intrinsic) {
         return Result.Err(error(context, node, "private async intrinsics must be awaited directly"))
     }
+    discard record_function_reference(context, node, selected, arguments)?
     let target = if context.emit {
         schedule(context.env, selected, arguments, new[StaticValue](), node)?
     } else {

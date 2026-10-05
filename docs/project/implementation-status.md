@@ -80,7 +80,10 @@ unaligned annotations still refuse edits. Record fields now use checked
 receiver/initializer identities, including updates, explicit destructuring,
 contracts and type-constraint templates. Distinct field owners and locals stay
 unchanged; unaccounted labels or structural accesses in any module package block
-the edit. Concept rename uses a lazy checker trace for bounds, `impl`, `dyn`,
+the edit. Functions and concepts share a lazy declaration-binding trace. Folded
+compile-time calls and named callbacks retain their checked source targets,
+including generic and pack specializations; covered uses participate in navigation
+and checked rename. Concept rename uses the same trace for bounds, `impl`, `dyn`,
 associated-type qualifiers, selected type values, `implements` guards and explicit
 method calls. Associated-type navigation follows the checked concept member,
 including generic families and `Self` projections. Fresh source rebinding excludes

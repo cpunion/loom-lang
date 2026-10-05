@@ -50,7 +50,7 @@ pub record Analysis {
     // Keep the explicit host capability for lazy semantic queries.
     proof_backend ProofBackend
     // Lazy query evidence; never attached to executable IR or definition caches.
-    concepts List[List[std.loom.checking.ConceptReference]]
+    declarations List[List[std.loom.checking.DeclarationReference]]
 }
 pub record Expression {
     function Int
@@ -96,7 +96,7 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
             options = detached.options
             targets = detached.targets
             proof_backend = detached.proof_backend
-            concepts = new[List[std.loom.checking.ConceptReference]]()
+            declarations = new[List[std.loom.checking.DeclarationReference]]()
         })
 }
 

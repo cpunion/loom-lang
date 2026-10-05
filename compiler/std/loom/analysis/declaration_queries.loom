@@ -1,7 +1,7 @@
-import std.loom.checking.ConceptReference
-import std.loom.checking.concept_references
+import std.loom.checking.DeclarationReference
+import std.loom.checking.declaration_references
 
-fn inspect_concept_references(view CheckedQuery, report Inspection, target Query, file Int, references List[ConceptReference]) {
+fn inspect_declaration_references(view CheckedQuery, report Inspection, target Query, file Int, references List[DeclarationReference]) {
     var index = 0
     while index < length(references) {
         let reference = get(references, index)
@@ -9,21 +9,24 @@ fn inspect_concept_references(view CheckedQuery, report Inspection, target Query
         // Type resolution rewrites selected receivers and wraps an applied
         // Name as a Type. Keep its source origin and checked path segment.
         let same_kind = node.kind == target.node.kind ||
-            (node.kind == NodeKind.Type && target.node.kind == NodeKind.Name)
+        (node.kind == NodeKind.Type && target.node.kind == NodeKind.Name)
         if reference.file == file && node.span.start == target.node.span.start && node.span.end >= target.node.span.end &&
         same_kind && reference.segment == target.segment &&
         get(view.bindings.symbols, reference.symbol).name == target.token.value {
             symbol_location(view, report, reference.symbol)
+            if reference.label != "" {
+                add_type(report, reference.label)
+            }
         }
         index = index + 1
     }
 }
 
-// A successful analysis lazily records erased concept bindings once. Readers
+// A successful analysis lazily records erased declaration bindings once. Readers
 // replay the analysis's observed input snapshots, never fresh filesystem data.
 // Ordinary body queries and ordinary compilation do not run this extra check.
-fn inspect_concept_at(analysis Analysis, view CheckedQuery, file Int, offset Int) Option[Inspection] {
-    if length(analysis.concepts) != 0 || file < 0 || file >= length(view.bindings.files) {
+fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset Int) Option[Inspection] {
+    if length(analysis.declarations) != 0 || file < 0 || file >= length(view.bindings.files) {
         return Option.None
     }
     let source = get(view.bindings.files, file)
@@ -49,7 +52,7 @@ fn inspect_concept_at(analysis Analysis, view CheckedQuery, file Int, offset Int
     var index = 0
     while index < length(view.bindings.symbols) {
         let symbol = get(view.bindings.symbols, index)
-        possible = possible || ((symbol.node.kind == NodeKind.Concept || symbol.node.kind == NodeKind.AssociatedType) &&
+        possible = possible || ((symbol.node.kind == NodeKind.Function || symbol.node.kind == NodeKind.Concept || symbol.node.kind == NodeKind.AssociatedType) &&
             symbol.name == token.value)
         index = index + 1
     }
@@ -67,17 +70,17 @@ fn inspect_concept_at(analysis Analysis, view CheckedQuery, file Int, offset Int
         push(inputs.targets, get(analysis.targets, index))
         index = index + 1
     }
-    let references = match concept_references(view.bindings, inputs) {
+    let references = match declaration_references(view.bindings, inputs) {
         Result.Ok(value) => value
-        Result.Err(_) => new[ConceptReference]()
+        Result.Err(_) => new[DeclarationReference]()
     }
-    push(analysis.concepts, references)
+    push(analysis.declarations, references)
     let report = Inspection {
         span = token.span
         types = new[Text]()
         definitions = new[Location]()
     }
-    inspect_concept_references(view, report, target, file, references)
+    inspect_declaration_references(view, report, target, file, references)
     if length(report.definitions) == 0 {
         return Option.None
     }
