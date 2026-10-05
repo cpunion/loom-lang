@@ -1,5 +1,6 @@
 import std.text.concat
 import std.text.split
+import std.io.write_error
 
 async fn send_multicast(socket Socket, address Text) Result[Int, UdpError] {
     sleep_ms(2).await
@@ -21,26 +22,44 @@ async fn multicast_loop_fixture() Result[Bool, UdpError] {
     }
     let alias = socket
     discard set_multicast(alias, MulticastV4 {
-            interface = "0.0.0.0"
+            interface = "127.0.0.1"
             loopback = true
             hops = 0
         })?
-    discard join_multicast(socket, "239.255.0.1", "0.0.0.0")?
+    discard join_multicast(socket, "239.255.0.1", "127.0.0.1")?
     let address = local_address(socket)?
     let parts = split(address, ":")
     let destination = concat("239.255.0.1:", parts[1])
-    let outcome = after_ns(multicast_exchange(socket, destination), 1000000000).await
-    discard leave_multicast(alias, "239.255.0.1", "0.0.0.0")?
+    let outcome = after_ns(multicast_exchange(socket, destination), 10000000000).await
+    discard leave_multicast(alias, "239.255.0.1", "127.0.0.1")?
     match outcome {
         Outcome.Completed(value) => value
-        _ => Result.Ok(false)
+        _ => {
+            discard write_error("local multicast exchange did not complete before its draining deadline")
+            Result.Ok(false)
+        }
     }
 }
 
 test async fn multicast_loop_delivers_a_real_local_packet_through_readiness() {
     assert match multicast_loop_fixture().await {
         Result.Ok(value) => value
-        Result.Err(_) => false
+        Result.Err(UdpError.Option) => {
+            discard write_error("OS rejected local multicast configuration")
+            false
+        }
+        Result.Err(UdpError.Membership) => {
+            discard write_error("OS rejected local multicast membership")
+            false
+        }
+        Result.Err(UdpError.Send) => {
+            discard write_error("OS rejected local multicast send")
+            false
+        }
+        Result.Err(_) => {
+            discard write_error("local multicast setup or receive failed")
+            false
+        }
     }
 }
 

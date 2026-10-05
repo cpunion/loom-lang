@@ -44,8 +44,8 @@ or `MulticastV6` explicitly sets the outbound interface, `loopback`, and `hops`
 configuration; it does not retire pending I/O. The OS may reject an unavailable
 interface or default-interface request, and failures can leave part of the
 configuration applied; close the socket if exact policy is required.
-The [multicast exchange](multicast.loom) uses IPv4 TTL zero to send only to local
-multicast loopback, with a delayed sender, real readiness and a draining deadline.
+The [multicast exchange](multicast.loom) uses an explicit loopback interface and
+IPv4 TTL zero, with a delayed sender, real readiness and a draining deadline.
 This is real packet evidence for the tested hosts, not routed delivery or IPv6
 multicast delivery evidence. Host routes and interface policy still apply.
 IPv6 numeric endpoints are supported when the host enables that family; DNS
