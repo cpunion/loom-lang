@@ -1,0 +1,37 @@
+intrinsic fn socket_membership_v4(token Int, group Text, interface Text, join Int) Int
+
+intrinsic fn socket_membership_v6(token Int, group Text, interface Int, join Int) Int
+
+fn membership_result(status Int) Result[Int, UdpError] {
+    if status < 0 {
+        Result.Err(UdpError.Membership)
+    } else {
+        Result.Ok(0)
+    }
+}
+
+// Numeric IPv4 group and local interface address; 0.0.0.0 lets the OS select
+// an interface. Membership is socket-wide and shared by copies of Socket.
+pub fn join_multicast(socket Socket, group Text, interface Text) Result[Int, UdpError] {
+    membership_result(socket_membership_v4(socket.state.token, group, interface, 1))
+}
+
+pub fn leave_multicast(socket Socket, group Text, interface Text) Result[Int, UdpError] {
+    membership_result(socket_membership_v4(socket.state.token, group, interface, 0))
+}
+
+// Numeric IPv6 group without brackets/port/zone. interface is the native
+// interface index, or zero for the OS default; it is not an IPv4 address.
+pub fn join_multicast(socket Socket, group Text, interface Int) Result[Int, UdpError] {
+    if interface < 0 || interface > 4294967295 {
+        return Result.Err(UdpError.Membership)
+    }
+    membership_result(socket_membership_v6(socket.state.token, group, interface, 1))
+}
+
+pub fn leave_multicast(socket Socket, group Text, interface Int) Result[Int, UdpError] {
+    if interface < 0 || interface > 4294967295 {
+        return Result.Err(UdpError.Membership)
+    }
+    membership_result(socket_membership_v6(socket.state.token, group, interface, 0))
+}

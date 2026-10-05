@@ -31,5 +31,15 @@ close/abort identity. The source tests also exercise filtering and empty packets
 `set_broadcast(socket, enabled)` controls IPv4 broadcast permission and
 `broadcast(socket)` queries it; aliases share the option. The source tests
 verify configuration, not delivery under arbitrary routing/firewall policy.
+`join_multicast(socket, group, interface)` and `leave_multicast` change shared
+membership. For IPv4, both arguments are numeric addresses without ports, and
+`"0.0.0.0"` selects the OS default interface. For IPv6, the group is an unbracketed
+numeric address without a zone, and the interface is an index (0 for OS choice).
+Invalid groups, indices, family mismatches and closed sockets return
+`UdpError.Membership`; repeated joins/leaves retain OS error semantics, not an
+idempotency promise. Closing releases memberships. The example and source tests
+check OS membership operations, not multicast packet delivery. Host routes and
+interface policy still apply; outbound interface, loop and hop-limit controls
+remain future work.
 IPv6 numeric endpoints are supported when the host enables that family; DNS
-and multicast configuration remain future work.
+in the UDP convenience API remains future work.

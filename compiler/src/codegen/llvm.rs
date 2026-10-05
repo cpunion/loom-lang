@@ -1034,6 +1034,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::SocketDatagramBroadcast => {
                 ("socket_datagram_broadcast", Some(i64_type.into()))
             }
+            Primitive::SocketMembershipV4 => ("socket_membership_v4", Some(i64_type.into())),
+            Primitive::SocketMembershipV6 => ("socket_membership_v6", Some(i64_type.into())),
             Primitive::SocketConnect => ("socket_connect", Some(i64_type.into())),
             Primitive::SocketConnectStatus => ("socket_connect_status", Some(i64_type.into())),
             Primitive::SocketAccept => ("socket_accept", Some(i64_type.into())),

@@ -31,6 +31,11 @@ The account example constrains each immutable `amount` beside shared `notes`.
 Input replacement and notes updates cannot change the copied amounts, including
 across suspension; a nonpositive account fails checked construction. Reading
 shared notes in the predicate rejects rather than assuming they remain unchanged.
+For writable elements, put the amount constraint on `PositiveAccount` and the
+extent constraint on `Nonempty[PositiveAccount]`. Construct and validate a new
+account before replacing or appending it; aliases see the replacement, while
+shared notes retain ordinary mutation. `first_amount` proves its positive return
+from the element invariant, without a duplicate assertion or runtime contract.
 Raw writable outer aliases still cannot escape. The factory must prove fresh, unpublished
 outer storage; purity or a method named `clone` is not sufficient.
 Potential recursive backreferences and opaque function/dyn captures cannot escape

@@ -1,0 +1,74 @@
+async fn membership_fixture() Result[Bool, UdpError] {
+    let socket = bind("0.0.0.0:0").await?
+    defer {
+        discard close(socket)
+    }
+    let alias = socket
+    discard join_multicast(socket, "239.255.0.1", "0.0.0.0")?
+    discard leave_multicast(alias, "239.255.0.1", "0.0.0.0")?
+    discard join_multicast(alias, "239.255.0.1", "0.0.0.0")?
+    assert match join_multicast(socket, "127.0.0.1", "0.0.0.0") {
+        Result.Err(UdpError.Membership) => true
+        _ => false
+    }
+    assert match join_multicast(socket, "239.255.0.1", "localhost") {
+        Result.Err(UdpError.Membership) => true
+        _ => false
+    }
+    assert match join_multicast(socket, "ff02::1", 0) {
+        Result.Err(UdpError.Membership) => true
+        _ => false
+    }
+    discard close(socket)?
+    assert match leave_multicast(alias, "239.255.0.1", "0.0.0.0") {
+        Result.Err(UdpError.Membership) => true
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+test async fn multicast_membership_is_explicit_shared_and_revoked_on_close() {
+    assert match membership_fixture().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
+
+test async fn ipv6_membership_checks_indices_and_uses_host_interface_policy() {
+    match bind("[::]:0").await {
+        Result.Ok(socket) => {
+            defer {
+                discard close(socket)
+            }
+            assert match join_multicast(socket, "::1", 0) {
+                Result.Err(UdpError.Membership) => true
+                _ => false
+            }
+            assert match join_multicast(socket, "ff02::1", -1) {
+                Result.Err(UdpError.Membership) => true
+                _ => false
+            }
+            assert match leave_multicast(socket, "ff02::1", 4294967296) {
+                Result.Err(UdpError.Membership) => true
+                _ => false
+            }
+            // IPv6 loopback need not provide a multicast-capable default
+            // interface. If joining succeeds, leaving must succeed.
+            match join_multicast(socket, "ff02::1", 0) {
+                Result.Ok(_) => {
+                    assert match leave_multicast(socket, "ff02::1", 0) {
+                        Result.Ok(_) => true
+                        Result.Err(_) => false
+                    }
+                }
+                Result.Err(UdpError.Membership) => {
+                }
+                _ => {
+                    assert false
+                }
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+}

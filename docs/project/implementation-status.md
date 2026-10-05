@@ -242,6 +242,10 @@ input resizing cannot change the copy's extent, and nested updates remain visibl
 Content constraints may observe immutable element fields beside unobserved shared
 siblings. The checker tracks reads through elements and rejects nested mutable
 observations, including same-type recursive headers; this is not a deep freeze.
+For mutable element slots, the example instead composes an extent constraint
+with a constrained element type. Already validated replacements preserve element
+invariants; reading an immutable amount supplies its required positive-return
+proof while unobserved notes remain writable through aliases and suspension.
 Raw writable outer aliases cannot escape. Shared elements can return through checked reads when their stored
 type graph cannot contain the protected outer header; recursive backreferences,
 opaque captures and unresolved types remain conservative. Cyclic invariant construction rejects
@@ -553,7 +557,10 @@ endpoints and alias revocation have source tests. Creation is not a remote
 handshake or delivery guarantee. Unconnected IPv4 sockets expose explicit
 default-off broadcast configuration/query with alias and stale-token tests;
 configuration does not prove delivery under host routing/firewall policy.
-Multicast configuration remains open.
+Explicit multicast join/leave accepts IPv4 interface addresses or IPv6 indices,
+with family, range and stale-identity checks. Native and source tests exercise
+membership, not routed multicast delivery; IPv6 default-interface support is
+host-dependent. Outbound interface, loop and hop-limit controls remain open.
 Hostname connections interleave address families with configurable bounded
 concurrency, stagger and a total cancellation deadline. Numeric address races
 share that source policy. Sockets are registered before suspension, so completed
