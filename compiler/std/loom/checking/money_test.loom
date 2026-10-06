@@ -60,5 +60,10 @@ test fn float_refinement_weakening_preserves_numeric_and_nominal_boundaries() {
     rejects(concat(definition, "type Other = Float where self > 0.0\nfn invalid(value Money) Other { value }"))
     rejects(concat(definition, "fn invalid(value (Money, Bool)) (Float, Bool) { value }"))
     rejects("type Count = Int where self > 0\nfn invalid(value Count) Float { value }")
-    rejects(concat(definition, "fn identity(value Money) Money ensures result == value { value }"))
+    discard accepted(concat(definition, """
+fn identity(value Money) Money
+ensures result == value {
+    value
+}
+"""))
 }

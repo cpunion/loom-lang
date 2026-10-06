@@ -400,6 +400,20 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
                     return true
                 }
             }
+            Predicate.FloatCompare(relation, left, right) => {
+                if float_holds(relation, left, right, facts, true) {
+                    return true
+                }
+            }
+            Predicate.Not(values) => match get(values, 0) {
+                Predicate.FloatCompare(relation, left, right) => {
+                    if float_holds(relation, left, right, facts, false) {
+                        return true
+                    }
+                }
+                _ => {
+                }
+            }
             _ => {
             }
         }
@@ -415,11 +429,12 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
     }
     match predicate {
         Predicate.Constant(value) => value
-        Predicate.FloatCompare(relation, left, right) => float_holds(relation, left, right, facts)
+        Predicate.FloatCompare(relation, left, right) => float_holds(relation, left, right, facts, false)
         Predicate.Compare(relation, value) => affine_holds(relation, value, facts) || inequality_holds(relation, value, facts)
         Predicate.TextEqual(left, right) => text_equal(left, right, facts)
         Predicate.Not(values) => match get(values, 0) {
             Predicate.TextEqual(left, right) => text_distinct(left, right, facts)
+            Predicate.FloatCompare(relation, left, right) => float_holds(relation, left, right, facts, true)
             _ => false
         }
         Predicate.And(values) => holds(get(values, 0), facts) && holds(get(values, 1), facts)

@@ -1,0 +1,50 @@
+import std.float.is_nan
+
+type NarrowAmount = Float where self >= 1.0 && self <= 2.0
+
+type WideAmount = Float where self >= 0.0 && self < 3.0
+
+fn widened_amount(value NarrowAmount) WideAmount {
+    WideAmount(value)
+}
+
+fn bounded_amount(value Float, lower Float, upper Float) Float
+requires !is_nan(value) && lower <= upper
+ensures result >= lower && result <= upper {
+    if value < lower {
+        lower
+    } else {
+        if value > upper {
+            upper
+        } else {
+            value
+        }
+    }
+}
+
+fn between(a Float, b Float, c Float) Bool
+requires a <= b && b < c
+ensures result {
+    a < c && a != c
+}
+
+fn equal_in_order(a Float, b Float) Bool
+requires a <= b && b <= a
+ensures result {
+    a == b
+}
+
+fn order_contract_values() {
+    assert widened_amount(NarrowAmount(1.5)) == 1.5
+    assert bounded_amount(-1.0 / 0.0, 1.0, 2.0) == 1.0
+    assert bounded_amount(1.5, 1.0, 2.0) == 1.5
+    assert bounded_amount(1.0 / 0.0, 1.0, 2.0) == 2.0
+    assert between(-1.0 / 0.0, 0.0, 1.0 / 0.0)
+    assert equal_in_order(-0.0, 0.0)
+    let zero = bounded_amount(-0.0, 0.0, 1.0)
+    assert zero == 0.0 && 1.0 / zero < 0.0
+    let calculate = comptime {
+        bounded_amount(2.5, 1.0, 2.0)
+    }
+    assert calculate == 2.0
+}

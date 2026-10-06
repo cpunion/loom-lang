@@ -2178,8 +2178,10 @@ The latter rule matches typed expressions exactly, permits regrouping/reordering
 conjuncts, and does not apply integer algebra to IEEE values. It cannot extract
 a condition hidden behind `||`. Unproved narrowing and exhausted or unsupported
 proofs retain ordinary checked `Result` construction. IEEE comparisons also use
-the bounded value/contract rules in the [contract boundary](#contract-boundary);
-general Float postcondition solving remains unsupported.
+the bounded value/contract rules in the [contract boundary](#contract-boundary).
+The IEEE order theory also proves wider constant ranges and comparison chains,
+without treating numeric equality as identity of arithmetic computations.
+General Float arithmetic solving remains unsupported.
 
 Construction also consumes already established facts about an immutable scalar
 local or parameter, from `requires`, a successful `assert`, or the current
@@ -2685,9 +2687,14 @@ indirect calls and nonconstant division remain outside
 this proof fragment. IEEE Float proofs reuse exact comparisons over immutable
 values, including constrained inputs/elements, verified returns and guarded
 entry observations. Constant expressions use binary64 evaluation; symbolic
-arithmetic retains its operand order and structure. A true strict comparison
-implies its non-strict form. NaN prevents reflexivity and ordered-comparison
-negation; no cancellation, reassociation or real-number arithmetic is inferred.
+arithmetic retains its operand order and structure. A bounded comparison graph
+composes strict/non-strict order, constant range endpoints and numeric equality.
+True comparisons establish non-NaN endpoints, allowing reflexivity and reversal
+of negated ordered comparisons only for those endpoints. Contradictory order
+paths exclude unreachable branches, including short-circuit return paths.
+Numeric equality does not identify computations: signed zeros compare equal but
+have different reciprocals. No cancellation, reassociation or real-number
+arithmetic is inferred. See the [range/clamp example](examples/floats/order.loom).
 Float locals and literals may participate in proved loops, including variadic
 induction; assigned values are freshened at loop heads, not assumed to retain
 entry comparisons. No general Float arithmetic invariant is inferred.

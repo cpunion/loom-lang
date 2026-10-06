@@ -1,0 +1,108 @@
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+
+test fn ieee_order_paths_track_strictness_without_identifying_computations() {
+    let a = FloatValue.Variable(1)
+    let b = FloatValue.Variable(2)
+    let c = FloatValue.Variable(3)
+    let facts = [Predicate.FloatCompare("<=", a, b), Predicate.FloatCompare("<", b, c)]
+    assert holds(Predicate.FloatCompare("<", a, c), facts)
+    assert holds(not(Predicate.FloatCompare("==", a, c)), facts)
+    assert holds(not(Predicate.FloatCompare("<=", c, a)), facts)
+    assert holds(Predicate.FloatCompare("==", a, a), facts)
+    assert !holds(Predicate.FloatCompare("<", a, b), facts)
+    let equal = [Predicate.FloatCompare("<=", a, b), Predicate.FloatCompare("<=", b, a)]
+    assert holds(Predicate.FloatCompare("==", a, b), equal)
+    assert !same_float(a, b, [256])
+    assert !holds(Predicate.FloatCompare("==", a, a), [])
+    assert !holds(Predicate.FloatCompare("<=", a, a), [])
+    assert !holds(Predicate.FloatCompare("<", a, b), equal)
+    let contradicted = [Predicate.FloatCompare("<=", a, b), Predicate.FloatCompare("<", b, c),
+        not(Predicate.FloatCompare("<", a, c))]
+    assert holds(Predicate.Constant(false), contradicted)
+    assert holds(Predicate.Constant(false),
+        [Predicate.FloatCompare("<", a, b), Predicate.FloatCompare("<=", b, a)])
+    assert holds(Predicate.Constant(false),
+        [Predicate.FloatCompare("<=", a, b), Predicate.FloatCompare("<=", b, a),
+            not(Predicate.FloatCompare("==", a, b))])
+    assert !holds(Predicate.Constant(false),
+        [not(Predicate.FloatCompare("<", a, b)), not(Predicate.FloatCompare("<", b, a)),
+            not(Predicate.FloatCompare("==", a, b))])
+}
+
+test fn ieee_order_ranges_and_complements_require_non_nan_evidence() {
+    let a = FloatValue.Variable(1)
+    let b = FloatValue.Variable(2)
+    let zero = FloatValue.Literal("0")
+    let one = FloatValue.Literal("1")
+    let two = FloatValue.Literal("2")
+    assert holds(Predicate.FloatCompare("<", a, two),
+        [Predicate.FloatCompare("<=", a, one)])
+    assert holds(Predicate.FloatCompare("<=", one, a),
+        [Predicate.FloatCompare("<=", zero, a), not(Predicate.FloatCompare("<", a, one))])
+    assert !holds(Predicate.FloatCompare("<=", one, a),
+        [not(Predicate.FloatCompare("<", a, one))])
+    let guarded = [Predicate.FloatCompare("==", a, a), Predicate.FloatCompare("<=", zero, b),
+        not(Predicate.FloatCompare("<=", a, b))]
+    assert holds(Predicate.FloatCompare("<", b, a), guarded)
+    assert !holds(Predicate.FloatCompare("<", b, a),
+        [Predicate.FloatCompare("==", a, a), not(Predicate.FloatCompare("<=", a, b))])
+    assert !holds(Predicate.FloatCompare("==", FloatValue.Apply("-", [a, a]), zero), guarded)
+}
+
+test fn ieee_order_rules_agree_with_special_values() {
+    let a = FloatValue.Variable(1)
+    let b = FloatValue.Variable(2)
+    let c = FloatValue.Variable(3)
+    let values = [-1.0 / 0.0, -1.0, -0.0, 0.0, 5e-324, 1.0, 1.0 / 0.0, 0.0 / 0.0]
+    // Exercise the order laws on infinities, both zeros, a subnormal and NaN.
+    // These cases check the implementation; proof comes from the order laws.
+    var first = 0
+    while first < length(values) {
+        let x = get(values, first)
+        var second = 0
+        while second < length(values) {
+            let y = get(values, second)
+            let facts = new[Predicate]()
+            if x <= y {
+                push(facts, Predicate.FloatCompare("<=", a, b))
+            }
+            if y <= x {
+                push(facts, Predicate.FloatCompare("<=", b, a))
+            }
+            if x == x {
+                push(facts, Predicate.FloatCompare("==", a, a))
+            }
+            if !(x < y) {
+                push(facts, not(Predicate.FloatCompare("<", a, b)))
+            }
+            if holds(Predicate.FloatCompare("<=", b, a), facts) {
+                assert y <= x
+            }
+            if holds(Predicate.FloatCompare("==", a, b), facts) {
+                assert x == y
+            }
+            var third = 0
+            while third < length(values) {
+                let z = get(values, third)
+                if x <= y && y < z {
+                    assert holds(Predicate.FloatCompare("<", a, c),
+                        [Predicate.FloatCompare("<=", a, b), Predicate.FloatCompare("<", b, c)])
+                    assert x < z
+                }
+                third = third + 1
+            }
+            second = second + 1
+        }
+        first = first + 1
+    }
+    let many = new[Predicate]()
+    var index = 1
+    while index < 34 {
+        push(many, Predicate.FloatCompare("<=", FloatValue.Variable(index), FloatValue.Variable(index + 1)))
+        index = index + 1
+    }
+    assert !holds(Predicate.FloatCompare("<=", a, FloatValue.Variable(34)), many)
+}

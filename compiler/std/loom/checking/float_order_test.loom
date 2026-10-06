@@ -1,0 +1,97 @@
+test fn ieee_order_contracts_compose_ranges_helpers_and_guarded_branches() {
+    discard accepted("""
+type Narrow = Float where self >= 1.0 && self <= 2.0
+type Wide = Float where self >= 0.0 && self < 3.0
+
+fn widen(value Narrow) Wide {
+    Wide(value)
+}
+
+fn upper(value Float) Float
+requires value == value && value <= 2.0
+ensures result >= value && result >= 1.0 && result <= 2.0 {
+    if value < 1.0 {
+        1.0
+    } else {
+        value
+    }
+}
+
+fn chain(a Float, b Float, c Float) Bool
+requires a <= b && b < c
+ensures result {
+    a < c && a != c
+}
+
+fn same_number(a Float, b Float) Bool
+requires a <= b && b <= a
+ensures result {
+    a == b
+}
+
+fn ordered_copy(value Float) Float
+requires value >= 0.0
+ensures result == value {
+    value
+}
+
+fn forwarded(value Float) Bool
+requires value >= 0.0 && value <= 2.0
+ensures result {
+    ordered_copy(value) < 3.0
+}
+
+fn main() {
+    assert widen(Narrow(1.5)) == 1.5
+    assert upper(1.5) == 1.5
+    assert chain(-1.0 / 0.0, 0.0, 1.0 / 0.0)
+    assert same_number(-0.0, 0.0)
+    assert forwarded(1.5)
+}
+""")
+}
+
+test fn ieee_order_does_not_invent_order_or_arithmetic_substitution() {
+    rejects("""
+fn unsafe(value Float) Bool
+requires !(value < 1.0)
+ensures result {
+    value >= 1.0
+}
+""")
+    rejects("""
+fn unsafe(a Float, b Float) Bool
+requires a == a && !(a <= b)
+ensures result {
+    b < a
+}
+""")
+    rejects("""
+fn unsafe(a Float, b Float, c Float) Bool
+requires a <= b && b <= c
+ensures result {
+    a < c
+}
+""")
+    rejects("""
+fn unsafe(a Float, b Float) Bool
+requires a <= b && b <= a
+ensures result {
+    1.0 / a == 1.0 / b
+}
+""")
+    rejects("""
+fn unsafe(a Float, b Float) Float
+requires a == a && b == b
+ensures result == result {
+    a + b
+}
+""")
+    rejects("""
+fn unsafe(value Float) Bool
+requires value >= 0.0
+ensures result {
+    value - value == 0.0
+}
+""")
+}

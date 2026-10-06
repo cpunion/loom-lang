@@ -152,28 +152,3 @@ fn float_binary(operator Text, left FloatValue, right FloatValue) Result[Value, 
                 fact
             }))
 }
-
-// A true strict ordered comparison excludes NaN and implies its non-strict
-// form. No reflexivity, cancellation, reassociation or ordered negation rule.
-fn float_holds(relation Text, left FloatValue, right FloatValue, facts List[Predicate]) Bool {
-    if relation != "<=" {
-        return false
-    }
-    var index = 0
-    while index < length(facts) {
-        match get(facts, index) {
-            Predicate.FloatCompare(known, first, second) => {
-                if (known == "<" && same(Predicate.FloatCompare("<", left, right),
-                        Predicate.FloatCompare("<", first, second))) ||
-                (known == "==" && same(Predicate.FloatCompare("==", left, right),
-                        Predicate.FloatCompare("==", first, second))) {
-                    return true
-                }
-            }
-            _ => {
-            }
-        }
-        index = index + 1
-    }
-    false
-}
