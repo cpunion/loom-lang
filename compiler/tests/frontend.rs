@@ -24,13 +24,18 @@ fn source_files(directory: &Path, paths: &mut Vec<std::path::PathBuf>) {
 
 fn source_compiler(compiler: &Path, args: &[&str]) -> Output {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    Command::new(compiler)
+    let mut command = Command::new(compiler);
+    command
         .args(args)
         .args(["--std", root.join("compiler/std").to_str().unwrap()])
         .args(["--native-tool", env!("CARGO_BIN_EXE_loom-native")])
-        .current_dir(root)
-        .output()
-        .unwrap()
+        .current_dir(root);
+    // Compile the large source unit-test suites quickly. Bootstrap and native
+    // application regressions retain their optimized builds.
+    if args.first() == Some(&"test") && args.contains(&"--recursive") {
+        command.env("LOOM_OPT_LEVEL", "0");
+    }
+    command.output().unwrap()
 }
 
 #[test]
