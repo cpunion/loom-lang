@@ -119,6 +119,10 @@ pub enum ExprKind {
 // their checked runtime arguments. Neither form supplies proof evidence.
 // List children are ordered, same-typed elements of a fresh shared container.
 // Bytes.text is canonical lowercase hex for a fresh mutable byte buffer.
+// Coerce.text == "comptime value" preserves a computed value's validated nominal
+// type during private graph reconstruction; it is not a source construction.
+// Computation checks original construction, escapes, and mutation rules; the
+// complete graph is initialized before external publication.
 // ResourceDrain exists only before lowering: child 0 is a scoped List, index
 // binds one element, and the remaining children are independent cleanup steps.
 // Defer/Cleanup index a function-local cleanup registration and retain its one

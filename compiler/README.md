@@ -2844,9 +2844,12 @@ fn main() {
 The [comptime example](examples/comptime/main.loom) also exercises ordinary pure
 function calls, recursion, local mutation, records/enums, and fresh list aliases.
 Results support `Bool`, `Int`, `Float`, `Text`, tuples, records/enums, shared lists, and byte
-buffers. Refined scalar and record results retain their underlying representation
-and validated nominal type; nested shared containers keep the same graph
-identities. List construction's isolation rules still apply.
+buffers. Refined results retain their underlying representation and validated
+nominal type; nested shared containers keep the same graph identities, including
+constrained Lists captured by returned callbacks. Original construction, escapes
+and mutations still pass the ordinary checks before evaluation; restoring the
+computed value is not a second source conversion. See the
+[refined-result example](examples/comptime/refined.loom).
 Scalar values become constants; containers are allocated and populated
 whenever the expression runs. Each runtime evaluation gets a fresh graph, while
 aliases and cycles inside that graph are preserved. Mutating one invocation's
