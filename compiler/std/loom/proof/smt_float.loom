@@ -1,0 +1,144 @@
+// Binary64, not Real arithmetic. Decimal spellings first round-trip through
+// the same parser/formatter as native literals; exact rationals then recover
+// that value with one RNE conversion. Zero's sign needs a separate constructor.
+fn smt_float_literal(text Text) Result[Text, Text] {
+    if std.text.length(text) > 400 {
+        return Result.Err("SMT Float literal budget exhausted")
+    }
+    let canonical = match float_literal(text)? {
+        FloatValue.Literal(value) => value
+        _ => {
+            return Result.Err("invalid SMT Float literal")
+        }
+    }
+    if canonical == "NaN" {
+        return Result.Ok("(_ NaN 11 53)")
+    }
+    if canonical == "inf" || canonical == "-inf" {
+        return Result.Ok(if canonical == "inf" {
+                "(_ +oo 11 53)"
+            } else {
+                "(_ -oo 11 53)"
+            })
+    }
+    if canonical == "0" || canonical == "-0" {
+        return Result.Ok(if canonical == "0" {
+                "(_ +zero 11 53)"
+            } else {
+                "(_ -zero 11 53)"
+            })
+    }
+    let digits = std.bytes.new()
+    let denominator = std.bytes.new()
+    std.bytes.push(denominator, 49)
+    let negative = byte(canonical, 0) == 45
+    var index = if negative {
+        1
+    } else {
+        0
+    }
+    var fractional = false
+    while index < std.text.length(canonical) {
+        let digit = byte(canonical, index)
+        if digit == 46 && !fractional {
+            fractional = true
+        } else {
+            if digit < 48 || digit > 57 {
+                return Result.Err("unsupported SMT Float literal spelling")
+            }
+            std.bytes.push(digits, digit)
+            if fractional {
+                std.bytes.push(denominator, 48)
+            }
+        }
+        index = index + 1
+    }
+    let numerator = smt_number(decimal(std.bytes.to_text(digits)))
+    let rational = concat("(/ ", concat(numerator,
+            concat(".0 ", concat(std.bytes.to_text(denominator), ".0)"))))
+    let signed = if negative {
+        concat("(- ", concat(rational, ")"))
+    } else {
+        rational
+    }
+    Result.Ok(concat("((_ to_fp 11 53) RNE ", concat(signed, ")")))
+}
+
+fn smt_float(writer SmtWriter, value FloatValue, depth Int) Result[Text, Text] {
+    discard smt_step(writer, depth)?
+    match value {
+        FloatValue.Literal(text) => {
+            let size = std.text.length(text)
+            if size > get(writer.budget, 0) {
+                return Result.Err("SMT obligation encoding budget exhausted")
+            }
+            set(writer.budget, 0, get(writer.budget, 0) - size)
+            smt_float_literal(text)
+        }
+        FloatValue.Variable(id) => Result.Ok(smt_name(writer, "f", id, "(_ FloatingPoint 11 53)"))
+        FloatValue.Apply(operator, inputs) => {
+            if operator == "-" && length(inputs) == 1 {
+                return Result.Ok(concat("(fp.neg ", concat(smt_float(writer, get(inputs, 0), depth + 1)?, ")")))
+            }
+            // Loom/LLVM frem truncates the quotient. SMT fp.rem rounds it to
+            // nearest instead; substituting that operator would be unsound.
+            if length(inputs) != 2 || (operator != "+" && operator != "-" &&
+                operator != "*" && operator != "/") {
+                return Result.Err("unsupported SMT Float operation")
+            }
+            let operation = smt_float_operator(operator)?
+            let first = smt_float(writer, get(inputs, 0), depth + 1)?
+            let second = smt_float(writer, get(inputs, 1), depth + 1)?
+            Result.Ok(concat("(", concat(operation,
+                        concat(" RNE ", concat(first, concat(" ", concat(second, ")")))))))
+        }
+    }
+}
+
+fn smt_float_operator(operator Text) Result[Text, Text] {
+    if operator == "+" {
+        return Result.Ok("fp.add")
+    }
+    if operator == "-" {
+        return Result.Ok("fp.sub")
+    }
+    if operator == "*" {
+        return Result.Ok("fp.mul")
+    }
+    if operator == "/" {
+        return Result.Ok("fp.div")
+    }
+    Result.Err("unsupported SMT Float operation")
+}
+
+fn smt_float_comparison(relation Text) Result[Text, Text] {
+    if relation == "==" || relation == "!=" {
+        return Result.Ok("fp.eq")
+    }
+    if relation == "<" {
+        return Result.Ok("fp.lt")
+    }
+    if relation == "<=" {
+        return Result.Ok("fp.leq")
+    }
+    if relation == ">" {
+        return Result.Ok("fp.gt")
+    }
+    if relation == ">=" {
+        return Result.Ok("fp.geq")
+    }
+    Result.Err("invalid SMT Float comparison")
+}
+
+fn smt_float_relation(writer SmtWriter, relation Text, left FloatValue, right FloatValue, depth Int) Result[Text, Text] {
+    let operation = smt_float_comparison(relation)?
+    let first = smt_float(writer, left, depth + 1)?
+    let second = smt_float(writer, right, depth + 1)?
+    let comparison = concat("(", concat(operation,
+            concat(" ", concat(first, concat(" ", concat(second, ")"))))))
+    Result.Ok(if relation == "!=" {
+            concat("(not ", concat(comparison, ")"))
+        } else {
+            comparison
+        })
+}

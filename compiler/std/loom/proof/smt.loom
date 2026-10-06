@@ -206,7 +206,7 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
             let second = smt_integer(writer, right, depth + 1)?
             Result.Ok(concat("(", concat(operator, concat(" ", concat(first, concat(" ", concat(second, ")")))))))
         }
-        Predicate.FloatCompare(_, _, _) => Result.Err("IEEE Float obligations are outside the SMT theory")
+        Predicate.FloatCompare(relation, left, right) => smt_float_relation(writer, relation, left, right, depth)
         Predicate.Compare(relation, value) => {
             let operator = smt_relation(relation)?
             Result.Ok(concat("(", concat(operator, concat(" ", concat(smt_linear(writer, value)?, " 0)")))))

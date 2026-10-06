@@ -1,0 +1,65 @@
+fn encoded_float_literal(text Text) Text {
+    match smt_float_literal(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+test fn smt_float_encoding_preserves_ieee_values_rounding_and_order() {
+    assert encoded_float_literal("-0.0") == "(_ -zero 11 53)"
+    assert encoded_float_literal("0e300") == "(_ +zero 11 53)"
+    assert encoded_float_literal("1e400") == "(_ +oo 11 53)"
+    assert encoded_float_literal("-inf") == "(_ -oo 11 53)"
+    assert encoded_float_literal("NaN") == "(_ NaN 11 53)"
+    assert encoded_float_literal("1.25e-1") == "((_ to_fp 11 53) RNE (/ 125.0 1000.0))"
+    assert match smt_float_literal("1) (assert false)") {
+        Result.Err(_) => true
+        _ => false
+    }
+    let x = FloatValue.Variable(7)
+    let minus = FloatValue.Apply("-", [x])
+    let query = encoding([Obligation {
+                facts = [Predicate.Variable(7), Predicate.Compare(">=", variable(7))]
+                conclusion = Predicate.FloatCompare("<=", minus, FloatValue.Apply("+", [x,
+                            FloatValue.Apply("/", [FloatValue.Apply("*", [x, x]),
+                                    FloatValue.Apply("-", [x, FloatValue.Literal("-0")])])]))
+            }])
+    assert contains(query, "(declare-const f7 (_ FloatingPoint 11 53))")
+    assert contains(query, "(declare-const b7 Bool)") && contains(query, "(declare-const n7 Int)")
+    assert contains(query, "(fp.leq (fp.neg f7) (fp.add RNE f7 (fp.div RNE (fp.mul RNE f7 f7) (fp.sub RNE f7 (_ -zero 11 53)))))")
+    let different = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.FloatCompare("!=", x, x)
+            }])
+    assert contains(different, "(not (fp.eq f7 f7))")
+    assert !contains(different, "(= f7 f7)")
+}
+
+test fn unsupported_float_operations_and_budget_exhaustion_supply_no_solver_axiom() {
+    let x = FloatValue.Variable(1)
+    assert match smt_query([Obligation {
+                facts = []
+                conclusion = Predicate.FloatCompare("==", FloatValue.Apply("%", [x,
+                            FloatValue.Literal("2")]), FloatValue.Literal("0"))
+            }]) {
+        Result.Err(message) => message == "unsupported SMT Float operation"
+        _ => false
+    }
+    let writer = SmtWriter {
+        declarations = std.bytes.new()
+        names = new[Text]()
+        budget = [0]
+        counts = []
+    }
+    assert match smt_float(writer, x, 0) {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert match smt_float(writer, x, 256) {
+        Result.Err(_) => true
+        _ => false
+    }
+}
