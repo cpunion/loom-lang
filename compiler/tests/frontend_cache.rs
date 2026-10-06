@@ -38,9 +38,13 @@ fn pack_observations_reprove_changed_concept_guarantees_after_body_reuse() {
     let path = package.join("main.loom");
     let source = r#"
 concept Amount {
-    fn amount[Tag](self Self) (Int, Text)
+    fn amount[Tag, Us...](self Self, input Int, ignored Us...) (Int, Text)
+    requires input >= 0
     ensures result.0 >= 0 && result.1 == "checked" {
-        (1, "checked")
+        comptime for item in ignored {
+            discard item
+        }
+        (input, "checked")
     }
 }
 impl Amount for Bool {}
@@ -48,7 +52,7 @@ fn total[Ts... Amount](values Ts...) Int
 ensures result >= 0 {
     var sum = 0
     comptime for item in values {
-        let report = item.amount[Bool]()
+        let report = item.amount[Bool, Bool, Text](1, true, "tag")
         assert report.1 == "checked"
         sum = sum + report.0
     }
@@ -75,6 +79,18 @@ fn main() {
     let invalid = cached("check", &package, &cache, &[]);
     assert!(!invalid.status.success());
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("postcondition"));
+    // Required guarantees do not remove a callee's runtime entry guard.
+    fs::write(
+        &path,
+        source.replace(
+            "item.amount[Bool, Bool, Text](1, true, \"tag\")",
+            "item.amount[Bool, Bool, Text](-1, true, \"tag\")",
+        ),
+    )
+    .unwrap();
+    let guarded = cached("run", &package, &cache, &[]);
+    assert!(!guarded.status.success());
+    assert!(String::from_utf8_lossy(&guarded.stderr).contains("precondition failed"));
 }
 
 #[test]

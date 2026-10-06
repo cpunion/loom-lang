@@ -584,7 +584,8 @@ test fn variadic_observations_reuse_method_pack_inference_and_contracts() {
         }
         """))
     rejects(std.text.join(std.text.split(definitions, "total + item.keep(pair.0, empty)"), "total - item.keep(pair.0, empty)"))
-    rejects(std.text.join(std.text.split(definitions, "item.keep(input, true, 7)"), "item.keep(-1, true, 7)"))
+    // Preconditions retain runtime guards; proofs describe normal returns.
+    discard accepted(std.text.join(std.text.split(definitions, "item.keep(input, true, 7)"), "item.keep(-1, true, 7)"))
     rejects(std.text.join(std.text.split(definitions, "item.pair(mixed, (1, true), pack())"), "item.pair(mixed, 1, pack())"))
     rejects(std.text.join(std.text.split(definitions, "ensures result == input"), "ensures true"))
 }
