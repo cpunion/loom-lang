@@ -272,7 +272,15 @@ async function privateRenameSmoke(executable, stdRoot) {
   const testUri = URI.file(helperTest).toString();
   const savedMain = await fs.readFile(file, 'utf8'), savedHelper = await fs.readFile(helper, 'utf8');
   const savedTest = await fs.readFile(helperTest, 'utf8');
-  const source = '// é😀\nfn main() { assert helper() == 7 }\n';
+  const source = `// é😀
+fn main() {
+    let callback fn() Int = helper
+    assert callback() == 7
+    let computed = comptime { helper() }
+    assert computed == 7
+    assert helper() == 7
+}
+`;
   const client = await session({ executable, stdRoot }, folder);
   const renameAt = newName => client.rpc.sendRequest('textDocument/rename', {
     textDocument: { uri }, position: TextDocument.create(uri, 'loom', 1, source).positionAt(source.indexOf('helper()')),
@@ -285,13 +293,15 @@ async function privateRenameSmoke(executable, stdRoot) {
     assert.deepEqual((await client.wait(file, 1)).diagnostics, []);
     const edit = await renameAt('utility');
     assert.deepEqual(Object.keys(edit.changes).sort(), [helperUri, testUri, uri].sort());
-    assert.equal(edit.changes[uri].length, 1);
+    assert.equal(edit.changes[uri].length, 3);
     assert.equal(edit.changes[helperUri].length, 1);
     assert.equal(edit.changes[testUri].length, 1);
     const revisedMain = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 1, source), edit.changes[uri]);
     const revisedHelper = TextDocument.applyEdits(TextDocument.create(helperUri, 'loom', 1, savedHelper), edit.changes[helperUri]);
     const revisedTest = TextDocument.applyEdits(TextDocument.create(testUri, 'loom', 1, savedTest), edit.changes[testUri]);
     assert.match(revisedMain, /assert utility\(\) == 7/);
+    assert.match(revisedMain, /fn\(\) Int = utility/);
+    assert.match(revisedMain, /comptime \{ utility\(\) \}/);
     assert.match(revisedHelper, /^fn utility\(\) Int/);
     assert.match(revisedTest, /assert utility\(\) == 7/);
     await client.change(helper, revisedHelper, 2);
@@ -299,15 +309,29 @@ async function privateRenameSmoke(executable, stdRoot) {
     await client.change(helperTest, revisedTest, 2);
     assert.deepEqual((await client.wait(file, 2)).diagnostics, []);
 
-    await client.change(helper, 'fn helper() Int { 7 }\nfn decoy() { let helper = 1\n discard helper }\n', 3);
-    await client.change(file, source, 3);
+    await client.change(helper, `${savedHelper}
+fn pending(comptime flag Bool) Int {
+    comptime if flag {
+        helper()
+    } else {
+        helper()
+    }
+}
+`, 3);
+    await client.change(file, source.replace('assert helper() == 7', 'assert helper() == 7\n    assert pending(true) == 7'), 3);
     await client.change(helperTest, savedTest, 3);
     assert.deepEqual((await client.wait(file, 3)).diagnostics, []);
     await assert.rejects(renameAt('utility'), /every occurrence of this private declaration/);
 
-    await client.change(helper, 'pub fn helper() Int { 7 }\n', 4);
+    await client.change(helper, 'fn helper() Int { 7 }\nfn decoy() { let helper = 1\n discard helper }\n', 4);
     await client.change(file, source, 4);
+    await client.change(helperTest, savedTest, 4);
     assert.deepEqual((await client.wait(file, 4)).diagnostics, []);
+    await assert.rejects(renameAt('utility'), /every occurrence of this private declaration/);
+
+    await client.change(helper, 'pub fn helper() Int { 7 }\n', 5);
+    await client.change(file, source, 5);
+    assert.deepEqual((await client.wait(file, 5)).diagnostics, []);
     const publicEdit = await renameAt('utility');
     assert.deepEqual(Object.keys(publicEdit.changes).sort(), [helperUri, testUri, uri].sort());
     assert.equal(await fs.readFile(file, 'utf8'), savedMain);

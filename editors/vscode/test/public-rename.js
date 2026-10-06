@@ -93,10 +93,23 @@ test fn other_test() {
     assert.equal(unsaved.changes[URI.file(testFile).toString()].length, 2);
     await assert.rejects(fs.access(testFile), { code: 'ENOENT' });
 
-    const hidden = `${sources.get('library/main.loom')}\nfn unused[T](value T) Int {\n    answer(2)\n}\n`;
-    await client.change(library, hidden, 2);
+    const covered = `${sources.get('library/main.loom')}\nfn unused[T](value T) Int {\n    answer(2)\n}\n`;
+    await client.change(library, covered, 2);
+    const abstractEdit = await client.rpc.sendRequest('textDocument/rename', { ...imported, newName: 'identity' });
+    assert.equal(abstractEdit.changes[URI.file(library).toString()].length, 3);
+
+    const hidden = `${sources.get('library/main.loom')}
+fn unused[T](value T) Int {
+    comptime if T == Int {
+        answer(2)
+    } else {
+        answer(3)
+    }
+}
+`;
+    await client.change(library, hidden, 3);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...imported, newName: 'identity' }), /every occurrence/);
-    await client.change(library, sources.get('library/main.loom'), 3);
+    await client.change(library, sources.get('library/main.loom'), 4);
 
     const generated = `import std.reflect.Schema
 ${sources.get('library/main.loom')}
@@ -107,13 +120,13 @@ test fn generated_test() {
     assert generated!() == 1
 }
 `;
-    await client.change(library, generated, 4);
+    await client.change(library, generated, 5);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...imported, newName: 'identity' }), /generated source references/);
-    await client.change(library, `${sources.get('library/main.loom')}\npub fn answer(value Bool) Bool {\n    value\n}\n`, 5);
+    await client.change(library, `${sources.get('library/main.loom')}\npub fn answer(value Bool) Bool {\n    value\n}\n`, 6);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
       ...at(library, sources.get('library/main.loom'), 'answer'), newName: 'identity',
     }), /one top-level function/);
-    await client.change(library, sources.get('library/main.loom'), 6);
+    await client.change(library, sources.get('library/main.loom'), 7);
 
     // Rechecking alone could accept accidental capture by this callback.
     const collision = source.replace('let callback', 'let identity fn(Int) Int = fn(value Int) Int {\n        value + 1\n    }\n    let callback');

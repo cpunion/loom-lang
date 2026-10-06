@@ -1,0 +1,117 @@
+// Optional source bindings, captured before specialization and CTFE erase uses.
+// Declaration IDs refer to the original source, not appended checked instances.
+pub record DeclarationReference {
+    file Int
+    node Node
+    segment Int
+    symbol Int
+    label Text
+}
+
+fn referenced_concept(env Environment, owner Int, node Node, path Text, skip Int) Result[Int, Failure] {
+    let selected = concept_named(env, owner, node, path)?
+    if selected < 0 || !get(env.inputs, 0).declaration_queries {
+        return Result.Ok(selected)
+    }
+    var segment = skip
+    var index = 0
+    while index < length(path) {
+        if std.text.byte(path, index) == 46 {
+            segment = segment + 1
+        }
+        index = index + 1
+    }
+    record_declaration_reference(env, owner, node, selected, segment, "")
+    Result.Ok(selected)
+}
+
+fn record_declaration_reference(env Environment, owner Int, node Node, selected Int, segment Int, label Text) {
+    let inputs = get(env.inputs, 0)
+    if selected < 0 || !inputs.declaration_queries {
+        return
+    }
+    let file = symbol(env, owner).file
+    // Deduplication is file-local, not a quadratic scan of the import closure.
+    while length(inputs.reference_indices) <= file {
+        push(inputs.reference_indices, new[Int]())
+    }
+    let indices = get(inputs.reference_indices, file)
+    var index = 0
+    while index < length(indices) {
+        let previous = get(inputs.declaration_references, get(indices, index))
+        if previous.node.span.start == node.span.start && previous.node.span.end == node.span.end &&
+        previous.segment == segment && previous.symbol == selected && previous.label == label {
+            return
+        }
+        index = index + 1
+    }
+    push(indices, length(inputs.declaration_references))
+    push(inputs.declaration_references, DeclarationReference {
+            file = file
+            node = node
+            segment = segment
+            symbol = selected
+            label = label
+        })
+}
+
+// Callers test the switch before entering this allocating function/root frame.
+// Binding evidence needs no locals, effects, cleanup or other Context state.
+fn record_function_reference(env Environment, owner Int, node Node, selected Int, arguments List[Int]) Result[Bool, Failure] {
+    let source = if node.kind == NodeKind.Apply {
+        child(node, 0)
+    } else {
+        node
+    }
+    if source.kind != NodeKind.Name && source.kind != NodeKind.Call {
+        return Result.Ok(true)
+    }
+    var declaration = get(env.signatures, selected).symbol
+    var index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        // Private proof headers and their rewritten bodies are not source
+        // specializations. Neither their calls nor their IDs are query evidence.
+        if erased_pack(pack) && (pack.signature == selected ||
+            get(env.signatures, pack.signature).symbol == owner) {
+            return Result.Ok(true)
+        }
+        if pack.signature == selected {
+            declaration = pack.declaration
+        }
+        index = index + 1
+    }
+    if name(source.value) != symbol(env, declaration).name {
+        return Result.Ok(true)
+    }
+    var segment = 0
+    index = 0
+    while index < length(source.value) {
+        if std.text.byte(source.value, index) == 46 {
+            segment = segment + 1
+        }
+        index = index + 1
+    }
+    let current = signature(env, selected, arguments, node)?
+    let parameters = copy_indices(current.params)
+    push(parameters, current.result)
+    let label = type_name(env.source, env.types, env.interfaces,
+        intern(env, TypeKind.Function, -1, parameters))
+    record_declaration_reference(env, owner, source, declaration, segment,
+        if async_signature(env, current) {
+            concat("async ", label)
+        } else {
+            label
+        })
+    Result.Ok(true)
+}
+
+// Fresh checking observes abstract templates as well as concrete instances.
+// Cached executable bodies cannot supply erased source-binding evidence.
+pub fn declaration_references(source std.loom.binding.Program, inputs BuildInputs) Result[List[DeclarationReference], Failure] {
+    discard expanded_source(source)?
+    let detached = query_source(source)?
+    let env = prepare_with_inputs(detached, inputs, true)?
+    discard checked_program(env, new[Bool](), new[Bool](), ints(0))?
+    Result.Ok(get(env.inputs, 0).declaration_references)
+}

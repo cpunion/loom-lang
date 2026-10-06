@@ -674,15 +674,15 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
         types = analysis.program.types
         interfaces = analysis.program.interfaces
         functions = analysis.program.functions
-        concepts = if length(analysis.concepts) == 0 {
-            new[std.loom.checking.ConceptReference]()
+        declarations = if length(analysis.declarations) == 0 {
+            new[std.loom.checking.DeclarationReference]()
         } else {
-            get(analysis.concepts, 0)
+            get(analysis.declarations, 0)
         }
     }
     match inspect_view(view, file, offset) {
         Option.Some(found) => Option.Some(found)
-        Option.None => inspect_concept_at(analysis, view, file, offset)
+        Option.None => inspect_declaration_at(analysis, view, file, offset)
     }
 }
 
@@ -728,7 +728,7 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int) Option[Inspection] 
         types = new[Text]()
         definitions = new[Location]()
     }
-    inspect_concept_references(analysis, report, target, file, analysis.concepts)
+    inspect_declaration_references(analysis, report, target, file, analysis.declarations)
     if length(report.definitions) > 0 {
         return Option.Some(report)
     }

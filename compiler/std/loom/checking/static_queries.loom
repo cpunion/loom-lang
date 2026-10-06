@@ -4,8 +4,9 @@ record CheckInputs {
     build BuildInputs
     signature_ids List[Int]
     static_queries List[StaticReferenceQuery]
-    concept_queries Bool
-    concept_references List[ConceptReference]
+    declaration_queries Bool
+    declaration_references List[DeclarationReference]
+    reference_indices List[List[Int]]
     // Trusted source shapes are fixed within this binding/type snapshot.
     result_shapes List[ResultShape]
     constraint_errors List[Int]

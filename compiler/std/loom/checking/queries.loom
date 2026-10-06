@@ -17,7 +17,7 @@ pub record CheckedQuery {
     types List[Type]
     interfaces List[Interface]
     functions List[Function]
-    concepts List[ConceptReference]
+    declarations List[DeclarationReference]
 }
 
 fn query_templates(env Environment) Result[Bool, Failure] {
@@ -67,7 +67,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
                 types = env.types
                 interfaces = env.interfaces
                 functions = new[Function]()
-                concepts = get(env.inputs, 0).concept_references
+                declarations = get(env.inputs, 0).declaration_references
             })
     }
     let current = get(env.signatures, selected)
@@ -81,6 +81,6 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
             types = env.types
             interfaces = env.interfaces
             functions = functions
-            concepts = get(env.inputs, 0).concept_references
+            declarations = get(env.inputs, 0).declaration_references
         })
 }

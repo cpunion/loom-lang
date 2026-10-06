@@ -164,6 +164,72 @@ fn independent_found(bindings std.loom.binding.Program, text Text, fragment Text
     }
 }
 
+test fn folded_calls_and_specialized_callbacks_keep_checked_declaration_bindings() {
+    let text = """
+        fn identity[T](value T) T {
+            value
+        }
+
+        fn width[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var count = 0
+            comptime for value in values {
+                discard value
+                count = identity(count + 1)
+            }
+            count
+        }
+
+        fn selected(comptime flag Bool) Int {
+            comptime if flag {
+                identity(7)
+            } else {
+                identity(8)
+            }
+        }
+
+        fn other() Int {
+            comptime { identity(9) }
+        }
+
+        fn main() {
+            let computed = comptime {
+                let callback fn(Int) Int = identity[Int]
+                callback(3)
+            }
+            let counted = comptime { width(1, true) }
+            assert computed == 3 && counted == 2
+            assert selected(true) == 7
+        }
+        """
+    let analysis = accepted(input(text))
+    let symbols = length(analysis.bindings.symbols)
+    let declared = query_offset(text, "identity[T]")
+    let callback = inspection(analysis, text, "identity[Int]")
+    only_type(callback, "fn(Int) Int")
+    only_definition(callback, declared, declared + 8)
+    only_definition(inspection(analysis, text, "identity(9)"), declared, declared + 8)
+    assert length(analysis.declaration_scopes) == 2
+    let call = inspection(analysis, text, "identity(7)")
+    only_type(call, "fn(Int) Int")
+    only_definition(call, declared, declared + 8)
+    absent(analysis, query_offset(text, "identity(8)"))
+    let width = inspection(analysis, text, "width(1, true)")
+    only_type(width, "fn(Int, Bool) Int")
+    let width_declared = query_offset(text, "width[Ts")
+    only_definition(width, width_declared, width_declared + 5)
+    assert length(analysis.declarations) == 1
+    assert length(analysis.bindings.symbols) == symbols
+    let original = length(query_bindings(input(text)).symbols)
+    let references = get(analysis.declarations, 0)
+    var index = 0
+    while index < length(references) {
+        assert get(references, index).symbol >= 0 && get(references, index).symbol < original
+        index = index + 1
+    }
+    only_definition(independent_found(query_bindings(input(text)), text, "identity[Int]"), declared, declared + 8)
+}
+
 test fn independent_queries_keep_good_functions_despite_same_or_sibling_file_errors() {
     let good = "fn identity(value Int) Int { value }\nfn identity(value Bool) Bool { value }\nfn good() { let count = identity(3)\nassert count == 3 }\nfn main() { good() }"
     let bad = "fn broken() Int { true }\n"
@@ -198,6 +264,8 @@ test fn independent_queries_keep_good_functions_despite_same_or_sibling_file_err
         only_type(call, "fn(Int) Int")
         let target = query_offset(text, "identity(value Int)")
         only_definition(call, target, target + 8)
+        let folded = concat(text, "\nfn folded() Int {\n    comptime { identity(4) }\n}\n")
+        only_definition(independent_found(query_bindings(input(folded)), folded, "identity(4)"), target, target + 8)
         index = index + 1
     }
 }

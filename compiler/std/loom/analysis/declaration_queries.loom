@@ -1,0 +1,156 @@
+import std.loom.checking.DeclarationReference
+import std.loom.checking.declaration_references
+
+fn ordinary_query_owner(node Node) Bool {
+    var index = 0
+    while index < length(node.children) {
+        let group = get(node.children, index)
+        if group.kind == NodeKind.TypeParameters && length(group.children) != 0 {
+            return false
+        }
+        if group.kind == NodeKind.Parameters {
+            var parameter = 0
+            while parameter < length(group.children) {
+                if has(get(group.children, parameter), NodeKind.Comptime) {
+                    return false
+                }
+                parameter = parameter + 1
+            }
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn inspect_declaration_references(view CheckedQuery, report Inspection, target Query, file Int, references List[DeclarationReference]) {
+    var index = 0
+    while index < length(references) {
+        let reference = get(references, index)
+        let node = reference.node
+        // Type resolution rewrites selected receivers and wraps an applied
+        // Name as a Type. Keep its source origin and checked path segment.
+        let same_kind = node.kind == target.node.kind ||
+        (node.kind == NodeKind.Type && target.node.kind == NodeKind.Name)
+        if reference.file == file && node.span.start == target.node.span.start && node.span.end >= target.node.span.end &&
+        same_kind && reference.segment == target.segment &&
+        get(view.bindings.symbols, reference.symbol).name == target.token.value {
+            symbol_location(view, report, reference.symbol)
+            if reference.label != "" {
+                add_type(report, reference.label)
+            }
+        }
+        index = index + 1
+    }
+}
+
+// A successful analysis lazily records erased bindings per checked scope. Readers
+// replay the analysis's observed input snapshots, never fresh filesystem data.
+// Ordinary body queries and ordinary compilation do not run this extra check.
+fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset Int) Option[Inspection] {
+    if file < 0 || file >= length(view.bindings.files) {
+        return Option.None
+    }
+    var index = 0
+    while index < length(analysis.declaration_scopes) {
+        let scope = get(analysis.declaration_scopes, index)
+        if scope.file < 0 || (scope.file == file && inside(scope.span, offset)) {
+            return Option.None
+        }
+        index = index + 1
+    }
+    let source = get(view.bindings.files, file)
+    let tokens = match lex(source.text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    let token = match token_at(tokens, offset) {
+        Option.Some(value) => value
+        Option.None => {
+            return Option.None
+        }
+    }
+    let target = match query(source.tree, token, tokens) {
+        Option.Some(value) => value
+        Option.None => {
+            return Option.None
+        }
+    }
+    var possible = false
+    index = 0
+    while index < length(view.bindings.symbols) {
+        let symbol = get(view.bindings.symbols, index)
+        possible = possible || ((symbol.node.kind == NodeKind.Function || symbol.node.kind == NodeKind.Concept || symbol.node.kind == NodeKind.AssociatedType) &&
+            symbol.name == token.value)
+        index = index + 1
+    }
+    if !possible {
+        return Option.None
+    }
+    let inputs = with_proof_backend(build_inputs(no_input_reader, analysis.options), analysis.proof_backend)
+    index = 0
+    while index < length(analysis.inputs) {
+        push(inputs.files, get(analysis.inputs, index))
+        index = index + 1
+    }
+    index = 0
+    while index < length(analysis.targets) {
+        push(inputs.targets, get(analysis.targets, index))
+        index = index + 1
+    }
+    // A successful analysis already checked unrelated bodies. Reuse the query
+    // checker for an ordinary source function's closure; static/generic owners
+    // still need application instances to account for their selected branches.
+    var scope = Location {
+        file = -1
+        span = source.tree.span
+    }
+    index = 0
+    while index < length(view.bindings.symbols) {
+        let symbol = get(view.bindings.symbols, index)
+        let node = symbol.node
+        if symbol.file == file && symbol.owner < 0 && node.kind == NodeKind.Function &&
+        inside(node.span, offset) && ordinary_query_owner(node) {
+            scope = Location {
+                file = file
+                span = node.span
+            }
+        }
+        index = index + 1
+    }
+    let references = if scope.file >= 0 {
+        match check_query(view.bindings, file, offset, inputs) {
+            Result.Ok(value) => value.declarations
+            Result.Err(_) => new[DeclarationReference]()
+        }
+    } else {
+        match declaration_references(view.bindings, inputs) {
+            Result.Ok(value) => value
+            Result.Err(_) => new[DeclarationReference]()
+        }
+    }
+    push(analysis.declaration_scopes, scope)
+    if length(analysis.declarations) == 0 {
+        push(analysis.declarations, references)
+    } else if scope.file < 0 {
+        set(analysis.declarations, 0, references)
+    } else {
+        let stored = get(analysis.declarations, 0)
+        index = 0
+        while index < length(references) {
+            push(stored, get(references, index))
+            index = index + 1
+        }
+    }
+    let report = Inspection {
+        span = token.span
+        types = new[Text]()
+        definitions = new[Location]()
+    }
+    inspect_declaration_references(view, report, target, file, references)
+    if length(report.definitions) == 0 {
+        return Option.None
+    }
+    Option.Some(report)
+}
