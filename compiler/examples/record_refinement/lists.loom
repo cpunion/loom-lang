@@ -10,10 +10,16 @@ fn all_positive(values List[Int]) Bool {
         }
         index = index + 1
     }
-    length(values) > 0
+    true
 }
 
-type PositiveValues = List[Int] where all_positive(self)
+type PositiveValues = List[Int] where length(self) > 0 && all_positive(self)
+
+type PositiveElement = Int where self > 0
+
+fn replace_positive(values PositiveValues, index Int, value PositiveElement) {
+    values[index] = value
+}
 
 fn pair_length(values List[Int]) Bool {
     let inspect = fn() Int {
@@ -76,6 +82,10 @@ fn list_constraint_scope() Bool {
     }
     let literal = PositiveValues([2, 3])
     assert values_sum(literal) == 5
+    let literal_alias = literal
+    replace_positive(literal, 0, PositiveElement(4))
+    set(literal_alias, 1, PositiveElement(5))
+    assert literal[0] == 4 && values_sum(literal_alias) == 9
     let pair = IntPair([1, 2])
     let pair_alias = pair
     pair[0] = -7
@@ -107,8 +117,9 @@ test async fn list_constraints_survive_task_handoff_and_moving_collection() {
     let alias = original
     let copied = clone(original)
     copied[0] = -3
+    replace_positive(alias, 0, PositiveElement(5))
     let returned = child.await
-    assert returned[0] == 3 && values_sum(alias) == 7
+    assert returned[0] == 5 && values_sum(alias) == 9
     let pair = IntPair([5, 6])
     let pair_child = retain_pair(pair)
     pair[0] = 7

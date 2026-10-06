@@ -2097,7 +2097,7 @@ Explicit source `std.list.clone` is one such factory, not a
 compiler-recognized public name:
 
 ```loom
-type PositiveValues = List[Int] where all_positive(self)
+type PositiveValues = List[Int] where length(self) > 0 && all_positive(self)
 
 fn checked_copy(values List[Int]) Result[PositiveValues, ConstraintError] {
     PositiveValues(clone(values))
@@ -2146,14 +2146,33 @@ the predicate at length `n` implies it at `n + 1`, including helper precondition
 and arithmetic definedness. Thus `length(self) > 0` permits `push` and source
 append helpers, while fixed length and upper bounds do not. Capacity/length
 overflow faults before mutation. Unsupported proofs do not grant permission.
-A predicate that observes elements keeps the read-only capability; unknown effects, raw alias returns and
+A content predicate can also admit a single atomic replacement when the state
+proof establishes the complete predicate after that store:
+
+```loom
+type PositiveElement = Int where self > 0
+
+fn replace_positive(values PositiveValues, index Int, value PositiveElement) {
+    values[index] = value
+}
+```
+
+This composes the admitted List predicate with the replacement's type invariant
+or literal value. Ordinary argument-preserving `set` forwarders use the same
+rule, inferred from their checked bodies, not their names. Bounds faults precede
+mutation. The proof does not replay arguments or change their evaluation order,
+and adds no runtime predicate check. A callee's normal-return promise cannot
+justify temporarily invalid contents. Unknown preservation, effects, raw alias returns and
 publication into another aggregate reject at compile time. Factories
 and borrows are checked through helper bodies, not trusted annotations. These
 rules also run for compile-time code and unused concrete functions. The constrained
 List has the ordinary native List layout and survives moving GC and Task handoff.
 See the [generic extent example](examples/list_contracts/refinements.loom).
-Automatically proving that selected writes preserve an arbitrary predicate,
-and strengthening pre-existing writable aliases, remain later analysis work.
+The current rule abstracts nonliteral arguments by their validated types; it does
+not import arbitrary caller path/heap facts. General mutation preservation and
+strengthening pre-existing writable aliases remain later analysis work.
+Shared builds with admitted content writes no longer treat that nominal type's
+contents as read-only; old-cell equality still requires interference-safe proof.
 
 An explicit conversion between Int refinements can also return the destination
 directly when the source predicate proves the destination predicate, including

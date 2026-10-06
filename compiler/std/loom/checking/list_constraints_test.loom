@@ -12,11 +12,15 @@ fn list_constraint_files(source Text) List[TestFile] {
     push(files, source_file("std.list", """
         intrinsic fn list_len[T](values List[T]) Int
         intrinsic fn list_push[T](values List[T], value T)
+        intrinsic fn list_set[T](values List[T], index Int, value T)
         pub fn length[T](values List[T]) Int {
             list_len(values)
         }
         pub fn push[T](values List[T], value T) {
             list_push(values, value)
+        }
+        pub fn set[T](values List[T], index Int, value T) {
+            list_set(values, index, value)
         }
         pub fn clone[T](values List[T]) List[T] {
             let output List[T] = []
@@ -81,6 +85,53 @@ fn list_constraint_source() Text {
         total
     }
     """
+}
+
+test fn single_element_updates_prove_the_complete_content_constraint() {
+    let header = """
+    import std.list.length
+    import std.list.set
+    type Positive = Int where self > 0
+    fn positive_head(values List[Int]) Bool {
+        length(values) > 0 && values[0] > 0
+    }
+    type PositiveHead = List[Int] where positive_head(self)
+
+    """
+    list_constraint_accept(concat(header, """
+        fn replace(values PositiveHead, value Positive) {
+            values[0] = value
+        }
+        fn forwarded(values List[Int], index Int, value Int) {
+            set(values, index, value)
+        }
+        fn main() {
+            let values = PositiveHead([1, 2])
+            let alias = values
+            replace(values, Positive(3))
+            forwarded(alias, 0, Positive(4))
+            assert values[0] == 4 && length(values) == 2
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn unknown(values PositiveHead, value Int) {
+            values[0] = value
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(values PositiveHead) {
+            set(values, 0, 0)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn temporary(values List[Int]) {
+            values[0] = -1
+            values[0] = 1
+        }
+        pub fn invalid(values PositiveHead) {
+            temporary(values)
+        }
+        """))
 }
 
 test fn generic_list_extent_constraints_ignore_shared_element_contents() {

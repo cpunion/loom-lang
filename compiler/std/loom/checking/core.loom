@@ -85,7 +85,8 @@ record TypeState {
     // 0: header; 1: expanding layout; 2: ready; 3: checking a predicate.
     phase Int
     task_width Int
-    // 0: read-only; 1: element replacement; 2: replacement and proved append.
+    // Unconditional writes: 0: none; 1: replacement; 2: replacement and append.
+    // Individual atomic replacements may additionally prove full preservation.
     list_writes Int
 }
 

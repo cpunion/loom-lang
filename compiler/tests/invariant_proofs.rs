@@ -82,3 +82,201 @@ fn typed_inputs_prove_contracts_without_rechecking_construction() {
         }
     }
 }
+
+const UPDATE_TYPES: &str = r#"
+import std.list.length
+import std.list.set
+
+fn positive_elements(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        if values[index] <= 0 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+type PositiveElement = Int where self > 0
+type PositiveValues = List[Int] where length(self) > 0 && positive_elements(self)
+
+fn replace_positive(values PositiveValues, index Int, value PositiveElement) {
+    values[index] = value
+}
+
+fn forwarded(values List[Int], index Int, value Int) {
+    set(values, index, value)
+}
+"#;
+
+#[test]
+fn proved_element_updates_preserve_shared_constraints_and_revalidate_workers() {
+    let package = tempfile::tempdir().unwrap();
+    let path = package.path().to_str().unwrap();
+    let main = package.path().join("main.loom");
+    let cache = package.path().join("cache");
+    let check = || common::loom(&["check", path, "--frontend-cache", cache.to_str().unwrap()]);
+    let source = [
+        UPDATE_TYPES,
+        r#"
+fn main() {
+    let values = PositiveValues([1, 2])
+    let alias = values
+    replace_positive(values, 0, PositiveElement(3))
+    forwarded(alias, 1, PositiveElement(4))
+    values[0] = 5
+    assert alias[0] == 5 && values[1] == 4 && length(values) == 2
+}
+
+test fn preserved_updates() {
+    main()
+}
+"#,
+    ]
+    .concat();
+    fs::write(&main, &source).unwrap();
+    success(&check());
+    success(&check());
+    fs::write(&main, source.replace("self > 0", "self >= 0")).unwrap();
+    let weakened = check();
+    assert!(!weakened.status.success());
+    assert!(String::from_utf8_lossy(&weakened.stderr).contains("may invalidate"));
+    fs::write(&main, &source).unwrap();
+    success(&check());
+
+    let artifact = common::executable(package.path(), "updates");
+    for level in ["0", "2"] {
+        for args in [
+            vec!["test", path],
+            vec!["build", path, "--output", artifact.to_str().unwrap()],
+        ] {
+            success(
+                &common::command(&args)
+                    .env("LOOM_OPT_LEVEL", level)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        success(
+            &Command::new(&artifact)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
+    success(&common::loom(&["run", path]));
+
+    for rejected in [
+        r#"
+pub fn invalid(values PositiveValues, value Int) {
+    values[0] = value
+}
+"#,
+        r#"
+pub fn invalid(values PositiveValues) {
+    set(values, 0, 0)
+}
+"#,
+        r#"
+fn temporary(values List[Int])
+ensures positive_elements(values)
+{
+    values[0] = -1
+    assert false
+    values[0] = 1
+}
+pub fn invalid(values PositiveValues) {
+    temporary(values)
+}
+"#,
+        r#"
+fn linked(values List[Int]) Bool {
+    length(values) == 2 && values[0] == values[1] && values[0] > 0
+}
+type Linked = List[Int] where linked(self)
+pub fn invalid(values Linked) {
+    set(values, 0, PositiveElement(2))
+}
+"#,
+    ] {
+        fs::write(&main, [UPDATE_TYPES, rejected].concat()).unwrap();
+        let result = check();
+        assert!(!result.status.success(), "accepted: {rejected}");
+        assert!(String::from_utf8_lossy(&result.stderr).contains("may invalidate"));
+    }
+
+    // Bounds faults occur before the store; lexical cleanup sees the old value.
+    fs::write(
+        &main,
+        [
+            UPDATE_TYPES,
+            r#"
+import std.io.write_text
+fn retained(values PositiveValues) {
+    assert values[0] == 1 && values[1] == 2
+    discard write_text("preserved\n")
+}
+fn main() {
+    let values = PositiveValues([1, 2])
+    defer {
+        retained(values)
+    }
+    replace_positive(values, length(values), PositiveElement(3))
+}
+"#,
+        ]
+        .concat(),
+    )
+    .unwrap();
+    success(&common::loom(&[
+        "build",
+        path,
+        "--output",
+        artifact.to_str().unwrap(),
+    ]));
+    let fault = Command::new(&artifact)
+        .env("LOOM_GC_STRESS", "1")
+        .output()
+        .unwrap();
+    assert!(!fault.status.success());
+    assert_eq!(fault.stdout, b"preserved\n");
+    assert!(String::from_utf8_lossy(&fault.stderr).contains("list index out of bounds"));
+
+    let observer = r#"
+import std.task.worker.run
+fn unchanged(values PositiveValues) Int
+ensures result == old(values[0])
+{
+    values[0]
+}
+async fn main() {
+    let values = PositiveValues([1, 2])
+    discard run(fn() Int {
+        unchanged(values)
+    }).await
+}
+"#;
+    let readonly = [UPDATE_TYPES, observer].concat();
+    fs::write(&main, &readonly).unwrap();
+    success(&check());
+    let writable = readonly
+        .replace(
+            "    discard run(fn() Int {",
+            r#"    let writer = run(fn() Int {
+        replace_positive(values, 0, PositiveElement(3))
+        0
+    })
+    discard run(fn() Int {"#,
+        )
+        .replace(
+            "    }).await\n}",
+            "    }).await\n    discard writer.await\n}",
+        );
+    fs::write(&main, writable).unwrap();
+    let changed = check();
+    assert!(!changed.status.success());
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("interference-safe"));
+    fs::write(&main, readonly).unwrap();
+    success(&check());
+}
