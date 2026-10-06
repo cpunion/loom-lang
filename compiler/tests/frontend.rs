@@ -32,7 +32,7 @@ fn source_compiler(compiler: &Path, args: &[&str]) -> Output {
         .current_dir(root);
     // Compile the large source unit-test suites quickly. Bootstrap and native
     // application regressions retain their optimized builds.
-    if args.first() == Some(&"test") && args.contains(&"--recursive") {
+    if args.first() == Some(&"test") {
         command.env("LOOM_OPT_LEVEL", "0");
     }
     command.output().unwrap()
