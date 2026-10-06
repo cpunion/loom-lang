@@ -1,17 +1,40 @@
 test fn explicit_integer_conversions_and_bounds() {
     assert from_int(7) == 7.0
     assert from_int(9007199254740993) == 9007199254740992.0
-    assert match to_int(1.75) { Result.Ok(value) => value == 1, _ => false }
-    assert match to_int(-1.75) { Result.Ok(value) => value == -1, _ => false }
+    assert match to_int(1.75) {
+        Result.Ok(value) => value == 1,
+        _ => false
+    }
+    assert match to_int(-1.75) {
+        Result.Ok(value) => value == -1,
+        _ => false
+    }
     assert match to_int(from_int(-9223372036854775808)) {
-        Result.Ok(value) => value == -9223372036854775808, _ => false
+        Result.Ok(value) => value == -9223372036854775808,
+        _ => false
     }
     assert match to_int(from_int(9223372036854775807)) {
-        Result.Err(error) => error == FloatToIntError.OutOfRange, _ => false
+        Result.Err(error) => error == FloatToIntError.OutOfRange,
+        _ => false
     }
     assert match to_int(-9223372036854777856.0) {
-        Result.Err(error) => error == FloatToIntError.OutOfRange, _ => false
+        Result.Err(error) => error == FloatToIntError.OutOfRange,
+        _ => false
     }
+}
+
+test fn absolute_value_handles_ieee_values_and_compile_time_calls() {
+    assert abs(-7.5) == 7.5 && abs(7.5) == 7.5
+    assert 1.0 / abs(-0.0) == 1.0 / 0.0
+    assert 1.0 / abs(0.0) == 1.0 / 0.0
+    assert abs(-5e-324) == 5e-324
+    assert abs(-1.7976931348623157e308) == 1.7976931348623157e308
+    assert abs(-1.0 / 0.0) == 1.0 / 0.0
+    assert abs(1.0 / 0.0) == 1.0 / 0.0
+    assert is_nan(abs(0.0 / 0.0))
+    assert comptime {
+        abs(-2.0)
+    } == 2.0
 }
 
 test fn ieee_special_values_do_not_use_integer_fault_rules() {
@@ -23,26 +46,43 @@ test fn ieee_special_values_do_not_use_integer_fault_rules() {
     assert nan != nan && !(nan == nan) && !(nan < 1.0) && !(nan >= 1.0)
     assert 0.0 == -0.0 && 1.0 / -0.0 == -infinity
     assert 1e999 == infinity && 1e-999 == 0.0
-    assert match to_int(nan) { Result.Err(error) => error == FloatToIntError.NonFinite, _ => false }
-    assert match to_int(infinity) { Result.Err(error) => error == FloatToIntError.NonFinite, _ => false }
+    assert match to_int(nan) {
+        Result.Err(error) => error == FloatToIntError.NonFinite,
+        _ => false
+    }
+    assert match to_int(infinity) {
+        Result.Err(error) => error == FloatToIntError.NonFinite,
+        _ => false
+    }
 }
 
 fn parsed(value Text) Float {
     match parse(value) {
         Result.Ok(number) => number
-        Result.Err(_) => { assert false
-            0.0 }
+        Result.Err(_) => {
+            assert false
+            0.0
+        }
     }
 }
+
 fn invalid(value Text) {
-    assert match parse(value) { Result.Err(error) => error == ParseError.Invalid, _ => false }
+    assert match parse(value) {
+        Result.Err(error) => error == ParseError.Invalid,
+        _ => false
+    }
 }
+
 fn round_trip(value Float) {
     let text = to_text(value)
     let decoded = parsed(text)
-    if is_nan(value) { assert is_nan(decoded) } else {
+    if is_nan(value) {
+        assert is_nan(decoded)
+    } else {
         assert decoded == value
-        if value == 0.0 { assert 1.0 / decoded == 1.0 / value }
+        if value == 0.0 {
+            assert 1.0 / decoded == 1.0 / value
+        }
     }
     assert to_text(decoded) == text
 }
@@ -99,14 +139,31 @@ test fn compile_time_and_native_float_operations_agree() {
         (to_text(parsed("1.25") + from_int(3)), to_int(-1.75), parsed("-1e-9999"), parsed("5e-324"))
     }
     assert text == to_text(parsed("1.25") + from_int(3))
-    assert match converted { Result.Ok(value) => value == -1, _ => false }
+    assert match converted {
+        Result.Ok(value) => value == -1,
+        _ => false
+    }
     assert 1.0 / zero == 1.0 / parsed("-1e-9999") && tiny == parsed("5e-324")
-    let rounded = comptime { from_int(9007199254740993) }
+    let rounded = comptime {
+        from_int(9007199254740993)
+    }
     assert rounded == from_int(9007199254740993)
-    let outside = comptime { to_int(from_int(9223372036854775807)) }
-    assert match outside { Result.Err(error) => error == FloatToIntError.OutOfRange, _ => false }
-    let nan = comptime { parsed("NaN") }
+    let outside = comptime {
+        to_int(from_int(9223372036854775807))
+    }
+    assert match outside {
+        Result.Err(error) => error == FloatToIntError.OutOfRange,
+        _ => false
+    }
+    let nan = comptime {
+        parsed("NaN")
+    }
     assert is_nan(nan)
-    let malformed = comptime { parse("1e+") }
-    assert match malformed { Result.Err(error) => error == ParseError.Invalid, _ => false }
+    let malformed = comptime {
+        parse("1e+")
+    }
+    assert match malformed {
+        Result.Err(error) => error == ParseError.Invalid,
+        _ => false
+    }
 }

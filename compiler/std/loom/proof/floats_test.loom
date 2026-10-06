@@ -45,7 +45,7 @@ test fn ieee_terms_keep_signed_zero_nan_and_operand_order() {
                 facts = []
                 conclusion = less
             }]) {
-        Result.Err(_) => true
+        Result.Ok(query) => std.text.contains(query, "(fp.lt f1 (_ +zero 11 53))")
         _ => false
     }
 }

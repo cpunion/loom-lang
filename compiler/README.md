@@ -577,7 +577,7 @@ timings; local variables remain conservatively rooted for the function.
   Parsing accepts ASCII decimal digits with an optional sign and leading zeros;
   invalid syntax and out-of-range input return errors, not arithmetic faults.
   It works in `comptime` without an additional intrinsic.
-- Source `std.float` supplies explicit integer conversion, finite/NaN queries,
+- Source `std.float` supplies `abs`, explicit integer conversion, finite/NaN queries,
   decimal parsing, and round-tripping formatting. `to_int` truncates toward zero
   and returns `NonFinite` or `OutOfRange`; `from_int` rounds ties to even.
   Parsing accepts complete signed ASCII decimals/exponents and exact `NaN`,
@@ -2181,7 +2181,8 @@ proofs retain ordinary checked `Result` construction. IEEE comparisons also use
 the bounded value/contract rules in the [contract boundary](#contract-boundary).
 The IEEE order theory also proves wider constant ranges and comparison chains,
 without treating numeric equality as identity of arithmetic computations.
-General Float arithmetic solving remains unsupported.
+Unresolved supported arithmetic uses the binary64 SMT theory described below,
+not integer or real algebra.
 
 Construction also consumes already established facts about an immutable scalar
 local or parameter, from `requires`, a successful `assert`, or the current
@@ -2669,8 +2670,8 @@ Int/Bool predicates use the existing bounded
 fragment. If direct facts are insufficient, acyclic pure predicate helpers expand
 in a private checked closure, retaining their guarded preconditions and successful
 checked calculations. This does not add runtime calls or change construction
-checks. Unsupported conjuncts, general helper loops/recursion and Float arithmetic
-supply no evidence. See the [input invariant example](examples/invariant_contracts).
+checks. Unsupported conjuncts and general helper loops/recursion supply no
+evidence. See the [input invariant example](examples/invariant_contracts).
 
 The current proof fragment supports scalar linear arithmetic, comparisons,
 Boolean facts, local assignments, branches/returns, and the scalar loops above. It reasons from
@@ -2683,7 +2684,7 @@ Pure-helper expansion supports the bounded scans above, but still excludes
 general loops, shared-storage mutation, cleanup and returns inside operands;
 verified callee summaries use the separate rules above.
 Recursive proof dependencies, dynamic calls without a usable declared contract,
-indirect calls and nonconstant division remain outside
+indirect calls and nonconstant integer division remain outside
 this proof fragment. IEEE Float proofs reuse exact comparisons over immutable
 values, including constrained inputs/elements, verified returns and guarded
 entry observations. Constant expressions use binary64 evaluation; symbolic
@@ -2698,8 +2699,18 @@ arithmetic is inferred. See the [range/clamp example](examples/floats/order.loom
 Float locals and literals may participate in proved loops, including variadic
 induction; assigned values are freshened at loop heads, not assumed to retain
 entry comparisons. No general Float arithmetic invariant is inferred.
-Unresolved Float obligations reject rather than enter the integer SMT theory.
-See the [Float trial](examples/floats/contracts.loom).
+Unresolved supported Float obligations use SMT-LIB's binary64 FloatingPoint
+theory, with `fp.eq`/ordered comparisons, negation and RNE-rounded `+`, `-`, `*`
+and `/` in source order. Literal conversion preserves subnormals, infinities,
+NaN and zero's sign. This proves magnitude and bounded scaling contracts without
+assuming finiteness, reassociation or real-number identities. Symbolic `%`
+remains unsupported: [SMT `fp.rem`](https://smt-lib.org/theories-FloatingPoint.shtml)
+and [LLVM `frem`](https://releases.llvm.org/22.1.0/docs/LangRef.html#frem-instruction)
+use different quotient rules. See the [Float trial](examples/floats/contracts.loom)
+and [arithmetic contracts](examples/smt_contracts/floats.loom). Source `std.float.abs`
+uses ordinary branches/arithmetic, preserves NaN and maps both zero signs to
+positive zero. Its finite pure body supports checked caller contracts, which
+then compose at refinement boundaries.
 Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not
 proofs of termination or absence of runtime faults.

@@ -1,0 +1,78 @@
+import std.float.is_nan
+import std.float.abs
+import std.float.parse
+import std.result.Result
+
+type NonNegativeFloat = Float where self >= 0.0
+
+fn magnitude(value Float) Float
+requires !is_nan(value)
+ensures result >= 0.0 {
+    abs(value)
+}
+
+fn positive_magnitude(value Float) NonNegativeFloat {
+    NonNegativeFloat(magnitude(value))
+}
+
+fn mirrored(value Float) Float
+requires value >= -10.0 && value <= 20.0
+ensures result >= -20.0 && result <= 10.0 {
+    -value
+}
+
+fn shifted(value Float) Float
+requires value >= 0.0 && value <= 1.0
+ensures result >= 1.0 && result <= 2.0 {
+    value + 1.0
+}
+
+fn halved(value Float) Float
+requires value >= 0.0 && value <= 2.0
+ensures result >= 0.0 && result <= 1.0 {
+    value / 2.0
+}
+
+fn doubled(value Float) Float
+requires value >= 0.0 && value <= 1.0
+ensures result >= 0.0 && result <= 2.0 {
+    value * 2.0
+}
+
+fn double_smallest(value Float) Float
+requires value == 5e-324
+ensures result == 1e-323 {
+    value * 2.0
+}
+
+fn rounded_unit(value Float) Float
+requires value == 9007199254740992.0
+ensures result == value {
+    value + 1.0
+}
+
+fn float_solver_cases() {
+    assert abs(-3.5) == 3.5
+    assert positive_magnitude(-4.0) == 4.0
+    assert abs(-1.0 / 0.0) == 1.0 / 0.0
+    assert 1.0 / abs(-0.0) == 1.0 / 0.0
+    assert is_nan(abs(0.0 / 0.0))
+    assert mirrored(-10.0) == 10.0
+    assert shifted(0.5) == 1.5
+    assert halved(2.0) == 1.0
+    assert doubled(1.0) == 2.0
+    assert rounded_unit(9007199254740992.0) == 9007199254740992.0
+    match parse("5e-324") {
+        Result.Ok(smallest) => {
+            assert abs(-smallest) == smallest
+            assert halved(smallest) == 0.0
+            assert double_smallest(smallest) == 1e-323
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert comptime {
+        abs(-2.0)
+    } == 2.0
+}

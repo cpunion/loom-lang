@@ -120,8 +120,16 @@ generic and dynamic calls and variadic induction, using this same value theory.
 The bounded IEEE order graph also proves comparison chains, wider constant
 ranges, guarded reflexivity/complements and contradictory short-circuit paths.
 These rules support contracted clamp functions without arithmetic substitution
-of equal signed zeros. General Float arithmetic solving remains unsupported;
-unknown obligations reject.
+of equal signed zeros. Unresolved supported arithmetic uses the same compile-time
+SMT backend with binary64 IEEE comparisons, negation and RNE-rounded `+`, `-`,
+`*` and `/` in source order; it does not replace Float with Real arithmetic.
+The [arithmetic example](../../compiler/examples/smt_contracts/floats.loom)
+proves a guarded wrapper of source `std.float.abs`, bounded scaling, subnormal
+doubling and a rounded unit addition. Pure body expansion and the wrapper's
+checked guarantee compose into a nonnegative refinement without a native
+intrinsic or application-specific proof rule.
+Symbolic `%`, general Float loop-invariant inference and exhausted/unknown
+solver obligations remain unsupported.
 
 Concepts require explicit conformances. Static/default/generic methods,
 associated bounds/defaults/families and exact dyn bindings are implemented.
@@ -323,7 +331,7 @@ these terms handles bounded safety/range obligations before SMT, with mathematic
 endpoints and unchanged eager operand checks. Polynomial identities, safety
 bounds and verified call summaries compose with Text lengths; see the
 [polynomial example](../../compiler/examples/smt_contracts/polynomials.loom).
-Nonconstant division, general collection induction and content/type-dependent
+Nonconstant integer division, general collection induction and content/type-dependent
 variadic proofs remain unsupported; nonlinear solver queries may still be unknown or time out.
 Constrained construction, stable scalar facts, pure-helper implication and
 supported List-append preservation now share the same optional backend and
@@ -516,7 +524,7 @@ invariant terms. Resource cleanup and general heap-content proofs remain unsuppo
 [native loop example](../../compiler/examples/loop_contracts).
 
 General content-preserving mutation, strengthening existing mutable alias graphs,
-general loop/recursive proofs, arbitrary `old` snapshots and general Float reasoning
+general loop/recursive proofs, arbitrary `old` snapshots and general Float induction
 remain open. The bounded sorting/permutation story above does not close these
 broader gates. Exact supported rules and examples are in the
 [contract reference](../../compiler/README.md#contract-boundary).
