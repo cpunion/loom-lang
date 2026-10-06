@@ -2844,7 +2844,10 @@ fn main() {
 The [comptime example](examples/comptime/main.loom) also exercises ordinary pure
 function calls, recursion, local mutation, records/enums, and fresh list aliases.
 Results support `Bool`, `Int`, `Float`, `Text`, tuples, records/enums, shared lists, and byte
-buffers. Scalar values become constants; containers are allocated and populated
+buffers. Refined scalar and record results retain their underlying representation
+and validated nominal type; nested shared containers keep the same graph
+identities. List construction's isolation rules still apply.
+Scalar values become constants; containers are allocated and populated
 whenever the expression runs. Each runtime evaluation gets a fresh graph, while
 aliases and cycles inside that graph are preserved. Mutating one invocation's
 result cannot affect the next; there is no hidden mutable global or package

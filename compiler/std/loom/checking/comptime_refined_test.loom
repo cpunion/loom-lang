@@ -1,0 +1,15 @@
+test fn refined_comptime_text_retains_its_base_representation() {
+    let program = accepted_result("""
+type Tag = Text where self == "ready"
+
+pub fn made() Tag {
+    comptime { Tag("ready") }
+}
+""")
+    let value = get(get(program.functions, 0).body.children, 0)
+    assert value.kind == ExprKind.Coerce
+    assert get(program.types, value.ty).kind == TypeKind.Refined
+    let literal = get(value.children, 0)
+    assert literal.kind == ExprKind.Text && literal.ty == 3
+    assert literal.text == "ready"
+}
