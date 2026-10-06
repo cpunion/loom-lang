@@ -1,0 +1,89 @@
+// Preserve the nominal information erased by an ordinary representation borrow.
+// Other expressions are abstract inputs: never replay caller effects in a proof.
+fn update_input(env Environment, value Expr) Expr {
+    if value.kind == ExprKind.Coerce && length(value.children) == 1 {
+        let input = get(value.children, 0)
+        if get(env.types, input.ty).kind == TypeKind.Refined && base_type(env, input.ty) == value.ty {
+            return input
+        }
+    }
+    value
+}
+
+fn proved_list_update(env Environment, value Expr) Bool {
+    let receiver = get(value.children, 0)
+    if !constraint_weakened(env, receiver) {
+        return false
+    }
+    let ty = get(receiver.children, 0).ty
+    let node = predicate_node(env, get(env.types, ty).symbol)
+    let scope = match predicate_scope(env, ty) {
+        Result.Ok(context) => context
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let stage = match staging(scope, node) {
+        Result.Ok(context) => context
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let predicate = match refinement_expression(stage, ty) {
+        Result.Ok(expression) => expression
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let program = match prepared_in(stage, true) {
+        Result.Ok(checked) => checked
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let params = [receiver.ty, 1, update_input(env, get(value.children, 2)).ty]
+    let locals = new[Local]()
+    let arguments = new[Expr]()
+    var index = 0
+    while index < length(params) {
+        let input = get(value.children, index)
+        let source = expression(ExprKind.Local, get(params, index), node,
+            "", index, new[Expr](), true)
+        push(locals, Local {
+                name = ""
+                ty = source.ty
+                mutable = false
+                is_scoped = false
+            })
+        push(arguments, if index != 0 && input.kind == ExprKind.Integer {
+                input
+            } else if input.ty != source.ty {
+                expression(ExprKind.Coerce, input.ty, node, "", -1, [source], true)
+            } else {
+                source
+            })
+        index = index + 1
+    }
+    // Construction established the complete predicate immediately before this
+    // atomic operation. Normal continuation models the native bounds check and
+    // one store; a bounds fault happens before any mutation. No transient broken
+    // state or callee normal-return promise can justify this admission.
+    let probe = Function {
+        is_async = false
+        symbol = get(env.types, ty).symbol
+        arguments = new[Int]()
+        params = params
+        result = 0
+        locals = locals
+        preconditions = [predicate]
+        postconditions = [predicate]
+        result_local = -1
+        body = expression(ExprKind.Intrinsic, 0, node, "list_set", -1, arguments, true)
+        runtime_name = ""
+        span = value.span
+    }
+    match std.loom.proof.verify_with_helpers(program, probe, get(env.inputs, 0).build.proof_backend) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}

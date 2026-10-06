@@ -26,6 +26,28 @@ fn worker_expression(value Expr) Bool {
     false
 }
 
+fn constraint_content_updates(env Environment, program std.loom.typed.Program, value Expr, modified List[Int]) {
+    if std.loom.proof.single_list_update(program, value) &&
+    constraint_weakened(env, get(value.children, 0)) {
+        push(modified, get(get(value.children, 0).children, 0).ty)
+    }
+    var index = 0
+    while index < length(value.children) {
+        constraint_content_updates(env, program, get(value.children, index), modified)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            constraint_content_updates(env, program, get(body, item), modified)
+            item = item + 1
+        }
+        index = index + 1
+    }
+}
+
 // Cached sequential certificates never authorize a shared build. Reuse the
 // same algebra, forgetting mutable observations between independently guarded
 // accesses. Unsupported interference obligations remain build errors.
@@ -41,13 +63,36 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     if !shared {
         return Result.Ok(true)
     }
+    // A guarded replacement preserves the predicate, not a particular cell's
+    // old value. Retain read-only precision only for types with no such writes
+    // in this checked build; never reuse sequential certificates across workers.
+    let modified = new[Int]()
+    index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        constraint_content_updates(env, program, function.body, modified)
+        var clause = 0
+        while clause < length(function.preconditions) {
+            constraint_content_updates(env, program, get(function.preconditions, clause), modified)
+            clause = clause + 1
+        }
+        index = index + 1
+    }
     let protected = new[InputGuarantee]()
     index = 6
     while env.has_refinements && index < length(env.types) {
         if constrained_list(env, index) {
+            var writes = get(env.type_states, index).list_writes
+            var changed = 0
+            while writes == 0 && changed < length(modified) {
+                if get(modified, changed) == index {
+                    writes = 1
+                }
+                changed = changed + 1
+            }
             push(protected, InputGuarantee {
                     ty = index
-                    writes = get(env.type_states, index).list_writes
+                    writes = writes
                 })
         }
         index = index + 1

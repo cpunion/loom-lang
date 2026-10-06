@@ -1,10 +1,11 @@
 import std.loom.proof.fresh_list_factory
+import std.loom.proof.single_list_update
 
 // A constrained List has no pre-existing writable outer aliases. Content
 // predicates may observe immutable fields, not nested shared mutable storage.
 // Copies retain the constrained type and ordinary sharing.
-// Plain List borrows must not escape. Element writes additionally require a
-// predicate proved independent of those elements; no runtime monitor is needed.
+// Plain List borrows must not escape. Element writes require an independent
+// predicate or a proved atomic replacement; no runtime monitor is needed.
 fn constrained_list(env Environment, ty Int) Bool {
     let shape = get(env.types, ty)
     shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
@@ -155,6 +156,21 @@ fn constraint_operation(env Environment, functions List[Function], value Expr) B
                 origin_empty()
             })
         index = index + 1
+    }
+    if writes == 0 && invariant_intrinsic_allowed(true, 1, "list_set", inputs) {
+        let program = std.loom.typed.Program {
+            types = env.types
+            functions = functions
+            entry = -1
+            tests = new[Int]()
+            test_names = new[Text]()
+            exports = new[Int]()
+            interfaces = env.interfaces
+            witnesses = env.witnesses
+        }
+        if std.loom.proof.single_list_update(program, value) && proved_list_update(env, value) {
+            return true
+        }
     }
     if value.kind == ExprKind.Intrinsic {
         return invariant_intrinsic_allowed(true, writes, value.text, inputs) &&
