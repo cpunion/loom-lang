@@ -21,6 +21,14 @@ fn replace_positive(values PositiveValues, index Int, value PositiveElement) {
     values[index] = value
 }
 
+fn replace_guarded(values PositiveValues, index Int, value Int) {
+    if value <= 0 {
+        return
+    }
+    let replacement = value
+    set(values, index, replacement)
+}
+
 fn pair_length(values List[Int]) Bool {
     let inspect = fn() Int {
         length(values)
@@ -85,6 +93,8 @@ fn list_constraint_scope() Bool {
     let literal_alias = literal
     replace_positive(literal, 0, PositiveElement(4))
     set(literal_alias, 1, PositiveElement(5))
+    replace_guarded(literal_alias, 0, 4)
+    replace_guarded(literal, 0, -1)
     assert literal[0] == 4 && values_sum(literal_alias) == 9
     let pair = IntPair([1, 2])
     let pair_alias = pair

@@ -173,5 +173,6 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.PackError { return Result.Err(error(context, node, node.value)) } else {
         return Result.Err(error(context, node, "unsupported expression in source checker"))
     } } } } } } } } } } } } } } } } } } } } }
-    if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+    let checked = flow_list_update(context, node, value)
+    if enforce { typed(context, node, checked, expected) } else { Result.Ok(checked) }
 }
