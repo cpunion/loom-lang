@@ -812,7 +812,7 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
     let target = if context.emit {
         schedule(context.env, instance.signature, instance.arguments, constants, node)?
     } else {
-        -1
+        fact_call_target(context, instance.signature, instance.arguments, constants, output, runtime_values)
     }
     let returns = !(has(symbol(context.env, signature.symbol).node, NodeKind.Intrinsic) &&
         symbol(context.env, signature.symbol).name == "fault_text")

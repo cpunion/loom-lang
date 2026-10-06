@@ -19,9 +19,44 @@ fn refinement_declarations(source std.loom.binding.Program) Bool {
     false
 }
 
-// Only immutable scalar bindings are stable. An immutable handle does not
-// make a shared container's elements stable; calls and projections stay opaque.
+fn fact_call_target(context Context, signature Int, arguments List[Int], constants List[StaticValue], output Int, values List[Expr]) Int {
+    let ty = base_type(context.env, output)
+    if !context.env.has_refinements || symbol(context.env, context.signature.symbol).node.kind != NodeKind.Function ||
+    (ty != 1 && ty != 2 && ty != 3 && ty != 5) {
+        return -1
+    }
+    var index = 0
+    while index < length(values) {
+        if fact_size(context, get(values, index), 0, true) < 0 {
+            return -1
+        }
+        index = index + 1
+    }
+    let calls = get(context.env.inputs, 0).fact_calls
+    let target = -2 - length(calls)
+    push(calls, Instance {
+            signature = signature
+            arguments = arguments
+            constants = constants
+        })
+    target
+}
+
+fn fact_instance(env Environment, target Int) Instance {
+    if target <= -2 {
+        get(get(env.inputs, 0).fact_calls, -2 - target)
+    } else {
+        get(env.pending, target)
+    }
+}
+
+// Only immutable scalar bindings are stable. Candidate calls are retained for
+// lazy, checked helper expansion; they are not facts about arbitrary effects.
 fn fact_size(context Context, value Expr, depth Int) Int {
+    fact_size(context, value, depth, false)
+}
+
+fn fact_size(context Context, value Expr, depth Int, calls Bool) Int {
     let ty = base_type(context.env, value.ty)
     if depth >= 64 || (ty != 1 && ty != 2 && ty != 3 && ty != 5) || length(value.arms) != 0 {
         return -1
@@ -37,17 +72,19 @@ fn fact_size(context Context, value Expr, depth Int) Int {
         return 1
     }
     let unary = value.kind == ExprKind.Unary || value.kind == ExprKind.Coerce
-    if (!unary && value.kind != ExprKind.Binary) || length(value.children) != (if unary {
-            1
-        } else {
-            2
-        }) {
+    let call = calls && value.kind == ExprKind.Call && value.index != -1 &&
+    fact_instance(context.env, value.index).signature >= 0
+    if !call && ((!unary && value.kind != ExprKind.Binary) || length(value.children) != (if unary {
+                1
+            } else {
+                2
+            })) {
         return -1
     }
     var size = 1
     var index = 0
     while index < length(value.children) {
-        let found = fact_size(context, get(value.children, index), depth + 1)
+        let found = fact_size(context, get(value.children, index), depth + 1, calls)
         if found < 0 || size + found > 256 {
             return -1
         }
@@ -163,7 +200,7 @@ fn fact_context(context Context, head Int) Context {
 }
 
 fn remembered_fact(context Context, value Expr, truth Bool) Context {
-    if fact_size(context, value, 0) < 0 {
+    if fact_size(context, value, 0, true) < 0 {
         return context
     }
     let normalized = normalized_fact(context, value)
@@ -230,7 +267,7 @@ fn copied_scalar_facts(context Context, value Expr, local Int) Context {
     }
     let ty = base_type(context.env, value.ty)
     var established = context
-    if (ty == 1 || ty == 2 || ty == 3) && fact_size(context, value, 0) > 0 {
+    if (ty == 1 || ty == 2 || ty == 3) && fact_size(context, value, 0, true) > 0 {
         let target = Expr {
             kind = ExprKind.Local
             ty = ty
@@ -282,10 +319,28 @@ fn facts_imply(context Context, value Expr, goal Expr) Bool {
     }
     let premises = new[Expr]()
     var head = context.fact_head
-    while head >= 0 && length(premises) < 256 {
+    var steps = 0
+    while head >= 0 && steps < 256 {
         let fact = get(context.facts, head)
-        push(premises, fact.predicate)
+        if !predicate_calls(fact.predicate, 0) {
+            push(premises, fact.predicate)
+        }
         head = fact.previous
+        steps = steps + 1
     }
     implies_facts(premises, rebound_fact(goal, 0, local), get(context.env.inputs, 0).build.proof_backend)
+}
+
+fn helper_facts(context Context) Bool {
+    var head = context.fact_head
+    var steps = 0
+    while head >= 0 && steps < 256 {
+        let fact = get(context.facts, head)
+        if predicate_calls(fact.predicate, 0) {
+            return true
+        }
+        head = fact.previous
+        steps = steps + 1
+    }
+    false
 }

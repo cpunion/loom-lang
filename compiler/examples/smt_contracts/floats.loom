@@ -15,6 +15,12 @@ fn positive_magnitude(value Float) NonNegativeFloat {
     NonNegativeFloat(magnitude(value))
 }
 
+// The ordinary pure guard also proves the direct construction boundary.
+fn direct_magnitude(value Float) NonNegativeFloat
+requires !is_nan(value) {
+    NonNegativeFloat(abs(value))
+}
+
 fn mirrored(value Float) Float
 requires value >= -10.0 && value <= 20.0
 ensures result >= -20.0 && result <= 10.0 {
@@ -54,6 +60,9 @@ ensures result == value {
 fn float_solver_cases() {
     assert abs(-3.5) == 3.5
     assert positive_magnitude(-4.0) == 4.0
+    assert direct_magnitude(-4.0) == 4.0
+    assert direct_magnitude(-1.0 / 0.0) == 1.0 / 0.0
+    assert 1.0 / direct_magnitude(-0.0) == 1.0 / 0.0
     assert abs(-1.0 / 0.0) == 1.0 / 0.0
     assert 1.0 / abs(-0.0) == 1.0 / 0.0
     assert is_nan(abs(0.0 / 0.0))

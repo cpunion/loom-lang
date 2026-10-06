@@ -1,3 +1,5 @@
+import std.loom.proof.established_predicates
+
 // A constructor may reuse a checked call's normal-return guarantees. Re-type
 // only its input and predicate in a private helper queue; neither proof helpers
 // nor a second evaluation enter executable code. Unsupported proofs retain the
@@ -23,7 +25,7 @@ fn construction_proof(context Context, node Node, source Node, target Int) Resul
         push(arguments, construction_input(context, argument, bindings, params, locals, 0))
         index = index + 1
     }
-    let premises = construction_premises(context, bindings, params, locals)
+    let premises = construction_premises(context, stage, node, bindings, params, locals)
     construction_body_proof(stage, node,
         expression(input.kind, input.ty, source, input.text, input.index, arguments, input.falls),
         params, locals, premises, target)
@@ -41,6 +43,29 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
         })
     let predicate = refinement_expression(predicate_context(stage.env, target, locals, result_local, true)?, target)?
     let program = prepared_in(stage, true)?
+    let established = new[Expr]()
+    var index = 0
+    while index < length(premises) {
+        let premise = get(premises, index)
+        if predicate_calls(premise, 0) {
+            match established_predicates(program, locals, premise) {
+                Result.Ok(expanded) => {
+                    var item = 0
+                    while item < length(expanded) {
+                        push(established, get(expanded, item))
+                        item = item + 1
+                    }
+                }
+                Result.Err(_) => {
+                    // An opaque candidate supplies no evidence, but must not
+                    // hide an independent, already established scalar fact.
+                }
+            }
+        } else {
+            push(established, premise)
+        }
+        index = index + 1
+    }
     let proof = Function {
         is_async = false
         symbol = -1
@@ -48,7 +73,7 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
         params = params
         result = base
         locals = locals
-        preconditions = premises
+        preconditions = established
         postconditions = expressions(predicate)
         result_local = result_local
         body = body
@@ -186,15 +211,48 @@ fn construction_input(context Context, value Expr, bindings List[Int],
     }
 }
 
-fn construction_premises(context Context, bindings List[Int],
+// Call indices are queue-local. Re-schedule the actual selected instance,
+// including type and static arguments, before compacting its scalar bindings.
+fn construction_fact_calls(context Context, stage Context, node Node, value Expr) Result[Expr, Failure] {
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, construction_fact_calls(context, stage, node, get(value.children, index))?)
+        index = index + 1
+    }
+    var target = value.index
+    if value.kind == ExprKind.Call {
+        let instance = fact_instance(context.env, value.index)
+        target = schedule(stage.env, instance.signature, instance.arguments, instance.constants, node)?
+    }
+    Result.Ok(Expr {
+            kind = value.kind
+            ty = value.ty
+            span = value.span
+            text = value.text
+            index = target
+            children = children
+            arms = value.arms
+            falls = value.falls
+        })
+}
+
+fn construction_premises(context Context, stage Context, node Node, bindings List[Int],
     params List[Int], locals List[Local]) List[Expr] {
     let premises = new[Expr]()
     var head = context.fact_head
-    while head >= 0 && length(premises) < 256 {
+    var steps = 0
+    while head >= 0 && steps < 256 {
         let fact = get(context.facts, head)
-        // Context facts already exclude mutable bindings, calls and heap reads.
-        push(premises, construction_fact(context, fact.predicate, bindings, params, locals))
+        // Candidate calls have immutable scalar inputs, never heap reads.
+        // Actual helper expansion decides whether their bodies are supported.
+        match construction_fact_calls(context, stage, node, fact.predicate) {
+            Result.Ok(predicate) => push(premises, construction_fact(context, predicate, bindings, params, locals))
+            Result.Err(_) => {
+            }
+        }
         head = fact.previous
+        steps = steps + 1
     }
     premises
 }
@@ -207,7 +265,7 @@ fn flow_construction_proof(context Context, node Node, value Expr,
     let params = new[Int]()
     let locals = new[Local]()
     let body = construction_input(context, value, bindings, params, locals, 0)
-    let premises = construction_premises(context, bindings, params, locals)
+    let premises = construction_premises(context, stage, node, bindings, params, locals)
     let scope = predicate_context(env, target, locals, 0, true)?
     construction_body_proof(scope, node, body, params, locals, premises, target)
 }
@@ -221,7 +279,7 @@ fn proved_construction(context Context, node Node, source Node, value Expr, targ
     }
     if value.kind != ExprKind.Call {
         if context.fact_head >= 0 && fact_reference(context, value) >= 0 &&
-        contract_call(predicate_node(context.env, get(context.env.types, target).symbol)) {
+        (contract_call(predicate_node(context.env, get(context.env.types, target).symbol)) || helper_facts(context)) {
             return flow_construction_proof(context, node, value, target)
         }
         return Result.Ok(false)

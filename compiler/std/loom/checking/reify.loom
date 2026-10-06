@@ -50,6 +50,16 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
         return Result.Err(error(state.context, state.node, "comptime result has no concrete type"))
     }
     let kind = get(state.context.env.types, value.ty).kind
+    if kind == TypeKind.Refined {
+        let original = Value {
+            ty = base_type(state.context.env, value.ty)
+            number = value.number
+            floating = value.floating
+            text = value.text
+            items = value.items
+        }
+        return reify_visit(state, original, depth + 1)
+    }
     let shared = kind == TypeKind.List || kind == TypeKind.Bytes || kind == TypeKind.Frame
     if shared {
         if value.number <= 0 || value.number > 100000 {
@@ -109,7 +119,9 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
 }
 
 fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] {
-    if depth >= 256 { return Result.Err(error(state.context, state.node, "comptime result depth exhausted")) }
+    if depth >= 256 {
+        return Result.Err(error(state.context, state.node, "comptime result depth exhausted"))
+    }
     discard reify_spend(state, 0, 2)?
     let node = state.node
     let kind = get(state.context.env.types, value.ty).kind
@@ -117,17 +129,25 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
         let object = get(state.objects, get(state.by_id, value.number))
         return Result.Ok(atom(ExprKind.Local, value.ty, node, object.local))
     }
-    if kind == TypeKind.Unit { return Result.Ok(expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)) }
+    if kind == TypeKind.Unit {
+        return Result.Ok(expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true))
+    }
     if kind == TypeKind.Function {
         let arguments = new[Int]()
         var index = 0
-        let count = length(value.items) - if value.text == "closure" { 1 } else { 0 }
-        while index < count { push(arguments, get(value.items, index).number)
-            index = index + 1 }
+        let count = length(value.items) - if value.text == "closure" {
+            1
+        } else {
+            0
+        }
+        while index < count {
+            push(arguments, get(value.items, index).number)
+            index = index + 1
+        }
         let reference = reify_function(state.context, node, value.ty, value.number, arguments)?
         if value.text == "closure" {
             return Result.Ok(expression(ExprKind.FunctionRef, value.ty, node, "", reference.index,
-                expressions(reify_value(state, get(value.items, count), depth + 1)?), true))
+                    expressions(reify_value(state, get(value.items, count), depth + 1)?), true))
         }
         return Result.Ok(reference)
     }
@@ -138,27 +158,46 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
         return witness_box(state.context, node, receiver, value.ty)
     }
     if kind == TypeKind.Refined {
-        let base = base_type(state.context.env, value.ty)
-        if get(state.context.env.types, base).kind == TypeKind.Record {
-            let original = Value { ty = base number = value.number floating = value.floating text = value.text items = value.items }
-            let rebuilt = reify_value(state, original, depth + 1)?
-            return Result.Ok(expression(ExprKind.Coerce, value.ty, node, "", -1, expressions(rebuilt), true))
+        // Refinement erases representation, not the base value's kind. Reuse
+        // ordinary scalar/aggregate reification and its shared graph identities.
+        let original = Value {
+            ty = base_type(state.context.env, value.ty)
+            number = value.number
+            floating = value.floating
+            text = value.text
+            items = value.items
         }
+        let rebuilt = reify_value(state, original, depth + 1)?
+        return Result.Ok(expression(ExprKind.Coerce, value.ty, node,
+                if constrained_list(state.context.env, value.ty) {
+                    "checked list"
+                } else {
+                    ""
+                },
+                -1, expressions(rebuilt), true))
     }
     if kind == TypeKind.Meta {
         return meta_literal(state.context, node, value.number)
     }
-    if kind == TypeKind.Int || kind == TypeKind.Float || kind == TypeKind.Refined {
-        let base = base_type(state.context.env, value.ty)
-        let text = if base == 5 { std.float.to_text(value.floating) } else { std.int.to_text(value.number) }
+    if kind == TypeKind.Int || kind == TypeKind.Float {
+        let text = if kind == TypeKind.Float {
+            std.float.to_text(value.floating)
+        } else {
+            std.int.to_text(value.number)
+        }
         discard reify_spend(state, 1, length(text))?
-        let numeric = expression(if base == 5 { ExprKind.Float } else { ExprKind.Integer }, base, node, text, -1, new[Expr](), true)
-        return Result.Ok(if kind != TypeKind.Refined { numeric } else {
-            expression(ExprKind.Coerce, value.ty, node, "", -1, expressions(numeric), true)
-        })
+        return Result.Ok(expression(if kind == TypeKind.Float {
+                    ExprKind.Float
+                } else {
+                    ExprKind.Integer
+                }, value.ty, node, text, -1, new[Expr](), true))
     }
     if kind == TypeKind.Bool {
-        return Result.Ok(expression(ExprKind.Bool, 2, node, if value.number == 0 { "false" } else { "true" }, -1, new[Expr](), true))
+        return Result.Ok(expression(ExprKind.Bool, 2, node, if value.number == 0 {
+                    "false"
+                } else {
+                    "true"
+                }, -1, new[Expr](), true))
     }
     if kind == TypeKind.Text {
         // Count each emitted occurrence, even when immutable Text was shared
@@ -172,14 +211,26 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
         var index = 0
         while index < length(value.items) {
             let field = reify_value(state, get(value.items, index), depth + 1)?
-            if positional { discard reify_spend(state, 0, 1)? }
+            if positional {
+                discard reify_spend(state, 0, 1)?
+            }
             push(fields, if positional {
-                expression(ExprKind.Field, field.ty, node, "", index, expressions(field), true)
-            } else { field })
+                    expression(ExprKind.Field, field.ty, node, "", index, expressions(field), true)
+                } else {
+                    field
+                })
             index = index + 1
         }
-        return Result.Ok(expression(if positional { ExprKind.Record } else { ExprKind.Variant },
-            value.ty, node, "", if positional { -1 } else { value.number }, fields, true))
+        return Result.Ok(expression(if positional {
+                    ExprKind.Record
+                } else {
+                    ExprKind.Variant
+                },
+                value.ty, node, "", if positional {
+                    -1
+                } else {
+                    value.number
+                }, fields, true))
     }
     Result.Err(error(state.context, node, "comptime result has no concrete representation"))
 }
@@ -192,18 +243,30 @@ fn reify_function(context Context, node Node, ty Int, source Int, arguments List
             let closure = get(context.env.closures, index)
             if closure.signature.symbol == source && closure.environment == get(arguments, 0) {
                 return Result.Ok(expression(ExprKind.FunctionRef, ty, node, "",
-                    if context.emit { schedule_closure(context.env, index) } else { -1 }, new[Expr](), true))
+                        if context.emit {
+                            schedule_closure(context.env, index)
+                        } else {
+                            -1
+                        }, new[Expr](), true))
             }
             index = index + 1
         }
     }
     index = 0
     while index < length(context.env.signatures) {
-        if get(context.env.signatures, index).symbol == source { target = index }
+        if get(context.env.signatures, index).symbol == source {
+            target = index
+        }
         index = index + 1
     }
-    if target < 0 { return Result.Err(error(context, node, "comptime function result has no source declaration")) }
-    let function = if context.emit { schedule(context.env, target, arguments, new[StaticValue](), node)? } else { -1 }
+    if target < 0 {
+        return Result.Err(error(context, node, "comptime function result has no source declaration"))
+    }
+    let function = if context.emit {
+        schedule(context.env, target, arguments, new[StaticValue](), node)?
+    } else {
+        -1
+    }
     Result.Ok(expression(ExprKind.FunctionRef, ty, node, "", function, new[Expr](), true))
 }
 

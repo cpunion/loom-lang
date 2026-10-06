@@ -11,6 +11,9 @@ record CheckInputs {
     result_shapes List[ResultShape]
     constraint_errors List[Int]
     contracts List[List[ContractCertificate]]
+    // Check-only scalar call identities. Negative references never become
+    // executable targets or add roots to the runtime reachability queue.
+    fact_calls List[Instance]
 }
 
 record StaticReferenceQuery {

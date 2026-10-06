@@ -1,0 +1,182 @@
+test fn pure_guard_facts_compose_at_scalar_construction_boundaries() {
+    let program = flow_program("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+fn ordered(value Float) Bool {
+    value == value
+}
+
+fn identity(value Float) Float {
+    value
+}
+
+type Positive = Int where self > 0
+type Ordered = Float where self == self
+
+pub fn required(ignored Int, value Int) Positive
+requires positive(value)
+{
+    discard ignored
+    Positive(value)
+}
+
+pub fn asserted(value Int) Positive {
+    let condition = positive(value)
+    assert condition
+    let copy = value
+    Positive(copy)
+}
+
+pub fn branch(value Int) Positive {
+    if positive(value) {
+        Positive(value)
+    } else {
+        Positive(1)
+    }
+}
+
+pub fn exit_guard(value Int) Positive {
+    if !positive(value) {
+        return Positive(1)
+    }
+    Positive(value)
+}
+
+pub fn floating(value Float) Ordered
+requires ordered(value)
+{
+    Ordered(identity(value))
+}
+
+fn unused(value Int) Positive
+requires positive(value)
+{
+    Positive(value)
+}
+""")
+    assert length(program.functions) == 8
+    var index = 0
+    while index < 5 {
+        assert dynamic_count(get(program.functions, index).body, ExprKind.If) == (if index == 2 || index == 3 {
+                1
+            } else {
+                0
+            })
+        index = index + 1
+    }
+}
+
+test fn guard_facts_keep_selected_static_instances_and_independent_evidence() {
+    discard accepted_result("""
+fn above(value Int, comptime minimum Int) Bool {
+    value > minimum
+}
+
+fn selected[T](value T) Bool {
+    comptime if T == Int {
+        above(value, 0)
+    } else {
+        false
+    }
+}
+
+fn looping(value Int) Bool {
+    var count = value
+    while count > 0 {
+        count = count - 1
+    }
+    true
+}
+
+type Positive = Int where self > 0
+
+pub fn chosen(value Int) Positive
+requires above(value, -10) && selected[Int](value)
+{
+    Positive(value)
+}
+
+pub fn independent(value Int) Positive
+requires above(value, 0)
+{
+    assert looping(value)
+    Positive(value)
+}
+""")
+    rejects_result("""
+fn above(value Int, comptime minimum Int) Bool {
+    value > minimum
+}
+
+type Positive = Int where self > 0
+
+pub fn chosen(value Int) Positive
+requires above(value, -10)
+{
+    Positive(value)
+}
+""")
+}
+
+test fn guard_helpers_do_not_make_mutable_inputs_or_skipped_requirements_stable() {
+    rejects_result("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where self > 0
+
+pub fn changed(value Int) Positive {
+    var current = value
+    assert positive(current)
+    current = 0
+    Positive(current)
+}
+""")
+    rejects_result("""
+fn admitted(value Int) Bool
+requires value > 0
+{
+    true
+}
+
+type Positive = Int where self > 0
+
+pub fn skipped(value Int) Positive
+requires value == 0 || admitted(value)
+{
+    Positive(value)
+}
+""")
+    rejects_result("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+record Box {
+    value Int
+}
+
+type Positive = Int where self > 0
+
+pub fn shared(box Box) Positive {
+    assert positive(box.value)
+    Positive(box.value)
+}
+""")
+    rejects_result("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where self > 0
+
+pub fn unrelated(value Int, other Int) Positive {
+    let condition = positive(other)
+    assert condition
+    Positive(value)
+}
+""")
+}

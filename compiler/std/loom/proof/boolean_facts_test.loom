@@ -1,0 +1,18 @@
+test fn established_boolean_equivalence_transfers_only_proved_truth() {
+    let state = State {
+        locals = new[Value]()
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
+        observations = new[Observation]()
+    }
+    let first = Predicate.Variable(0)
+    let second = Predicate.Variable(1)
+    let positive = Predicate.Compare(">", variable(2))
+    let pending = assume(assume(state, Predicate.Equal(predicates(first, second))),
+        Predicate.Equal(predicates(second, positive)))
+    assert !holds(positive, conditional_facts(pending).facts)
+    assert !holds(not(positive), conditional_facts(pending).facts)
+    assert holds(positive, conditional_facts(assume(pending, first)).facts)
+    assert holds(first, conditional_facts(assume(pending, positive)).facts)
+    assert holds(not(positive), conditional_facts(assume(pending, not(first))).facts)
+}

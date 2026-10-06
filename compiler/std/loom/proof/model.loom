@@ -215,6 +215,15 @@ fn append_facts(output List[Predicate], fact Predicate) {
             distinct_fact(output, Predicate.Compare("==", add(text_length(left),
                         scale(text_length(right), integer(-1)))))
         }
+        Predicate.Equal(values) => {
+            // Boolean equivalence is two implications. Reuse bounded unit
+            // propagation; equality alone establishes neither operand's truth.
+            distinct_fact(output, fact)
+            let left = get(values, 0)
+            let right = get(values, 1)
+            distinct_fact(output, Predicate.Or(predicates(not(left), right)))
+            distinct_fact(output, Predicate.Or(predicates(not(right), left)))
+        }
         _ => {
             distinct_fact(output, bag_fact(fact, output))
         }

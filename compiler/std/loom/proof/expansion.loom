@@ -678,8 +678,13 @@ pub fn invariant_predicates(program Program, base Int, predicate Expr) Result[Li
             mutable = false
             is_scoped = false
         })
-    let inputs = new[Expr]()
-    push(inputs, predicate)
+    established_predicates(program, locals, predicate)
+}
+
+// An already evaluated predicate over stable input snapshots. Unsupported
+// effects fail closed; neither declared guarantees nor helper names are axioms.
+pub fn established_predicates(program Program, locals List[Local], predicate Expr) Result[List[Expr], Text] {
+    let inputs = [predicate]
     let budget = new[Int]()
     push(budget, 4096)
     contract_predicates(program, locals, inputs, true, budget, new[Int](), new[ObservationOrigin]())
