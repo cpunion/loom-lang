@@ -271,7 +271,11 @@ fn result_definition(value Expr, path Expr, result_local Int, output List[Expr])
             while index < 2 {
                 let left = get(value.children, index)
                 let right = get(value.children, 1 - index)
-                if same_result_path(left, path) && !mentions_result(right, result_local) {
+                // Only substitutive scalar equality defines a result value.
+                // IEEE equality equates signed zeros, but division can tell
+                // them apart. Float guarantees stay facts on the snapshot.
+                if (left.ty == 1 || left.ty == 2 || left.ty == 3) &&
+                same_result_path(left, path) && !mentions_result(right, result_local) {
                     push(output, right)
                     return
                 }

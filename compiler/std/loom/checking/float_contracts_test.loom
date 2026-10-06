@@ -277,3 +277,49 @@ ensures result >= 0.0 {
 }
 """)
 }
+
+test fn ieee_numeric_equality_does_not_substitute_signed_zero() {
+    let declarations = """
+type Zero = Float where self == 0.0
+
+fn zero() Float
+ensures result == 0.0 {
+    -0.0
+}
+
+fn refined_zero() Zero
+ensures result == 0.0 {
+    Zero(-0.0)
+}
+
+fn pair() (Float, Int)
+ensures result.0 == 0.0 && result.1 == 1 {
+    (-0.0, 1)
+}
+
+concept Signed {
+    fn zero(self Self) Float
+    ensures result == 0.0 {
+        -0.0
+    }
+}
+
+impl Signed for Bool {}
+
+fn forwarded(source dyn Signed) Float
+ensures result == 0.0 {
+    source.zero()
+}
+"""
+    discard accepted(declarations)
+    let sources = ["zero()", "refined_zero()", "pair().0", "source.zero()"]
+    var index = 0
+    while index < length(sources) {
+        rejects(concat(declarations, concat("""
+fn reciprocal(source dyn Signed) Float
+ensures result > 0.0 {
+    1.0 / (
+""", concat(get(sources, index), "\n)\n}\n"))))
+        index = index + 1
+    }
+}

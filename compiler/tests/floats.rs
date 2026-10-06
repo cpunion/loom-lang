@@ -82,6 +82,26 @@ fn float_mixing_and_unproved_contracts_reject_in_source() {
         "fn main() { discard 1.e2 }",
         "fn bad(value Float) Float ensures result == value { value }",
         "fn bad() Bool ensures result { 0.0 / 0.0 == 0.0 / 0.0 }",
+        r#"
+fn zero() Float
+ensures result == 0.0 {
+    -0.0
+}
+fn reciprocal() Float
+ensures result > 0.0 {
+    1.0 / zero()
+}
+"#,
+        r#"
+fn pair() (Float, Int)
+ensures result.0 == 0.0 && result.1 == 1 {
+    (-0.0, 1)
+}
+fn reciprocal() Float
+ensures result > 0.0 {
+    1.0 / pair().0
+}
+"#,
     ] {
         fs::write(source.path().join("main.loom"), text).unwrap();
         let output = loom(&["check", source.path().to_str().unwrap()]);

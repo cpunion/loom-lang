@@ -1608,8 +1608,10 @@ implementation; required proofs may use the same declared postconditions through
 abstract generic/associated receivers or `dyn`. Private summaries support Int,
 Bool, IEEE Float, Text and inline record/tuple value facts, including scalar
 refinements. Float uses the same bounded IEEE rules as ordinary calls, not
-real-number algebra. Unspecified leaves remain independent;
-shared siblings supply no content or alias facts. Summaries never guess an
+real-number algebra. Float equality remains a fact on the returned snapshot,
+not a substituted definition: equal signed zeros can behave differently in
+later arithmetic. Unspecified leaves remain independent; shared siblings
+supply no content or alias facts. Summaries never guess an
 implementation or enter native code. See the [generic](examples/concept_contracts/generic.loom)
 and [aggregate](examples/concept_contracts/aggregates.loom) contract examples.
 The [Float method example](examples/floats/methods.loom) composes dynamic calls,

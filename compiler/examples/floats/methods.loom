@@ -2,6 +2,11 @@ concept Quote {
     fn quote(self Self) Float
     ensures result >= 0.0 && result <= 1000000.0
 
+    fn zero(self Self) Float
+    ensures result == 0.0 {
+        -0.0
+    }
+
     fn amount(self Self) Money
     ensures result >= 0.0 && result <= 1000000.0 {
         Money(2.5)
@@ -46,6 +51,11 @@ ensures result >= 0.0 && result <= 1000000.0 {
     source.quote()
 }
 
+fn quoted_zero(source dyn Quote) Float
+ensures result == 0.0 {
+    source.zero()
+}
+
 fn retained(source dyn Quote, input Float) Float
 requires positive_amount(input)
 ensures positive_amount(result) {
@@ -73,6 +83,8 @@ fn method_contract_values() {
     let source dyn Quote = true
     assert quoted(source) == 10.0 && retained(source, 2.5) == 2.5
     assert quoted_money(source) == 2.5
+    let zero = quoted_zero(source)
+    assert zero == 0.0 && 1.0 / zero < 0.0
     let callback fn(dyn Quote) Float = quoted
     assert callback(source) == 10.0
     assert valid_quotes() && valid_quotes(true, 2.5, false)
