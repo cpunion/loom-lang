@@ -117,7 +117,11 @@ operations use binary64 evaluation; symbolic arithmetic remains ordered and
 opaque. NaN, signed zero and rounding do not inherit integer/real algebra.
 Declared concept guarantees also compose Float/refined-Float results through
 generic and dynamic calls and variadic induction, using this same value theory.
-General Float solving remains unsupported; unknown obligations reject.
+The bounded IEEE order graph also proves comparison chains, wider constant
+ranges, guarded reflexivity/complements and contradictory short-circuit paths.
+These rules support contracted clamp functions without arithmetic substitution
+of equal signed zeros. General Float arithmetic solving remains unsupported;
+unknown obligations reject.
 
 Concepts require explicit conformances. Static/default/generic methods,
 associated bounds/defaults/families and exact dyn bindings are implemented.

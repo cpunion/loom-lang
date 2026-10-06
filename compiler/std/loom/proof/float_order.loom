@@ -1,0 +1,229 @@
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+import std.list.set
+import std.result.Result
+
+record FloatOrderEdge {
+    left Int
+    right Int
+    strict Bool
+}
+
+fn float_order_identity(values List[FloatValue], value FloatValue) Result[Int, Text] {
+    var index = 0
+    while index < length(values) {
+        if same_float(get(values, index), value, [256]) {
+            return Result.Ok(index)
+        }
+        index = index + 1
+    }
+    if length(values) >= 32 {
+        return Result.Err("Float order identity budget exhausted")
+    }
+    push(values, value)
+    Result.Ok(index)
+}
+
+fn float_order_edge(edges List[FloatOrderEdge], relation Text, left Int, right Int) {
+    if relation == "<" || relation == "<=" || relation == "==" {
+        push(edges, FloatOrderEdge {
+                left = left
+                right = right
+                strict = relation == "<"
+            })
+        if relation == "==" {
+            push(edges, FloatOrderEdge {
+                    left = right
+                    right = left
+                    strict = false
+                })
+        }
+    }
+}
+
+// Positive comparisons establish non-NaN endpoints. A negated ordered
+// comparison may be reversed only after both endpoints are known non-NaN.
+fn float_order_facts(values List[FloatValue], edges List[FloatOrderEdge],
+    ordered List[Bool], facts List[Predicate], negative Bool) Result[Bool, Text] {
+    var index = 0
+    while index < length(facts) && index < 256 {
+        let fact = get(facts, index)
+        let negated = match fact {
+            Predicate.Not(_) => true
+            _ => false
+        }
+        let selected = match fact {
+            Predicate.Not(parts) => get(parts, 0)
+            _ => fact
+        }
+        match selected {
+            Predicate.FloatCompare(relation, first, second) => {
+                if relation == "<" || relation == "<=" || (!negated && relation == "==") {
+                    let left = float_order_identity(values, first)?
+                    let right = float_order_identity(values, second)?
+                    while length(ordered) < length(values) {
+                        push(ordered, false)
+                    }
+                    if !negative {
+                        if !negated {
+                            set(ordered, left, true)
+                            set(ordered, right, true)
+                            float_order_edge(edges, relation, left, right)
+                        }
+                    } else {
+                        if negated && get(ordered, left) && get(ordered, right) {
+                            float_order_edge(edges, if relation == "<" {
+                                    "<="
+                                } else {
+                                    "<"
+                                }, right, left)
+                        }
+                    }
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// -1 means no path, 0 a non-strict path, 1 a path containing a strict edge.
+// No reflexive path is introduced for a possibly-NaN computation.
+fn float_order_reach(edges List[FloatOrderEdge], ordered List[Bool], start Int) List[Int] {
+    let reached = new[Int]()
+    var index = 0
+    while index < length(ordered) {
+        push(reached, if index == start && get(ordered, index) {
+                0
+            } else {
+                -1
+            })
+        index = index + 1
+    }
+    var pass = 0
+    var changed = true
+    while changed && pass < 2 * length(ordered) {
+        changed = false
+        index = 0
+        while index < length(edges) {
+            let edge = get(edges, index)
+            let before = get(reached, edge.left)
+            if before >= 0 {
+                let after = if edge.strict {
+                    1
+                } else {
+                    before
+                }
+                if after > get(reached, edge.right) {
+                    set(reached, edge.right, after)
+                    changed = true
+                }
+            }
+            index = index + 1
+        }
+        pass = pass + 1
+    }
+    reached
+}
+
+// This is an IEEE order theory, not real arithmetic. Numeric equality can
+// connect comparison paths (including signed zeros), never computation terms.
+fn float_holds(relation Text, left FloatValue, right FloatValue,
+    facts List[Predicate], negative Bool) Bool {
+    if relation != "<" && relation != "<=" && relation != "==" {
+        return false
+    }
+    let values = new[FloatValue]()
+    let first = match float_order_identity(values, left) {
+        Result.Ok(index) => index
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let last = match float_order_identity(values, right) {
+        Result.Ok(index) => index
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let edges = new[FloatOrderEdge]()
+    let ordered = new[Bool]()
+    match float_order_facts(values, edges, ordered, facts, false) {
+        Result.Err(_) => {
+            return false
+        }
+        Result.Ok(_) => {
+        }
+    }
+    while length(ordered) < length(values) {
+        push(ordered, false)
+    }
+    // Literal order supplies constant range endpoints; infinities participate
+    // normally, whereas NaN literals establish no order or reflexivity.
+    var index = 0
+    while index < length(values) {
+        match float_constant(get(values, index)) {
+            Result.Ok(a) => {
+                if a == a {
+                    set(ordered, index, true)
+                }
+                var other = 0
+                while other < index {
+                    match float_constant(get(values, other)) {
+                        Result.Ok(b) => {
+                            if a == b {
+                                float_order_edge(edges, "==", index, other)
+                            } else {
+                                if a < b {
+                                    float_order_edge(edges, "<", index, other)
+                                } else {
+                                    if b < a {
+                                        float_order_edge(edges, "<", other, index)
+                                    }
+                                }
+                            }
+                        }
+                        Result.Err(_) => {
+                        }
+                    }
+                    other = other + 1
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+        index = index + 1
+    }
+    match float_order_facts(values, edges, ordered, facts, true) {
+        Result.Err(_) => {
+            return false
+        }
+        Result.Ok(_) => {
+        }
+    }
+    let forward = get(float_order_reach(edges, ordered, first), last)
+    if !negative && relation != "==" {
+        return forward >= (if relation == "<" {
+                1
+            } else {
+                0
+            })
+    }
+    let backward = get(float_order_reach(edges, ordered, last), first)
+    if relation == "==" {
+        return if negative {
+            forward == 1 || backward == 1
+        } else {
+            forward >= 0 && backward >= 0
+        }
+    }
+    backward >= (if relation == "<" {
+            0
+        } else {
+            1
+        })
+}

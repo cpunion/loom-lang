@@ -102,6 +102,20 @@ ensures result > 0.0 {
     1.0 / pair().0
 }
 "#,
+        r#"
+fn unsafe(a Float, b Float) Bool
+requires a <= b && b <= a
+ensures result {
+    1.0 / a == 1.0 / b
+}
+"#,
+        r#"
+fn unsafe(value Float) Bool
+requires !(value < 1.0)
+ensures result {
+    value >= 1.0
+}
+"#,
     ] {
         fs::write(source.path().join("main.loom"), text).unwrap();
         let output = loom(&["check", source.path().to_str().unwrap()]);
@@ -139,6 +153,53 @@ fn main() {
     )
     .unwrap();
     let executable = common::executable(source.path(), "guarded");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                source.path().to_str().unwrap(),
+                "--output",
+                executable.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        let output = Command::new(&executable).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("precondition failed"));
+    }
+}
+
+#[test]
+fn float_order_proofs_do_not_remove_non_nan_entry_checks() {
+    let source = tempfile::tempdir().unwrap();
+    fs::write(
+        source.path().join("main.loom"),
+        r#"
+import std.float.is_nan
+
+fn bounded(value Float, lower Float, upper Float) Float
+requires !is_nan(value) && lower <= upper
+ensures result >= lower && result <= upper {
+    if value < lower {
+        lower
+    } else {
+        if value > upper {
+            upper
+        } else {
+            value
+        }
+    }
+}
+
+fn main() {
+    discard bounded(0.0 / 0.0, 1.0, 2.0)
+}
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(source.path(), "unordered");
     for level in ["0", "2"] {
         success(
             &common::command(&[
