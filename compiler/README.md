@@ -577,7 +577,7 @@ timings; local variables remain conservatively rooted for the function.
   Parsing accepts ASCII decimal digits with an optional sign and leading zeros;
   invalid syntax and out-of-range input return errors, not arithmetic faults.
   It works in `comptime` without an additional intrinsic.
-- Source `std.float` supplies explicit integer conversion, finite/NaN queries,
+- Source `std.float` supplies `abs`, explicit integer conversion, finite/NaN queries,
   decimal parsing, and round-tripping formatting. `to_int` truncates toward zero
   and returns `NonFinite` or `OutOfRange`; `from_int` rounds ties to even.
   Parsing accepts complete signed ASCII decimals/exponents and exact `NaN`,
@@ -2707,7 +2707,10 @@ assuming finiteness, reassociation or real-number identities. Symbolic `%`
 remains unsupported: [SMT `fp.rem`](https://smt-lib.org/theories-FloatingPoint.shtml)
 and [LLVM `frem`](https://releases.llvm.org/22.1.0/docs/LangRef.html#frem-instruction)
 use different quotient rules. See the [Float trial](examples/floats/contracts.loom)
-and [arithmetic contracts](examples/smt_contracts/floats.loom).
+and [arithmetic contracts](examples/smt_contracts/floats.loom). Source `std.float.abs`
+uses ordinary branches/arithmetic, preserves NaN and maps both zero signs to
+positive zero. Its finite pure body supports checked caller contracts, which
+then compose at refinement boundaries.
 Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not
 proofs of termination or absence of runtime faults.

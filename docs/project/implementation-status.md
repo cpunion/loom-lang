@@ -124,7 +124,10 @@ of equal signed zeros. Unresolved supported arithmetic uses the same compile-tim
 SMT backend with binary64 IEEE comparisons, negation and RNE-rounded `+`, `-`,
 `*` and `/` in source order; it does not replace Float with Real arithmetic.
 The [arithmetic example](../../compiler/examples/smt_contracts/floats.loom)
-proves magnitude, bounded scaling, subnormal doubling and a rounded unit addition.
+proves a guarded wrapper of source `std.float.abs`, bounded scaling, subnormal
+doubling and a rounded unit addition. Pure body expansion and the wrapper's
+checked guarantee compose into a nonnegative refinement without a native
+intrinsic or application-specific proof rule.
 Symbolic `%`, general Float loop-invariant inference and exhausted/unknown
 solver obligations remain unsupported.
 
