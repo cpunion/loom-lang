@@ -123,7 +123,11 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
         }
         let instance = get(context.env.pending, value.index)
         selected = expression(value.kind, value.ty, node, value.text,
-            schedule(env, instance.signature, instance.arguments, instance.constants, node)?, value.children, value.falls)
+            if instance.signature < 0 {
+                schedule_closure(env, -1 - instance.signature)
+            } else {
+                schedule(env, instance.signature, instance.arguments, instance.constants, node)?
+            }, value.children, value.falls)
     }
     let params = [get(value.children, 0).ty]
     let locals = [Local {

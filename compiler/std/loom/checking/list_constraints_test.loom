@@ -172,6 +172,13 @@ test fn atomic_updates_reuse_only_stable_caller_conditions() {
             }
             values[0] = value
         }
+        pub fn callback(values PositiveHead, value Int)
+        requires value > 0
+        {
+            (fn(items List[Int], index Int, replacement Int) {
+                set(items, index, replacement)
+            })(values, 0, value)
+        }
         """))
     list_constraint_reject(concat(header, """
         pub fn mutable(values PositiveHead, input Int) {

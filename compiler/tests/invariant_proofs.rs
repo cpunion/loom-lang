@@ -142,6 +142,9 @@ fn main() {
     let copied = replacement
     forwarded(alias, 0, copied)
     replace_checked(alias, 0, copied)
+    (fn(items List[Int], index Int, value Int) {
+        set(items, index, value)
+    })(alias, 0, copied)
     let effects List[Int] = []
     forwarded(alias, {
         push(effects, 1)
