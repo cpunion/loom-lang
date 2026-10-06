@@ -332,6 +332,10 @@ fn loop_candidates(proof Verification, guard Expr, writes List[Bool], resized Li
     while index < length(writes) {
         if get(writes, index) {
             discard loop_entry_candidates(proof, candidates, index, new[Int](), get(entry.locals, index), entry)?
+        } else {
+            if length(resized) != 0 && mutable_value(get(entry.locals, index)) {
+                discard loop_entry_storage_candidates(proof, candidates, index, new[Int](), get(entry.locals, index), entry, resized)?
+            }
         }
         index = index + 1
     }

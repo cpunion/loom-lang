@@ -27,6 +27,9 @@ node --test .github/scripts/check-docs.test.mjs
 The development rebuild uses one installed Loom compiler. CI retains
 `bash scripts/bootstrap.sh` without flags for the full stage comparison; also
 use it when changing bootstrap boundaries or advancing the seed.
+The frontend gate's source unit-test suites and large tool test harnesses use O0
+to avoid optimizing test-only code. Bootstrap and application builds stay at O2;
+native regressions retain their explicit optimization levels.
 
 Start with the narrowest test that exercises a change. A language change needs
 source-to-native evidence and the important rejection case, not another public

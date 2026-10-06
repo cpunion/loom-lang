@@ -95,6 +95,10 @@ test fn 订单失败() {
         assert_eq!(cli.stdout, standalone.stdout);
         let diagnostic = diagnostic_text(&cli.stderr);
         assert!(diagnostic.starts_with(&expected), "O{level}: {diagnostic}");
+        assert!(
+            diagnostic.contains("native program failed (exit code 1)"),
+            "O{level}: {diagnostic}"
+        );
         assert_eq!(diagnostic.matches("FAIL ").count(), 1, "{diagnostic}");
         assert_eq!(
             diagnostic.matches("RuntimeFault:").count(),

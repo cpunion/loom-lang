@@ -88,6 +88,31 @@ fn loop_list_type(proof Verification, ty Int, depth Int) Bool {
     false
 }
 
+// A stable handle can still name resized storage. Reuse entry comparisons for
+// those leaves even when no assignment writes the local that holds the handle.
+fn loop_entry_storage_candidates(proof Verification, candidates List[LoopCandidate], index Int, path List[Int], initial Value, entry State, resized List[Int]) Result[Bool, Text] {
+    discard loop_step(proof)?
+    match initial {
+        Value.List(identity) => {
+            if extent_modified(list_state(identity, entry)?, entry, resized) {
+                discard loop_entry_candidates(proof, candidates, index, path, initial, entry)?
+            }
+        }
+        Value.Record(fields) => {
+            var field = 0
+            while field < length(fields) {
+                let nested = std.list.clone(path)
+                push(nested, field)
+                discard loop_entry_storage_candidates(proof, candidates, index, nested, get(fields, field), entry, resized)?
+                field = field + 1
+            }
+        }
+        _ => {
+        }
+    }
+    Result.Ok(true)
+}
+
 // Copy/build loops commonly advance an index with an output length. Propose
 // only equalities true at entry; ordinary backedge induction must preserve them.
 // Nonzero offsets matter only for possibly resized storage, avoiding speculative
