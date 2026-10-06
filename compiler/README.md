@@ -198,8 +198,9 @@ message deallocator can crash even before IR lowering.
 Bootstrap imports SDK library paths from the developer environment automatically.
 Before standalone Cargo commands in Git Bash, run `source scripts/windows-env.sh`
 to make those paths available to Rust's static-library packaging as well.
-Native executables reserve an 8 MiB main stack, with the default commit size,
-so bounded compiler recursion does not inherit MSVC's smaller 1 MiB default.
+Native executables reserve a 32 MiB main stack, with the default commit size,
+for bounded compiler traversals at O0 as well as optimized builds. This reserves
+virtual address space; only used stack pages are committed.
 
 A fresh checkout contains the same compressed, source-bound checked stage 0
 used on Unix in [`compiler/bootstrap`](bootstrap/stage0.source). Git Bash verifies its

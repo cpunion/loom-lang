@@ -114,9 +114,9 @@ fn link_command(
             "/OPT:REF",
             "/Brepro",
         ]);
-        // Match the usual Unix main-stack capacity. Reserve virtual space;
-        // leave the commit size unchanged so small programs pay only for use.
-        command.arg("/STACK:8388608");
+        // Unoptimized bounded compiler traversals need headroom on the MSVC
+        // ABI. Reserve virtual space; commit only the pages actually used.
+        command.arg("/STACK:33554432");
         command.arg(destination);
         // Native objects have no Clang-generated CRT .drectve section. Match
         // the runtime's static MSVC CRT, including scalar-only executables.
@@ -229,7 +229,7 @@ mod tests {
         for argument in [
             "/OUT:build files/program.exe",
             "/DEFAULTLIB:libcmt",
-            "/STACK:8388608",
+            "/STACK:33554432",
             "/OPT:REF",
             "/Brepro",
             "dbghelp.lib",
