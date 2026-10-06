@@ -544,7 +544,7 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     // checked effect footprint can frame its storage; no body value is assumed.
     let framed_unit = function.result == 0 && (length(function.postconditions) != 0 ||
         extent_preserving(proof.program, function.body))
-    if function.runtime_name != "" || (!helper_type(proof.program, function.result, 0) && !framed_unit) || function.result == 5 || length(function.params) != length(call.children) {
+    if function.runtime_name != "" || (!helper_type(proof.program, function.result, 0) && !framed_unit) || length(function.params) != length(call.children) {
         return Result.Err("body proof needs a checked scalar or inline aggregate source function")
     }
     var index = 0
@@ -554,8 +554,8 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
         // unmodeled value supplies no facts; operations and requirements on it
         // still need proof. Do not enumerate the permitted opaque type kinds.
         let opaque = length(function.postconditions) != 0
-        if (!helper_type(proof.program, ty, 0) || ty == 5) && !opaque {
-            return Result.Err("body proof helper parameters must be Int, Bool, Text or inline aggregates, apart from contracted opaque arguments")
+        if !helper_type(proof.program, ty, 0) && !opaque {
+            return Result.Err("body proof helper parameters must be scalars or supported inline aggregates, apart from contracted opaque arguments")
         }
         index = index + 1
     }

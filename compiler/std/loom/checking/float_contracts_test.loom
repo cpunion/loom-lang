@@ -52,11 +52,15 @@ ensures result >= 0.0
     }
 }
 
+fn sum(a Float, b Float) Float {
+    a + b
+}
+
 fn ordered_sum(a Float, b Float) Float
 requires a + b > 0.0
 ensures result > 0.0
 {
-    a + b
+    sum(a, b)
 }
 
 fn main() {
@@ -106,6 +110,170 @@ fn unconstrained(values List[Float]) Float
 ensures result > 0.0
 {
     values[0]
+}
+""")
+}
+
+test fn ieee_method_guarantees_compose_without_concrete_witnesses() {
+    discard accepted("""
+type Amount = Float where self >= 0.0
+
+concept Quote {
+    fn quote(self Self) Float
+    ensures result >= 0.0
+
+    fn keep[Us...](self Self, input Float, ignored Us...) Float
+    requires input > 0.0
+    ensures result > 0.0 {
+        comptime for item in ignored {
+            discard item
+        }
+        input
+    }
+
+    fn amount(self Self) Amount
+    ensures result >= 0.0 {
+        Amount(2.5)
+    }
+}
+
+impl Quote for Bool {
+    fn quote(self Bool) Float {
+        2.5
+    }
+}
+
+fn forward[T Quote](source T) Float
+ensures result >= 0.0 {
+    source.quote()
+}
+
+fn dynamic(source dyn Quote) Float
+ensures result >= 0.0 {
+    source.quote()
+}
+
+fn refined(source dyn Quote) Amount
+ensures result >= 0.0 {
+    source.amount()
+}
+
+fn guarded(source dyn Quote, input Float) Float
+ensures result > 0.0 {
+    source.keep(input, true, "ignored")
+}
+
+fn every[Ts...Quote](values Ts...) Bool
+ensures result {
+    var valid = true
+    comptime for item in values {
+        let value = item.quote()
+        valid = valid && value >= 0.0 && item.keep(1.0) > 0.0
+    }
+    valid
+}
+
+fn main() {
+    let source dyn Quote = true
+    assert forward(true) == 2.5
+    assert dynamic(source) == 2.5 && refined(source) == 2.5
+    assert guarded(source, 1.5) == 1.5
+    assert every() && every(true, false)
+}
+""")
+}
+
+test fn ieee_method_summaries_do_not_invent_float_guarantees() {
+    let declarations = """
+concept Quote {
+    fn quote(self Self) Float
+    ensures result >= 0.0
+}
+
+impl Quote for Bool {
+    fn quote(self Bool) Float {
+        2.5
+    }
+}
+"""
+    rejects(concat(declarations, """
+fn stronger(source dyn Quote) Float
+ensures result > 0.0 {
+    source.quote()
+}
+"""))
+    rejects(concat(declarations, """
+fn cancelled(source dyn Quote) Float
+ensures result == 0.0 {
+    let value = source.quote()
+    value - value
+}
+"""))
+    rejects("""
+concept Quote {
+    fn quote(self Self) Float
+}
+
+impl Quote for Bool {
+    fn quote(self Bool) Float {
+        2.5
+    }
+}
+
+fn undeclared(source dyn Quote) Float
+ensures result >= 0.0 {
+    source.quote()
+}
+""")
+    rejects("""
+concept Quote {
+    fn quote(self Self) Float
+    ensures result >= 0.0
+}
+
+impl Quote for Bool {
+    fn quote(self Bool) Float {
+        0.0 / 0.0
+    }
+}
+""")
+    rejects("""
+concept Unordered {
+    fn value(self Self) Float
+    ensures !(result < 0.0)
+}
+
+impl Unordered for Bool {
+    fn value(self Bool) Float {
+        0.0 / 0.0
+    }
+}
+
+fn ordered(source dyn Unordered) Float
+ensures result >= 0.0 {
+    source.value()
+}
+""")
+    rejects("""
+fn replaced(count Int) Float
+ensures result == 0.0 {
+    var value = 0.0
+    var index = 0
+    while index < count {
+        value = 1.0
+        index = index + 1
+    }
+    value
+}
+""")
+    rejects("""
+fn stopped(value Float) Float
+ensures result >= 0.0 {
+    var current = value
+    while current < 0.0 {
+        current = 0.0
+    }
+    current
 }
 """)
 }

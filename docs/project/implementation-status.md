@@ -115,6 +115,8 @@ Required Float contracts now reuse exact IEEE comparisons from constrained
 values, typed reads, verified returns and guarded entry observations. Literal
 operations use binary64 evaluation; symbolic arithmetic remains ordered and
 opaque. NaN, signed zero and rounding do not inherit integer/real algebra.
+Declared concept guarantees also compose Float/refined-Float results through
+generic and dynamic calls and variadic induction, using this same value theory.
 General Float solving remains unsupported; unknown obligations reject.
 
 Concepts require explicit conformances. Static/default/generic methods,

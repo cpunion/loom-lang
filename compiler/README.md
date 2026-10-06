@@ -1606,10 +1606,14 @@ combines defaults, recursive static callbacks, Text/Bool options and dynamic cal
 Bounded synchronous scalar concept method contracts are proved for each
 implementation; required proofs may use the same declared postconditions through
 abstract generic/associated receivers or `dyn`. Private summaries support Int,
-Bool, Text and inline record/tuple value facts. Unspecified leaves remain independent;
+Bool, IEEE Float, Text and inline record/tuple value facts, including scalar
+refinements. Float uses the same bounded IEEE rules as ordinary calls, not
+real-number algebra. Unspecified leaves remain independent;
 shared siblings supply no content or alias facts. Summaries never guess an
 implementation or enter native code. See the [generic](examples/concept_contracts/generic.loom)
 and [aggregate](examples/concept_contracts/aggregates.loom) contract examples.
+The [Float method example](examples/floats/methods.loom) composes dynamic calls,
+defaults and method-local packs through these same summaries.
 Bytes and List inputs can pass through these proofs, including generic nominal
 receivers. List lengths use the stateful contract rules below; an opaque method
 may change reachable lengths unless its postcondition establishes new facts.
@@ -2682,6 +2686,9 @@ entry observations. Constant expressions use binary64 evaluation; symbolic
 arithmetic retains its operand order and structure. A true strict comparison
 implies its non-strict form. NaN prevents reflexivity and ordered-comparison
 negation; no cancellation, reassociation or real-number arithmetic is inferred.
+Float locals and literals may participate in proved loops, including variadic
+induction; assigned values are freshened at loop heads, not assumed to retain
+entry comparisons. No general Float arithmetic invariant is inferred.
 Unresolved Float obligations reject rather than enter the integer SMT theory.
 See the [Float trial](examples/floats/contracts.loom).
 Solver work is bounded; exhaustion is a diagnostic,

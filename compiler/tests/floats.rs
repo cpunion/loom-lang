@@ -89,3 +89,50 @@ fn float_mixing_and_unproved_contracts_reject_in_source() {
         assert!(!output.stderr.is_empty());
     }
 }
+
+#[test]
+fn float_method_normal_return_proofs_retain_runtime_entry_checks() {
+    let source = tempfile::tempdir().unwrap();
+    fs::write(
+        source.path().join("main.loom"),
+        r#"
+concept Positive {
+    fn keep(self Self, value Float) Float
+    requires value > 0.0
+    ensures result > 0.0 {
+        value
+    }
+}
+
+impl Positive for Bool {}
+
+fn guarded(source dyn Positive, value Float) Float
+ensures result > 0.0 {
+    source.keep(value)
+}
+
+fn main() {
+    let source dyn Positive = true
+    discard guarded(source, 0.0 / 0.0)
+}
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(source.path(), "guarded");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                source.path().to_str().unwrap(),
+                "--output",
+                executable.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        let output = Command::new(&executable).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("precondition failed"));
+    }
+}
