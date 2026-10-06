@@ -140,13 +140,13 @@ fn pack_proof_observation(env Environment, owner Int, pack Int, node Node) Resul
             let method = get(methods, member)
             let parameters = group(method, NodeKind.Parameters)
             if method.kind == NodeKind.Function && method.value == node.value &&
-            length(parameters) == length(child(node, 2).children) + 1 {
+            (length(declared_packs(method)) != 0 || length(parameters) == length(child(node, 2).children) + 1) {
                 let returns = group(method, NodeKind.ReturnType)
                 // Ordinary signature/summary checking owns type inference,
-                // static arguments and supported result shapes. The family
+                // pack widths, static arguments and supported result shapes. The family
                 // guard only prevents the abstract receiver escaping into
                 // type selection or value-dependent contracts.
-                var supported = length(declared_packs(method)) == 0 && !has(method, NodeKind.Async) &&
+                var supported = !has(method, NodeKind.Async) &&
                 has(method, NodeKind.Ensures) && length(returns) == 1
                 if supported {
                     supported = !pack_proof_opaque_contract(get(returns, 0), "Self")

@@ -523,16 +523,70 @@ test fn variadic_observations_do_not_reveal_receiver_types_through_results() {
         """)
     rejects("""
         concept C {
-            fn value[Ts...](self Self, values Ts...) Int
+            fn value[Ts...](self Self, other Self, values Ts...) Int
             ensures result >= 0
         }
         fn unsupported[Ts... C](values Ts...) Int
         ensures result >= 0 {
             var sum = 0
-            comptime for item in values { sum = sum + item.value(1) }
+            comptime for item in values { sum = sum + item.value(item, 1) }
             sum
         }
         """)
+}
+
+test fn variadic_observations_reuse_method_pack_inference_and_contracts() {
+    let definitions = """
+        fn pack[Us...](values Us...) (Us...) {
+            values
+        }
+        concept C {
+            fn keep[Us...](self Self, input Int, ignored Us...) Int
+            requires input >= 0
+            ensures result == input {
+                comptime for item in ignored {
+                    discard item
+                }
+                input
+            }
+            fn pair[As..., Bs...](self Self, input Int, left (As...), right (Bs...)) (Int, Bool)
+            requires input >= 0
+            ensures result.0 == input && result.1 {
+                comptime for item in left {
+                    discard item
+                }
+                comptime for item in right {
+                    discard item
+                }
+                (input, true)
+            }
+        }
+        impl C for Int {}
+        impl C for Bool {}
+        fn collect[Ts... C](input Int, values Ts...) Int
+        requires input >= 0
+        ensures result >= input {
+            var total = input
+            comptime for item in values {
+                let empty = item.keep(input)
+                let mixed = item.keep(input, true, 7)
+                let pair = item.pair(mixed, (1, true), pack())
+                assert pair.1
+                total = total + item.keep(pair.0, empty)
+            }
+            total
+        }
+        """
+    discard accepted(concat(definitions, """
+        fn main() {
+            assert collect(3) == 3 && collect(3, 1, true) == 9
+            assert comptime { collect(2, true) } == 4
+        }
+        """))
+    rejects(std.text.join(std.text.split(definitions, "total + item.keep(pair.0, empty)"), "total - item.keep(pair.0, empty)"))
+    rejects(std.text.join(std.text.split(definitions, "item.keep(input, true, 7)"), "item.keep(-1, true, 7)"))
+    rejects(std.text.join(std.text.split(definitions, "item.pair(mixed, (1, true), pack())"), "item.pair(mixed, 1, pack())"))
+    rejects(std.text.join(std.text.split(definitions, "ensures result == input"), "ensures true"))
 }
 
 test fn variadic_element_observations_invalidate_opaque_shared_effects() {

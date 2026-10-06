@@ -208,14 +208,15 @@ zero iterations, indices, independent nested packs and inherited methods. The
 shared List updates and native/dyn defaults. Direct elements now compose declared
 scalar/inline aggregate concept method guarantees through the same loop rules. The
 [observation example](../../compiler/examples/variadics/observations.loom) covers
-mixed/empty packs, generic methods, Text/tuple/record guarantees, inherited bounds,
+mixed/empty packs, generic and variadic methods, Text/tuple/record guarantees, inherited bounds,
 nested independent packs, CTFE, function references and native/dyn dispatch.
-Ordinary generic parameters and static arguments reuse existing method checking;
+Ordinary generic parameters, method-local packs and static arguments reuse existing
+method checking and width inference, including independent tuple groups;
 unknown static values cannot supply proof facts. Observations cannot depend on
 receiver identity/types;
 repeated calls remain independent and opaque effects invalidate heap facts.
 Type-dependent induction, opaque element escape, pack-dependent results and
-variadic observation methods and broader structural sources still reject. A
+broader structural sources still reject. A
 single type pack can
 have fixed parameters before and after it, including concept methods and impl
 families; the same ordered expansion and width rule applies to each.

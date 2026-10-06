@@ -1147,17 +1147,19 @@ Unselected arities have not had their bodies verified, except for required
 postconditions in the dependency-erasure and induction fragments above. Direct
 `Ts... C` and `(Ts...)` element receivers may call synchronous concept methods
 with explicitly declared postconditions and supported scalar/inline aggregate
-results. Ordinary generic parameters and static arguments reuse method signature
-checking; unknown static values still cannot supply proof facts. Result types,
+results. Ordinary generic parameters, method-local packs and static arguments reuse
+method signature checking and width inference; unknown static values still cannot
+supply proof facts. Fixed arguments and concrete tuples can select empty, mixed or
+independent method-local packs without revealing the opaque receiver. Result types,
 arguments, requirements and contracts cannot depend on `Self` or receiver identity.
 Results compose through ordinary arithmetic, Text equations, helpers and loop
 invariants;
 each observation is fresh and opaque effects invalidate shared-storage facts.
 There is no homogeneous-element assumption, sampling, or runtime proof object.
 See the [observation example](examples/variadics/observations.loom), including
-empty/mixed packs, generic methods, Text/tuple/record guarantees, inherited bounds,
-nested independent packs, CTFE, function references and dyn calls.
-Type inspection, opaque element escape, variadic observation methods and structural
+empty/mixed packs, generic and variadic methods, Text/tuple/record guarantees,
+inherited bounds, nested independent packs, CTFE, function references and dyn calls.
+Type inspection, opaque element escape and structural
 element patterns remain unsupported for family proofs and reject even when
 uncalled: proving selected arities is not a proof for every arity. Preconditions use fixed scalar
 parameters, not the tuple pack, and retain ordinary checked/runtime boundaries.

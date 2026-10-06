@@ -8,9 +8,12 @@ concept Measurement {
     fn measure(self Self) Int
     ensures result >= 0
 
-    fn preserve(self Self, input Int) Int
+    fn preserve[Us...](self Self, input Int, ignored Us...) Int
     requires input >= 0
     ensures result == old(input) {
+        comptime for item in ignored {
+            discard item
+        }
         input
     }
 
@@ -28,6 +31,18 @@ concept Measurement {
     fn echo[Tag](self Self, input Text, comptime marker Int) Text
     ensures result == input {
         input
+    }
+
+    fn grouped[As..., Bs...](self Self, input Int, left (As...), right (Bs...)) (Int, Bool)
+    requires input >= 0
+    ensures result.0 == input && result.1 {
+        comptime for item in left {
+            discard item
+        }
+        comptime for item in right {
+            discard item
+        }
+        (input, true)
     }
 }
 
@@ -71,7 +86,7 @@ ensures result >= 0 {
     comptime for item in values {
         let amount = item.measure()
         assert item.nonnegative(amount)
-        total = total + item.preserve(amount)
+        total = total + item.preserve(amount, true, 7)
     }
     total
 }
@@ -86,9 +101,10 @@ ensures result.amount >= input && result.valid && result.label == label {
     }
     comptime for item in values {
         let pair = item.inspect[Tag](item.measure())
+        let grouped = item.grouped(pair.0, (1, true), pack())
         state = Reading {
-            amount = state.amount + pair.0
-            valid = state.valid && pair.1
+            amount = state.amount + grouped.0
+            valid = state.valid && pair.1 && grouped.1
             label = item.echo[Tag](state.label, 7)
         }
     }
@@ -155,4 +171,7 @@ fn exercise_pack_observations() {
     let log List[Int] = []
     assert measured(mark(log, 2), mark(log, 3), true) == 6
     assert length(log) == 2 && log[0] == 2 && log[1] == 3
+    let observation dyn Measurement = true
+    assert observation.preserve(4, mark(log, 5), mark(log, 6), false) == 4
+    assert length(log) == 4 && log[2] == 5 && log[3] == 6
 }
