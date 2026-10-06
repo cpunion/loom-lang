@@ -85,6 +85,7 @@ fn typed_inputs_prove_contracts_without_rechecking_construction() {
 
 const UPDATE_TYPES: &str = r#"
 import std.list.length
+import std.list.push
 import std.list.set
 
 fn positive_elements(values List[Int]) Bool {
@@ -108,6 +109,16 @@ fn replace_positive(values PositiveValues, index Int, value PositiveElement) {
 fn forwarded(values List[Int], index Int, value Int) {
     set(values, index, value)
 }
+
+fn positive_scalar(value Int) Bool {
+    value > 0
+}
+
+fn replace_checked(values PositiveValues, index Int, value Int)
+requires positive_scalar(value)
+{
+    forwarded(values, index, value)
+}
 "#;
 
 #[test]
@@ -126,6 +137,20 @@ fn main() {
     replace_positive(values, 0, PositiveElement(3))
     forwarded(alias, 1, PositiveElement(4))
     values[0] = 5
+    let replacement = values[0]
+    assert replacement > 0
+    let copied = replacement
+    forwarded(alias, 0, copied)
+    replace_checked(alias, 0, copied)
+    (fn(items List[Int], index Int, value Int) {
+        set(items, index, value)
+    })(alias, 0, copied)
+    let effects List[Int] = []
+    forwarded(alias, {
+        push(effects, 1)
+        0
+    }, copied)
+    assert length(effects) == 1
     assert alias[0] == 5 && values[1] == 4 && length(values) == 2
 }
 
@@ -135,6 +160,13 @@ test fn preserved_updates() {
 "#,
     ]
     .concat();
+    fs::write(&main, &source).unwrap();
+    success(&check());
+
+    fs::write(&main, source.replace("value > 0", "value >= 0")).unwrap();
+    let weakened_guard = check();
+    assert!(!weakened_guard.status.success());
+    assert!(String::from_utf8_lossy(&weakened_guard.stderr).contains("may invalidate"));
     fs::write(&main, &source).unwrap();
     success(&check());
     success(&check());
@@ -171,6 +203,14 @@ test fn preserved_updates() {
         r#"
 pub fn invalid(values PositiveValues, value Int) {
     values[0] = value
+}
+"#,
+        r#"
+pub fn invalid(values PositiveValues, input Int) {
+    var value = input
+    assert value > 0
+    value = -1
+    set(values, 0, value)
 }
 "#,
         r#"
@@ -222,7 +262,7 @@ fn main() {
     defer {
         retained(values)
     }
-    replace_positive(values, length(values), PositiveElement(3))
+    replace_checked(values, length(values), 3)
 }
 "#,
         ]

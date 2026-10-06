@@ -66,5 +66,6 @@ fn index_assignment(context Context, node Node) Result[Expr, Failure] {
     // Evaluate the container, index and replacement once, in source order. The
     // existing primitive checks bounds after argument evaluation, as set() does.
     let primitive = if receiver.ty == 4 { "bytes_set" } else { "list_set" }
-    Result.Ok(expression(ExprKind.Intrinsic, 0, node, primitive, -1, values, all_fall(values)))
+    Result.Ok(flow_list_update(context, node,
+            expression(ExprKind.Intrinsic, 0, node, primitive, -1, values, all_fall(values))))
 }

@@ -2168,8 +2168,22 @@ and borrows are checked through helper bodies, not trusted annotations. These
 rules also run for compile-time code and unused concrete functions. The constrained
 List has the ordinary native List layout and survives moving GC and Task handoff.
 See the [generic extent example](examples/list_contracts/refinements.loom).
-The current rule abstracts nonliteral arguments by their validated types; it does
-not import arbitrary caller path/heap facts. General mutation preservation and
+Single writes also reuse stable caller evidence: `requires`, successful assertions,
+selected branches, early exits and immutable scalar copies. Pure helper conditions
+use the same bounded expansion as construction proofs:
+
+```loom
+fn replace_guarded(values PositiveValues, index Int, value Int) {
+    if value <= 0 {
+        return
+    }
+    set(values, index, value)
+}
+```
+
+Mutable bindings, heap observations and effectful arguments supply no stable
+caller facts. Arguments still execute once in source order; a failed guard or
+bounds check precedes the write. General multi-step mutation preservation and
 strengthening pre-existing writable aliases remain later analysis work.
 Shared builds with admitted content writes no longer treat that nominal type's
 contents as read-only; old-cell equality still requires interference-safe proof.

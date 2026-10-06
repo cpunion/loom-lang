@@ -309,8 +309,11 @@ invariants; reading an immutable amount supplies its required positive-return
 proof while unobserved notes remain writable through aliases and suspension.
 Content predicates can now admit one atomic element replacement using the same
 state/contract algebra, including bounded pure scans over `List[Int]`. The complete
-predicate, replacement type/literal and successful native bounds check must prove
-preservation. Checked argument-preserving `set` forwarders share this rule; normal-return
+predicate, replacement type/literal or stable scalar caller conditions, and successful
+native bounds check must prove preservation. Preconditions, assertions, selected
+branches, early exits and immutable copies reuse the existing construction-fact
+algebra, including bounded pure helpers. Mutable bindings and heap reads supply
+no stable evidence. Checked argument-preserving `set` forwarders share this rule; normal-return
 promises cannot authorize transient invalid contents. Unknown arguments/effects reject.
 The [content example](../../compiler/examples/record_refinement/lists.loom) retains
 alias identity, moving collection and Task handoff without repeated runtime checks.

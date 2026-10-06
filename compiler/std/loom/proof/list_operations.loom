@@ -14,11 +14,11 @@ fn forwarded_list_operation(program Program, function Function, depth Int) Text 
         return function.runtime_name
     }
     var body = function.body
-    if body.kind == ExprKind.Block && length(body.children) == 1 {
+    var wrappers = 0
+    while wrappers < 16 && (body.kind == ExprKind.Block || body.kind == ExprKind.Return) &&
+    length(body.children) == 1 {
         body = get(body.children, 0)
-    }
-    if body.kind == ExprKind.Return && length(body.children) == 1 {
-        body = get(body.children, 0)
+        wrappers = wrappers + 1
     }
     if body.kind != ExprKind.Call || body.index < 0 ||
     body.index >= length(program.functions) || length(body.children) != length(function.params) {

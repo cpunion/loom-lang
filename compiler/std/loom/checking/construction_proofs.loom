@@ -43,6 +43,28 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
         })
     let predicate = refinement_expression(predicate_context(stage.env, target, locals, result_local, true)?, target)?
     let program = prepared_in(stage, true)?
+    let established = established_construction_premises(program, locals, premises)
+    let proof = Function {
+        is_async = false
+        symbol = -1
+        arguments = new[Int]()
+        params = params
+        result = base
+        locals = locals
+        preconditions = established
+        postconditions = expressions(predicate)
+        result_local = result_local
+        body = body
+        runtime_name = ""
+        span = node.span
+    }
+    Result.Ok(match verify_with_helpers(program, proof, get(stage.env.inputs, 0).build.proof_backend) {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        })
+}
+
+fn established_construction_premises(program std.loom.typed.Program, locals List[Local], premises List[Expr]) List[Expr] {
     let established = new[Expr]()
     var index = 0
     while index < length(premises) {
@@ -66,24 +88,7 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
         }
         index = index + 1
     }
-    let proof = Function {
-        is_async = false
-        symbol = -1
-        arguments = new[Int]()
-        params = params
-        result = base
-        locals = locals
-        preconditions = established
-        postconditions = expressions(predicate)
-        result_local = result_local
-        body = body
-        runtime_name = ""
-        span = node.span
-    }
-    Result.Ok(match verify_with_helpers(program, proof, get(stage.env.inputs, 0).build.proof_backend) {
-            Result.Ok(_) => true
-            Result.Err(_) => false
-        })
+    established
 }
 
 // Compact actual binding IDs in one pass. Sequential substitutions could

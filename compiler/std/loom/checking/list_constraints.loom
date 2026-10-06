@@ -138,6 +138,10 @@ fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool 
 }
 
 fn constraint_operation(env Environment, functions List[Function], value Expr) Bool {
+    constraint_operation(env, functions, value, false)
+}
+
+fn constraint_operation(env Environment, functions List[Function], value Expr, established Bool) Bool {
     let inputs = new[InputOrigin]()
     var writes = 2
     var index = 0
@@ -168,7 +172,7 @@ fn constraint_operation(env Environment, functions List[Function], value Expr) B
             interfaces = env.interfaces
             witnesses = env.witnesses
         }
-        if std.loom.proof.single_list_update(program, value) && proved_list_update(env, value) {
+        if std.loom.proof.single_list_update(program, value) && (established || proved_list_update(env, value)) {
             return true
         }
     }
@@ -185,6 +189,26 @@ fn constraint_operation(env Environment, functions List[Function], value Expr) B
 }
 
 fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr) Result[Bool, Failure] {
+    // Only original typing can emit this certificate. Cached bodies retain its
+    // definition dependencies; recheck the non-publishing operation structure.
+    if value.kind == ExprKind.Block && value.text == "proved list update" && length(value.children) == 1 {
+        let operation = get(value.children, 0)
+        if !constraint_operation(env, functions, operation, true) {
+            return Result.Err(list_constraint_error(env, owner, operation,
+                    "this operation may invalidate or expose constrained List storage; use a proved preserving operation or an explicit copy"))
+        }
+        var index = 0
+        while index < length(operation.children) {
+            let child = get(operation.children, index)
+            discard list_constraint_expression(env, functions, owner, if constraint_weakened(env, child) {
+                    get(child.children, 0)
+                } else {
+                    child
+                })?
+            index = index + 1
+        }
+        return Result.Ok(true)
+    }
     // Compiler-emitted checked construction: the private raw temporary is used
     // only by the validated predicate and the successful refined result.
     if value.kind == ExprKind.Block && value.text == "checked list" {

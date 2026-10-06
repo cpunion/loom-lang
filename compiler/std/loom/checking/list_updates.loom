@@ -87,3 +87,93 @@ fn proved_list_update(env Environment, value Expr) Bool {
         Result.Err(_) => false
     }
 }
+
+// Capture evidence at the original typing point, where stable caller facts and
+// binding identities are available. The private probe imports no heap reads or
+// mutable bindings, and never re-evaluates argument effects in executable code.
+fn flow_list_update(context Context, node Node, value Expr) Expr {
+    if !context.emit || !context.env.has_refinements || context.env.expanding_helpers ||
+    context.env.stage_depth >= 32 || context.fact_head < 0 || value.ty != 0 ||
+    length(value.children) != 3 || (value.kind != ExprKind.Call &&
+        (value.kind != ExprKind.Intrinsic || value.text != "list_set")) {
+        return value
+    }
+    let receiver = get(value.children, 0)
+    if !constraint_weakened(context.env, receiver) {
+        return value
+    }
+    let ty = get(receiver.children, 0).ty
+    if get(context.env.type_states, ty).list_writes != 0 {
+        return value
+    }
+    match flow_list_update_proof(context, node, value, ty) {
+        Result.Ok(true) => expression(ExprKind.Block, 0, node, "proved list update", -1,
+            expressions(value), value.falls)
+        _ => value
+    }
+}
+
+fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result[Bool, Failure] {
+    let stage = staging(context, node)?
+    let env = helper_environment(stage.env)
+    var selected = value
+    if value.kind == ExprKind.Call {
+        if value.index < 0 {
+            return Result.Ok(false)
+        }
+        let instance = get(context.env.pending, value.index)
+        selected = expression(value.kind, value.ty, node, value.text,
+            if instance.signature < 0 {
+                schedule_closure(env, -1 - instance.signature)
+            } else {
+                schedule(env, instance.signature, instance.arguments, instance.constants, node)?
+            }, value.children, value.falls)
+    }
+    let params = [get(value.children, 0).ty]
+    let locals = [Local {
+            name = "self"
+            ty = get(params, 0)
+            mutable = false
+            is_scoped = false
+        }]
+    let bindings = [-1]
+    let inputs = [expression(ExprKind.Local, get(params, 0), node, "", 0, new[Expr](), true)]
+    var index = 1
+    while index < 3 {
+        let argument = get(value.children, index)
+        let input = construction_input(context, update_input(context.env, argument), bindings, params, locals, 0)
+        push(inputs, if input.ty == argument.ty {
+                input
+            } else {
+                expression(ExprKind.Coerce, argument.ty, node, "", -1, expressions(input), true)
+            })
+        index = index + 1
+    }
+    let premises = construction_premises(context, stage, node, bindings, params, locals)
+    let scope = predicate_context(env, ty, locals, 0, true)?
+    let predicate = refinement_expression(scope, ty)?
+    let program = prepared_in(scope, true)?
+    if !std.loom.proof.single_list_update(program, selected) {
+        return Result.Ok(false)
+    }
+    let established = established_construction_premises(program, locals, premises)
+    push(established, predicate)
+    let probe = Function {
+        is_async = false
+        symbol = -1
+        arguments = new[Int]()
+        params = params
+        result = 0
+        locals = locals
+        preconditions = established
+        postconditions = expressions(predicate)
+        result_local = -1
+        body = expression(ExprKind.Intrinsic, 0, node, "list_set", -1, inputs, true)
+        runtime_name = ""
+        span = node.span
+    }
+    Result.Ok(match std.loom.proof.verify_with_helpers(program, probe, get(env.inputs, 0).build.proof_backend) {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        })
+}

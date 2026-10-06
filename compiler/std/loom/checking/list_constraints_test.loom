@@ -134,6 +134,84 @@ test fn single_element_updates_prove_the_complete_content_constraint() {
         """))
 }
 
+test fn atomic_updates_reuse_only_stable_caller_conditions() {
+    let header = """
+    import std.list.length
+    import std.list.set
+    fn positive_head(values List[Int]) Bool {
+        length(values) > 0 && values[0] > 0
+    }
+    type PositiveHead = List[Int] where positive_head(self)
+    fn positive(value Int) Bool {
+        value > 0
+    }
+    fn forwarded(values List[Int], index Int, value Int) {
+        set(values, index, value)
+    }
+
+    """
+    list_constraint_accept(concat(header, """
+        pub fn required(values PositiveHead, value Int)
+        requires value > 0
+        {
+            values[0] = value
+        }
+        pub fn guarded(values PositiveHead, value Int) {
+            if positive(value) {
+                let copied = value
+                forwarded(values, 0, copied)
+            }
+        }
+        pub fn asserted(values PositiveHead, value Int) {
+            assert value > 0
+            set(values, 0, value)
+        }
+        pub fn after_exit(values PositiveHead, value Int) {
+            if value <= 0 {
+                return
+            }
+            values[0] = value
+        }
+        pub fn callback(values PositiveHead, value Int)
+        requires value > 0
+        {
+            (fn(items List[Int], index Int, replacement Int) {
+                set(items, index, replacement)
+            })(values, 0, value)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn mutable(values PositiveHead, input Int) {
+            var value = input
+            assert value > 0
+            value = -1
+            values[0] = value
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn heap(values PositiveHead, source List[Int]) {
+            assert source[0] > 0
+            source[0] = -1
+            set(values, 0, source[0])
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn disjunction(values PositiveHead, value Int, flag Bool) {
+            if flag || value > 0 {
+                set(values, 0, value)
+            }
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn escaped(values PositiveHead, value Int) {
+            if value > 0 {
+                assert true
+            }
+            values[0] = value
+        }
+        """))
+}
+
 test fn generic_list_extent_constraints_ignore_shared_element_contents() {
     list_constraint_accept("""
         import std.list.length
