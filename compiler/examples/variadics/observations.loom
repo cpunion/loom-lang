@@ -103,6 +103,7 @@ fn recorded[Ts...Measurement](log List[Int], values Ts...)
 ensures length(log) >= old(length(log)) {
     comptime for index, item in values {
         item.note(log, index, true, 7)
+        item.note(log, index + 10)
     }
 }
 
@@ -196,12 +197,12 @@ fn exercise_pack_observations() {
     assert length(log) == 4 && log[2] == 5 && log[3] == 6
     recorded(log)
     recorded(log, 2, true)
-    assert length(log) == 6 && log[4] == 0 && log[5] == 1
+    assert length(log) == 8 && log[4] == 0 && log[5] == 10 && log[6] == 1 && log[7] == 11
     recorded_dyn(log, observation)
-    assert length(log) == 7 && log[6] == 9
+    assert length(log) == 9 && log[8] == 9
     assert comptime {
         let log List[Int] = []
         recorded(log, 1, true)
         length(log)
-    } == 2
+    } == 4
 }

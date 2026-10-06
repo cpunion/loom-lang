@@ -594,6 +594,9 @@ test fn variadic_unit_observations_compose_declared_heap_guarantees() {
     let source = """
         import std.list.push
         import std.list.length
+        record Journal {
+            log List[Int]
+        }
         concept Writer {
             fn tick(self Self, log List[Int])
             ensures length(log) == old(length(log)) + 1 {
@@ -609,11 +612,11 @@ test fn variadic_unit_observations_compose_declared_heap_guarantees() {
         }
         impl Writer for Int {}
         impl Writer for Bool {}
-        fn grow[Ts... Writer](log List[Int], values Ts...)
-        ensures length(log) >= old(length(log)) {
+        fn grow[Ts... Writer](journal Journal, values Ts...)
+        ensures length(journal.log) >= old(length(journal.log)) {
             comptime for index, item in values {
-                item.tick(log)
-                item.append(log, index, true, 7)
+                item.tick(journal.log)
+                item.append(journal.log, index, true, 7)
             }
         }
         fn dynamic(log List[Int], writer dyn Writer)
@@ -623,7 +626,7 @@ test fn variadic_unit_observations_compose_declared_heap_guarantees() {
         }
         """
     list_length_contract(source, true)
-    list_length_contract(std.text.join(std.text.split(source, "length(log) >= old(length(log))"), "length(log) == old(length(log))"), false)
+    list_length_contract(std.text.join(std.text.split(source, "length(journal.log) >= old(length(journal.log))"), "length(journal.log) == old(length(journal.log))"), false)
     list_length_contract(std.text.join(std.text.split(source, "ensures length(log) == old(length(log)) + 1"), "ensures true"), false)
 }
 

@@ -208,7 +208,9 @@ zero iterations, indices, independent nested packs and inherited methods. The
 shared List updates and native/dyn defaults. Direct elements now compose declared
 scalar/inline aggregate concept method guarantees through the same loop rules.
 Methods with omitted returns compose declared heap guarantees without a dummy
-result or an explicit `Unit` type. The
+result or an explicit `Unit` type. Possibly resized handles use existing
+entry-length induction even without local rebinding; repeated updates need no
+sampled iteration counts. The
 [observation example](../../compiler/examples/variadics/observations.loom) covers
 mixed/empty packs, generic and variadic methods, Text/tuple/record guarantees, inherited bounds,
 nested independent packs, CTFE, function references and native/dyn dispatch.
