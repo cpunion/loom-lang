@@ -62,7 +62,7 @@ fn loop_step(proof Verification) Result[Bool, Text] {
 }
 
 fn loop_local_type(proof Verification, ty Int, depth Int) Bool {
-    if ty == 1 || ty == 2 || ty == 3 {
+    if scalar_type(ty) {
         return true
     }
     if depth >= 16 || ty < 0 || ty >= length(proof.program.types) {
@@ -96,7 +96,7 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
         return Result.Err("loop proof depth budget exhausted")
     }
     let kind = expr.kind
-    let scalar = kind == ExprKind.Integer || kind == ExprKind.Bool || kind == ExprKind.Text || kind == ExprKind.Local ||
+    let scalar = kind == ExprKind.Integer || kind == ExprKind.Float || kind == ExprKind.Bool || kind == ExprKind.Text || kind == ExprKind.Local ||
     kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce ||
     kind == ExprKind.Field || kind == ExprKind.Record || kind == ExprKind.List
     if !scalar && kind != ExprKind.Call &&

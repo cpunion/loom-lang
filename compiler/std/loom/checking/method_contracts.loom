@@ -185,7 +185,7 @@ fn dynamic_contract_summary(context Context, call Expr) Result[Function, Failure
 }
 
 fn method_summary_type(env Environment, ty Int, depth Int) Bool {
-    if ty == 0 || ty == 1 || ty == 2 || ty == 3 {
+    if ty == 0 || ty == 1 || ty == 2 || ty == 3 || ty == 5 {
         return true
     }
     if depth >= 16 || ty < 0 || ty >= length(env.types) {

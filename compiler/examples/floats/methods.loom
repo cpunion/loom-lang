@@ -1,0 +1,95 @@
+concept Quote {
+    fn quote(self Self) Float
+    ensures result >= 0.0 && result <= 1000000.0
+
+    fn zero(self Self) Float
+    ensures result == 0.0 {
+        -0.0
+    }
+
+    fn amount(self Self) Money
+    ensures result >= 0.0 && result <= 1000000.0 {
+        Money(2.5)
+    }
+
+    fn keep[Us...](self Self, input Float, ignored Us...) Float
+    requires input > 0.0
+    ensures result > 0.0 {
+        comptime for item in ignored {
+            discard item
+        }
+        input
+    }
+}
+
+fn positive_amount(value Float) Bool {
+    value > 0.0
+}
+
+impl Quote for Bool {
+    fn quote(self Bool) Float {
+        if self {
+            10.0
+        } else {
+            0.0
+        }
+    }
+}
+
+impl Quote for Float {
+    fn quote(self Float) Float {
+        if self > 0.0 && self <= 1000000.0 {
+            self
+        } else {
+            0.0
+        }
+    }
+}
+
+fn quoted(source dyn Quote) Float
+ensures result >= 0.0 && result <= 1000000.0 {
+    source.quote()
+}
+
+fn quoted_zero(source dyn Quote) Float
+ensures result == 0.0 {
+    source.zero()
+}
+
+fn retained(source dyn Quote, input Float) Float
+requires positive_amount(input)
+ensures positive_amount(result) {
+    source.keep(input, true, "quote")
+}
+
+fn quoted_money(source dyn Quote) Money
+ensures result >= 0.0 && result <= 1000000.0 {
+    source.amount()
+}
+
+fn valid_quotes[Ts...Quote](values Ts...) Bool
+ensures result {
+    var valid = true
+    comptime for item in values {
+        let amount = item.quote()
+        valid = valid && amount >= 0.0 && amount <= 1000000.0
+        let kept = item.keep(1.0)
+        valid = valid && kept > 0.0
+    }
+    valid
+}
+
+fn method_contract_values() {
+    let source dyn Quote = true
+    assert quoted(source) == 10.0 && retained(source, 2.5) == 2.5
+    assert quoted_money(source) == 2.5
+    let zero = quoted_zero(source)
+    assert zero == 0.0 && 1.0 / zero < 0.0
+    let callback fn(dyn Quote) Float = quoted
+    assert callback(source) == 10.0
+    assert valid_quotes() && valid_quotes(true, 2.5, false)
+    assert valid_quotes(0.0 / 0.0, 1.0 / 0.0, -0.0)
+    assert comptime {
+        valid_quotes(true, 2.5)
+    }
+}

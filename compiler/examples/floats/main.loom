@@ -24,6 +24,7 @@ fn exercise() {
     compile_time_values()
     money_boundaries()
     contract_values()
+    method_contract_values()
     let point = Point {
         x = 1.25
         y = 2.5
