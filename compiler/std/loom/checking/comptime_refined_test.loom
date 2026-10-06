@@ -13,3 +13,57 @@ pub fn made() Tag {
     assert literal.kind == ExprKind.Text && literal.ty == 3
     assert literal.text == "ready"
 }
+
+test fn refined_comptime_lists_restore_admission_without_weakening_alias_rules() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.list.push
+
+        type Nonempty[T] = List[T] where length(self) > 0
+
+        pub fn pair() (Nonempty[Int], Nonempty[Int]) {
+            comptime {
+                let values = Nonempty([1, 2])
+                (values, values)
+            }
+        }
+
+        pub fn use_pair() Int {
+            let values = pair()
+            push(values.0, 3)
+            length(values.1)
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+
+        type Nonempty = List[Int] where length(self) > 0
+
+        pub fn aliases() (Nonempty, List[Int]) {
+            comptime {
+                let values = [1, 2]
+                (Nonempty(values), values)
+            }
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+
+        type Nonempty = List[Int] where length(self) > 0
+
+        pub fn expose() List[Int] {
+            comptime { Nonempty([1, 2]) }
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        import std.list.push
+
+        type Fixed = List[Int] where length(self) == 2
+
+        pub fn invalid() {
+            let values = comptime { Fixed([1, 2]) }
+            push(values, 3)
+        }
+        """)
+}

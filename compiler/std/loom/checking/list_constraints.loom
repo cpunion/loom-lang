@@ -71,6 +71,15 @@ fn constraint_weakened(env Environment, value Expr) Bool {
     value.ty == base_type(env, get(value.children, 0).ty)
 }
 
+fn constraint_restored(env Environment, value Expr) Bool {
+    // Only reification emits this semantic marker, after computation's ordinary
+    // construction/escape checks. The base graph is freshly allocated and fully
+    // initialized before its already validated nominal value is published.
+    value.kind == ExprKind.Coerce && value.text == "comptime value" &&
+    length(value.children) == 1 && get(env.types, value.ty).kind == TypeKind.Refined &&
+    get(value.children, 0).ty == base_type(env, value.ty)
+}
+
 fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool {
     if value.kind == ExprKind.List {
         return true
@@ -173,7 +182,7 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
         return Result.Ok(true)
     }
     if value.kind == ExprKind.Coerce && constrained_list(env, value.ty) &&
-    !constraint_fresh(env, functions, get(value.children, 0)) {
+    !constraint_restored(env, value) && !constraint_fresh(env, functions, get(value.children, 0)) {
         return Result.Err(list_constraint_error(env, owner, value,
                 "a List constraint requires a fresh literal or a proved non-publishing factory; explicitly copy existing storage"))
     }

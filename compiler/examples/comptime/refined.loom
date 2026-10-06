@@ -1,0 +1,44 @@
+import std.list.length
+import std.list.push
+
+type Nonempty[T] = List[T] where length(self) > 0
+
+fn refined_pair() (Nonempty[Int], Nonempty[Int]) {
+    comptime {
+        let values = Nonempty([1, 2])
+        (values, values)
+    }
+}
+
+fn refined_capture() fn() Nonempty[Int] {
+    comptime {
+        let values = Nonempty([4, 5])
+        fn() Nonempty[Int] {
+            values
+        }
+    }
+}
+
+fn refined_results() {
+    let pair = refined_pair()
+    push(pair.0, 3)
+    assert length(pair.1) == 3
+    assert length(refined_pair().0) == 2
+
+    let nested = comptime {
+        let inner = [1]
+        (Nonempty([inner]), inner)
+    }
+    push(nested.0[0], 2)
+    assert length(nested.0) == 1
+    assert length(nested.1) == 2
+
+    let read = refined_capture()
+    push(read(), 6)
+    assert length(read()) == 3
+    assert length(refined_capture()()) == 2
+}
+
+test fn refined_compile_time_results_keep_types_aliases_and_freshness() {
+    refined_results()
+}

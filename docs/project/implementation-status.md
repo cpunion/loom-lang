@@ -355,6 +355,10 @@ Established scalar guards can themselves call bounded pure helpers. Their
 selected type/static instances are rebuilt in the private proof closure, and
 guarded checks are retained without adding executable roots or replaying calls.
 Opaque candidates do not hide independent supported facts.
+Compile-time results preserve admitted constrained List types while rebuilding
+fresh private graphs. Aliases, nested storage and callback captures retain their
+identities; original construction, escape and mutation checks still run before
+evaluation. Restoration is not another source construction boundary.
 Immutable Text participates through byte equality and copied-value identity,
 including helper-defined refinements, without storage-address assumptions.
 Mutable bindings, heap reads and caller effects are not imported as stable facts;

@@ -168,13 +168,12 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
             items = value.items
         }
         let rebuilt = reify_value(state, original, depth + 1)?
+        // Computation checked construction and storage admission before
+        // evaluation. Preserve that type during private graph reconstruction;
+        // the complete graph is initialized before external publication. This
+        // is not another source conversion boundary.
         return Result.Ok(expression(ExprKind.Coerce, value.ty, node,
-                if constrained_list(state.context.env, value.ty) {
-                    "checked list"
-                } else {
-                    ""
-                },
-                -1, expressions(rebuilt), true))
+                "comptime value", -1, expressions(rebuilt), true))
     }
     if kind == TypeKind.Meta {
         return meta_literal(state.context, node, value.number)
