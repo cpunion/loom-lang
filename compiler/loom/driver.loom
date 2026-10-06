@@ -444,7 +444,7 @@ fn execute_package(selected Options) Result[Text, Text] {
         return Result.Ok("")
     }
     if status != 0 {
-        return Result.Err("native program failed")
+        return Result.Err(concat("native program failed (exit code ", concat(to_text(status), ")")))
     }
     if selected.command == "test" {
         return Result.Ok(concat(to_text(prepared.tests), " tests passed\n"))
