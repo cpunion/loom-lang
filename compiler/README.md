@@ -2190,6 +2190,13 @@ local or parameter, from `requires`, a successful `assert`, or the current
 scalar facts into a private proof scope and checks the helper's requirements and
 evaluation safety. Unknown results retain checked construction; caller effects
 are not replayed, and proof-only helpers do not become native roots.
+The established condition itself may call a bounded pure scalar helper, such as
+`requires !is_nan(value)` followed by `NonNegative(abs(value))`. Its actual
+selected body is expanded, including guarded requirements and successful
+evaluation checks; an opaque candidate supplies no evidence. This also applies
+to assertions, branch/exit guards and exact immutable copies. Check-only call
+identities remain separate from executable reachability, and concrete type and
+compile-time arguments remain part of the selected instance.
 
 Int, IEEE Float and immutable Text use their own value theories. Text equality
 and immutable copies do not expose native addresses or make mutable bindings

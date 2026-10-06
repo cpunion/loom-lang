@@ -351,6 +351,10 @@ state and does not treat shared-storage mutation as pure.
 Constrained construction can combine stable immutable scalar flow facts with a
 pure helper predicate in a private proof queue. Actual binding identities stay
 distinct, and helper requirements and hypothetical arithmetic still need proof.
+Established scalar guards can themselves call bounded pure helpers. Their
+selected type/static instances are rebuilt in the private proof closure, and
+guarded checks are retained without adding executable roots or replaying calls.
+Opaque candidates do not hide independent supported facts.
 Immutable Text participates through byte equality and copied-value identity,
 including helper-defined refinements, without storage-address assumptions.
 Mutable bindings, heap reads and caller effects are not imported as stable facts;
