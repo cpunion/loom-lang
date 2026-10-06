@@ -1146,8 +1146,10 @@ and [aggregate parameter example](examples/comptime_parameters/aggregates.loom).
 Unselected arities have not had their bodies verified, except for required
 postconditions in the dependency-erasure and induction fragments above. Direct
 `Ts... C` and `(Ts...)` element receivers may call synchronous concept methods
-with explicitly declared postconditions and supported scalar/inline aggregate
-results. Ordinary generic parameters, method-local packs and static arguments reuse
+with explicitly declared postconditions and omitted, scalar or supported inline
+aggregate results. Methods with omitted returns also compose declared heap
+guarantees through the same call and loop rules. Ordinary generic parameters,
+method-local packs and static arguments reuse
 method signature checking and width inference; unknown static values still cannot
 supply proof facts. Fixed arguments and concrete tuples can select empty, mixed or
 independent method-local packs without revealing the opaque receiver. Result types,

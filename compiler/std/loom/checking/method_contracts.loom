@@ -165,7 +165,7 @@ fn dynamic_contract_summary(context Context, call Expr) Result[Function, Failure
     let slot = get(slots, call.index)
     let declaration = symbol(env, get(env.signatures, slot.signature).symbol).node
     if !has(declaration, NodeKind.Ensures) || !method_summary_type(env, call.ty, 0) {
-        return Result.Err(error(context, node, "required proof needs a scalar or inline aggregate declared dynamic method postcondition"))
+        return Result.Err(error(context, node, "required proof needs a declared dynamic method postcondition with a supported result"))
     }
     let arguments = ints(receiver)
     var index = 0
@@ -175,7 +175,7 @@ fn dynamic_contract_summary(context Context, call Expr) Result[Function, Failure
     }
     let current = signature(env, slot.signature, arguments, node)?
     if async_signature(env, current) || current.result != call.ty {
-        return Result.Err(error(context, node, "required proof needs a synchronous scalar or inline aggregate dynamic method"))
+        return Result.Err(error(context, node, "required proof needs a synchronous dynamic method with a supported result"))
     }
     let summary = declared_method_summary(env, slot.signature, arguments, slot.constants)?
     if length(summary.params) != length(call.children) {
@@ -185,8 +185,12 @@ fn dynamic_contract_summary(context Context, call Expr) Result[Function, Failure
 }
 
 fn method_summary_type(env Environment, ty Int, depth Int) Bool {
-    if ty == 1 || ty == 2 || ty == 3 { return true }
-    if depth >= 16 || ty < 0 || ty >= length(env.types) { return false }
+    if ty == 0 || ty == 1 || ty == 2 || ty == 3 {
+        return true
+    }
+    if depth >= 16 || ty < 0 || ty >= length(env.types) {
+        return false
+    }
     let shape = get(env.types, ty)
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         return method_summary_type(env, get(shape.fields, 0).ty, depth + 1)
@@ -203,7 +207,7 @@ fn declared_method_summary(env Environment, id Int, arguments List[Int], constan
     let current = signature(env, id, arguments, declaration)?
     if !has(declaration, NodeKind.Ensures) || async_signature(env, current) || !method_summary_type(env, current.result, 0) {
         return Result.Err(failure(env, current.symbol, declaration,
-                "required proof needs a synchronous scalar or inline aggregate concept method with a declared postcondition"))
+                "required proof needs a synchronous concept method with a declared postcondition and supported result"))
     }
     let scope = function_scope(env, current, arguments, constants, true)?
     let result_local = length(scope.context.locals)

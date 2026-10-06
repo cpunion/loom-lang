@@ -147,9 +147,11 @@ fn pack_proof_observation(env Environment, owner Int, pack Int, node Node) Resul
                 // guard only prevents the abstract receiver escaping into
                 // type selection or value-dependent contracts.
                 var supported = !has(method, NodeKind.Async) &&
-                has(method, NodeKind.Ensures) && length(returns) == 1
+                has(method, NodeKind.Ensures) && length(returns) <= 1
                 if supported {
-                    supported = !pack_proof_opaque_contract(get(returns, 0), "Self")
+                    if length(returns) == 1 {
+                        supported = !pack_proof_opaque_contract(get(returns, 0), "Self")
+                    }
                     if has(method, NodeKind.TypeParameters) {
                         supported = supported && !pack_proof_opaque_contract(child(method, part(method, NodeKind.TypeParameters)), "Self")
                     }

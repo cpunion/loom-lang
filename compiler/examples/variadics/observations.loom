@@ -44,6 +44,14 @@ concept Measurement {
         }
         (input, true)
     }
+
+    fn note[Us...](self Self, log List[Int], input Int, ignored Us...)
+    ensures length(log) == old(length(log)) + 1 {
+        push(log, input)
+        comptime for item in ignored {
+            discard item
+        }
+    }
 }
 
 impl Measurement for Bool {
@@ -89,6 +97,18 @@ ensures result >= 0 {
         total = total + item.preserve(amount, true, 7)
     }
     total
+}
+
+fn recorded[Ts...Measurement](log List[Int], values Ts...)
+ensures length(log) >= old(length(log)) {
+    comptime for index, item in values {
+        item.note(log, index, true, 7)
+    }
+}
+
+fn recorded_dyn(log List[Int], source dyn Measurement)
+ensures length(log) >= old(length(log)) {
+    source.note(log, 9)
 }
 
 fn inspected[Tag, Ts...Measurement](input Int, label Text, values Ts...) Reading
@@ -174,4 +194,14 @@ fn exercise_pack_observations() {
     let observation dyn Measurement = true
     assert observation.preserve(4, mark(log, 5), mark(log, 6), false) == 4
     assert length(log) == 4 && log[2] == 5 && log[3] == 6
+    recorded(log)
+    recorded(log, 2, true)
+    assert length(log) == 6 && log[4] == 0 && log[5] == 1
+    recorded_dyn(log, observation)
+    assert length(log) == 7 && log[6] == 9
+    assert comptime {
+        let log List[Int] = []
+        recorded(log, 1, true)
+        length(log)
+    } == 2
 }

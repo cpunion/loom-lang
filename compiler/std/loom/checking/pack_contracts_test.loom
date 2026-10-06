@@ -590,6 +590,43 @@ test fn variadic_observations_reuse_method_pack_inference_and_contracts() {
     rejects(std.text.join(std.text.split(definitions, "ensures result == input"), "ensures true"))
 }
 
+test fn variadic_unit_observations_compose_declared_heap_guarantees() {
+    let source = """
+        import std.list.push
+        import std.list.length
+        concept Writer {
+            fn tick(self Self, log List[Int])
+            ensures length(log) == old(length(log)) + 1 {
+                push(log, 1)
+            }
+            fn append[Us...](self Self, log List[Int], value Int, ignored Us...)
+            ensures length(log) == old(length(log)) + 1 {
+                push(log, value)
+                comptime for item in ignored {
+                    discard item
+                }
+            }
+        }
+        impl Writer for Int {}
+        impl Writer for Bool {}
+        fn grow[Ts... Writer](log List[Int], values Ts...)
+        ensures length(log) >= old(length(log)) {
+            comptime for index, item in values {
+                item.tick(log)
+                item.append(log, index, true, 7)
+            }
+        }
+        fn dynamic(log List[Int], writer dyn Writer)
+        ensures length(log) >= old(length(log)) {
+            writer.tick(log)
+            writer.append(log, 0)
+        }
+        """
+    list_length_contract(source, true)
+    list_length_contract(std.text.join(std.text.split(source, "length(log) >= old(length(log))"), "length(log) == old(length(log))"), false)
+    list_length_contract(std.text.join(std.text.split(source, "ensures length(log) == old(length(log)) + 1"), "ensures true"), false)
+}
+
 test fn variadic_element_observations_invalidate_opaque_shared_effects() {
     list_length_contract("""
         import std.list.length
