@@ -1,0 +1,99 @@
+import std.bytes.get
+import std.bytes.push
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.Outcome
+import std.json.parse
+import std.text.length
+import std.list.length
+
+test async fn json_output_awaits_each_chunk_and_reports_its_full_byte_count() {
+    let output = std.bytes.new()
+    let source = """
+        {"name":"hé中😀", "items":[null,true,"\n\\\""], "amount":123456789012345678901234567890}
+        """
+    let value = match std.json.parse(source) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            Value.Null
+        }
+    }
+    let expected = match stringify(value) {
+        Result.Ok(text) => text
+        _ => {
+            assert false
+            ""
+        }
+    }
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        sleep_ms(0).await
+        var index = 0
+        while index < std.bytes.length(chunk) {
+            std.bytes.push(output, std.bytes.get(chunk, index))
+            index = index + 1
+        }
+        Result.Ok(index)
+    }
+    assert match write(value, 1, sink).await {
+        Result.Ok(count) => count == std.text.length(expected)
+        _ => false
+    }
+    assert std.bytes.to_text(output) == expected
+}
+
+test async fn json_output_stops_on_sink_encoding_and_count_errors() {
+    let calls = [0]
+    let fail = async fn(chunk Bytes) Result[Int, Text] {
+        calls[0] = calls[0] + 1
+        Result.Err("sink failed")
+    }
+    assert match write(Value.Null, 1, fail).await {
+        Result.Err(OutputError.Sink(message)) => message == "sink failed"
+        _ => false
+    }
+    assert calls[0] == 1
+    calls[0] = 0
+    assert match write(Value.Number("01"), 1, fail).await {
+        Result.Err(OutputError.Encoding(WriteError.InvalidNumber)) => true
+        _ => false
+    }
+    assert calls[0] == 0
+    let counts = [0, -1, 2]
+    var index = 0
+    while index < std.list.length(counts) {
+        let reported = counts[index]
+        let sink = async fn(chunk Bytes) Result[Int, Text] {
+            calls[0] = calls[0] + 1
+            Result.Ok(reported)
+        }
+        assert match write(Value.Null, 1, sink).await {
+            Result.Err(OutputError.Count(expected, actual)) => expected == 1 && actual == reported
+            _ => false
+        }
+        assert calls[0] == 1
+        calls[0] = 0
+        index = index + 1
+    }
+}
+
+test async fn json_output_cancellation_drains_the_pending_sink() {
+    let started = [0]
+    let drained = [0]
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        started[0] = started[0] + 1
+        defer {
+            drained[0] = drained[0] + 1
+        }
+        sleep_ms(60000).await
+        Result.Ok(std.bytes.length(chunk))
+    }
+    let writing = write(Value.Null, 1, sink)
+    sleep_ms(1).await
+    assert started[0] == 1
+    assert match cancel(writing) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert drained[0] == 1
+}
