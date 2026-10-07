@@ -16,51 +16,14 @@ Result[Program, ContractGroupFailure] {
                 message = "invalid contract group membership"
             })
     }
-    let proofs = new[Verification](length(program.functions))
-    let functions = new[Function](length(program.functions))
+    // Normalize each member's own obligations, but retain source-form summaries
+    // in the closure. Calls expand them at their invocation boundary; normalizing
+    // the entire closure first would expand safety clauses a second time.
     var index = 0
     while index < length(program.functions) {
-        let proof = match contract_verification(program, get(program.functions, index), backend, false) {
-            Result.Ok(value) => value
-            Result.Err(message) => {
-                return Result.Err(ContractGroupFailure {
-                        function = index
-                        message = message
-                    })
-            }
-        }
-        push(proofs, proof)
-        push(functions, proof.function)
-        index = index + 1
-    }
-    let normalized = Program {
-        types = program.types
-        functions = functions
-        entry = program.entry
-        tests = program.tests
-        test_names = program.test_names
-        exports = program.exports
-        interfaces = program.interfaces
-        witnesses = program.witnesses
-    }
-    index = 0
-    while index < length(proofs) {
-        let previous = get(proofs, index)
-        if get(members, index) && length(previous.function.postconditions) != 0 {
-            let proof = Verification {
-                function = previous.function
-                program = normalized
-                fresh = previous.fresh
-                budget = previous.budget
-                loop_control = previous.loop_control
-                query = previous.query
-                shared = previous.shared
-                preservation = previous.preservation
-                returns = previous.returns
-            }
-            match verify_body(proof) {
-                Result.Ok(_) => {
-                }
+        if get(members, index) {
+            let proof = match contract_verification(program, get(program.functions, index), backend, false) {
+                Result.Ok(value) => value
                 Result.Err(message) => {
                     return Result.Err(ContractGroupFailure {
                             function = index
@@ -68,8 +31,20 @@ Result[Program, ContractGroupFailure] {
                         })
                 }
             }
+            if length(proof.function.postconditions) != 0 {
+                match verify_body(proof) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(message) => {
+                        return Result.Err(ContractGroupFailure {
+                                function = index
+                                message = message
+                            })
+                    }
+                }
+            }
         }
         index = index + 1
     }
-    Result.Ok(normalized)
+    Result.Ok(program)
 }
