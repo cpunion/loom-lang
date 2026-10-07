@@ -1,0 +1,62 @@
+import std.iter.from_list
+import std.stream.from_iter
+import std.bytes.new
+import std.bytes.to_text
+import std.text.to_bytes
+import std.json.stringify
+
+fn packet(item Result[Bytes, Text]) Result[Bytes, Text] {
+    item
+}
+
+fn raw(item Bytes) Result[Bytes, Text] {
+    Result.Ok(item)
+}
+
+test async fn json_stream_pulls_to_eof_with_static_and_dynamic_producers() {
+    let source = from_iter(from_list([to_bytes("{\"a\":"), new(), to_bytes("[true,null]} ")]))
+    assert match parse(source, raw).await {
+        Result.Ok(value) => match stringify(value) {
+            Result.Ok(text) => text == "{\"a\":[true,null]}"
+            _ => false
+        }
+        _ => false
+    }
+    let pieces List[Result[Bytes, Text]] = [Result.Ok(to_bytes("1e")), Result.Ok(to_bytes("+20"))]
+    let dynamic dyn Stream[Item = Result[Bytes, Text]] = from_iter(from_list(pieces))
+    assert match parse(dynamic, packet).await {
+        Result.Ok(Value.Number(text)) => text == "1e+20"
+        _ => false
+    }
+}
+
+test async fn json_stream_keeps_input_errors_and_stops_before_the_suffix() {
+    let pieces List[Result[Bytes, Text]] = [Result.Ok(to_bytes("null")), Result.Err("input failed"),
+        Result.Ok(to_bytes("unread"))]
+    let source = from_iter(from_list(pieces))
+    assert match parse(source, packet).await {
+        Result.Err(StreamError.Input(message)) => message == "input failed"
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(Result.Ok(bytes)) => std.bytes.to_text(bytes) == "unread"
+        _ => false
+    }
+    let bad = from_iter(from_list([to_bytes("[0,]"), to_bytes("suffix")]))
+    assert match parse(bad, raw).await {
+        Result.Err(StreamError.Syntax(failed)) => failed.offset == 3
+        _ => false
+    }
+    assert match bad.next().await {
+        Option.Some(bytes) => std.bytes.to_text(bytes) == "suffix"
+        _ => false
+    }
+    assert match parse(from_iter(from_list([to_bytes("true"), to_bytes(" false")])), raw).await {
+        Result.Err(StreamError.Syntax(_)) => true
+        _ => false
+    }
+    assert match parse(from_iter(from_list([to_bytes("{\"a\":")])), raw).await {
+        Result.Err(StreamError.Syntax(_)) => true
+        _ => false
+    }
+}

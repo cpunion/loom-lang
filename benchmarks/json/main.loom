@@ -1,0 +1,81 @@
+import std.json.decoder
+import std.json.feed
+import std.json.finish
+import std.json.Value
+import std.result.Result
+import std.bytes.new
+import std.bytes.push
+import std.bytes.get
+import std.bytes.length
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.time.monotonic_ns
+import std.int.to_text
+import std.io.write_text
+import std.text.concat
+import std.text.length
+
+fn chunks(input Bytes, width Int) List[Bytes] {
+    let output = std.list.new[Bytes]()
+    var index = 0
+    while index < std.bytes.length(input) {
+        let chunk = std.bytes.new()
+        var count = 0
+        while count < width && index < std.bytes.length(input) {
+            std.bytes.push(chunk, std.bytes.get(input, index))
+            index = index + 1
+            count = count + 1
+        }
+        std.list.push(output, chunk)
+    }
+    output
+}
+
+fn measure(label Text, input List[Bytes], repeats Int, expected Int) {
+    let started = monotonic_ns()
+    var repeat = 0
+    while repeat < repeats {
+        let cursor = decoder()
+        var index = 0
+        while index < std.list.length(input) {
+            assert match feed(cursor, std.list.get(input, index)) {
+                Result.Ok(_) => true
+                _ => false
+            }
+            index = index + 1
+        }
+        assert match finish(cursor) {
+            Result.Ok(Value.Array(items)) => std.list.length(items) == expected
+            Result.Ok(Value.String(text)) => std.text.length(text) == expected
+            _ => false
+        }
+        repeat = repeat + 1
+    }
+    discard write_text(concat(label, concat(" ", concat(std.int.to_text(monotonic_ns() - started), "\n"))))
+}
+
+fn main() {
+    let numbers = std.bytes.new()
+    std.bytes.push(numbers, 91)
+    var index = 0
+    while index < 10000 {
+        std.bytes.push(numbers, 49)
+        std.bytes.push(numbers, 44)
+        index = index + 1
+    }
+    std.bytes.push(numbers, 48)
+    std.bytes.push(numbers, 93)
+    let text = std.bytes.new()
+    std.bytes.push(text, 34)
+    index = 0
+    while index < 262144 {
+        std.bytes.push(text, 97)
+        index = index + 1
+    }
+    std.bytes.push(text, 34)
+    measure("numbers/4KiB", chunks(numbers, 4096), 30, 10001)
+    measure("text/4KiB", chunks(text, 4096), 30, 262144)
+    measure("numbers/1B", chunks(numbers, 1), 3, 10001)
+}

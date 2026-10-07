@@ -1,0 +1,93 @@
+import std.net.tcp.Stream
+import std.net.tcp.TcpError
+import std.net.tcp.listen
+import std.net.tcp.connect
+import std.net.tcp.accept
+import std.net.tcp.local_address
+import std.net.tcp.write_bytes
+import std.net.tcp.shutdown_write
+import std.net.tcp.close_listener
+import std.net.tcp.close_stream
+import std.net.tcp.chunks.read
+import std.json.Value
+import std.json.stringify
+import std.json.stream.StreamError
+import std.json.stream.parse
+import std.result.Result
+import std.text.to_bytes
+import std.text.byte
+import std.text.length
+import std.bytes.new
+import std.bytes.push
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.Outcome
+
+fn packet(item Result[Bytes, TcpError]) Result[Bytes, TcpError] {
+    item
+}
+
+async fn send(client Stream) Result[Int, TcpError] {
+    let document = """
+        {"name":"hé中😀", "amount":123456789012345678901234567890,
+         "items":[true,null,{},"\uD83D\uDE00"]}
+        """
+    var index = 0
+    while index < length(document) {
+        let chunk = new()
+        push(chunk, byte(document, index))
+        discard write_bytes(client, chunk).await?
+        sleep_ms(0).await
+        index = index + 1
+    }
+    shutdown_write(client)
+}
+
+async fn trial() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let client = connect(local_address(listener)?).await?
+    defer {
+        discard close_stream(client)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    let source = read(server, 2)
+    let cancelled = parse(source, packet)
+    sleep_ms(1).await
+    assert match cancel(cancelled) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    let writing = send(client)
+    let parsed = parse(source, packet).await
+    discard writing.await?
+    assert match parsed {
+        Result.Ok(value) => match stringify(value) {
+            Result.Ok(text) => text == """
+                {"name":"hé中😀","amount":123456789012345678901234567890,"items":[true,null,{},"😀"]}
+                """
+            _ => false
+        }
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+async fn main() {
+    assert match trial().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+test async fn fragmented_json_uses_real_io_and_cancellation_drains_readiness() {
+    assert match trial().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}

@@ -1,0 +1,398 @@
+import std.option.Option
+import std.set.Set
+import std.list.transfer.take_last
+import std.list.set
+import std.bytes.decode_utf8
+import std.bytes.get
+import std.bytes.length
+
+enum JsonPhase {
+    First
+    Value
+    Key
+    Colon
+    Separator
+}
+
+enum JsonFrame {
+    Array(List[Value], JsonPhase)
+    Object(List[(Text, Value)], Set[Text], Text, JsonPhase)
+}
+
+enum JsonToken {
+    None
+    String
+    Escape
+    Scalar
+}
+
+record DecoderState {
+    offset Int
+    start Int
+    mode JsonToken
+    token Bytes
+    frames List[JsonFrame]
+    root Option[Value]
+    failure Option[ParseError]
+    finished Bool
+}
+
+pub record Decoder {
+    state List[DecoderState]
+}
+
+// One document, one serialized consumer. Copies share the same parse cursor.
+pub fn decoder() Decoder {
+    Decoder {
+        state = [DecoderState {
+                offset = 0
+                start = 0
+                mode = JsonToken.None
+                token = std.bytes.new()
+                frames = std.list.new[JsonFrame]()
+                root = Option.None
+                failure = Option.None
+                finished = false
+            }]
+    }
+}
+
+fn json_accept(previous DecoderState, value Value) Result[DecoderState, ParseError] {
+    var state = previous
+    if std.list.length(state.frames) == 0 {
+        match state.root {
+            Option.Some(_) => {
+                return Result.Err(error(state.offset, "unexpected trailing input"))
+            }
+            Option.None => {
+                state = DecoderState {
+                    root = Option.Some(value)
+                    ..state
+                }
+                return Result.Ok(state)
+            }
+        }
+    }
+    let index = std.list.length(state.frames) - 1
+    match get(state.frames, index) {
+        JsonFrame.Array(items, phase) => {
+            if phase != JsonPhase.First && phase != JsonPhase.Value {
+                return Result.Err(error(state.offset, "expected array separator"))
+            }
+            push(items, value)
+            std.list.set(state.frames, index, JsonFrame.Array(items, JsonPhase.Separator))
+        }
+        JsonFrame.Object(fields, keys, key, phase) => {
+            if phase == JsonPhase.First || phase == JsonPhase.Key {
+                let name = match value {
+                    Value.String(text) => text
+                    _ => {
+                        return Result.Err(error(state.start, "expected object key"))
+                    }
+                }
+                if !std.set.insert(keys, name) {
+                    return Result.Err(error(state.start, "duplicate object key"))
+                }
+                std.list.set(state.frames, index, JsonFrame.Object(fields, keys, name, JsonPhase.Colon))
+            } else if phase == JsonPhase.Value {
+                push(fields, (key, value))
+                std.list.set(state.frames, index, JsonFrame.Object(fields, keys, "", JsonPhase.Separator))
+            } else {
+                return Result.Err(error(state.offset, "expected object separator"))
+            }
+        }
+    }
+    Result.Ok(state)
+}
+
+fn json_token(previous DecoderState) Result[DecoderState, ParseError] {
+    var state = previous
+    let text = match std.bytes.decode_utf8(state.token) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(error(state.start, "invalid UTF-8 in JSON token"))
+        }
+    }
+    let value = match std.json.parse(text) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(error(state.start + failed.offset, failed.message))
+        }
+    }
+    state = DecoderState {
+        token = std.bytes.new()
+        mode = JsonToken.None
+        ..state
+    }
+    json_accept(state, value)
+}
+
+fn json_expected_value(state DecoderState) Result[Int, ParseError] {
+    if std.list.length(state.frames) == 0 {
+        return match state.root {
+            Option.None => Result.Ok(0)
+            Option.Some(_) => Result.Err(error(state.offset, "unexpected trailing input"))
+        }
+    }
+    match get(state.frames, std.list.length(state.frames) - 1) {
+        JsonFrame.Array(_, phase) => {
+            if phase != JsonPhase.First && phase != JsonPhase.Value {
+                return Result.Err(error(state.offset, "expected array separator"))
+            }
+        }
+        JsonFrame.Object(_, _, _, phase) => {
+            if phase != JsonPhase.Value {
+                return Result.Err(error(state.offset, "expected object value"))
+            }
+        }
+    }
+    Result.Ok(0)
+}
+
+fn json_structure(previous DecoderState, current Int) Result[DecoderState, ParseError] {
+    var state = previous
+    if current == 91 || current == 123 {
+        discard json_expected_value(state)?
+        if std.list.length(state.frames) >= 64 {
+            return Result.Err(error(state.offset, "JSON nesting depth exceeded"))
+        }
+        let frame = if current == 91 {
+            JsonFrame.Array(std.list.new[Value](), JsonPhase.First)
+        } else {
+            JsonFrame.Object(std.list.new[(Text, Value)](), std.set.new[Text](), "", JsonPhase.First)
+        }
+        push(state.frames, frame)
+        return Result.Ok(state)
+    }
+    if std.list.length(state.frames) == 0 {
+        return Result.Err(error(state.offset, "unexpected JSON separator"))
+    }
+    let index = std.list.length(state.frames) - 1
+    let frame = get(state.frames, index)
+    if current == 93 || current == 125 {
+        let value = match frame {
+            JsonFrame.Array(items, phase) => {
+                if current != 93 || (phase != JsonPhase.First && phase != JsonPhase.Separator) {
+                    return Result.Err(error(state.offset, "expected array value or closing bracket"))
+                }
+                Value.Array(items)
+            }
+            JsonFrame.Object(fields, _, _, phase) => {
+                if current != 125 || (phase != JsonPhase.First && phase != JsonPhase.Separator) {
+                    return Result.Err(error(state.offset, "expected object field or closing brace"))
+                }
+                Value.Object(fields)
+            }
+        }
+        discard take_last(state.frames)
+        return json_accept(state, value)
+    }
+    match frame {
+        JsonFrame.Array(items, phase) => {
+            if current != 44 || phase != JsonPhase.Separator {
+                return Result.Err(error(state.offset, "expected array separator"))
+            }
+            std.list.set(state.frames, index, JsonFrame.Array(items, JsonPhase.Value))
+        }
+        JsonFrame.Object(fields, keys, key, phase) => {
+            if current == 58 && phase == JsonPhase.Colon {
+                std.list.set(state.frames, index, JsonFrame.Object(fields, keys, key, JsonPhase.Value))
+            } else if current == 44 && phase == JsonPhase.Separator {
+                std.list.set(state.frames, index, JsonFrame.Object(fields, keys, "", JsonPhase.Key))
+            } else {
+                return Result.Err(error(state.offset, "expected object separator"))
+            }
+        }
+    }
+    Result.Ok(state)
+}
+
+fn json_byte(previous DecoderState, current Int) Result[DecoderState, ParseError] {
+    var state = previous
+    let structural = current == 91 || current == 93 || current == 123 ||
+    current == 125 || current == 44 || current == 58
+    if state.mode == JsonToken.Scalar {
+        if !space(current) && !structural && current != 34 {
+            std.bytes.push(state.token, current)
+            return Result.Ok(state)
+        }
+        state = json_token(state)?
+    }
+    if space(current) {
+        return Result.Ok(state)
+    }
+    if structural {
+        return json_structure(state, current)
+    }
+    if std.list.length(state.frames) != 0 {
+        match get(state.frames, std.list.length(state.frames) - 1) {
+            JsonFrame.Object(_, _, _, phase) => {
+                if phase == JsonPhase.First || phase == JsonPhase.Key {
+                    if current != 34 {
+                        return Result.Err(error(state.offset, "expected object key"))
+                    }
+                } else {
+                    discard json_expected_value(state)?
+                }
+            }
+            JsonFrame.Array(_, _) => {
+                discard json_expected_value(state)?
+            }
+        }
+    } else {
+        discard json_expected_value(state)?
+    }
+    state = DecoderState {
+        start = state.offset
+        mode = if current == 34 {
+            JsonToken.String
+        } else {
+            JsonToken.Scalar
+        }
+        ..state
+    }
+    std.bytes.push(state.token, current)
+    Result.Ok(state)
+}
+
+// Carry only the lexical mode through a string span, rather than copying the
+// complete parse state for every byte. Short scalar tokens keep the direct path.
+fn json_scan(previous DecoderState, chunk Bytes, start Int) Result[DecoderState, ParseError] {
+    let end = std.bytes.length(chunk)
+    var index = start
+    var mode = previous.mode
+    while index < end {
+        let current = std.bytes.get(chunk, index)
+        std.bytes.push(previous.token, current)
+        index = index + 1
+        if mode == JsonToken.Escape {
+            mode = JsonToken.String
+        } else if mode == JsonToken.String {
+            if current == 92 {
+                mode = JsonToken.Escape
+            } else if current == 34 {
+                let state = json_token(DecoderState {
+                        offset = previous.offset + index - start - 1
+                        mode = JsonToken.String
+                        ..previous
+                    })?
+                return Result.Ok(DecoderState {
+                        offset = state.offset + 1
+                        ..state
+                    })
+            }
+        }
+    }
+    Result.Ok(DecoderState {
+            offset = previous.offset + index - start
+            mode = mode
+            ..previous
+        })
+}
+
+fn json_failed(previous DecoderState, failed ParseError) DecoderState {
+    DecoderState {
+        failure = Option.Some(failed)
+        finished = true
+        frames = std.list.new[JsonFrame]()
+        token = std.bytes.new()
+        root = Option.None
+        ..previous
+    }
+}
+
+// Success reports consumed bytes, not a value: trailing input and truncated
+// final tokens are only ruled out after the producer reaches EOF.
+pub fn feed(decoder Decoder, chunk Bytes) Result[Int, ParseError] {
+    var state = get(decoder.state, 0)
+    match state.failure {
+        Option.Some(failed) => {
+            return Result.Err(failed)
+        }
+        Option.None => {
+        }
+    }
+    if state.finished {
+        return Result.Err(error(state.offset, "JSON decoder is finished"))
+    }
+    let end = std.bytes.length(chunk)
+    var index = 0
+    while index < end {
+        if state.mode != JsonToken.String && state.mode != JsonToken.Escape {
+            state = match json_byte(state, std.bytes.get(chunk, index)) {
+                Result.Ok(next) => next
+                Result.Err(failed) => {
+                    std.list.set(decoder.state, 0, json_failed(state, failed))
+                    return Result.Err(failed)
+                }
+            }
+            state = DecoderState {
+                offset = state.offset + 1
+                ..state
+            }
+            index = index + 1
+        } else {
+            let offset = state.offset
+            state = match json_scan(state, chunk, index) {
+                Result.Ok(next) => next
+                Result.Err(failed) => {
+                    std.list.set(decoder.state, 0, json_failed(state, failed))
+                    return Result.Err(failed)
+                }
+            }
+            index = index + state.offset - offset
+        }
+    }
+    std.list.set(decoder.state, 0, state)
+    Result.Ok(index)
+}
+
+fn json_finished(previous DecoderState) Result[Value, ParseError] {
+    let state = if previous.mode != JsonToken.None {
+        json_token(previous)?
+    } else {
+        previous
+    }
+    if std.list.length(state.frames) != 0 {
+        return Result.Err(error(state.offset, "unterminated JSON container"))
+    }
+    match state.root {
+        Option.Some(value) => Result.Ok(value)
+        Option.None => Result.Err(error(state.offset, "expected JSON value"))
+    }
+}
+
+// Terminal, including on error. Construct a fresh decoder for another document.
+pub fn finish(decoder Decoder) Result[Value, ParseError] {
+    var state = get(decoder.state, 0)
+    match state.failure {
+        Option.Some(failed) => {
+            return Result.Err(failed)
+        }
+        Option.None => {
+        }
+    }
+    if state.finished {
+        return Result.Err(error(state.offset, "JSON decoder is finished"))
+    }
+    let outcome = json_finished(state)
+    state = DecoderState {
+        finished = true
+        frames = std.list.new[JsonFrame]()
+        token = std.bytes.new()
+        root = Option.None
+        ..state
+    }
+    match outcome {
+        Result.Err(failed) => {
+            state = DecoderState {
+                failure = Option.Some(failed)
+                ..state
+            }
+        }
+        Result.Ok(_) => {
+        }
+    }
+    std.list.set(decoder.state, 0, state)
+    outcome
+}
