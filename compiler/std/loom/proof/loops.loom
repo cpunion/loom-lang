@@ -434,7 +434,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             execute(proof, guard, assumed, depth - 1)?
         } else {
             let logical = preservation_snapshot(proof)
-            let persistent = established_conditions(logical, preservation_conditions(logical)?, assumed)?
+            let persistent = established_conditions(logical, proof.preservation, assumed)?
             let outcomes = new[Outcome]()
             var path = 0
             while path < length(persistent) {

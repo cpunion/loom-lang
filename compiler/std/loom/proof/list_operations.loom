@@ -107,7 +107,7 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
         // store. Argument values remain earlier snapshots: they do not recover
         // equality with cells another worker may have changed in the meantime.
         let atomic = preservation_snapshot(proof)
-        let entries = established_conditions(atomic, preservation_conditions(atomic)?, state)?
+        let entries = established_conditions(atomic, proof.preservation, state)?
         let output = new[Outcome]()
         var path = 0
         while path < length(entries) {
@@ -184,11 +184,10 @@ fn execute_list_operation(proof Verification, expr Expr, name Text, state State,
         let written = list_operation_outcomes(proof, name, expr.ty, get(inputs, index))?
         if length(proof.preservation) != 0 && (name == "list_set" || name == "list_push") {
             let atomic = preservation_snapshot(proof)
-            let conditions = preservation_conditions(atomic)?
             var path = 0
             while path < length(written) {
-                let state = required_conditions(atomic, conditions, get(written, path).state)?
-                discard append(output, established_conditions(atomic, conditions, state)?)?
+                let state = required_conditions(atomic, proof.preservation, get(written, path).state)?
+                discard append(output, established_conditions(atomic, proof.preservation, state)?)?
                 path = path + 1
             }
         } else {

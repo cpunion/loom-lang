@@ -4,6 +4,12 @@
 pub fn verify_preservation(program Program, function Function, backend ProofBackend,
     shared Bool, protected List[InputGuarantee]) Result[Bool, Text] {
     let proof = contract_verification(program, function, backend, shared)?
+    let conditions = new[Expr]()
+    var index = 0
+    while index < length(proof.function.postconditions) {
+        push(conditions, preservation_predicate(get(proof.function.postconditions, index), 256)?)
+        index = index + 1
+    }
     let persistent = Verification {
         function = proof.function
         program = proof.program
@@ -12,7 +18,7 @@ pub fn verify_preservation(program Program, function Function, backend ProofBack
         loop_control = proof.loop_control
         query = proof.query
         shared = proof.shared
-        preservation = proof.function.postconditions
+        preservation = conditions
         returns = new[Outcome]()
     }
     verify_body(persistent, protected)
@@ -53,12 +59,25 @@ fn preservation_snapshot(proof Verification) Verification {
     }
 }
 
-// Each boundary is a new observation scope. Duplicated reads within that
-// boundary share their identity, but a later store cannot reuse an earlier
-// predicate's scalar snapshots as observations of the current heap.
-fn preservation_conditions(proof Verification) Result[List[Expr], Text] {
-    contract_predicates(proof.program, proof.function.locals, proof.preservation,
-        false, [4096], proof.fresh, new[ObservationOrigin]())
+// These pure predicates describe a coherent logical heap, not once-evaluated
+// source reads. Reuse its current cells, never cached scalar observations from
+// an earlier boundary. Normalize once instead of re-expanding every store.
+fn preservation_predicate(value Expr, depth Int) Result[Expr, Text] {
+    if depth <= 0 {
+        return Result.Err("preservation predicate depth exhausted")
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, preservation_predicate(get(value.children, index), depth - 1)?)
+        index = index + 1
+    }
+    Result.Ok(proof_expr(value, value.kind, value.ty, value.text,
+            if list_length_expression(value) || list_read_expression(value) {
+                -1
+            } else {
+                value.index
+            }, children))
 }
 
 fn preservation_at(value Expr, offset Int, depth Int) Result[Expr, Text] {

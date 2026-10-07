@@ -645,7 +645,7 @@ fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, 
         var entry = 0
         while entry < length(entries) {
             if length(proof.preservation) != 0 {
-                discard required_conditions(entry_proof, preservation_conditions(entry_proof)?,
+                discard required_conditions(entry_proof, proof.preservation,
                     get(entries, entry).state)?
             }
             discard verify_entered(proof, get(entries, entry).state)?
