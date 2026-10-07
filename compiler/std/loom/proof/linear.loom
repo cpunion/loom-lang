@@ -180,21 +180,21 @@ fn same(a Predicate, b Predicate) Bool {
             Predicate.Or(other) => same_predicates(values, other),
             _ => false
         }
-        Predicate.ArrayRead(id, index, value, valid) => match b {
-            Predicate.ArrayRead(other, position, term, guard) => {
+        Predicate.ArrayRead(id, path, index, value, valid) => match b {
+            Predicate.ArrayRead(other, fields, position, term, guard) => {
                 let budget = new[Int]()
                 push(budget, 1024)
-                id == other && compare(index.constant, position.constant) == 0 &&
+                id == other && same_projection(path, fields) && compare(index.constant, position.constant) == 0 &&
                 same_terms(index.terms, position.terms) && same_integer_term(value, term, budget) &&
                 same_predicates(valid, guard)
             }
             _ => false
         }
-        Predicate.ArrayWrite(before, after, index, value) => match b {
-            Predicate.ArrayWrite(first, second, position, term) => {
+        Predicate.ArrayWrite(before, after, path, index, value) => match b {
+            Predicate.ArrayWrite(first, second, fields, position, term) => {
                 let budget = new[Int]()
                 push(budget, 1024)
-                before == first && after == second && compare(index.constant, position.constant) == 0 &&
+                before == first && after == second && same_projection(path, fields) && compare(index.constant, position.constant) == 0 &&
                 same_terms(index.terms, position.terms) && same_integer_term(value, term, budget)
             }
             _ => false

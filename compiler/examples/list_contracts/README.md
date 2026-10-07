@@ -31,15 +31,22 @@ The account example constrains each immutable `amount` beside shared `notes`.
 Input replacement and notes updates cannot change the copied amounts, including
 across suspension; a nonpositive account fails checked construction. Reading
 shared notes in the predicate rejects rather than assuming they remain unchanged.
-For writable elements, put the amount constraint on `PositiveAccount` and the
-extent constraint on `Nonempty[PositiveAccount]`. Construct and validate a new
-account before replacing or appending it; aliases see the replacement, while
+Construct and validate a new `PositiveAccount` before replacing or appending it
+to either `PositiveAccounts` or `Nonempty[PositiveAccount]`; aliases see the replacement, while
 shared notes retain ordinary mutation. `first_amount` proves its positive return
 from the element invariant, without a duplicate assertion or runtime contract.
 Raw writable outer aliases still cannot escape. The factory must prove fresh, unpublished
 outer storage; purity or a method named `clone` is not sufficient.
 Potential recursive backreferences and opaque function/dyn captures cannot escape
 through this type-graph rule.
+
+`projections.loom` uses the same array algebra for nested record and tuple integer
+fields. A pure scan binds each row and checks relations between its fields,
+then requires nonemptiness. Replacement, append and an ordinary fill loop prove
+the complete constraint at every store, without runtime predicate checks.
+Unobserved notes remain shared across suspension. An unconstrained inline List
+also proves arbitrary-index write/restore contracts for each field; field
+equality never implies equality or permutation of whole records.
 
 `entry.loom` proves append against `old(length(values))`, without an explicit
 size parameter. Two consecutive calls use different invocation-entry lengths;
@@ -55,6 +62,6 @@ input: later passes may update it, and the result is not promised to be fresh.
 
 The sorting example proves only its stated length contract. Its concrete order
 and element checks are runtime tests, not sortedness/permutation proofs. General
-content proofs remain unsupported; bounded indexed reads/writes and immutable
+content induction beyond the supported array/scan rules remains open; bounded indexed reads/writes and immutable
 entry-element snapshots have their own [example](../list_elements). No
 postcondition helper is emitted into the native program.

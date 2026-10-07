@@ -72,12 +72,26 @@ fn same_integer_term(left IntegerTerm, right IntegerTerm, budget List[Int]) Bool
             }
             _ => false
         }
-        IntegerTerm.Select(identity, index) => match right {
-            IntegerTerm.Select(other, position) => identity == other &&
+        IntegerTerm.Select(identity, path, index) => match right {
+            IntegerTerm.Select(other, fields, position) => identity == other && same_projection(path, fields) &&
             compare(index.constant, position.constant) == 0 && same_terms(index.terms, position.terms)
             _ => false
         }
     }
+}
+
+fn same_projection(left List[Int], right List[Int]) Bool {
+    if length(left) != length(right) {
+        return false
+    }
+    var index = 0
+    while index < length(left) {
+        if get(left, index) != get(right, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
 }
 
 fn integer_limit(relation Text, value IntegerTerm, limit Int) Predicate {

@@ -71,7 +71,7 @@ fn quantified_views(proof Verification, expr Expr, state State, inside Bool, dep
     }
     var current = state
     let nested = inside || quantified_expression(expr)
-    if count_expression(expr) || (inside && list_read_expression(expr) && expr.ty == 1) {
+    if count_expression(expr) || (inside && list_read_expression(expr)) {
         match pure(get(expr.children, 0), current)? {
             Value.List(identity) => {
                 if proof.shared && !stable_storage(list_state(identity, current)?) {
@@ -82,7 +82,7 @@ fn quantified_views(proof Verification, expr Expr, state State, inside Bool, dep
             Value.EntryList(_, _) => {
             }
             _ => {
-                return Result.Err("quantified read requires a tracked Int List")
+                return Result.Err("quantified read requires tracked List storage")
             }
         }
     }

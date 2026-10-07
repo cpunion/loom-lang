@@ -1,0 +1,129 @@
+import std.list.clone
+import std.list.length
+import std.list.push
+import std.result.Result
+import std.result.ConstraintError
+import std.time.sleep_ms
+
+record Position {
+    amount Int
+}
+
+record Row {
+    position Position
+    bounds (Int, Int)
+    notes List[Int]
+}
+
+fn valid_rows(values List[Row]) Bool {
+    var index = 0
+    while index < length(values) {
+        let row = values[index]
+        if row.bounds.0 < 0 || row.position.amount < row.bounds.0 || row.position.amount > row.bounds.1 {
+            return false
+        }
+        index = index + 1
+    }
+    length(values) > 0
+}
+
+type ValidRows = List[Row] where valid_rows(self)
+
+type ValidRow = Row where self.bounds.0 >= 0 &&
+self.position.amount >= self.bounds.0 && self.position.amount <= self.bounds.1
+
+fn checked_rows(values List[Row]) Result[ValidRows, ConstraintError] {
+    ValidRows(clone(values))
+}
+
+fn replace_row(values ValidRows, index Int, value ValidRow) {
+    values[index] = value
+}
+
+fn append_row(values ValidRows, value ValidRow) {
+    push(values, value)
+}
+
+fn fill_rows(values List[Row], value ValidRow) {
+    var index = 0
+    while index < length(values) {
+        values[index] = value
+        index = index + 1
+    }
+}
+
+record Frame {
+    position Position
+    bounds (Int, Int)
+}
+
+fn restore_row(values List[Frame], observed Int, changed Int)
+requires observed >= 0 && observed < length(values)
+requires changed >= 0 && changed < length(values)
+ensures values[observed].position.amount == old(values[observed]).position.amount
+ensures values[observed].bounds.0 == old(values[observed]).bounds.0
+ensures values[observed].bounds.1 == old(values[observed]).bounds.1
+{
+    let saved = values[changed]
+    values[changed] = Frame {
+        position = Position {
+            amount = 99
+        }
+        bounds = (99, 100)
+    }
+    values[changed] = saved
+}
+
+async fn exercise_projections() {
+    let notes = [1]
+    let input = [Row {
+            position = Position {
+                amount = 5
+            }
+            bounds = (0, 10)
+            notes = notes
+        }]
+    let replacement = ValidRow(Row {
+            position = Position {
+                amount = 8
+            }
+            bounds = (2, 20)
+            notes = notes
+        })
+    let frames = [Frame {
+            position = Position {
+                amount = 5
+            }
+            bounds = (0, 10)
+        }]
+    restore_row(frames, 0, 0)
+    assert frames[0].position.amount == 5 && frames[0].bounds.0 == 0 && frames[0].bounds.1 == 10
+    assert match checked_rows(input) {
+        Result.Ok(values) => {
+            let alias = values
+            replace_row(alias, 0, replacement)
+            append_row(values, replacement)
+            fill_rows(values, replacement)
+            notes[0] = -1
+            sleep_ms(1).await
+            length(alias) == 2 && alias[0].position.amount == 8 &&
+            alias[1].bounds.0 == 2 && alias[1].notes[0] == -1
+        }
+        Result.Err(_) => false
+    }
+    input[0] = Row {
+        position = Position {
+            amount = 21
+        }
+        bounds = (2, 20)
+        notes = notes
+    }
+    assert match checked_rows(input) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
+
+test async fn nested_record_and_tuple_constraints_preserve_each_store() {
+    exercise_projections().await
+}

@@ -16,30 +16,36 @@ fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Va
     if name == "list_get" {
         match get(inputs, 0) {
             Value.EntryList(_, contents) => {
-                if ty != 1 || contents < 0 {
+                if contents < 0 {
                     return Result.Err("entry List contents need an enabled proof backend")
                 }
-                return Result.Ok(Value.Nonlinear(IntegerTerm.Select(contents, list_value_index(get(inputs, 1))?)))
+                return Result.Ok(projected_value(contents, new[Int](), list_value_index(get(inputs, 1))?, ty))
             }
             _ => {
             }
         }
         let location = element_inputs(get(inputs, 0), get(inputs, 1))?
         let known = known_element(location.identity, location.index, state)
-        if ty == 1 {
-            if match known {
-                Result.Ok(_) => false,
-                Result.Err(_) => true
-            } {
-                let contents = list_state(location.identity, state)?.contents
-                if contents >= 0 {
-                    return Result.Ok(Value.Nonlinear(IntegerTerm.Select(contents, location.index)))
-                }
+        if match known {
+            Result.Ok(_) => false,
+            Result.Err(_) => true
+        } {
+            let contents = list_state(location.identity, state)?.contents
+            if contents >= 0 {
+                return Result.Ok(projected_value(contents, new[Int](), location.index, ty))
             }
         }
         return known
     }
     Result.Err("unsupported or uncaptured intrinsic in required proof")
+}
+
+fn projected_value(contents Int, path List[Int], index Linear, ty Int) Value {
+    if ty == 1 {
+        Value.Nonlinear(IntegerTerm.Select(contents, path, index))
+    } else {
+        Value.Projected(contents, path, index)
+    }
 }
 
 // Check this operation only; composition has checked each operand under the

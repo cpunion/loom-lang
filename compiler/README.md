@@ -2168,6 +2168,17 @@ fn append_positive(values PositiveValues, value PositiveElement) {
 }
 ```
 
+The same array rules compose through immutable `Int` fields of inline records
+and tuples, including nested paths and relations between fields. A bounded pure
+scan may bind the current element locally and finish with an ordinary Boolean
+expression, such as nonemptiness. Replacement, append and finite source helpers
+must prove the whole predicate after every store. Unobserved shared siblings
+remain mutable; the proof neither freezes them nor infers their contents.
+Field equations are not whole-record equality or permutation evidence. See
+[projections.loom](examples/list_contracts/projections.loom) for nested field
+constraints and arbitrary-index write/restore contracts. Bool, Float, Text and
+mutable element graphs are not interpreted as integer array columns.
+
 Indexing in a `where` predicate uses the same purity and storage-observation
 rules as a pure getter, without requiring a wrapper function:
 
@@ -2594,7 +2605,8 @@ ensures values[second] == old(values[first])
 This is not quantified array reasoning. See the
 [indexed List example](examples/list_elements).
 
-For `List[Int]`, the optional compile-time solver also relates reads and writes
+For integer List elements and inline integer field paths, the optional
+compile-time solver also relates reads and writes
 through versioned logical arrays (`select`/`store`). Contracts can prove restoration
 and swapping at arbitrary parameter indices, including equal indices and the
 unchanged value at any other valid index. This is an algebraic proof for every
@@ -2621,10 +2633,13 @@ or ownership syntax is introduced. Mutable element graphs, other element domains
 and whole aggregates containing shared storage remain unsupported. See the
 [entry List example](examples/smt_contracts/snapshots.loom).
 
-Bounded pure scans can express whole-`List[Int]` predicates without special
+Bounded pure scans can express List predicates over modeled integer elements or
+inline field paths without special
 helper names or a new source quantifier syntax. The current fragment recognizes
 a stable exclusive upper bound, an `Int` cursor incremented by one, and an
-early-false Boolean test followed by `true`. A complete equality scan with a
+early-false Boolean test followed by a Boolean tail expression. Local element
+observations expand within the iteration; the tail cannot depend on the updated
+cursor. A complete equality scan over `List[Int]` with a
 separate zero-based accumulator derives occurrence counts. Equal lengths and
 equal counts for every input element normalize to finite histogram equality;
 an in-range store removes the previous occurrence and adds the replacement.

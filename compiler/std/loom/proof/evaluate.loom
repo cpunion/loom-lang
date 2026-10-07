@@ -214,7 +214,10 @@ fn pure(expr Expr, state State) Result[Value, Text] {
         return Result.Ok(get(state.locals, expr.index))
     }
     if expr.kind == ExprKind.Coerce {
-        return pure(get(expr.children, 0), state)
+        return match pure(get(expr.children, 0), state)? {
+            Value.Projected(contents, path, index) => Result.Ok(projected_value(contents, path, index, expr.ty))
+            value => Result.Ok(value)
+        }
     }
     if expr.kind == ExprKind.Field {
         match pure(get(expr.children, 0), state)? {
@@ -223,6 +226,9 @@ fn pure(expr Expr, state State) Result[Value, Text] {
                     return Result.Err("invalid proof record field")
                 }
                 return Result.Ok(get(fields, expr.index))
+            }
+            Value.Projected(contents, path, index) => {
+                return Result.Ok(projected_value(contents, projection_field(path, expr.index), index, expr.ty))
             }
             _ => {
                 return Result.Err("field proof requires a scalar record")
