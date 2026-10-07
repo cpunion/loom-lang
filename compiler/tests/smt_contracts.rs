@@ -18,6 +18,64 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn signed_bit_contracts_recheck_word_algebra_and_independent_operand_domains() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("bits.loom");
+    let program = include_str!("../examples/smt_contracts/bitwise.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace("mask <= 255", "mask <= 256"),
+        program.replace("result <= 63", "result <= 62"),
+        program.replace("(left ^ right) ^ right", "(left ^ right) ^ left"),
+        program.replace("~(left & right)", "~(left | right)"),
+        program.replace("count >= 0 && count < 64", "count >= 0"),
+        program.replace("count >= 0 && count < 64", "count < 64"),
+        program.replace("count < 64", "count <= 64"),
+    ] {
+        assert_ne!(changed, program, "test edit did not apply");
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(!output.status.success(), "unsound bit proof: {changed}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "{error}"
+        );
+    }
+    for unsafe_source in [
+        "fn hidden(value Int) Bool\nensures ((value + 1) & 0) == 0\n{ true }\n",
+        "fn hidden(value Int) Bool\nensures ((value + 1) ^ (value + 1)) == 0\n{ true }\n",
+        "fn hidden(value Int) Bool\nensures (value << -1) == (value << -1)\n{ true }\n",
+        "fn hidden(value Int) Bool\nensures (value >> 64) == (value >> 64)\n{ true }\n",
+    ] {
+        fs::write(&source, unsafe_source).unwrap();
+        assert!(
+            !check().status.success(),
+            "unsafe bit operands: {unsafe_source}"
+        );
+    }
+    fs::write(
+        &source,
+        format!("{program}\nfn main() {{\n    bitwise_cases()\n}}\n"),
+    )
+    .unwrap();
+    for mode in ["test", "run"] {
+        success(&common::loom(&[mode, package.path().to_str().unwrap()]));
+    }
+}
+
+#[test]
 fn immutable_text_bytes_recheck_ranges_utf8_and_hypothetical_access_domains() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("bytes.loom");

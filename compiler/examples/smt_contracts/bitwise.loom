@@ -1,0 +1,66 @@
+import std.text.byte
+import std.text.length
+
+fn masked(value Int, mask Int) Int
+requires mask >= 0 && mask <= 255
+ensures result >= 0 && result <= 255
+{
+    value & mask
+}
+
+fn low_bits(value Text, index Int) Int
+requires index >= 0 && index < length(value)
+ensures result >= 0 && result <= 63
+{
+    byte(value, index) & 63
+}
+
+fn xor_cancel(left Int, right Int) Int
+ensures result == left
+{
+    (left ^ right) ^ right
+}
+
+fn de_morgan(left Int, right Int) Bool
+ensures result
+{
+    ~(left & right) == (~left | ~right)
+}
+
+fn flipped(value Int) Int
+ensures result == ~value
+{
+    ~value
+}
+
+fn shifted(value Int, count Int) Int
+requires count >= 0 && count < 64
+ensures result == (value << count) >> count
+{
+    (value << count) >> count
+}
+
+fn hypothetical_shift(value Int, count Int) Bool
+requires count >= 0 && count < 64
+ensures (value << count) == (value << count)
+{
+    true
+}
+
+fn bitwise_cases() {
+    assert masked(-1, 255) == 255
+    assert masked(-9223372036854775808, 127) == 0
+    assert low_bits("雪", 1) == 27
+    assert xor_cancel(-9223372036854775808, 9223372036854775807) == -9223372036854775808
+    assert xor_cancel(-7, -1) == -7
+    assert de_morgan(-1, 9223372036854775807)
+    assert de_morgan(7, 12)
+    assert flipped(-9223372036854775808) == 9223372036854775807
+    assert shifted(-8, 1) == -8
+    assert shifted(1, 63) == -1
+    assert hypothetical_shift(-9223372036854775808, 63)
+}
+
+test fn signed_bit_contracts_compose_with_integer_and_text_algebra() {
+    bitwise_cases()
+}

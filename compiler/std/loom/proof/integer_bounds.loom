@@ -50,6 +50,9 @@ fn integer_bounds(value IntegerTerm, facts List[Predicate], budget List[Int]) Re
                 })
         }
         IntegerTerm.Apply(operator, inputs) => {
+            if integer_bitwise(operator) {
+                return integer_bitwise_bounds(operator, inputs, facts, budget)
+            }
             if length(inputs) != 2 {
                 return Result.Err("invalid integer interval operands")
             }

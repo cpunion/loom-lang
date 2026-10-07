@@ -2420,6 +2420,12 @@ Text equality and concrete UTF-8 contents compose through the same SMT byte
 sequence, not a code-point or signed-byte model. See the
 [byte contracts](examples/smt_contracts/text_bytes.loom).
 
+Signed 64-bit `~`, `&`, `|`, `^`, `<<` and `>>` compose in the same proof model.
+Nonnegative mask bounds and XOR factor parity prove locally; other supported
+relationships use exact word operations in SMT, with arithmetic right shift.
+Shift counts independently require 0–63, and neither masking nor cancellation
+erases an eager operand fault. See [bit contracts](examples/smt_contracts/bitwise.loom).
+
 Constrained construction, scalar flow facts, pure-helper implication and supported
 List-append preservation use this same backend after their fast rules fail.
 Helper evaluation safety and predicate truth are discharged together, before

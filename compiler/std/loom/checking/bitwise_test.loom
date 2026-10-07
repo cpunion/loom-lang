@@ -16,5 +16,6 @@ test fn bitwise_requires_int_operands_without_assuming_symbolic_proofs() {
     rejects("fn main() { discard comptime { 1 << -1 } }")
     rejects("fn main() { discard comptime { 1 >> 64 } }")
     rejects("fn hidden[T](value T) T { value & value }")
-    rejects("fn masked(value Int) Int ensures result >= 0 { value & 7 }")
+    discard accepted("fn masked(value Int) Int ensures result >= 0 && result <= 7 { value & 7 }")
+    rejects("fn masked(value Int) Int ensures result >= 0 { value | 7 }")
 }

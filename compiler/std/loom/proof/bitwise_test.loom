@@ -1,0 +1,42 @@
+test fn integer_bit_rules_keep_signed_words_masks_and_literal_counts() {
+    let x = local(0)
+    let masked = expression(ExprKind.Binary, 1, "&", -1, [x, literal("7")])
+    let range = operation("&&", operation(">=", local(1), literal("0")), operation("<=", local(1), literal("7")))
+    assert verified(fixture(masked, [], range))
+    assert !verified(fixture(masked, [], operation("<", local(1), literal("7"))))
+    let union = expression(ExprKind.Binary, 1, "|", -1, [x, literal("7")])
+    assert !verified(fixture(union, [], operation(">=", local(1), literal("0"))))
+    let shifted = expression(ExprKind.Binary, 1, "<<", -1, [x, literal("63")])
+    let identity = operation("==", shifted, shifted)
+    assert verified(fixture(literal("0"), [], identity))
+    let counts = [-1, 64]
+    var index = 0
+    while index < length(counts) {
+        let fault = expression(ExprKind.Binary, 1, "<<", -1, [x, literal(std.int.to_text(get(counts, index)))])
+        assert !verified(fixture(literal("0"), [], operation("==", fault, fault)))
+        index = index + 1
+    }
+    // Word truncation does not make an eagerly evaluated addition safe.
+    let eager = expression(ExprKind.Binary, 1, "&", -1, [operation("+", x, literal("1")), literal("0")])
+    assert !verified(fixture(literal("0"), [], operation("==", eager, literal("0"))))
+    let cancelled = expression(ExprKind.Binary, 1, "^", -1,
+        [operation("+", x, literal("1")), operation("+", x, literal("1"))])
+    assert !verified(fixture(literal("0"), [], operation("==", cancelled, literal("0"))))
+    let safe = [operation("<", x, literal("9223372036854775807"))]
+    assert verified(fixture(literal("0"), safe, operation("==", eager, literal("0"))))
+    assert verified(fixture(literal("0"), safe, operation("==", cancelled, literal("0"))))
+    assert verified(fixture(expression(ExprKind.Unary, 1, "~", -1, [literal("0")]), [],
+            operation("==", local(1), literal("-1"))))
+    let negative = expression(ExprKind.Binary, 1, ">>", -1, [literal("-8"), literal("2")])
+    assert verified(fixture(negative, [], operation("==", local(1), literal("-2"))))
+}
+
+test fn bit_encoding_keeps_word_width_signedness_and_arithmetic_right_shift() {
+    let value = IntegerTerm.Linear(variable(0))
+    let shifted = IntegerTerm.Apply(">>", [value, IntegerTerm.Linear(constant(integer(1)))])
+    let query = encoding([Obligation {
+                facts = []
+                conclusion = integer_limit("<=", shifted, 9223372036854775807)
+            }])
+    assert std.text.contains(query, "(sbv_to_int (bvashr ((_ int_to_bv 64) (+ 0 (* 1 n0))) ((_ int_to_bv 64) (+ 1))))")
+}

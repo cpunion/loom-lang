@@ -59,8 +59,9 @@ test fn backend_failures_propagate_and_easy_or_unsupported_proofs_do_not_call_it
         Result.Err(message) => message == "test backend failure"
         _ => false
     }
-    assert match verify_with_types([], fixture(literal("0"), [],
-            operation(">", expression(ExprKind.Binary, 1, "&", -1, nodes(x, literal("1"))), x)), backend) {
+    let floating = expression(ExprKind.Local, 5, "", 0, [])
+    assert match verify_with_types([], contract_fixture([5], 5, floating, [],
+            [opaque_float_fact()]), backend) {
         Result.Err(message) => message != "test backend failure"
         _ => false
     }

@@ -375,6 +375,9 @@ fn operation(proof Verification, expr Expr, state State, depth Int) Result[List[
                         current = assume(current, integer_division_guard(integer_term(first.value)?,
                                 integer_term(second.value)?))
                     }
+                    if expr.ty == 1 && (expr.text == "<<" || expr.text == ">>") {
+                        current = assume(current, integer_shift_guard(integer_term(second.value)?))
+                    }
                     discard add_outcome(output, Outcome {
                             state = current
                             value = value

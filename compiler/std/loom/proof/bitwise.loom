@@ -1,0 +1,169 @@
+// Source Int uses signed 64-bit words. Bit operations wrap those words, not
+// mathematical arithmetic; shift counts and eager operands need separate safety.
+// XOR is an associative word group: flatten factors and cancel even parity.
+// This changes only the proof value. Source operand evaluation/definedness is
+// still traversed separately, including factors that cancel here.
+fn xor_factors(value IntegerTerm, terms List[IntegerTerm], odd List[Bool], budget List[Int]) Result[Bool, Text] {
+    if get(budget, 0) <= 0 {
+        return Result.Err("XOR normalization budget exhausted")
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    match value {
+        IntegerTerm.Apply(operator, inputs) => {
+            if operator == "^" && length(inputs) == 2 {
+                discard xor_factors(get(inputs, 0), terms, odd, budget)?
+                return xor_factors(get(inputs, 1), terms, odd, budget)
+            }
+        }
+        IntegerTerm.Linear(number) => {
+            if length(number.terms) == 0 && compare(number.constant, integer(0)) == 0 {
+                return Result.Ok(true)
+            }
+        }
+        _ => {
+        }
+    }
+    var index = 0
+    while index < length(terms) {
+        if same_integer_term(value, get(terms, index), [256]) {
+            set(odd, index, !get(odd, index))
+            return Result.Ok(true)
+        }
+        index = index + 1
+    }
+    push(terms, value)
+    push(odd, true)
+    Result.Ok(true)
+}
+
+fn xor_value(left IntegerTerm, right IntegerTerm) Result[Value, Text] {
+    let terms = new[IntegerTerm]()
+    let odd = new[Bool]()
+    let budget = [256]
+    discard xor_factors(left, terms, odd, budget)?
+    discard xor_factors(right, terms, odd, budget)?
+    var reduced = IntegerTerm.Linear(constant(integer(0)))
+    var first = true
+    var index = 0
+    while index < length(terms) {
+        if get(odd, index) {
+            reduced = if first {
+                get(terms, index)
+            } else {
+                IntegerTerm.Apply("^", [reduced, get(terms, index)])
+            }
+            first = false
+        }
+        index = index + 1
+    }
+    Result.Ok(integer_value(reduced))
+}
+
+fn integer_bitwise_literal(operator Text, left Int, right Int) Result[Value, Text] {
+    if (operator == "<<" || operator == ">>") && (right < 0 || right >= 64) {
+        return Result.Err("undefined proof shift count")
+    }
+    let value = if operator == "&" {
+        left & right
+    } else if operator == "|" {
+        left | right
+    } else if operator == "^" {
+        left ^ right
+    } else if operator == "<<" {
+        left << right
+    } else if operator == ">>" {
+        left >> right
+    } else {
+        return Result.Err("unsupported binary bit operation")
+    }
+    Result.Ok(Value.Number(constant(integer(value))))
+}
+
+fn integer_bitwise_bounds(operator Text, inputs List[IntegerTerm], facts List[Predicate],
+    budget List[Int]) Result[Bounds, Text] {
+    if length(inputs) != (if operator == "~" {
+            1
+        } else {
+            2
+        }) {
+        return Result.Err("invalid bit operation operands")
+    }
+    var bounds = Bounds {
+        low = integer(-9223372036854775808)
+        high = integer(9223372036854775807)
+    }
+    if operator == "&" {
+        var index = 0
+        while index < length(inputs) {
+            match integer_bounds(get(inputs, index), facts, budget) {
+                Result.Ok(mask) => {
+                    if compare(mask.low, integer(0)) >= 0 && compare(mask.high, integer(9223372036854775807)) <= 0 {
+                        bounds = Bounds {
+                            low = integer(0)
+                            high = if compare(mask.high, bounds.high) < 0 {
+                                mask.high
+                            } else {
+                                bounds.high
+                            }
+                        }
+                    }
+                }
+                Result.Err(_) => {
+                }
+            }
+            index = index + 1
+        }
+    }
+    Result.Ok(bounds)
+}
+
+fn smt_bitwise(writer SmtWriter, operator Text, inputs List[IntegerTerm], depth Int) Result[Text, Text] {
+    Result.Ok(concat("(sbv_to_int ", concat(smt_bitwise_word(writer, operator, inputs, depth)?, ")")))
+}
+
+// Keep a nested word expression in one domain. Repeated int_to_bv(sbv_to_int
+// (...)) round trips obscure even elementary bit identities from the solver.
+fn smt_word(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text] {
+    match value {
+        IntegerTerm.Apply(operator, inputs) => {
+            if integer_bitwise(operator) {
+                discard smt_step(writer, depth)?
+                return smt_bitwise_word(writer, operator, inputs, depth)
+            }
+        }
+        _ => {
+        }
+    }
+    Result.Ok(concat("((_ int_to_bv 64) ", concat(smt_integer(writer, value, depth)?, ")")))
+}
+
+fn smt_bitwise_word(writer SmtWriter, operator Text, inputs List[IntegerTerm], depth Int) Result[Text, Text] {
+    if length(inputs) != (if operator == "~" {
+            1
+        } else {
+            2
+        }) {
+        return Result.Err("invalid SMT bit operation operands")
+    }
+    let name = if operator == "~" {
+        "bvnot"
+    } else if operator == "&" {
+        "bvand"
+    } else if operator == "|" {
+        "bvor"
+    } else if operator == "^" {
+        "bvxor"
+    } else if operator == "<<" {
+        "bvshl"
+    } else {
+        "bvashr"
+    }
+    var operands = ""
+    var index = 0
+    while index < length(inputs) {
+        let value = smt_word(writer, get(inputs, index), depth + 1)?
+        operands = concat(operands, concat(" ", value))
+        index = index + 1
+    }
+    Result.Ok(concat("(", concat(name, concat(operands, ")"))))
+}

@@ -69,7 +69,8 @@ fn scalar_operator(value Expr) Bool {
     }
     value.text == "+" || value.text == "-" || value.text == "*" || value.text == "/" || value.text == "%" ||
     value.text == "==" || value.text == "!=" || value.text == "<" || value.text == "<=" || value.text == ">" || value.text == ">=" ||
-    value.text == "&&" || value.text == "||" || value.text == "&" || value.text == "|" || value.text == "^"
+    value.text == "&&" || value.text == "||" || value.text == "&" || value.text == "|" || value.text == "^" ||
+    value.text == "<<" || value.text == ">>"
 }
 
 fn proof_operation(value Expr) ProofOperation {
@@ -101,7 +102,7 @@ fn proof_operation(value Expr) ProofOperation {
             OperandFlow.Eager
         }
         let partial = value.ty == 1 && (value.text == "+" || value.text == "-" ||
-            value.text == "*" || value.text == "/" || value.text == "%")
+            value.text == "*" || value.text == "/" || value.text == "%" || value.text == "<<" || value.text == ">>")
         return operation_shape(arity, flow, false, !partial)
     }
     unsupported_operation()
