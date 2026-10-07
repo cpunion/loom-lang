@@ -13,6 +13,7 @@ import std.json.Value
 import std.json.stringify
 import std.json.stream.StreamError
 import std.json.stream.parse
+import std.json.stream.write
 import std.result.Result
 import std.text.to_bytes
 import std.text.byte
@@ -28,6 +29,9 @@ fn packet(item Result[Bytes, TcpError]) Result[Bytes, TcpError] {
 }
 
 async fn send(client Stream) Result[Int, TcpError] {
+    defer {
+        discard shutdown_write(client)
+    }
     let document = """
         {"name":"hé中😀", "amount":123456789012345678901234567890,
          "items":[true,null,{},"\uD83D\uDE00"]}
@@ -40,7 +44,23 @@ async fn send(client Stream) Result[Int, TcpError] {
         sleep_ms(0).await
         index = index + 1
     }
-    shutdown_write(client)
+    Result.Ok(index)
+}
+
+async fn reply(server Stream, value Value) Result[Int, TcpError] {
+    defer {
+        discard shutdown_write(server)
+    }
+    let sink = async fn(chunk Bytes) Result[Int, TcpError] {
+        write_bytes(server, chunk).await
+    }
+    let count = match std.json.stream.write(value, 3, sink).await {
+        Result.Ok(value) => value
+        _ => {
+            return Result.Err(TcpError.Write)
+        }
+    }
+    Result.Ok(count)
 }
 
 async fn trial() Result[Bool, TcpError] {
@@ -66,11 +86,26 @@ async fn trial() Result[Bool, TcpError] {
     let writing = send(client)
     let parsed = parse(source, packet).await
     discard writing.await?
-    assert match parsed {
+    let value = match parsed {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            Value.Null
+        }
+    }
+    let expected = """
+        {"name":"hé中😀","amount":123456789012345678901234567890,"items":[true,null,{},"😀"]}
+        """
+    assert match stringify(value) {
+        Result.Ok(text) => text == expected
+        _ => false
+    }
+    let replying = reply(server, value)
+    let echoed = parse(read(client, 2), packet).await
+    assert replying.await? == length(expected)
+    assert match echoed {
         Result.Ok(value) => match stringify(value) {
-            Result.Ok(text) => text == """
-                {"name":"hé中😀","amount":123456789012345678901234567890,"items":[true,null,{},"😀"]}
-                """
+            Result.Ok(text) => text == expected
             _ => false
         }
         _ => false

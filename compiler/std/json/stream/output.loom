@@ -1,0 +1,44 @@
+import std.json.encoder
+import std.json.next
+import std.json.WriteError
+import std.bytes.length
+
+pub enum OutputError[E] {
+    Sink(E)
+    Encoding(WriteError)
+    Count(Int, Int)
+}
+
+// The sink must finish writing each chunk or report an error. A mismatched
+// count is explicit, never silently dropped or retried as if no bytes escaped.
+pub async fn write[E](value Value, chunk_size Int, sink fn(Bytes) Task[Result[Int, E]])
+Result[Int, OutputError[E]]
+requires chunk_size > 0
+{
+    let cursor = encoder(value, chunk_size)
+    var count = 0
+    while true {
+        match std.json.next(cursor) {
+            Option.None => {
+                break
+            }
+            Option.Some(Result.Err(failed)) => {
+                return Result.Err(OutputError.Encoding(failed))
+            }
+            Option.Some(Result.Ok(chunk)) => {
+                let expected = std.bytes.length(chunk)
+                let written = match sink(chunk).await {
+                    Result.Ok(value) => value
+                    Result.Err(failed) => {
+                        return Result.Err(OutputError.Sink(failed))
+                    }
+                }
+                if written != expected {
+                    return Result.Err(OutputError.Count(expected, written))
+                }
+                count = count + written
+            }
+        }
+    }
+    Result.Ok(count)
+}

@@ -55,5 +55,18 @@ and stick across later calls; finish is terminal. Decoder copies share a cursor,
 so serialize feeds. The same duplicate-key and 64-level nesting policy applies.
 
 [`std.json.stream`](stream/README.md) awaits an existing Stream and uses this
-decoder. It needs no JSON runtime or new producer protocol. Streaming writers
-and record-at-a-time document sequences are not provided.
+decoder. It needs no JSON runtime or new producer protocol.
+
+`encoder(value, chunk_size)` and `next(encoder)` write a `Value` incrementally.
+The chunk size must be positive. Each item is a fresh nonempty `Bytes` of at most
+that size; UTF-8 and escapes may split across chunks. Concatenate bytes before
+decoding Text. EOF is `None`; invalid numbers, duplicate keys or excessive depth
+produce one error item, then EOF. Earlier chunks are not rolled back.
+
+Encoder copies share a serialized cursor. Open containers retain fixed-shape
+List views, not an isolated snapshot of the entire graph: shared element writes
+and not-yet-opened children remain observable. Synchronize application mutations
+when a consistent document is required. Encoding retains traversal state, key
+sets and the current output chunk, not a complete serialized document.
+The async writer uses the same cursor. Typed streaming encoding and
+record-at-a-time document sequences are not provided.

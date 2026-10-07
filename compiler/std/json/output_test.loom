@@ -1,0 +1,133 @@
+import std.bytes.set
+
+fn json_output_matches(outcome Result[Text, WriteError], expected Text) Bool {
+    match outcome {
+        Result.Ok(value) => value == expected
+        _ => false
+    }
+}
+
+fn json_output_error(outcome Result[Text, WriteError], expected WriteError) Bool {
+    match outcome {
+        Result.Err(value) => value == expected
+        _ => false
+    }
+}
+
+fn json_output_eof(cursor Encoder) {
+    assert match std.json.next(cursor) {
+        Option.None => true
+        _ => false
+    }
+}
+
+fn json_written(input Value, width Int) Result[Text, WriteError] {
+    let cursor = encoder(input, width)
+    let output = std.bytes.new()
+    while true {
+        match std.json.next(cursor) {
+            Option.Some(Result.Ok(chunk)) => {
+                assert std.bytes.length(chunk) > 0 && std.bytes.length(chunk) <= width
+                var index = 0
+                while index < std.bytes.length(chunk) {
+                    std.bytes.push(output, std.bytes.get(chunk, index))
+                    index = index + 1
+                }
+            }
+            Option.Some(Result.Err(failed)) => {
+                return Result.Err(failed)
+            }
+            Option.None => {
+                break
+            }
+        }
+    }
+    Result.Ok(to_text(output))
+}
+
+test fn json_output_chunks_match_stringify_at_byte_and_escape_boundaries() {
+    let controls = std.bytes.new()
+    var index = 0
+    while index < 32 {
+        std.bytes.push(controls, index)
+        index = index + 1
+    }
+    let values = [Value.String(to_text(controls)), Value.String("hé中😀\\\""), Value.String(""),
+        decoded("""
+            {"hé中":"😀", "values":[null,true,false,{},[],
+                -123456789012345678901234567890.001e+42]}
+            """), Value.Null, Value.Boolean(false)]
+    index = 0
+    while index < std.list.length(values) {
+        let value = get(values, index)
+        var width = 1
+        while width <= 17 {
+            assert json_output_matches(json_written(value, width), rendered(value))
+            width = width + 1
+        }
+        index = index + 1
+    }
+}
+
+test fn json_output_reports_one_error_then_releases_the_cursor() {
+    let invalid = ["", "01", "+1", "1.", "NaN", "true"]
+    var index = 0
+    while index < std.list.length(invalid) {
+        let cursor = encoder(Value.Number(get(invalid, index)), 1)
+        let alias = cursor
+        assert match std.json.next(cursor) {
+            Option.Some(Result.Err(WriteError.InvalidNumber)) => true
+            _ => false
+        }
+        json_output_eof(alias)
+        index = index + 1
+    }
+    let duplicate = Value.Object([("a", Value.Null), ("a", Value.Boolean(true))])
+    assert json_output_error(json_written(duplicate, 1), WriteError.DuplicateKey)
+    let children = std.list.new[Value]()
+    let cycle = Value.Array(children)
+    push(children, cycle)
+    assert json_output_error(json_written(cycle, 3), WriteError.DepthExceeded)
+    var nested = Value.Null
+    index = 0
+    while index < 64 {
+        nested = Value.Array([nested])
+        index = index + 1
+    }
+    assert json_output_matches(json_written(nested, 7), rendered(nested))
+    assert json_output_error(json_written(Value.Array([nested]), 7), WriteError.DepthExceeded)
+}
+
+test fn json_output_copies_share_the_cursor_and_retain_captured_element_identities() {
+    let values = [Value.String("old")]
+    let cursor = encoder(Value.Array(values), 1)
+    let alias = cursor
+    let opening = match std.json.next(cursor) {
+        Option.Some(Result.Ok(chunk)) => chunk
+        _ => {
+            assert false
+            std.bytes.new()
+        }
+    }
+    assert to_text(opening) == "["
+    std.bytes.set(opening, 0, 88)
+    discard take_last(values)
+    push(values, Value.String("new"))
+    let output = std.bytes.new()
+    while true {
+        match std.json.next(alias) {
+            Option.Some(Result.Ok(chunk)) => {
+                assert std.bytes.length(chunk) == 1
+                std.bytes.push(output, std.bytes.get(chunk, 0))
+            }
+            Option.None => {
+                break
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert to_text(output) == "\"old\"]"
+    json_output_eof(cursor)
+}

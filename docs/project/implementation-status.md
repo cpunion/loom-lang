@@ -641,8 +641,12 @@ UTF-8, escapes and numbers may cross chunk boundaries; container state and the
 result tree grow without buffering the full document text. EOF/trailing input,
 producer errors and cancellation use existing library/Task semantics. The
 [real TCP trial](../../compiler/examples/json_stream/main.loom) also runs at
-O0/O2 under moving-GC stress. Streaming writers/document sequences,
-borrow-retaining adapters, owned async resource pipelines and application-grade
+O0/O2 under moving-GC stress. A source encoder now emits bounded fresh byte chunks;
+the async writer awaits each sink with checked full-chunk counts. JSON errors,
+sink errors and cancellation preserve partial-output and caller-managed resource
+semantics. Open containers retain fixed-shape views, not deep snapshots.
+Typed streaming encoding, document sequences, borrow-retaining adapters,
+owned async resource pipelines and application-grade
 networking remain open.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;

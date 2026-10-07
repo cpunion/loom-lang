@@ -1,4 +1,4 @@
-# JSON from async chunks
+# JSON over async chunks
 
 `parse(source, bytes).await` consumes one JSON document from a `std.stream.Stream`.
 The synchronous callback has type `fn(S.Item) Result[Bytes, E]`, making the
@@ -19,8 +19,22 @@ restart. The caller closes borrowed resources after child Tasks drain. Input
 size limits and deadlines belong to the caller/producer. This parses one
 document into a `Value`, not a lazy sequence of array items or JSON documents.
 
+`write(value, chunk_size, sink).await` encodes a `Value` without preparing a full
+serialized Text. The positive chunk size bounds fresh output buffers. The
+callback has type `fn(Bytes) Task[Result[Int, E]]`; it must complete each whole
+chunk before returning its byte count, as TCP/TLS `write_bytes` does. Calls run
+serially, providing backpressure. Success returns the total byte count.
+
+`OutputError.Sink(E)` retains a sink error; `Encoding(WriteError)` retains JSON
+validation errors. `Count(expected, reported)` rejects partial, negative or
+excessive success counts, without pulling another chunk or guessing a retry.
+Already-emitted bytes are not undone, and cancellation drains the pending sink
+without closing the caller's resource. Neither operation freezes shared input
+data. Generic typed streaming encoding and document sequences remain open.
+
 The [TCP example](../../../examples/json_stream/main.loom) sends UTF-8 and escapes
-one byte at a time and exercises cancellation followed by a fresh parse:
+one byte at a time, exercises cancellation followed by a fresh parse, then
+echoes the value through three-byte output chunks:
 
 ```sh
 target/loom run compiler/examples/json_stream

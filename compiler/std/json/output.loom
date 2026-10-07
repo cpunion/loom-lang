@@ -1,0 +1,205 @@
+import std.list.view.View
+import std.list.view.capture
+import std.list.view.get
+import std.list.view.length
+
+enum EncodeFrame {
+    Value(Value, Int)
+    Raw(Text, Int)
+    String(Text, Int)
+    Array(View[Value], Int, Int)
+    Object(View[(Text, Value)], Set[Text], Int, Int)
+    Byte(Int)
+}
+
+record EncoderState {
+    frames List[EncodeFrame]
+    limit Int
+    finished Bool
+}
+
+pub record Encoder {
+    state List[EncoderState]
+}
+
+// Copies share one serialized cursor. Output chunks need not end at UTF-8 or
+// JSON-token boundaries; concatenate them as bytes, not independently as Text.
+pub fn encoder(input Value, chunk_size Int) Encoder
+requires chunk_size > 0
+{
+    Encoder {
+        state = [EncoderState {
+                frames = [EncodeFrame.Value(input, 0)]
+                limit = chunk_size
+                finished = false
+            }]
+    }
+}
+
+fn json_encode_raw(frames List[EncodeFrame], output Bytes, input Text, start Int, limit Int) {
+    var index = start
+    while index < std.text.length(input) && std.bytes.length(output) < limit {
+        std.bytes.push(output, byte(input, index))
+        index = index + 1
+    }
+    if index < std.text.length(input) {
+        push(frames, EncodeFrame.Raw(input, index))
+    }
+}
+
+fn json_encode_string(frames List[EncodeFrame], output Bytes, input Text, start Int, limit Int) {
+    var index = start
+    if index < 0 {
+        std.bytes.push(output, 34)
+        index = 0
+    }
+    while index < std.text.length(input) && std.bytes.length(output) < limit {
+        let current = byte(input, index)
+        index = index + 1
+        if current == 34 || current == 92 || current < 32 {
+            let escaped = std.bytes.new()
+            write_string_byte(escaped, current)
+            push(frames, EncodeFrame.String(input, index))
+            push(frames, EncodeFrame.Raw(to_text(escaped), 0))
+            return
+        }
+        std.bytes.push(output, current)
+    }
+    if index < std.text.length(input) {
+        push(frames, EncodeFrame.String(input, index))
+    } else if std.bytes.length(output) < limit {
+        std.bytes.push(output, 34)
+    } else {
+        push(frames, EncodeFrame.Byte(34))
+    }
+}
+
+fn json_encode_step(frames List[EncodeFrame], output Bytes, limit Int) Result[Bool, WriteError] {
+    let frame = match take_last(frames) {
+        Option.Some((value, _)) => value
+        Option.None => {
+            return Result.Ok(false)
+        }
+    }
+    match frame {
+        EncodeFrame.Byte(value) => {
+            std.bytes.push(output, value)
+        }
+        EncodeFrame.Raw(text, position) => {
+            json_encode_raw(frames, output, text, position, limit)
+        }
+        EncodeFrame.String(text, position) => {
+            json_encode_string(frames, output, text, position, limit)
+        }
+        EncodeFrame.Value(value, depth) => {
+            match value {
+                Value.Null => {
+                    push(frames, EncodeFrame.Raw("null", 0))
+                }
+                Value.Boolean(flag) => {
+                    push(frames, EncodeFrame.Raw(if flag {
+                                "true"
+                            } else {
+                                "false"
+                            }, 0))
+                }
+                Value.Number(raw) => {
+                    match number_end(raw, 0) {
+                        Result.Ok(end) => {
+                            if end != std.text.length(raw) {
+                                return Result.Err(WriteError.InvalidNumber)
+                            }
+                        }
+                        Result.Err(_) => {
+                            return Result.Err(WriteError.InvalidNumber)
+                        }
+                    }
+                    push(frames, EncodeFrame.Raw(raw, 0))
+                }
+                Value.String(text) => {
+                    push(frames, EncodeFrame.String(text, -1))
+                }
+                Value.Array(items) => {
+                    if depth >= 64 {
+                        return Result.Err(WriteError.DepthExceeded)
+                    }
+                    push(frames, EncodeFrame.Array(std.list.view.capture(items), 0, depth))
+                    std.bytes.push(output, 91)
+                }
+                Value.Object(fields) => {
+                    if depth >= 64 {
+                        return Result.Err(WriteError.DepthExceeded)
+                    }
+                    push(frames, EncodeFrame.Object(std.list.view.capture(fields), std.set.new[Text](), 0, depth))
+                    std.bytes.push(output, 123)
+                }
+            }
+        }
+        EncodeFrame.Array(items, index, depth) => {
+            if index == std.list.view.length(items) {
+                std.bytes.push(output, 93)
+            } else {
+                push(frames, EncodeFrame.Array(items, index + 1, depth))
+                push(frames, EncodeFrame.Value(std.list.view.get(items, index), depth + 1))
+                if index > 0 {
+                    std.bytes.push(output, 44)
+                }
+            }
+        }
+        EncodeFrame.Object(fields, seen, index, depth) => {
+            if index == std.list.view.length(fields) {
+                std.bytes.push(output, 125)
+            } else {
+                let field = std.list.view.get(fields, index)
+                if !std.set.insert(seen, field.0) {
+                    return Result.Err(WriteError.DuplicateKey)
+                }
+                push(frames, EncodeFrame.Object(fields, seen, index + 1, depth))
+                push(frames, EncodeFrame.Value(field.1, depth + 1))
+                push(frames, EncodeFrame.Byte(58))
+                push(frames, EncodeFrame.String(field.0, -1))
+                if index > 0 {
+                    std.bytes.push(output, 44)
+                }
+            }
+        }
+    }
+    Result.Ok(true)
+}
+
+// One error item then EOF. A caller may already have emitted earlier chunks;
+// encoding is not a transaction and does not freeze the input's shared graph.
+pub fn next(cursor Encoder) Option[Result[Bytes, WriteError]] {
+    let state = get(cursor.state, 0)
+    if state.finished {
+        return Option.None
+    }
+    let output = std.bytes.new()
+    while std.bytes.length(output) < state.limit {
+        match json_encode_step(state.frames, output, state.limit) {
+            Result.Ok(true) => {
+            }
+            Result.Ok(false) => {
+                std.list.set(cursor.state, 0, EncoderState {
+                        frames = std.list.new[EncodeFrame]()
+                        finished = true
+                        ..state
+                    })
+                break
+            }
+            Result.Err(failed) => {
+                std.list.set(cursor.state, 0, EncoderState {
+                        frames = std.list.new[EncodeFrame]()
+                        finished = true
+                        ..state
+                    })
+                return Option.Some(Result.Err(failed))
+            }
+        }
+    }
+    if std.bytes.length(output) == 0 {
+        Option.None
+    } else {
+        Option.Some(Result.Ok(output))
+    }
+}

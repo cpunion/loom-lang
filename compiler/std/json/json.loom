@@ -334,25 +334,31 @@ fn hex_digit(value Int) Int {
     }
 }
 
+fn write_string_byte(output Bytes, current Int) {
+    if current == 34 || current == 92 {
+        std.bytes.push(output, 92)
+        std.bytes.push(output, current)
+    } else if current < 32 {
+        std.bytes.push(output, 92)
+        std.bytes.push(output, 117)
+        std.bytes.push(output, 48)
+        std.bytes.push(output, 48)
+        std.bytes.push(output, hex_digit(current / 16))
+        std.bytes.push(output, hex_digit(current % 16))
+    } else {
+        std.bytes.push(output, current)
+    }
+}
+
 fn write_string(output Bytes, input Text) {
     std.bytes.push(output, 34)
     var index = 0
     while index < std.text.length(input) {
         let current = byte(input, index)
-        if current == 34 || current == 92 {
-            std.bytes.push(output, 92)
-            std.bytes.push(output, current)
+        if current == 34 || current == 92 || current < 32 {
+            write_string_byte(output, current)
         } else {
-            if current < 32 {
-                std.bytes.push(output, 92)
-                std.bytes.push(output, 117)
-                std.bytes.push(output, 48)
-                std.bytes.push(output, 48)
-                std.bytes.push(output, hex_digit(current / 16))
-                std.bytes.push(output, hex_digit(current % 16))
-            } else {
-                std.bytes.push(output, current)
-            }
+            std.bytes.push(output, current)
         }
         index = index + 1
     }
