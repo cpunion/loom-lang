@@ -1,6 +1,7 @@
 test fn established_scalar_facts_keep_supported_conjunction_terms() {
     let positive = operation(">", local(0), literal("0"))
-    let unknown = operation("==", operation("/", local(0), literal("2")), literal("1"))
+    let masked = expression(ExprKind.Binary, 1, "&", -1, nodes(local(0), literal("1")))
+    let unknown = operation("==", masked, literal("1"))
     let goal = operation(">", local(1), literal("0"))
     assert verified(fixture(local(0), [unknown, positive], goal))
     assert verified(fixture(local(0), [operation("&&", positive, unknown)], goal))
@@ -19,7 +20,8 @@ test fn established_scalar_facts_keep_supported_conjunction_terms() {
 }
 
 test fn unmodeled_entry_facts_never_establish_goal_truth_or_safety() {
-    let unknown = operation("==", operation("/", local(0), literal("2")), literal("1"))
+    let masked = expression(ExprKind.Binary, 1, "&", -1, nodes(local(0), literal("1")))
+    let unknown = operation("==", masked, literal("1"))
     let no = expression(ExprKind.Bool, 2, "false", -1, [])
     assert !verified(fixture(local(0), [unknown], no))
     assert !verified(fixture(local(0), [unknown], unknown))

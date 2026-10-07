@@ -352,6 +352,11 @@ bounds and verified call summaries compose with Text lengths; see the
 Symbolic integer division and remainder now preserve signed truncation toward
 zero. Zero and `Int.min / -1` guards remain independent obligations for both
 operations; hypothetical arithmetic supplies no successful-check assumption.
+Fixed-sign divisor intervals prove quotient and remainder ranges locally,
+including negative divisors and `Int.min` endpoints, without launching SMT.
+Zero-containing or wider quotient intervals remain conservative; independent
+fault obligations still apply. See the
+[range example](../../compiler/examples/smt_contracts/division_ranges.loom).
 Structural integer-term identity bypasses interval/SMT search without bypassing
 evaluation safety. See the [division example](../../compiler/examples/smt_contracts/division.loom).
 General collection induction and content/type-dependent variadic proofs remain
