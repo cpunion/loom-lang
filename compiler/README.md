@@ -2413,6 +2413,13 @@ See [division contracts](examples/smt_contracts/division.loom). Universal pack
 content/type proofs remain unsupported. Nonlinear solving is incomplete: unknown or timeout
 still blocks a proof.
 
+`std.text.byte` joins this algebra as an unsigned UTF-8 byte observation.
+Normal returns establish 0–255 locally; hypothetical reads must independently
+prove `0 <= index < length(value)`, even for a reflexive equality. Immutable
+Text equality and concrete UTF-8 contents compose through the same SMT byte
+sequence, not a code-point or signed-byte model. See the
+[byte contracts](examples/smt_contracts/text_bytes.loom).
+
 Constrained construction, scalar flow facts, pure-helper implication and supported
 List-append preservation use this same backend after their fast rules fail.
 Helper evaluation safety and predicate truth are discharged together, before

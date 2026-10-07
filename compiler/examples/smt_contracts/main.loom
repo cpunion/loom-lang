@@ -62,6 +62,7 @@ fn main() {
     division_cases()
     search_cases()
     division_range_cases()
+    text_byte_cases()
 }
 
 test fn combined_contracts() {
