@@ -9,9 +9,6 @@ enum EncodeFrame {
     String(Text, Int)
     Array(View[Value], Int, Int)
     Object(View[(Text, Value)], Set[Text], Int, Int)
-    Deferred(fn() Result[EncodeFrame, WriteError])
-    Items(fn(Int) Result[EncodeFrame, WriteError], Int, Int)
-    Fields(fn(Int) Result[(Text, EncodeFrame), WriteError], Int, Int)
     Byte(Int)
 }
 
@@ -22,7 +19,7 @@ record EncoderState {
 }
 
 pub record Encoder {
-    state List[EncoderState]
+    advance fn() Option[Result[Bytes, WriteError]]
 }
 
 // Copies share one serialized cursor. Output chunks need not end at UTF-8 or
@@ -30,19 +27,31 @@ pub record Encoder {
 pub fn encoder[T](input T, chunk_size Int) Encoder
 requires chunk_size > 0
 {
-    let frames List[EncodeFrame] = comptime if T == Value {
-        [EncodeFrame.Value(input, 0)]
-    } else {
-        [EncodeFrame.Deferred(fn() Result[EncodeFrame, WriteError] {
-                    typed_frame(input, 0)
-                })]
-    }
-    Encoder {
-        state = [EncoderState {
-                frames = frames
+    comptime if T == Value {
+        let state = [EncoderState {
+                frames = [EncodeFrame.Value(input, 0)]
                 limit = chunk_size
                 finished = false
             }]
+        return Encoder {
+            advance = fn() Option[Result[Bytes, WriteError]] {
+                json_value_next(state)
+            }
+        }
+    } else {
+        let state = [TypedEncoderState {
+                frames = [TypedFrame.Deferred(fn() Result[TypedFrame, WriteError] {
+                            typed_frame(input, 0)
+                        })]
+                values = new[EncodeFrame]()
+                limit = chunk_size
+                finished = false
+            }]
+        return Encoder {
+            advance = fn() Option[Result[Bytes, WriteError]] {
+                json_typed_next(state)
+            }
+        }
     }
 }
 
@@ -100,41 +109,6 @@ fn json_encode_step(frames List[EncodeFrame], output Bytes, limit Int) Result[Bo
         }
         EncodeFrame.String(text, position) => {
             json_encode_string(frames, output, text, position, limit)
-        }
-        EncodeFrame.Deferred(expand) => {
-            push(frames, expand()?)
-        }
-        EncodeFrame.Items(item, count, index) => {
-            if index < 0 {
-                std.bytes.push(output, 91)
-                push(frames, EncodeFrame.Items(item, count, 0))
-            } else if index == count {
-                std.bytes.push(output, 93)
-            } else {
-                let child = item(index)?
-                push(frames, EncodeFrame.Items(item, count, index + 1))
-                push(frames, child)
-                if index > 0 {
-                    std.bytes.push(output, 44)
-                }
-            }
-        }
-        EncodeFrame.Fields(field, count, index) => {
-            if index < 0 {
-                std.bytes.push(output, 123)
-                push(frames, EncodeFrame.Fields(field, count, 0))
-            } else if index == count {
-                std.bytes.push(output, 125)
-            } else {
-                let child = field(index)?
-                push(frames, EncodeFrame.Fields(field, count, index + 1))
-                push(frames, child.1)
-                push(frames, EncodeFrame.Byte(58))
-                push(frames, EncodeFrame.String(child.0, -1))
-                if index > 0 {
-                    std.bytes.push(output, 44)
-                }
-            }
         }
         EncodeFrame.Value(value, depth) => {
             match value {
@@ -215,7 +189,11 @@ fn json_encode_step(frames List[EncodeFrame], output Bytes, limit Int) Result[Bo
 // One error item then EOF. A caller may already have emitted earlier chunks;
 // encoding is not a transaction and does not freeze the input's shared graph.
 pub fn next(cursor Encoder) Option[Result[Bytes, WriteError]] {
-    let state = get(cursor.state, 0)
+    cursor.advance()
+}
+
+fn json_value_next(cursor List[EncoderState]) Option[Result[Bytes, WriteError]] {
+    let state = get(cursor, 0)
     if state.finished {
         return Option.None
     }
@@ -225,7 +203,7 @@ pub fn next(cursor Encoder) Option[Result[Bytes, WriteError]] {
             Result.Ok(true) => {
             }
             Result.Ok(false) => {
-                std.list.set(cursor.state, 0, EncoderState {
+                std.list.set(cursor, 0, EncoderState {
                         frames = std.list.new[EncodeFrame]()
                         finished = true
                         ..state
@@ -233,7 +211,7 @@ pub fn next(cursor Encoder) Option[Result[Bytes, WriteError]] {
                 break
             }
             Result.Err(failed) => {
-                std.list.set(cursor.state, 0, EncoderState {
+                std.list.set(cursor, 0, EncoderState {
                         frames = std.list.new[EncodeFrame]()
                         finished = true
                         ..state

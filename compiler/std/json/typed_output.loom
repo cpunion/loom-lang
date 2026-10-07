@@ -1,43 +1,57 @@
 // Specialize field access, not a runtime schema registry or an intermediate
 // Value tree. Container callbacks retain only their input and current cursor.
-fn typed_frame[T](value T, depth Int) Result[EncodeFrame, WriteError] {
+enum TypedFrame {
+    Leaf(EncodeFrame)
+    Deferred(fn() Result[TypedFrame, WriteError])
+    Items(fn(Int) Result[TypedFrame, WriteError], Int, Int)
+    Fields(fn(Int) Result[(Text, TypedFrame), WriteError], Int, Int)
+}
+
+record TypedEncoderState {
+    frames List[TypedFrame]
+    values List[EncodeFrame]
+    limit Int
+    finished Bool
+}
+
+fn typed_frame[T](value T, depth Int) Result[TypedFrame, WriteError] {
     comptime if T == Value {
-        return Result.Ok(EncodeFrame.Value(value, depth))
+        return Result.Ok(TypedFrame.Leaf(EncodeFrame.Value(value, depth)))
     }
     comptime if encoding_kind[T]() == Kind.Bool {
-        return Result.Ok(EncodeFrame.Raw(if value {
-                    "true"
-                } else {
-                    "false"
-                }, 0))
+        return Result.Ok(TypedFrame.Leaf(EncodeFrame.Raw(if value {
+                        "true"
+                    } else {
+                        "false"
+                    }, 0)))
     }
     comptime if encoding_kind[T]() == Kind.Int {
-        return Result.Ok(EncodeFrame.Raw(std.int.to_text(value), 0))
+        return Result.Ok(TypedFrame.Leaf(EncodeFrame.Raw(std.int.to_text(value), 0)))
     }
     comptime if encoding_kind[T]() == Kind.Float {
         if !is_finite(value) {
             return Result.Err(WriteError.InvalidNumber)
         }
-        return Result.Ok(EncodeFrame.Raw(std.float.to_text(value), 0))
+        return Result.Ok(TypedFrame.Leaf(EncodeFrame.Raw(std.float.to_text(value), 0)))
     }
     comptime if encoding_kind[T]() == Kind.Text {
-        return Result.Ok(EncodeFrame.String(value, -1))
+        return Result.Ok(TypedFrame.Leaf(EncodeFrame.String(value, -1)))
     }
     comptime if encoding_kind[T]() == Kind.List {
         if depth >= 64 {
             return Result.Err(WriteError.DepthExceeded)
         }
         comptime if describe[T]().types[describe[T]().root].kind == Kind.Refined {
-            let item = fn(index Int) Result[EncodeFrame, WriteError] {
+            let item = fn(index Int) Result[TypedFrame, WriteError] {
                 typed_frame(std.list.get(value, index), depth + 1)
             }
-            return Result.Ok(EncodeFrame.Items(item, std.list.length(value), -1))
+            return Result.Ok(TypedFrame.Items(item, std.list.length(value), -1))
         } else {
             let items = std.list.view.capture(value)
-            let item = fn(index Int) Result[EncodeFrame, WriteError] {
+            let item = fn(index Int) Result[TypedFrame, WriteError] {
                 typed_frame(std.list.view.get(items, index), depth + 1)
             }
-            return Result.Ok(EncodeFrame.Items(item, std.list.view.length(items), -1))
+            return Result.Ok(TypedFrame.Items(item, std.list.view.length(items), -1))
         }
     }
     comptime if encoding_kind[T]() == Kind.Tuple {
@@ -47,7 +61,7 @@ fn typed_frame[T](value T, depth Int) Result[EncodeFrame, WriteError] {
         let count = comptime {
             std.list.length(encoding_shape[T]().arguments)
         }
-        let item = fn(index Int) Result[EncodeFrame, WriteError] {
+        let item = fn(index Int) Result[TypedFrame, WriteError] {
             comptime for position, field in value {
                 if index == position {
                     return typed_frame(field, depth + 1)
@@ -55,7 +69,7 @@ fn typed_frame[T](value T, depth Int) Result[EncodeFrame, WriteError] {
             }
             Result.Err(WriteError.UnsupportedType)
         }
-        return Result.Ok(EncodeFrame.Items(item, count, -1))
+        return Result.Ok(TypedFrame.Items(item, count, -1))
     }
     comptime if encoding_kind[T]() == Kind.Record {
         if depth >= 64 {
@@ -64,7 +78,7 @@ fn typed_frame[T](value T, depth Int) Result[EncodeFrame, WriteError] {
         let count = comptime {
             std.list.length(encoding_shape[T]().fields)
         }
-        let item = fn(index Int) Result[(Text, EncodeFrame), WriteError] {
+        let item = fn(index Int) Result[(Text, TypedFrame), WriteError] {
             var position = 0
             comptime for name, field in value {
                 if index == position {
@@ -74,7 +88,97 @@ fn typed_frame[T](value T, depth Int) Result[EncodeFrame, WriteError] {
             }
             Result.Err(WriteError.UnsupportedType)
         }
-        return Result.Ok(EncodeFrame.Fields(item, count, -1))
+        return Result.Ok(TypedFrame.Fields(item, count, -1))
     }
     Result.Err(WriteError.UnsupportedType)
+}
+
+fn json_typed_step(state TypedEncoderState, output Bytes) Result[Bool, WriteError] {
+    if length(state.values) > 0 {
+        return json_encode_step(state.values, output, state.limit)
+    }
+    let frame = match take_last(state.frames) {
+        Option.Some((value, _)) => value
+        Option.None => {
+            return Result.Ok(false)
+        }
+    }
+    match frame {
+        TypedFrame.Leaf(value) => {
+            push(state.values, value)
+        }
+        TypedFrame.Deferred(expand) => {
+            push(state.frames, expand()?)
+        }
+        TypedFrame.Items(item, count, index) => {
+            if index < 0 {
+                std.bytes.push(output, 91)
+                push(state.frames, TypedFrame.Items(item, count, 0))
+            } else if index == count {
+                std.bytes.push(output, 93)
+            } else {
+                let child = item(index)?
+                push(state.frames, TypedFrame.Items(item, count, index + 1))
+                push(state.frames, child)
+                if index > 0 {
+                    std.bytes.push(output, 44)
+                }
+            }
+        }
+        TypedFrame.Fields(field, count, index) => {
+            if index < 0 {
+                std.bytes.push(output, 123)
+                push(state.frames, TypedFrame.Fields(field, count, 0))
+            } else if index == count {
+                std.bytes.push(output, 125)
+            } else {
+                let child = field(index)?
+                push(state.frames, TypedFrame.Fields(field, count, index + 1))
+                push(state.frames, child.1)
+                push(state.values, EncodeFrame.Byte(58))
+                push(state.values, EncodeFrame.String(child.0, -1))
+                if index > 0 {
+                    std.bytes.push(output, 44)
+                }
+            }
+        }
+    }
+    Result.Ok(true)
+}
+
+fn json_typed_next(cursor List[TypedEncoderState]) Option[Result[Bytes, WriteError]] {
+    let state = get(cursor, 0)
+    if state.finished {
+        return Option.None
+    }
+    let output = std.bytes.new()
+    while std.bytes.length(output) < state.limit {
+        match json_typed_step(state, output) {
+            Result.Ok(true) => {
+            }
+            Result.Ok(false) => {
+                set(cursor, 0, TypedEncoderState {
+                        frames = new[TypedFrame]()
+                        values = new[EncodeFrame]()
+                        finished = true
+                        ..state
+                    })
+                break
+            }
+            Result.Err(failed) => {
+                set(cursor, 0, TypedEncoderState {
+                        frames = new[TypedFrame]()
+                        values = new[EncodeFrame]()
+                        finished = true
+                        ..state
+                    })
+                return Option.Some(Result.Err(failed))
+            }
+        }
+    }
+    if std.bytes.length(output) == 0 {
+        Option.None
+    } else {
+        Option.Some(Result.Ok(output))
+    }
 }
