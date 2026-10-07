@@ -47,7 +47,58 @@ fn ieee_arithmetic_contracts_compile_and_revalidate_real_edits() {
 }
 
 #[test]
-fn float_solver_does_not_invent_real_algebra_or_a_remainder_theory() {
+fn truncating_remainder_contracts_compose_and_reject_stale_or_wrong_ieee_proofs() {
+    let package = tempfile::tempdir().unwrap();
+    let path = package.path().to_str().unwrap();
+    let source = package.path().join("main.loom");
+    let program = format!(
+        "{}\nfn main() {{\n    float_remainder_cases()\n}}\n",
+        include_str!("../examples/smt_contracts/float_remainders.loom")
+    );
+    let cache = package.path().join("cache");
+    let check = || common::loom(&["check", path, "--frontend-cache", cache.to_str().unwrap()]);
+    fs::write(&source, &program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace("ensures result == 1.5", "ensures result == -0.5"),
+        program.replace("1.0 / result == 1.0 / value", "1.0 / result == 1.0 / 0.0"),
+        program.replace(" && !is_nan(divisor)", ""),
+        program.replace("value <= 100.0", "value <= 1.0 / 0.0"),
+    ] {
+        assert_ne!(changed, program, "test edit did not apply");
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(
+            !output.status.success(),
+            "unsound remainder proof: {changed}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("proved") || error.contains("SMT"), "{error}");
+    }
+    fs::write(&source, &program).unwrap();
+    success(&check());
+    let artifact = common::executable(package.path(), "float-remainder");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["test", path])
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(
+            &common::command(&["build", path, "--output", artifact.to_str().unwrap()])
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&Command::new(&artifact).output().unwrap());
+    }
+    success(&common::loom(&["run", path]));
+}
+
+#[test]
+fn float_solver_does_not_invent_real_algebra_or_nearest_quotient_remainders() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");
     for program in [

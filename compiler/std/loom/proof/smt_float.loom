@@ -81,19 +81,44 @@ fn smt_float(writer SmtWriter, value FloatValue, depth Int) Result[Text, Text] {
             if operator == "-" && length(inputs) == 1 {
                 return Result.Ok(concat("(fp.neg ", concat(smt_float(writer, get(inputs, 0), depth + 1)?, ")")))
             }
-            // Loom/LLVM frem truncates the quotient. SMT fp.rem rounds it to
-            // nearest instead; substituting that operator would be unsound.
             if length(inputs) != 2 || (operator != "+" && operator != "-" &&
-                operator != "*" && operator != "/") {
+                operator != "*" && operator != "/" && operator != "%") {
                 return Result.Err("unsupported SMT Float operation")
             }
-            let operation = smt_float_operator(operator)?
             let first = smt_float(writer, get(inputs, 0), depth + 1)?
             let second = smt_float(writer, get(inputs, 1), depth + 1)?
+            if operator == "%" {
+                return Result.Ok(smt_float_remainder(first, second))
+            }
+            // In RNE, x-x is +zero only for finite x; NaN and infinities yield
+            // NaN. This IEEE identity exposes classification without assuming
+            // real-number cancellation (std.float.is_finite uses x-x == 0).
+            if operator == "-" && first == second {
+                return Result.Ok(concat("(ite (or (fp.isNaN ", concat(first,
+                            concat(") (fp.isInfinite ", concat(first,
+                                    ")) (_ NaN 11 53) (_ +zero 11 53))")))))
+            }
+            let operation = smt_float_operator(operator)?
             Result.Ok(concat("(", concat(operation,
                         concat(" RNE ", concat(first, concat(" ", concat(second, ")")))))))
         }
     }
+}
+
+// C23 F.10.7.1: remainder of the magnitudes, correct a negative result by
+// adding |y|, then restore x's sign. The correction is exact even for
+// subnormals. A direct fp.rem or rounded x/y followed by truncation is wrong.
+// Local bindings keep nested remainder terms linear in the encoded input size.
+fn smt_float_remainder(first Text, second Text) Text {
+    let inputs = concat("(let ((fmod_x ", concat(first,
+            concat(") (fmod_y (fp.abs ", concat(second, "))) "))))
+    // Expose the IEEE exceptional/identity cases before the remainder circuit.
+    // In particular, numeric equality to zero must preserve x's actual sign.
+    let special = "(ite (or (fp.isNaN fmod_x) (fp.isNaN fmod_y) (fp.isInfinite fmod_x) (fp.isZero fmod_y)) (_ NaN 11 53) (ite (or (fp.isZero fmod_x) (fp.isInfinite fmod_y)) fmod_x "
+    let remainder = "(let ((fmod_r (fp.rem (fp.abs fmod_x) fmod_y))) "
+    let magnitude = "(let ((fmod_m (ite (fp.isNegative fmod_r) (fp.add RNE fmod_r fmod_y) fmod_r))) "
+    concat(inputs, concat(special, concat(remainder, concat(magnitude,
+                    "(ite (fp.isNegative fmod_x) (fp.neg fmod_m) fmod_m))))))"))))
 }
 
 fn smt_float_operator(operator Text) Result[Text, Text] {
@@ -132,14 +157,94 @@ fn smt_float_comparison(relation Text) Result[Text, Text] {
 }
 
 fn smt_float_relation(writer SmtWriter, relation Text, left FloatValue, right FloatValue, depth Int) Result[Text, Text] {
-    let operation = smt_float_comparison(relation)?
+    // A nonzero, non-NaN literal has one IEEE value. Equality to it may use
+    // SMT equality before bit-blasting. Zero tests and reflexive equality use
+    // IEEE classification predicates instead; they neither identify zero signs
+    // nor substitute equal computations into arithmetic.
+    let operation = if (relation == "==" || relation == "!=") &&
+    (float_exact_literal(left) || float_exact_literal(right)) {
+        "="
+    } else {
+        smt_float_comparison(relation)?
+    }
     let first = smt_float(writer, left, depth + 1)?
     let second = smt_float(writer, right, depth + 1)?
-    let comparison = concat("(", concat(operation,
-            concat(" ", concat(first, concat(" ", concat(second, ")"))))))
+    let comparison = if relation == "==" || relation == "!=" {
+        if first == second {
+            concat("(not ", concat(smt_float_class(writer, left, true, depth + 1)?, ")"))
+        } else {
+            if float_zero_literal(left) {
+                smt_float_class(writer, right, false, depth + 1)?
+            } else {
+                if float_zero_literal(right) {
+                    smt_float_class(writer, left, false, depth + 1)?
+                } else {
+                    concat("(", concat(operation,
+                            concat(" ", concat(first, concat(" ", concat(second, ")"))))))
+                }
+            }
+        }
+    } else {
+        concat("(", concat(operation,
+                concat(" ", concat(first, concat(" ", concat(second, ")"))))))
+    }
     Result.Ok(if relation == "!=" {
             concat("(not ", concat(comparison, ")"))
         } else {
             comparison
         })
+}
+
+// Classification composes with primitive IEEE rules, not source helper names.
+// Keep domain predicates out of large arithmetic circuits when possible.
+fn smt_float_class(writer SmtWriter, value FloatValue, nan Bool, depth Int) Result[Text, Text] {
+    discard smt_step(writer, depth)?
+    match value {
+        FloatValue.Apply(operator, inputs) => {
+            if operator == "-" && length(inputs) == 1 {
+                return smt_float_class(writer, get(inputs, 0), nan, depth + 1)
+            }
+            if operator == "-" && length(inputs) == 2 &&
+            same_float(get(inputs, 0), get(inputs, 1), [256]) {
+                let input = smt_float(writer, get(inputs, 0), depth + 1)?
+                let invalid = concat("(or (fp.isNaN ", concat(input,
+                        concat(") (fp.isInfinite ", concat(input, "))"))))
+                return Result.Ok(if nan {
+                        invalid
+                    } else {
+                        concat("(not ", concat(invalid, ")"))
+                    })
+            }
+            if operator == "%" && length(inputs) == 2 && nan {
+                let first = smt_float(writer, get(inputs, 0), depth + 1)?
+                let second = smt_float(writer, get(inputs, 1), depth + 1)?
+                return Result.Ok(concat("(or (fp.isNaN ", concat(first,
+                            concat(") (fp.isNaN ", concat(second,
+                                    concat(") (fp.isInfinite ", concat(first,
+                                            concat(") (fp.isZero ", concat(second, "))")))))))))
+            }
+        }
+        _ => {
+        }
+    }
+    Result.Ok(concat(if nan {
+                "(fp.isNaN "
+            } else {
+                "(fp.isZero "
+            },
+            concat(smt_float(writer, value, depth + 1)?, ")")))
+}
+
+fn float_exact_literal(value FloatValue) Bool {
+    match float_constant(value) {
+        Result.Ok(number) => number == number && number != 0.0
+        Result.Err(_) => false
+    }
+}
+
+fn float_zero_literal(value FloatValue) Bool {
+    match float_constant(value) {
+        Result.Ok(number) => number == 0.0
+        Result.Err(_) => false
+    }
 }

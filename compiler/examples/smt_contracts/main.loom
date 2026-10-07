@@ -59,6 +59,7 @@ fn main() {
     copy_cases()
     construction_cases()
     float_solver_cases()
+    float_remainder_cases()
     division_cases()
     search_cases()
     division_range_cases()

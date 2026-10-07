@@ -113,8 +113,8 @@ without validation. See the [implemented subset](../../compiler/README.md#implem
 
 Required Float contracts now reuse exact IEEE comparisons from constrained
 values, typed reads, verified returns and guarded entry observations. Literal
-operations use binary64 evaluation; symbolic arithmetic remains ordered and
-opaque. NaN, signed zero and rounding do not inherit integer/real algebra.
+operations use binary64 evaluation; symbolic arithmetic preserves source order
+and IEEE semantics. NaN, signed zero and rounding do not inherit integer/real algebra.
 Declared concept guarantees also compose Float/refined-Float results through
 generic and dynamic calls and variadic induction, using this same value theory.
 The bounded IEEE order graph also proves comparison chains, wider constant
@@ -122,14 +122,19 @@ ranges, guarded reflexivity/complements and contradictory short-circuit paths.
 These rules support contracted clamp functions without arithmetic substitution
 of equal signed zeros. Unresolved supported arithmetic uses the same compile-time
 SMT backend with binary64 IEEE comparisons, negation and RNE-rounded `+`, `-`,
-`*` and `/` in source order; it does not replace Float with Real arithmetic.
+`*` and `/`, plus truncating `%`, in source order; it does not replace Float
+with Real arithmetic. Primitive classification rules and bounded branch-local
+substitution reduce arithmetic circuits without identifying signed zeros.
 The [arithmetic example](../../compiler/examples/smt_contracts/floats.loom)
 proves a guarded wrapper of source `std.float.abs`, bounded scaling, subnormal
 doubling and a rounded unit addition. Pure body expansion and the wrapper's
 checked guarantee compose into a nonnegative refinement without a native
 intrinsic or application-specific proof rule.
-Symbolic `%`, general Float loop-invariant inference and exhausted/unknown
-solver obligations remain unsupported.
+The [remainder example](../../compiler/examples/smt_contracts/float_remainders.loom)
+proves range/refinement composition, dynamic divisor alternatives, signed-zero
+preservation, exceptional inputs, subnormals and nested remainders.
+General Float loop-invariant inference and exhausted/unknown solver obligations
+remain unsupported.
 
 Concepts require explicit conformances. Static/default/generic methods,
 associated bounds/defaults/families and exact dyn bindings are implemented.

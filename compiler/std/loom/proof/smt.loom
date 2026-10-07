@@ -434,6 +434,9 @@ fn smt_query(obligations List[Obligation]) Result[Text, Text] {
         smt_append(body, ")")
         index = index + 1
     }
-    smt_append(body, ")))\n(check-sat)\n")
+    // Split at most one explicit alternative, then substitute branch-local
+    // equalities before lowering arithmetic. Every branch must still be unsat;
+    // default preserves Z3's theory selection and the backend's time budget.
+    smt_append(body, ")))\n(check-sat-using (then simplify solve-eqs simplify (or-else split-clause skip) solve-eqs simplify default))\n")
     Result.Ok(concat(std.bytes.to_text(writer.declarations), std.bytes.to_text(body)))
 }

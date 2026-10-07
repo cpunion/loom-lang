@@ -8,6 +8,23 @@ fn encoded_float_literal(text Text) Text {
     }
 }
 
+test fn float_remainder_encoding_corrects_nearest_quotients_and_binds_operands_once() {
+    let value = FloatValue.Apply("%", [FloatValue.Apply("%", [FloatValue.Variable(1),
+                    FloatValue.Literal("4")]), FloatValue.Variable(2)])
+    let query = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.FloatCompare("<=", value, FloatValue.Literal("2"))
+            }])
+    assert contains(query, "(let ((fmod_x (let ((fmod_x f1)")
+    assert contains(query, "(fmod_y (fp.abs f2))")
+    assert contains(query, "(fp.rem (fp.abs fmod_x) fmod_y)")
+    assert contains(query, "(ite (fp.isNegative fmod_r) (fp.add RNE fmod_r fmod_y) fmod_r)")
+    assert contains(query, "(ite (fp.isNegative fmod_x) (fp.neg fmod_m) fmod_m)")
+    assert contains(query, "(fp.isInfinite fmod_x) (fp.isZero fmod_y)) (_ NaN 11 53)")
+    assert contains(query, "(ite (or (fp.isZero fmod_x) (fp.isInfinite fmod_y)) fmod_x ")
+    assert !contains(query, "fp.div") && !contains(query, "fp.roundToIntegral")
+}
+
 test fn smt_float_encoding_preserves_ieee_values_rounding_and_order() {
     assert encoded_float_literal("-0.0") == "(_ -zero 11 53)"
     assert encoded_float_literal("0e300") == "(_ +zero 11 53)"
@@ -34,15 +51,33 @@ test fn smt_float_encoding_preserves_ieee_values_rounding_and_order() {
                 facts = []
                 conclusion = Predicate.FloatCompare("!=", x, x)
             }])
-    assert contains(different, "(not (fp.eq f7 f7))")
+    assert contains(different, "(not (not (fp.isNaN f7)))")
     assert !contains(different, "(= f7 f7)")
+    let nonzero = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.FloatCompare("==", x, FloatValue.Literal("3.5"))
+            }])
+    assert contains(nonzero, "(= f7 ((_ to_fp 11 53) RNE (/ 35.0 10.0)))")
+    let zero = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.FloatCompare("==", x, FloatValue.Literal("-0"))
+            }])
+    assert contains(zero, "(fp.isZero f7)")
+    assert !float_exact_literal(FloatValue.Literal("NaN"))
+    assert float_exact_literal(FloatValue.Literal("inf"))
+    let subtraction = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.FloatCompare("==", FloatValue.Apply("-", [x, x]),
+                    FloatValue.Literal("0"))
+            }])
+    assert contains(subtraction, "(not (or (fp.isNaN f7) (fp.isInfinite f7)))")
 }
 
 test fn unsupported_float_operations_and_budget_exhaustion_supply_no_solver_axiom() {
     let x = FloatValue.Variable(1)
     assert match smt_query([Obligation {
                 facts = []
-                conclusion = Predicate.FloatCompare("==", FloatValue.Apply("%", [x,
+                conclusion = Predicate.FloatCompare("==", FloatValue.Apply("unknown", [x,
                             FloatValue.Literal("2")]), FloatValue.Literal("0"))
             }]) {
         Result.Err(message) => message == "unsupported SMT Float operation"
