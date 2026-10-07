@@ -29,6 +29,8 @@ mod dynamic;
 mod function_values;
 #[path = "llvm_gc.rs"]
 mod gc;
+#[path = "llvm_gc_liveness.rs"]
+mod gc_liveness;
 #[path = "llvm_gc_lower.rs"]
 mod gc_lower;
 #[path = "llvm_memory.rs"]
@@ -306,6 +308,13 @@ fn emit_checked(
             program,
             size_type,
             roots,
+            liveness: gc_liveness::Plan::new(
+                &source.body,
+                plans
+                    .iter()
+                    .flat_map(|plan| plan.captures.iter().copied())
+                    .collect(),
+            ),
             tracers: &mut tracers,
             loop_targets: Vec::new(),
             cleanups: HashMap::new(),
@@ -590,6 +599,7 @@ struct FunctionEmitter<'a, 'ctx> {
     program: &'a checked::Program,
     size_type: IntType<'ctx>,
     roots: gc::RootFrame<'ctx>,
+    liveness: gc_liveness::Plan,
     tracers: &'a mut HashMap<Type, FunctionValue<'ctx>>,
     /// Nearest loop body first via `last()`: (continue target, break target).
     loop_targets: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
@@ -1112,7 +1122,28 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
+    fn clear_dead_local(&self, local: usize) -> NativeResult<()> {
+        if self.liveness.pinned.contains(&local) {
+            return Ok(());
+        }
+        if let Some(slot) = self.roots.locals.get(&local)
+            && self.roots.slots.contains(slot)
+        {
+            // Borrowed cleanup slots are authoritative owner storage, not ours.
+            let ty = native_type(self.context, self.program, self.local_types[local])?;
+            self.builder.build_store(*slot, ty.const_zero())?;
+        }
+        Ok(())
+    }
+
     fn block(&mut self, block: &checked::Block) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
+        if let Some(live) = self.liveness.entries.get(&(block as *const checked::Block)) {
+            for local in 0..self.local_types.len() {
+                if !live.contains(&local) {
+                    self.clear_dead_local(local)?;
+                }
+            }
+        }
         for statement in &block.statements {
             if !self.live() {
                 break;
@@ -1198,6 +1229,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         self.builder.position_at_end(done);
                         self.builder.build_unreachable()?;
                     }
+                }
+            }
+            if self.live()
+                && let Some(retired) = self
+                    .liveness
+                    .retired
+                    .get(&(statement as *const checked::Stmt))
+            {
+                for local in retired {
+                    self.clear_dead_local(*local)?;
                 }
             }
         }

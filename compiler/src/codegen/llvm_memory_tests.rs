@@ -127,6 +127,71 @@ fn emit_run(
 }
 
 #[test]
+fn dead_inner_bindings_retire_without_releasing_their_result_handoff() {
+    let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
+    let source = program(
+        vec![Type::Text; 2],
+        vec![
+            statement(S::Let {
+                local: 1,
+                value: value(
+                    Type::Text,
+                    E::Block(checked::Block {
+                        statements: vec![statement(S::Let {
+                            local: 0,
+                            value: concat(text("hand"), text("off")),
+                        })],
+                        tail: Some(Box::new(local(Type::Text, 0))),
+                        falls_through: true,
+                    }),
+                ),
+            }),
+            statement(S::Discard(concat(text("collect"), text("now")))),
+            equal(local(Type::Text, 1), text("handoff")),
+        ],
+    );
+    let body = &source.functions[0].body;
+    let plan = gc_liveness::Plan::new(body, BTreeSet::new());
+    assert_eq!(
+        plan.retired[&(&body.statements[0] as *const checked::Stmt)],
+        BTreeSet::from([0])
+    );
+    assert_eq!(
+        plan.retired[&(&body.statements[2] as *const checked::Stmt)],
+        BTreeSet::from([1])
+    );
+    for optimization in [Optimization::O0, Optimization::O2] {
+        let (ir, output) = emit_run(&source, optimization);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if optimization == Optimization::O0 {
+            let body = ir.split("define internal void @loom.fn.0").nth(1).unwrap();
+            let body = body.split("\n}").next().unwrap();
+            let slots = body
+                .lines()
+                .filter(|line| line.contains(", ptr %gc.address"))
+                .map(|line| {
+                    line.trim()
+                        .strip_prefix("store ptr ")
+                        .unwrap()
+                        .split(',')
+                        .next()
+                        .unwrap()
+                })
+                .take(2)
+                .collect::<Vec<_>>();
+            let allocation = body.rfind("call ptr @loom_rt_text_concat").unwrap();
+            let before = &body[..allocation];
+            let handoff = before.rfind(&format!(", ptr {},", slots[1])).unwrap();
+            assert!(before[handoff..].contains(&format!("store ptr null, ptr {},", slots[0])));
+        }
+    }
+}
+
+#[test]
 fn match_payload_handoffs_survive_later_allocation_without_losing_other_local_roots() {
     let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
     let matched = |id, statements| {

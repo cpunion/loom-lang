@@ -338,6 +338,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 program: self.program,
                 size_type: self.size_type,
                 roots,
+                liveness: gc_liveness::Plan::new(plan.body, BTreeSet::new()),
                 tracers: self.tracers,
                 loop_targets: Vec::new(),
                 cleanups: HashMap::new(),
