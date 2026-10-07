@@ -311,6 +311,7 @@ test fn appends_prove_the_complete_constraint_without_publishing_storage() {
         push(values, value)
         push(values, value)
     }
+    type PositiveTail = List[Int] where length(self) > 0 && self[length(self) - 1] > 0
 
     """
     list_constraint_accept(concat(header, """
@@ -318,11 +319,29 @@ test fn appends_prove_the_complete_constraint_without_publishing_storage() {
             push(values, value)
             append_twice(values, value)
         }
+        fn guarded(values PositiveTail, value Int) {
+            if value <= 0 {
+                return
+            }
+            push(values, value)
+        }
         fn main() {
             let values = PositiveHead([1])
             let alias = values
             append(values, -1)
             assert length(alias) == 4 && alias[0] == 1 && alias[3] == -1
+            let tail = PositiveTail([1])
+            guarded(tail, 2)
+            guarded(tail, -1)
+            assert length(tail) == 2 && tail[1] == 2
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(values PositiveTail, input Int) {
+            var value = input
+            assert value > 0
+            value = -1
+            push(values, value)
         }
         """))
     list_constraint_reject(concat(header, """

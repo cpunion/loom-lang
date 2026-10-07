@@ -148,6 +148,13 @@ fn append_positive(values List[Int], value Int) {
         index = index + 1
     }
 }
+
+fn append_guarded(values PositiveValues, value Int) {
+    if value <= 0 {
+        return
+    }
+    push(values, value)
+}
 "#;
 
 #[test]
@@ -189,6 +196,13 @@ fn main() {
     append_positive(alias, 7)
     append_positive(values, -1)
     assert length(alias) == 5 && values[2] == 6 && values[4] == 7
+    append_guarded(alias, 8)
+    append_guarded(values, -1)
+    push(values, {
+        push(effects, 2)
+        PositiveElement(9)
+    })
+    assert length(effects) == 2 && length(alias) == 7 && values[5] == 8 && values[6] == 9
 }
 
 test fn preserved_updates() {

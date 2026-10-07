@@ -2182,7 +2182,7 @@ and borrows are checked through helper bodies, not trusted annotations. These
 rules also run for compile-time code and unused concrete functions. The constrained
 List has the ordinary native List layout and survives moving GC and Task handoff.
 See the [generic extent example](examples/list_contracts/refinements.loom).
-Single writes also reuse stable caller evidence: `requires`, successful assertions,
+Atomic replacement and append also reuse stable caller evidence: `requires`, successful assertions,
 selected branches, early exits and immutable scalar copies. Pure helper conditions
 use the same bounded expansion as construction proofs:
 

@@ -203,8 +203,9 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
 fn flow_list_update(context Context, node Node, value Expr) Expr {
     if !context.emit || !context.env.has_refinements || context.env.expanding_helpers ||
     context.env.stage_depth >= 32 || context.fact_head < 0 || value.ty != 0 ||
-    length(value.children) != 3 || (value.kind != ExprKind.Call &&
-        (value.kind != ExprKind.Intrinsic || value.text != "list_set")) {
+    (length(value.children) != 2 && length(value.children) != 3) ||
+    (value.kind != ExprKind.Call && (value.kind != ExprKind.Intrinsic ||
+            (value.text != "list_set" && value.text != "list_push"))) {
         return value
     }
     let receiver = get(value.children, 0)
@@ -248,7 +249,7 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
     let bindings = [-1]
     let inputs = [expression(ExprKind.Local, get(params, 0), node, "", 0, new[Expr](), true)]
     var index = 1
-    while index < 3 {
+    while index < length(value.children) {
         let argument = get(value.children, index)
         let input = construction_input(context, update_input(context.env, argument), bindings, params, locals, 0)
         push(inputs, if input.ty == argument.ty {
@@ -262,7 +263,8 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
     let scope = predicate_context(env, ty, locals, 0, true)?
     let predicate = refinement_expression(scope, ty)?
     let program = prepared_in(scope, true)?
-    if std.loom.proof.single_list_write(program.functions, selected) != 1 {
+    let writes = std.loom.proof.single_list_write(program.functions, selected)
+    if writes == 0 {
         return Result.Ok(false)
     }
     let established = established_construction_premises(program, locals, premises)
@@ -277,7 +279,12 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
         preconditions = established
         postconditions = expressions(predicate)
         result_local = -1
-        body = expression(ExprKind.Intrinsic, 0, node, "list_set", -1, inputs, true)
+        body = expression(ExprKind.Intrinsic, 0, node,
+            if writes == 1 {
+                "list_set"
+            } else {
+                "list_push"
+            }, -1, inputs, true)
         runtime_name = ""
         span = node.span
     }
