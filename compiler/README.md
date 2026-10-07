@@ -2183,10 +2183,38 @@ fn replace_guarded(values PositiveValues, index Int, value Int) {
 
 Mutable bindings, heap observations and effectful arguments supply no stable
 caller facts. Arguments still execute once in source order; a failed guard or
-bounds check precedes the write. General multi-step mutation preservation and
-strengthening pre-existing writable aliases remain later analysis work.
+bounds check precedes the write.
+
+Finite source helpers can also borrow the representation for multiple updates,
+branches and supported loops. Their checked bodies execute in the same proof
+engine, and the complete List predicate is required immediately after **every**
+store, including stores before an early return or fault. For example:
+
+```loom
+fn fill_positive(values List[Int], value Int) {
+    if value <= 0 {
+        return
+    }
+    var index = 0
+    while index < length(values) {
+        values[index] = value
+        index = index + 1
+    }
+}
+```
+
+`fill_positive` accepts `PositiveValues` without a copy or repeated runtime
+predicate checks. The proof infers the continuing predicate at loop heads and
+checks each store inductively; a callee's return contract cannot replace that
+check. Borrowed headers still cannot escape or be published. Unknown effects,
+unsupported bodies and mutating fault cleanup reject conservatively.
+Strengthening pre-existing writable aliases remains later analysis work.
 Shared builds with admitted content writes no longer treat that nominal type's
 contents as read-only; old-cell equality still requires interference-safe proof.
+Multi-step helpers are re-proved with interference before each source access.
+The continuing predicate describes a primitive store's atomic transition, not
+stable values across accesses: copying a previously read cell can be sequentially
+preserving but rejected with workers.
 
 An explicit conversion between Int refinements can also return the destination
 directly when the source predicate proves the destination predicate, including
@@ -3423,8 +3451,9 @@ worker boundary; acquire and close resources within the callback.
 Shared builds revalidate mandatory contracts. Unprotected mutable shared entry,
 `old` and current List observations are independent; scalar snapshots and observations of
 fresh, unpublished Lists remain stable. Validated content-constrained List inputs
-also retain their entry values: construction requires non-publishing fresh storage,
-and the checked write/escape policy permits no mutation. This evidence follows
+retain their entry values only when no admitted content mutation of that nominal
+type occurs in the checked program. Construction requires non-publishing fresh
+storage, and the checked write/escape policy supplies this evidence. It follows
 refined fields inside records/tuples, not arbitrary read-only function bodies.
 Length-only refinements retain their validated shape predicate after interference:
 replacement-only inputs have stable lengths, while append-capable inputs have

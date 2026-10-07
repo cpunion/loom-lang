@@ -315,6 +315,12 @@ branches, early exits and immutable copies reuse the existing construction-fact
 algebra, including bounded pure helpers. Mutable bindings and heap reads supply
 no stable evidence. Checked argument-preserving `set` forwarders share this rule; normal-return
 promises cannot authorize transient invalid contents. Unknown arguments/effects reject.
+Finite multi-step source helpers, branches and supported loops now use the same
+engine to require the complete predicate after each actual store. Loop heads reuse
+that continuing invariant, not arbitrary old-cell facts or return promises. Shared
+builds independently re-prove these bodies with interference between source
+accesses; stale-cell copies can be accepted sequentially and rejected with workers.
+Unknown effects, unsupported bodies and mutating fault cleanup remain conservative.
 The [content example](../../compiler/examples/record_refinement/lists.loom) retains
 alias identity, moving collection and Task handoff without repeated runtime checks.
 Raw writable outer aliases cannot escape. Shared elements can return through checked reads when their stored
@@ -525,8 +531,9 @@ contract also supplies nonnegativity for arbitrary `View[T]` parameters.
 Explicitly isolated Lists with immutable elements
 support constrained construction; copies of the constrained value share.
 Length-only predicates permit element writes, and bounded preservation proofs
-admit some appends. Content-dependent predicates admit only proved atomic replacements;
-unproved writes remain forbidden. Shared builds withdraw read-only content evidence
+admit some appends. Content-dependent predicates admit proved atomic replacements
+and multi-step helpers whose every store preserves the predicate; unproved writes
+remain forbidden. Shared builds withdraw read-only content evidence
 for nominal types with such writes in the checked program, including after cached edits.
 There is no implicit copy, monitor or alias-triggered runtime failure.
 
@@ -543,7 +550,7 @@ return snapshots. Guard calls use fresh checked results, not stable syntactic
 invariant terms. Resource cleanup and general heap-content proofs remain unsupported. See the
 [native loop example](../../compiler/examples/loop_contracts).
 
-General content-preserving mutation, strengthening existing mutable alias graphs,
+Unrestricted content mutation, strengthening existing mutable alias graphs,
 general loop/recursive proofs, arbitrary `old` snapshots and general Float induction
 remain open. The bounded sorting/permutation story above does not close these
 broader gates. Exact supported rules and examples are in the

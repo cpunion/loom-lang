@@ -63,6 +63,8 @@ fn verification(function Function, program Program, backend ProofBackend) Verifi
         loop_control = Option.None
         query = proof_query(backend)
         shared = false
+        preservation = new[Expr]()
+        returns = new[Outcome]()
     }
 }
 
@@ -543,6 +545,9 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     let primitive = forwarded_list_operation(proof.program, function, 0)
     if primitive != "" {
         return execute_list_operation(proof, call, primitive, state, depth)
+    }
+    if length(proof.preservation) != 0 {
+        return preserving_call(proof, call, function, state, depth)
     }
     // A no-result helper needs no invented result specification. A finite
     // checked effect footprint can frame its storage; no body value is assumed.

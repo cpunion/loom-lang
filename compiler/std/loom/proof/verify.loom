@@ -20,6 +20,8 @@ record Verification {
     loop_control Option[LoopControl]
     query ProofQuery
     shared Bool
+    preservation List[Expr]
+    returns List[Outcome]
 }
 
 record RecordPath {
@@ -227,12 +229,23 @@ fn required_condition(condition Expr, state State) Result[Bool, Text] {
 }
 
 fn returned(proof Verification, state State, value Value) Result[Bool, Text] {
+    if length(proof.preservation) != 0 {
+        return add_outcome(proof.returns, Outcome {
+                state = state
+                value = value
+            })
+    }
     let function = proof.function
-    var returned = assigned(state, function.result_local, value)
+    discard required_conditions(proof, function.postconditions, assigned(state, function.result_local, value))?
+    Result.Ok(true)
+}
+
+fn required_conditions(proof Verification, conditions List[Expr], state State) Result[State, Text] {
+    var returned = state
     var propagated = false
     var index = 0
-    while index < length(function.postconditions) {
-        let source = get(function.postconditions, index)
+    while index < length(conditions) {
+        let source = get(conditions, index)
         returned = quantified_views(proof, source, returned, false, 256)?
         let observed = if proof.shared || contains_list_read(source) {
             contract_observations(proof, source, proof_bool(source, true), returned)?
@@ -260,7 +273,7 @@ fn returned(proof Verification, state State, value Value) Result[Bool, Text] {
         }
         index = index + 1
     }
-    Result.Ok(true)
+    Result.Ok(returned)
 }
 
 fn add_outcome(output List[Outcome], value Outcome) Result[Bool, Text] {
@@ -410,6 +423,9 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
         return execute_quantifier(proof, expr, state)
     }
     if expr.kind == ExprKind.Defer {
+        if length(proof.preservation) != 0 && !elements_preserving(proof.program, get(expr.children, 0)) {
+            return Result.Err("preservation proof needs read-only fault cleanup")
+        }
         return Result.Ok(outcomes(state, Value.Empty))
     }
     if expr.kind == ExprKind.Text {
@@ -615,12 +631,23 @@ fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, 
         }
         index = index + 1
     }
-    let invariants = established_invariants(proof, state)
+    // A preservation probe starts from already validated type predicates, not
+    // runtime observations. Actual body accesses still use the shared model.
+    let entry_proof = if length(proof.preservation) == 0 {
+        proof
+    } else {
+        preservation_snapshot(proof)
+    }
+    let invariants = established_invariants(entry_proof, state)
     index = 0
     while index < length(invariants) {
-        let entries = established_entry(proof, get(invariants, index).state)?
+        let entries = established_entry(entry_proof, get(invariants, index).state)?
         var entry = 0
         while entry < length(entries) {
+            if length(proof.preservation) != 0 {
+                discard required_conditions(entry_proof, proof.preservation,
+                    get(entries, entry).state)?
+            }
             discard verify_entered(proof, get(entries, entry).state)?
             entry = entry + 1
         }
@@ -631,7 +658,11 @@ fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, 
 
 fn verify_entered(proof Verification, state State) Result[Bool, Text] {
     let function = proof.function
-    let captured = capture_conditions(proof, function.postconditions, state)?
+    let captured = capture_conditions(if length(proof.preservation) == 0 {
+            proof
+        } else {
+            preservation_snapshot(proof)
+        }, function.postconditions, state)?
     let observed_function = snapshot_function(function, captured.conditions)
     let prepared = Verification {
         function = observed_function
@@ -641,6 +672,8 @@ fn verify_entered(proof Verification, state State) Result[Bool, Text] {
         loop_control = proof.loop_control
         query = proof.query
         shared = proof.shared
+        preservation = proof.preservation
+        returns = proof.returns
     }
     let exits = execute(prepared, function.body, captured.state, 256)?
     var index = 0
@@ -711,5 +744,7 @@ fn contract_verification(program Program, function Function, backend ProofBacken
             loop_control = ordinary.loop_control
             query = ordinary.query
             shared = shared
+            preservation = ordinary.preservation
+            returns = ordinary.returns
         })
 }

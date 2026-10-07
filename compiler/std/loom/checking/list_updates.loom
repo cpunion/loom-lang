@@ -1,3 +1,5 @@
+import std.loom.proof.verify_preservation
+
 // Preserve the nominal information erased by an ordinary representation borrow.
 // Other expressions are abstract inputs: never replay caller effects in a proof.
 fn update_input(env Environment, value Expr) Expr {
@@ -85,6 +87,98 @@ fn proved_list_update(env Environment, value Expr) Bool {
     match std.loom.proof.verify_with_helpers(program, probe, get(env.inputs, 0).build.proof_backend) {
         Result.Ok(_) => true
         Result.Err(_) => false
+    }
+}
+
+fn proved_list_mutation(env Environment, value Expr, shared Bool) Bool {
+    match list_mutation_proof(env, value, shared) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}
+
+fn list_mutation_proof(env Environment, value Expr, shared Bool) Result[Bool, Failure] {
+    if value.kind != ExprKind.Call || value.index < 0 || env.expanding_helpers || env.stage_depth >= 32 {
+        return Result.Ok(false)
+    }
+    var root = -1
+    var index = 0
+    while index < length(value.children) {
+        if constraint_weakened(env, get(value.children, index)) {
+            root = get(get(value.children, index).children, 0).ty
+        }
+        index = index + 1
+    }
+    if root < 0 {
+        return Result.Ok(false)
+    }
+    let node = predicate_node(env, get(env.types, root).symbol)
+    let stage = staging(predicate_scope(env, root)?, node)?
+    let helpers = helper_environment(stage.env)
+    let instance = get(env.pending, value.index)
+    let target = if instance.signature < 0 {
+        schedule_closure(helpers, -1 - instance.signature)
+    } else {
+        schedule(helpers, instance.signature, instance.arguments, instance.constants, node)?
+    }
+    let params = new[Int]()
+    let locals = new[Local]()
+    let inputs = new[Expr]()
+    let predicates = new[Expr]()
+    let protected = new[std.loom.proof.InputGuarantee]()
+    index = 0
+    while index < length(value.children) {
+        let argument = get(value.children, index)
+        let borrowed = constraint_weakened(env, argument)
+        let ty = if borrowed {
+            get(argument.children, 0).ty
+        } else {
+            update_input(env, argument).ty
+        }
+        push(params, ty)
+        push(locals, Local {
+                name = ""
+                ty = ty
+                mutable = false
+                is_scoped = false
+            })
+        let input = expression(ExprKind.Local, ty, node, "", index, new[Expr](), true)
+        push(inputs, if argument.kind == ExprKind.Integer || argument.kind == ExprKind.Bool ||
+            argument.kind == ExprKind.Text || argument.kind == ExprKind.Float {
+                argument
+            } else if argument.ty != ty {
+                expression(ExprKind.Coerce, argument.ty, node, "", -1, expressions(input), true)
+            } else {
+                input
+            })
+        if borrowed {
+            push(predicates, refinement_expression(predicate_context(helpers, ty, locals, index, true)?, ty)?)
+            push(protected, std.loom.proof.InputGuarantee {
+                    ty = ty
+                    writes = 1
+                })
+        }
+        index = index + 1
+    }
+    let scope = predicate_context(helpers, root, locals, 0, true)?
+    let program = prepared_in(scope, true)?
+    let probe = Function {
+        is_async = false
+        symbol = -1
+        arguments = new[Int]()
+        params = params
+        result = value.ty
+        locals = locals
+        preconditions = predicates
+        postconditions = predicates
+        result_local = -1
+        body = expression(ExprKind.Call, value.ty, node, "", target, inputs, true)
+        runtime_name = ""
+        span = value.span
+    }
+    match std.loom.proof.verify_preservation(program, probe, get(env.inputs, 0).build.proof_backend, shared, protected) {
+        Result.Ok(proved) => Result.Ok(proved)
+        Result.Err(message) => Result.Err(error(scope, node, message))
     }
 }
 

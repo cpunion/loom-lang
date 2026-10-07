@@ -119,6 +119,23 @@ requires positive_scalar(value)
 {
     forwarded(values, index, value)
 }
+
+fn replace_twice(values List[Int], index Int, value Int) {
+    let alias = values
+    alias[index] = value
+    set(alias, index, value)
+}
+
+fn fill_positive(values List[Int], value Int) {
+    if value <= 0 {
+        return
+    }
+    var index = 0
+    while index < length(values) {
+        replace_twice(values, index, value)
+        index = index + 1
+    }
+}
 "#;
 
 #[test]
@@ -151,6 +168,10 @@ fn main() {
         0
     }, copied)
     assert length(effects) == 1
+    replace_twice(alias, 0, PositiveElement(5))
+    fill_positive(alias, 4)
+    fill_positive(values, -1)
+    values[0] = 5
     assert alias[0] == 5 && values[1] == 4 && length(values) == 2
 }
 
@@ -160,6 +181,17 @@ test fn preserved_updates() {
 "#,
     ]
     .concat();
+    fs::write(&main, &source).unwrap();
+    success(&check());
+
+    fs::write(
+        &main,
+        source.replace("alias[index] = value", "alias[index] = -1"),
+    )
+    .unwrap();
+    let broken_store = check();
+    assert!(!broken_store.status.success());
+    assert!(String::from_utf8_lossy(&broken_store.stderr).contains("may invalidate"));
     fs::write(&main, &source).unwrap();
     success(&check());
 
@@ -214,6 +246,18 @@ pub fn invalid(values PositiveValues, input Int) {
 }
 "#,
         r#"
+fn unsafe_cleanup(values List[Int]) {
+    defer {
+        values[0] = -1
+    }
+    values[0] = 1
+    assert false
+}
+pub fn invalid(values PositiveValues) {
+    unsafe_cleanup(values)
+}
+"#,
+        r#"
 pub fn invalid(values PositiveValues) {
     set(values, 0, 0)
 }
@@ -262,7 +306,7 @@ fn main() {
     defer {
         retained(values)
     }
-    replace_checked(values, length(values), 3)
+    replace_twice(values, length(values), PositiveElement(3))
 }
 "#,
         ]
@@ -282,6 +326,74 @@ fn main() {
     assert!(!fault.status.success());
     assert_eq!(fault.stdout, b"preserved\n");
     assert!(String::from_utf8_lossy(&fault.stderr).contains("list index out of bounds"));
+
+    let concurrent = [
+        UPDATE_TYPES,
+        r#"
+import std.task.worker.run
+async fn main() {
+    let values = PositiveValues([1, 2])
+    let writer = run(fn() Int {
+        fill_positive(values, 3)
+        0
+    })
+    discard run(fn() Int {
+        replace_twice(values, 1, PositiveElement(4))
+        0
+    }).await
+    discard writer.await
+    assert values[0] > 0 && values[1] > 0 && length(values) == 2
+}
+"#,
+    ]
+    .concat();
+    fs::write(&main, concurrent).unwrap();
+    success(&check());
+    success(&common::loom(&[
+        "build",
+        path,
+        "--output",
+        artifact.to_str().unwrap(),
+    ]));
+    success(
+        &Command::new(&artifact)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+
+    // A sequentially preserving copy can break an ordering invariant if a
+    // worker changes the right-hand cell between the read and the store.
+    let sequential = r#"
+import std.list.length
+import std.task.worker.run
+fn ordered(values List[Int]) Bool {
+    length(values) == 2 && values[0] >= 0 && values[0] <= values[1]
+}
+type Ordered = List[Int] where ordered(self)
+fn copy_right_to_left(values List[Int]) {
+    let right = values[1]
+    values[0] = right
+}
+fn main() {
+    let values = Ordered([1, 2])
+    copy_right_to_left(values)
+    assert values[0] == 2
+}
+"#;
+    fs::write(&main, sequential).unwrap();
+    success(&check());
+    fs::write(
+        &main,
+        sequential.replace("fn main()", "async fn main()").replace(
+            "    copy_right_to_left(values)",
+            "    discard run(fn() Int {\n        copy_right_to_left(values)\n        0\n    }).await",
+        ),
+    )
+    .unwrap();
+    let stale_copy = check();
+    assert!(!stale_copy.status.success());
+    assert!(String::from_utf8_lossy(&stale_copy.stderr).contains("interference-safe"));
 
     let observer = r#"
 import std.task.worker.run
@@ -304,7 +416,7 @@ async fn main() {
         .replace(
             "    discard run(fn() Int {",
             r#"    let writer = run(fn() Int {
-        replace_positive(values, 0, PositiveElement(3))
+        fill_positive(values, 3)
         0
     })
     discard run(fn() Int {"#,

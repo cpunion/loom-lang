@@ -1,0 +1,202 @@
+// Continuing invariants are obligations at each actual store, not promises
+// about a normal return. This mode shares the ordinary verifier's state, algebra,
+// argument snapshots and loop rules; source bodies never use opaque summaries.
+pub fn verify_preservation(program Program, function Function, backend ProofBackend,
+    shared Bool, protected List[InputGuarantee]) Result[Bool, Text] {
+    let proof = contract_verification(program, function, backend, shared)?
+    let conditions = new[Expr]()
+    var index = 0
+    while index < length(proof.function.postconditions) {
+        push(conditions, preservation_predicate(get(proof.function.postconditions, index), 256)?)
+        index = index + 1
+    }
+    let persistent = Verification {
+        function = proof.function
+        program = proof.program
+        fresh = proof.fresh
+        budget = proof.budget
+        loop_control = proof.loop_control
+        query = proof.query
+        shared = proof.shared
+        preservation = conditions
+        returns = new[Outcome]()
+    }
+    verify_body(persistent, protected)
+}
+
+fn with_preservation_returns(proof Verification) Verification {
+    Verification {
+        function = proof.function
+        program = proof.program
+        fresh = proof.fresh
+        budget = proof.budget
+        loop_control = proof.loop_control
+        query = proof.query
+        shared = proof.shared
+        preservation = proof.preservation
+        returns = if length(proof.preservation) == 0 {
+            proof.returns
+        } else {
+            new[Outcome]()
+        }
+    }
+}
+
+// Evaluate the continuing predicate over one logical heap, not as additional
+// runtime reads. Source evaluation still uses shared interference before every
+// access; only a primitive store's already-guarded transition uses this view.
+fn preservation_snapshot(proof Verification) Verification {
+    Verification {
+        function = proof.function
+        program = proof.program
+        fresh = proof.fresh
+        budget = proof.budget
+        loop_control = proof.loop_control
+        query = proof.query
+        shared = false
+        preservation = proof.preservation
+        returns = proof.returns
+    }
+}
+
+// These pure predicates describe a coherent logical heap, not once-evaluated
+// source reads. Reuse its current cells, never cached scalar observations from
+// an earlier boundary. Normalize once instead of re-expanding every store.
+fn preservation_predicate(value Expr, depth Int) Result[Expr, Text] {
+    if depth <= 0 {
+        return Result.Err("preservation predicate depth exhausted")
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, preservation_predicate(get(value.children, index), depth - 1)?)
+        index = index + 1
+    }
+    Result.Ok(proof_expr(value, value.kind, value.ty, value.text,
+            if list_length_expression(value) || list_read_expression(value) {
+                -1
+            } else {
+                value.index
+            }, children))
+}
+
+fn preservation_at(value Expr, offset Int, depth Int) Result[Expr, Text] {
+    if depth <= 0 {
+        return Result.Err("preservation proof body depth exhausted")
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, preservation_at(get(value.children, index), offset, depth - 1)?)
+        index = index + 1
+    }
+    // Match/closure/resource storage needs its own modeled execution, not an
+    // index substitution that silently drops alternatives or cleanup effects.
+    if length(value.arms) != 0 {
+        return Result.Err("unsupported match in preservation proof")
+    }
+    let local = value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign
+    Result.Ok(Expr {
+            kind = value.kind
+            ty = value.ty
+            span = value.span
+            text = value.text
+            index = if local {
+                value.index + offset
+            } else {
+                value.index
+            }
+            children = children
+            arms = value.arms
+            falls = value.falls
+        })
+}
+
+fn preserving_call(proof Verification, call Expr, function Function, state State, depth Int) Result[List[Outcome], Text] {
+    discard loop_step(proof)?
+    if depth <= 0 || function.runtime_name != "" || function.is_async ||
+    length(function.params) != length(call.children) {
+        return Result.Err("preservation proof needs a finite checked source body")
+    }
+    let arguments = call_arguments(proof, call, state, depth)?
+    let output = new[Outcome]()
+    var path = 0
+    while path < length(arguments) {
+        let input = get(arguments, path)
+        let boundary = length(input.state.locals)
+        let values = new[Value]()
+        let locals = new[Local]()
+        var index = 0
+        while index < boundary {
+            push(locals, if index < length(proof.function.locals) {
+                    get(proof.function.locals, index)
+                } else {
+                    Local {
+                        name = ""
+                        ty = 0
+                        mutable = false
+                        is_scoped = false
+                    }
+                })
+            index = index + 1
+        }
+        index = 0
+        while index < length(function.locals) {
+            push(locals, get(function.locals, index))
+            push(values, if index < length(input.values) {
+                    get(input.values, index)
+                } else {
+                    Value.Empty
+                })
+            index = index + 1
+        }
+        let preconditions = new[Expr]()
+        index = 0
+        while index < length(function.preconditions) {
+            push(preconditions, preservation_at(get(function.preconditions, index), boundary, 256)?)
+            index = index + 1
+        }
+        let scope = expanded_contracts(proof.program, Function {
+                is_async = false
+                symbol = function.symbol
+                arguments = function.arguments
+                params = new[Int]()
+                result = function.result
+                locals = locals
+                preconditions = preconditions
+                postconditions = new[Expr]()
+                result_local = -1
+                body = preservation_at(function.body, boundary, 256)?
+                runtime_name = ""
+                span = function.span
+            }, proof.fresh)?
+        let frame = Verification {
+            function = scope
+            program = proof.program
+            fresh = proof.fresh
+            budget = proof.budget
+            loop_control = Option.None
+            query = proof.query
+            shared = proof.shared
+            preservation = proof.preservation
+            returns = new[Outcome]()
+        }
+        let entries = established_entry(frame, call_scope(input.state, values))?
+        index = 0
+        while index < length(entries) {
+            discard append(frame.returns, execute(frame, scope.body, get(entries, index).state, depth - 1)?)?
+            index = index + 1
+        }
+        index = 0
+        while index < length(frame.returns) {
+            let returned = get(frame.returns, index)
+            discard add_outcome(output, Outcome {
+                    state = caller_state(returned.state, boundary)
+                    value = returned.value
+                })?
+            index = index + 1
+        }
+        path = path + 1
+    }
+    Result.Ok(output)
+}

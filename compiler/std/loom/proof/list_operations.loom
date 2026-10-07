@@ -102,6 +102,23 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
         }
     }
     state = interference(proof, state)
+    if proof.shared && stored >= 0 && length(proof.preservation) != 0 {
+        // The continuing invariant is true immediately before this atomic
+        // store. Argument values remain earlier snapshots: they do not recover
+        // equality with cells another worker may have changed in the meantime.
+        let atomic = preservation_snapshot(proof)
+        let entries = established_conditions(atomic, proof.preservation, state)?
+        let output = new[Outcome]()
+        var path = 0
+        while path < length(entries) {
+            discard append(output, list_operation_outcomes(atomic, name, ty, CallArguments {
+                        state = get(entries, path).state
+                        values = inputs.values
+                    })?)?
+            path = path + 1
+        }
+        return Result.Ok(output)
+    }
     if (name == "list_new" && length(inputs.values) == 0) ||
     (name == "list_new_capacity" && length(inputs.values) == 1) {
         let value = record_parameter_value(proof, ty, 0)
@@ -164,7 +181,18 @@ fn execute_list_operation(proof Verification, expr Expr, name Text, state State,
     let output = new[Outcome]()
     var index = 0
     while index < length(inputs) {
-        discard append(output, list_operation_outcomes(proof, name, expr.ty, get(inputs, index))?)?
+        let written = list_operation_outcomes(proof, name, expr.ty, get(inputs, index))?
+        if length(proof.preservation) != 0 && (name == "list_set" || name == "list_push") {
+            let atomic = preservation_snapshot(proof)
+            var path = 0
+            while path < length(written) {
+                let state = required_conditions(atomic, proof.preservation, get(written, path).state)?
+                discard append(output, established_conditions(atomic, proof.preservation, state)?)?
+                path = path + 1
+            }
+        } else {
+            discard append(output, written)?
+        }
         index = index + 1
     }
     Result.Ok(output)
