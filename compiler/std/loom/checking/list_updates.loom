@@ -262,7 +262,7 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
     let scope = predicate_context(env, ty, locals, 0, true)?
     let predicate = refinement_expression(scope, ty)?
     let program = prepared_in(scope, true)?
-    if std.loom.proof.single_list_write(program, selected) != 1 {
+    if std.loom.proof.single_list_write(program.functions, selected) != 1 {
         return Result.Ok(false)
     }
     let established = established_construction_premises(program, locals, premises)

@@ -162,17 +162,7 @@ fn constraint_operation(env Environment, functions List[Function], value Expr, e
         index = index + 1
     }
     if writes == 0 {
-        let program = std.loom.typed.Program {
-            types = env.types
-            functions = functions
-            entry = -1
-            tests = new[Int]()
-            test_names = new[Text]()
-            exports = new[Int]()
-            interfaces = env.interfaces
-            witnesses = env.witnesses
-        }
-        let store = std.loom.proof.single_list_write(program, value)
+        let store = std.loom.proof.single_list_write(functions, value)
         if store > 0 && invariant_intrinsic_allowed(true, store,
             if store == 1 {
                 "list_set"

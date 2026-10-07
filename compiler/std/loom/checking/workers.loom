@@ -27,7 +27,7 @@ fn worker_expression(value Expr) Bool {
 }
 
 fn constraint_content_updates(env Environment, program std.loom.typed.Program, owner Int, value Expr, modified List[InputGuarantee]) Result[Bool, Failure] {
-    let store = std.loom.proof.single_list_write(program, value)
+    let store = std.loom.proof.single_list_write(program.functions, value)
     if store > 0 &&
     constraint_weakened(env, get(value.children, 0)) {
         push(modified, InputGuarantee {
