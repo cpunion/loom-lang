@@ -155,6 +155,11 @@ fn append_guarded(values PositiveValues, value Int) {
     }
     push(values, value)
 }
+
+fn positive_effect(events List[Int]) PositiveElement {
+    push(events, 2)
+    PositiveElement(9)
+}
 "#;
 
 #[test]
@@ -198,10 +203,7 @@ fn main() {
     assert length(alias) == 5 && values[2] == 6 && values[4] == 7
     append_guarded(alias, 8)
     append_guarded(values, -1)
-    push(values, {
-        push(effects, 2)
-        PositiveElement(9)
-    })
+    push(values, positive_effect(effects))
     assert length(effects) == 2 && length(alias) == 7 && values[5] == 8 && values[6] == 9
 }
 
