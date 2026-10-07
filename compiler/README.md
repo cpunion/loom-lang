@@ -463,12 +463,16 @@ node scripts/benchmark-compiler.mjs --compare-edits --check-only --runs 3 --size
 node scripts/benchmark-compiler.mjs --compare-edits --check-only --baseline /path/to/old/loom --runs 5
 ```
 
-Each pair checks identical copied source after changing one private helper.
+Each pair checks identical copied source after changing one contracted private
+helper called from `main`. After warming each compiler/cache, a deliberately
+false helper contract must reject before timing valid edits.
 The cached variant must miss the whole-closure cache and reuse definitions and
 bodies. Initial misses, alternating sample order, time, peak RSS and reuse counts
 are recorded separately. This isolates a local edit; it does not represent a
 public API change. Snapshot I/O and copying can outweigh saved checking, especially
 for small programs; a positive reuse count alone is not evidence of a speedup.
+Earlier result files used an uncalled probe; their timings are not directly
+comparable to this reachable, contract-rechecked workload.
 
 The [2026-10-02 paired comparison](../benchmarks/compiler/results/2026-10-02-macos-arm64-body-replay-edited.json)
 measured the same edited inputs with two O2 compilers and independent caches:
