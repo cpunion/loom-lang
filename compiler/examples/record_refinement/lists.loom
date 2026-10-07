@@ -17,6 +17,8 @@ type PositiveValues = List[Int] where length(self) > 0 && all_positive(self)
 
 type PositiveElement = Int where self > 0
 
+type PositiveHead = List[Int] where length(self) > 0 && self[0] > 0
+
 fn replace_positive(values PositiveValues, index Int, value PositiveElement) {
     values[index] = value
 }
@@ -117,6 +119,11 @@ fn list_constraint_scope() Bool {
     fill_positive(literal_alias, 7)
     fill_positive(literal, -1)
     assert literal[0] == 7 && values_sum(literal_alias) == 14
+    let head = PositiveHead([1, -1])
+    let head_alias = head
+    set(head, 0, PositiveElement(3))
+    head_alias[1] = -2
+    assert head[0] == 3 && head[1] == -2
     let pair = IntPair([1, 2])
     let pair_alias = pair
     pair[0] = -7
