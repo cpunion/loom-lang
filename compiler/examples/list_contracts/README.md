@@ -48,6 +48,14 @@ Unobserved notes remain shared across suspension. An unconstrained inline List
 also proves arbitrary-index write/restore contracts for each field; field
 equality never implies equality or permutation of whole records.
 
+`scalars.loom` applies that same select/store algebra to Bool, Text and Float
+columns, beside shared notes. A mixed constraint proves replacement, append and
+loop filling; pure Text-length predicates are imported from the replacement's
+type. Text lengths count UTF-8 bytes. Float storage preserves its IEEE value:
+restoration proves numeric equality only when NaN has been excluded, and signed
+zeros retain their distinct representations. These are compile-time facts, not
+runtime copies or a solver dependency in the application.
+
 `entry.loom` proves append against `old(length(values))`, without an explicit
 size parameter. Two consecutive calls use different invocation-entry lengths;
 the caller's own `old` remains unchanged. Pure helper observations retain their

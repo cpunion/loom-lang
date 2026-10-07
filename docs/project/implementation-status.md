@@ -449,13 +449,13 @@ lengths are preserved. Lost candidates trigger dependent rechecks; ordinary
 cleanup and loop jumps retain their order. This covers bounded element counters
 and two-element sum conservation, not arbitrary-index array invariants. Indexed entry
 checks and storage postconditions compose; hypothetical postcondition reads
-must prove bounds and have an established observation or modeled Int content version. Unknown reads never
+must prove bounds and have an established observation or modeled scalar content version. Unknown reads never
 supply non-aliasing evidence. Immutable entry-element snapshots require entry
 bounds and survive writes, including through per-invocation summaries. See the
 [indexed example](../../compiler/examples/list_elements) and
 [List contract example](../../compiler/examples/list_contracts).
 The optional solver models List content versions with guarded reads
-and `select`/`store` equations for integer elements and immutable integer field
+and `select`/`store` equations for Int, Bool, Text and Float elements and immutable field
 paths through nested inline records/tuples. Arbitrary valid parameter indices can prove
 write-then-restore and swap/frame contracts, without deciding index equality at
 each write or enumerating concrete indices. The finite observation cache stays
@@ -467,8 +467,16 @@ The [projection example](../../compiler/examples/list_contracts/projections.loom
 also proves replacement, append and source-loop preservation of a multi-field
 constraint. Bounded scans support local element observations and Boolean tails;
 their access domains and short-circuit guards remain proof obligations.
-Unobserved mutable siblings remain shared. Field equality supplies neither
-whole-record equality nor permutation, and non-integer columns remain unsupported.
+The [mixed-scalar example](../../compiler/examples/list_contracts/scalars.loom)
+uses the same rules for Bool, UTF-8 byte sequences and IEEE Float fields, importing
+pure helper constraints from typed replacements. Storage equality is distinct
+from Float numeric equality: restoring a value does not establish reflexivity
+without excluding NaN. Local proofs precede helper preparation and SMT; queries
+receive the established helper facts before search. Propositional tautologies
+are folded after evaluation safety has been modeled, and quantified conjunctions
+split by logical equivalence rather than sharing a cross-column trigger.
+Unobserved mutable siblings remain shared. Field equality
+supplies neither whole-record equality nor permutation; mutable graphs remain opaque.
 Whole `List[Int]` entry values now capture their logical length and content
 version through `old(values)`, including inline parameter fields, refined Lists
 and finite pure helper selections. Queries can use post-state indices such as

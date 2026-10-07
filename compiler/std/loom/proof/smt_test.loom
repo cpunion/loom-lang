@@ -74,8 +74,8 @@ test fn array_encoding_preserves_versions_indices_and_observation_guards() {
     let index = variable(1)
     let value = IntegerTerm.Linear(variable(2))
     let query = encoding([Obligation {
-                facts = [Predicate.ArrayRead(10, [], index, value, [Predicate.Variable(3)]),
-                    Predicate.ArrayWrite(10, 11, [], index, value)]
+                facts = [Predicate.ArrayRead(10, [], index, ArrayScalar.Integer(value), [Predicate.Variable(3)]),
+                    Predicate.ArrayWrite(10, 11, [], index, ArrayScalar.Integer(value))]
                 conclusion = Predicate.IntegerCompare("==", IntegerTerm.Select(11, [], index), value)
             }])
     assert contains(query, "(declare-const a10 (Array Int Int))")
@@ -102,8 +102,8 @@ test fn projected_arrays_keep_nested_fields_distinct_from_elements_and_each_othe
     let index = variable(1)
     let value = IntegerTerm.Linear(variable(2))
     let query = encoding([Obligation {
-                facts = [Predicate.ArrayRead(10, [1, 23], index, value, [Predicate.Variable(3)]),
-                    Predicate.ArrayWrite(10, 11, [1, 23], index, value)]
+                facts = [Predicate.ArrayRead(10, [1, 23], index, ArrayScalar.Integer(value), [Predicate.Variable(3)]),
+                    Predicate.ArrayWrite(10, 11, [1, 23], index, ArrayScalar.Integer(value))]
                 conclusion = Predicate.IntegerCompare("==", IntegerTerm.Select(11, [12, 3], index), value)
             }])
     assert contains(query, "(declare-const a10_f1_f23 (Array Int Int))")
@@ -120,6 +120,62 @@ test fn projected_arrays_keep_nested_fields_distinct_from_elements_and_each_othe
         Option.None => true
         Option.Some(_) => false
     }
+}
+
+test fn scalar_columns_keep_their_sorts_and_float_storage_is_not_ieee_equality() {
+    let index = variable(1)
+    let label = TextValue.Select(10, [2], index)
+    let negative_zero = ArrayScalar.Float(FloatValue.Literal("-0"))
+    let query = encoding([Obligation {
+                facts = [Predicate.ArrayRead(10, [0, 0], index, ArrayScalar.Boolean([Predicate.Variable(3)]),
+                        [Predicate.Constant(true)]),
+                    Predicate.ArrayWrite(10, 11, [0, 1], index, ArrayScalar.Boolean([Predicate.Constant(false)])),
+                    Predicate.ArrayWrite(10, 11, [2], index, ArrayScalar.Text(TextValue.Literal("雪"))),
+                    Predicate.ArrayWrite(10, 11, [3], index, negative_zero)]
+                conclusion = Predicate.And([
+                        Predicate.IntegerCompare(">", text_length(label), IntegerTerm.Linear(constant(integer(0)))),
+                        Predicate.FloatCompare("==", FloatValue.Select(11, [3], index), FloatValue.Literal("-0"))])
+            }])
+    assert contains(query, "(declare-const a10_f0_f0_bool (Array Int Bool))")
+    assert contains(query, "(declare-const a11_f0_f1_bool (Array Int Bool))")
+    assert contains(query, "(declare-const a10_f2_text (Array Int (Seq (_ BitVec 8))))")
+    assert contains(query, "(declare-const a11_f3_float (Array Int (_ FloatingPoint 11 53)))")
+    assert contains(query, "(seq.len (select a10_f2_text")
+    assert contains(query, "(= a11_f3_float (store a10_f3_float")
+    assert contains(query, "(fp.eq (select a11_f3_float")
+    assert contains(query, "(_ -zero 11 53)")
+    assert !same_array_scalar(ArrayScalar.Boolean([Predicate.Constant(true)]),
+        ArrayScalar.Integer(IntegerTerm.Linear(constant(integer(1)))))
+    assert !same_array_scalar(negative_zero, ArrayScalar.Float(FloatValue.Literal("0")))
+    assert text_size_defined(text_length(label), State {
+            locals = []
+            facts = []
+            extents = []
+            observations = []
+        })
+}
+
+test fn tautological_quantifiers_do_not_repeat_the_context_or_assume_float_reflexivity() {
+    let query = encoding([Obligation {
+                facts = [Predicate.Variable(99)]
+                conclusion = Predicate.Forall(-1, constant(integer(0)), constant(integer(10)),
+                    [Predicate.Or([Predicate.Variable(1), Predicate.Constant(true)])])
+            }])
+    assert !contains(query, "b99") && !contains(query, "forall")
+    assert contains(query, "(assert (not (and true)))")
+    let ratio = FloatValue.Select(10, [2], variable(1))
+    assert contains(encoding([Obligation {
+                    facts = []
+                    conclusion = Predicate.FloatCompare("==", ratio, ratio)
+                }]), "fp.eq")
+    let split = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.Forall(-1, constant(integer(0)), constant(integer(10)),
+                    [Predicate.And([Predicate.Select(10, [0], variable(-1)),
+                                Predicate.FloatCompare("==", ratio, ratio)])])
+            }])
+    assert contains(split, "(and (forall ((n-1 Int))")
+    assert contains(split, "(select a10_f0_bool (+ 0 (* 1 n-1))))) (forall ((n-1 Int))")
 }
 
 test fn pointwise_prefix_equality_supplies_only_the_matching_histogram_law() {

@@ -18,6 +18,63 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn typed_columns_recheck_invalid_contents_nan_and_aliases_after_cached_edits() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("scalars.loom");
+    let program = include_str!("../examples/list_contracts/scalars.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace(
+            "    values[index] = value\n}",
+            "    values[index] = Content {\n        flags = (false, false)\n        label = value.label\n        ratio = value.ratio\n        notes = value.notes\n    }\n    values[index] = value\n}",
+        ),
+        program.replace("std.text.length(self.label) > 0 && ", ""),
+        program.replace(
+            "    push(values, value)\n}",
+            "    push(values, Content {\n        flags = value.flags\n        label = value.label\n        ratio = 0.0 / 0.0\n        notes = value.notes\n    })\n}",
+        ),
+        program.replace("    values[changed] = saved", "    discard saved"),
+        program.replace(
+            "requires values[observed].ratio == values[observed].ratio\n",
+            "",
+        ),
+        program
+            .replace(
+                "observed Int, changed Int)",
+                "observed Int, changed Int, alias List[ScalarContent])",
+            )
+            .replace(
+                "    values[changed] = saved",
+                "    values[changed] = saved\n    alias[observed] = saved",
+            )
+            .replace("restore_content(saved, 0, 0)", "restore_content(saved, 0, 0, saved)"),
+    ] {
+        assert_ne!(changed, program, "test edit did not apply");
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(!output.status.success(), "unsound typed-column proof: {changed}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "unexpected failure: {error}"
+        );
+    }
+    fs::write(&source, program).unwrap();
+    success(&check());
+}
+
+#[test]
 fn record_projections_compose_and_cached_edits_recheck_every_store() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");

@@ -18,12 +18,14 @@ enum TextValue {
     Literal(Text)
     Variable(Int)
     Joined(List[TextValue])
+    Select(Int, List[Int], Linear)
 }
 
 enum FloatValue {
     Literal(Text)
     Variable(Int)
     Apply(Text, List[FloatValue])
+    Select(Int, List[Int], Linear)
 }
 
 enum IntegerTerm {
@@ -31,11 +33,29 @@ enum IntegerTerm {
     Apply(Text, List[IntegerTerm])
     Select(Int, List[Int], Linear)
     Count(Int, List[IntegerTerm])
+    TextLength(TextValue)
+}
+
+enum ScalarDomain {
+    Integer
+    Boolean
+    Text
+    Float
+}
+
+// Boolean expressions are indirect because predicates also contain array
+// equations. The other scalar terms retain their ordinary inline representation.
+enum ArrayScalar {
+    Integer(IntegerTerm)
+    Boolean(List[Predicate])
+    Text(TextValue)
+    Float(FloatValue)
 }
 
 enum Predicate {
     Constant(Bool)
     Variable(Int)
+    Select(Int, List[Int], Linear)
     Compare(Text, Linear)
     Equal(List[Predicate])
     Not(List[Predicate])
@@ -44,8 +64,8 @@ enum Predicate {
     TextEqual(TextValue, TextValue)
     IntegerCompare(Text, IntegerTerm, IntegerTerm)
     FloatCompare(Text, FloatValue, FloatValue)
-    ArrayRead(Int, List[Int], Linear, IntegerTerm, List[Predicate])
-    ArrayWrite(Int, Int, List[Int], Linear, IntegerTerm)
+    ArrayRead(Int, List[Int], Linear, ArrayScalar, List[Predicate])
+    ArrayWrite(Int, Int, List[Int], Linear, ArrayScalar)
     Forall(Int, Linear, Linear, List[Predicate])
     BagEqual(Int, Linear, Int, Linear)
 }
@@ -213,8 +233,7 @@ fn append_facts(output List[Predicate], fact Predicate) {
         }
         Predicate.TextEqual(left, right) => {
             distinct_fact(output, fact)
-            distinct_fact(output, Predicate.Compare("==", add(text_length(left),
-                        scale(text_length(right), integer(-1)))))
+            distinct_fact(output, integer_predicate("==", text_length(left), text_length(right)))
         }
         Predicate.Equal(values) => {
             // Boolean equivalence is two implications. Reuse bounded unit

@@ -1,0 +1,49 @@
+// Domain adapters for one shared select/store algebra. Structural field paths
+// are independent of these scalar theories; mutable handles supply no column.
+fn array_scalar(value Value) Result[ArrayScalar, Text] {
+    match value {
+        Value.Number(term) => Result.Ok(ArrayScalar.Integer(IntegerTerm.Linear(term)))
+        Value.Nonlinear(term) => Result.Ok(ArrayScalar.Integer(term))
+        Value.Boolean(predicate) => Result.Ok(ArrayScalar.Boolean(predicates(predicate)))
+        Value.Text(term) => Result.Ok(ArrayScalar.Text(term))
+        Value.Float(term) => Result.Ok(ArrayScalar.Float(term))
+        _ => Result.Err("array equation requires an immutable scalar")
+    }
+}
+
+fn scalar_domain(value ArrayScalar) ScalarDomain {
+    match value {
+        ArrayScalar.Integer(_) => ScalarDomain.Integer
+        ArrayScalar.Boolean(_) => ScalarDomain.Boolean
+        ArrayScalar.Text(_) => ScalarDomain.Text
+        ArrayScalar.Float(_) => ScalarDomain.Float
+    }
+}
+
+fn same_array_scalar(left ArrayScalar, right ArrayScalar) Bool {
+    let budget = [1024]
+    match left {
+        ArrayScalar.Integer(term) => match right {
+            ArrayScalar.Integer(other) => same_integer_term(term, other, budget)
+            _ => false
+        }
+        ArrayScalar.Boolean(values) => match right {
+            ArrayScalar.Boolean(other) => same_predicates(values, other)
+            _ => false
+        }
+        ArrayScalar.Text(term) => match right {
+            ArrayScalar.Text(other) => same_text(term, other)
+            _ => false
+        }
+        ArrayScalar.Float(term) => match right {
+            ArrayScalar.Float(other) => same_float(term, other, budget)
+            _ => false
+        }
+    }
+}
+
+fn same_selection(identity Int, path List[Int], index Linear,
+    other Int, fields List[Int], position Linear) Bool {
+    identity == other && same_projection(path, fields) &&
+    compare(index.constant, position.constant) == 0 && same_terms(index.terms, position.terms)
+}

@@ -2168,7 +2168,7 @@ fn append_positive(values PositiveValues, value PositiveElement) {
 }
 ```
 
-The same array rules compose through immutable `Int` fields of inline records
+The same array rules compose through immutable `Int`, `Bool`, `Text` and `Float` fields of inline records
 and tuples, including nested paths and relations between fields. A bounded pure
 scan may bind the current element locally and finish with an ordinary Boolean
 expression, such as nonemptiness. Replacement, append and finite source helpers
@@ -2176,8 +2176,11 @@ must prove the whole predicate after every store. Unobserved shared siblings
 remain mutable; the proof neither freezes them nor infers their contents.
 Field equations are not whole-record equality or permutation evidence. See
 [projections.loom](examples/list_contracts/projections.loom) for nested field
-constraints and arbitrary-index write/restore contracts. Bool, Float, Text and
-mutable element graphs are not interpreted as integer array columns.
+constraints and arbitrary-index write/restore contracts, and
+[scalars.loom](examples/list_contracts/scalars.loom) for mixed scalar columns.
+Text uses UTF-8 byte sequences; Float uses IEEE values, with storage equality
+distinct from numeric equality. A restored Float still needs a non-NaN premise
+to prove it numerically equal to its old value. Mutable element graphs remain opaque.
 
 Indexing in a `where` predicate uses the same purity and storage-observation
 rules as a pure getter, without requiring a wrapper function:
@@ -2605,7 +2608,7 @@ ensures values[second] == old(values[first])
 This is not quantified array reasoning. See the
 [indexed List example](examples/list_elements).
 
-For integer List elements and inline integer field paths, the optional
+For Int, Bool, Text and Float List elements and inline scalar field paths, the optional
 compile-time solver also relates reads and writes
 through versioned logical arrays (`select`/`store`). Contracts can prove restoration
 and swapping at arbitrary parameter indices, including equal indices and the

@@ -154,6 +154,10 @@ fn same(a Predicate, b Predicate) Bool {
             Predicate.Variable(other) => id == other,
             _ => false
         }
+        Predicate.Select(id, path, index) => match b {
+            Predicate.Select(other, fields, position) => same_selection(id, path, index, other, fields, position)
+            _ => false
+        }
         Predicate.TextEqual(left, right) => match b {
             Predicate.TextEqual(first, second) =>
             (same_text(left, first) && same_text(right, second)) ||
@@ -182,20 +186,16 @@ fn same(a Predicate, b Predicate) Bool {
         }
         Predicate.ArrayRead(id, path, index, value, valid) => match b {
             Predicate.ArrayRead(other, fields, position, term, guard) => {
-                let budget = new[Int]()
-                push(budget, 1024)
                 id == other && same_projection(path, fields) && compare(index.constant, position.constant) == 0 &&
-                same_terms(index.terms, position.terms) && same_integer_term(value, term, budget) &&
+                same_terms(index.terms, position.terms) && same_array_scalar(value, term) &&
                 same_predicates(valid, guard)
             }
             _ => false
         }
         Predicate.ArrayWrite(before, after, path, index, value) => match b {
             Predicate.ArrayWrite(first, second, fields, position, term) => {
-                let budget = new[Int]()
-                push(budget, 1024)
                 before == first && after == second && same_projection(path, fields) && compare(index.constant, position.constant) == 0 &&
-                same_terms(index.terms, position.terms) && same_integer_term(value, term, budget)
+                same_terms(index.terms, position.terms) && same_array_scalar(value, term)
             }
             _ => false
         }
@@ -220,6 +220,10 @@ fn same_text(left TextValue, right TextValue) Bool {
         }
         TextValue.Variable(id) => match right {
             TextValue.Variable(other) => id == other
+            _ => false
+        }
+        TextValue.Select(id, path, index) => match right {
+            TextValue.Select(other, fields, position) => same_selection(id, path, index, other, fields, position)
             _ => false
         }
         TextValue.Joined(_) => false

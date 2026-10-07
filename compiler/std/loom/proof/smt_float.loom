@@ -67,6 +67,7 @@ fn smt_float_literal(text Text) Result[Text, Text] {
 fn smt_float(writer SmtWriter, value FloatValue, depth Int) Result[Text, Text] {
     discard smt_step(writer, depth)?
     match value {
+        FloatValue.Select(identity, path, index) => smt_select(writer, identity, path, index, ScalarDomain.Float)
         FloatValue.Literal(text) => {
             let size = std.text.length(text)
             if size > get(writer.budget, 0) {

@@ -53,7 +53,7 @@ fn array_projection_read(contents Int, path List[Int], index Linear, value Value
         _ => {
         }
     }
-    match integer_term(value) {
+    match array_scalar(value) {
         Result.Ok(term) => assume(state, Predicate.ArrayRead(contents, path, index, term, predicates(valid)))
         Result.Err(_) => state
     }
@@ -114,9 +114,9 @@ fn array_projection_write(before Int, after Int, path List[Int], index Linear,
         _ => {
         }
     }
-    match integer_term(value) {
+    match array_scalar(value) {
         Result.Ok(term) => assume(state, Predicate.ArrayWrite(before, after, path, index, term))
-        // No integer interpretation is inferred for Bool, Text or shared payloads.
+        // Shared payloads remain opaque; no scalar interpretation is inferred.
         Result.Err(_) => state
     }
 }
