@@ -18,6 +18,84 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn typed_entry_snapshots_recheck_content_domains_and_post_state_indices() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("snapshots.loom");
+    let program = include_str!("../examples/list_contracts/snapshots.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace(
+            "let saved = values[observed]",
+            "let saved = values[changed]",
+        ),
+        program.replace(
+            "requires values[observed].ratio == values[observed].ratio\n",
+            "",
+        ),
+        program.replace(
+            "old(selected_entries(left, right, choose_left))",
+            "old(selected_entries(left, right, !choose_left))",
+        ),
+        program.replace("old(values)[result].label", "old(values)[result + 1].label"),
+        program.replace(
+            "    if second {\n        1\n",
+            "    if second {\n        2\n",
+        ),
+    ] {
+        assert_ne!(changed, program, "test edit did not apply");
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(
+            !output.status.success(),
+            "unsound entry snapshot: {changed}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "unexpected failure: {error}"
+        );
+    }
+    let opaque = package.path().join("opaque.loom");
+    fs::write(
+        &opaque,
+        r#"import std.list.length
+
+fn shared_child(values List[List[Int]]) Int
+requires length(values) > 0 && length(values[0]) > 0
+ensures result == old(values)[0][0]
+{
+    values[0][0]
+}
+"#,
+    )
+    .unwrap();
+    fs::write(&source, program).unwrap();
+    let output = check();
+    assert!(
+        !output.status.success(),
+        "shared child became an immutable snapshot"
+    );
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("shared contract observation requires a tracked List"),
+        "unexpected failure: {error}"
+    );
+    fs::remove_file(opaque).unwrap();
+    success(&check());
+}
+
+#[test]
 fn typed_columns_recheck_invalid_contents_nan_and_aliases_after_cached_edits() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("scalars.loom");

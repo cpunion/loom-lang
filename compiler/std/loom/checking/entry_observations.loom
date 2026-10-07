@@ -2,8 +2,9 @@
 // The result is an immutable logical value, never another mutable List alias.
 fn old_list_type(env Environment, ty Int) Bool {
     let shape = get(env.types, base_type(env, ty))
-    shape.kind == TypeKind.List && length(shape.arguments) == 1 &&
-    get(shape.arguments, 0) == 1
+    // Capture the outer shape/version. Projection theories decide which
+    // contents are observable; shared payloads do not become graph snapshots.
+    shape.kind == TypeKind.List && length(shape.arguments) == 1
 }
 
 fn old_observation(context Context, node Node) Result[Expr, Failure] {

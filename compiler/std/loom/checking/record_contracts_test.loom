@@ -43,15 +43,20 @@ test fn old_reads_only_immutable_entry_scalars() {
 
 test fn old_rejects_unsupported_graphs_and_non_entry_places() {
     let shared = "record Holder { count Int; values List[Int] }\n"
-    let alias = "record Nested { values List[List[Int]] }\nfn unsafe(value Nested) Int ensures result == old(value.values) { 1 }"
-    match checked(source_files(alias)) {
-        Result.Err(failed) => {
-            assert failed.diagnostic.message == "old requires an immutable entry value or a supported pure observation"
+    // Capturing an outer header does not snapshot its shared elements. Keep
+    // both sides Int: a type mismatch is not evidence of graph safety.
+    list_length_contract("""
+        import std.list.length
+
+        record Nested {
+            values List[List[Int]]
         }
-        Result.Ok(_) => {
-            assert false
+        fn unsafe(value Nested) Int
+        requires length(value.values) > 0 && length(value.values[0]) > 0
+        ensures result == old(value.values)[0][0] {
+            value.values[0][0]
         }
-    }
+        """, false)
     rejects(concat(shared, "fn unsafe(value Holder) Int ensures result == old(value.values[0]) { 1 }"))
     rejects("fn unsafe(value Int) Int ensures result == old(value + 1) { value }")
     rejects("fn unsafe(value Int) Int ensures result == old(result) { value }")

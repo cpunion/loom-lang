@@ -1,0 +1,120 @@
+import std.list.length
+import std.list.push
+
+record EntryRow {
+    flags (Bool, Bool)
+    label Text
+    ratio Float
+    notes List[Int]
+}
+
+// The outer entry header is independent of the element's storage model.
+fn append_snapshot[T](values List[T], value T)
+requires length(values) < 9223372036854775807
+ensures length(values) == length(old(values)) + 1
+{
+    push(values, value)
+}
+
+fn saved_columns(values List[EntryRow], observed Int, changed Int) (Bool, Text, Float)
+requires observed >= 0 && observed < length(values)
+requires changed >= 0 && changed < length(values)
+requires values[observed].ratio == values[observed].ratio
+ensures result.0 == old(values)[observed].flags.0
+ensures result.1 == old(values)[observed].label
+ensures result.2 == old(values)[observed].ratio
+ensures length(values) == length(old(values))
+{
+    let saved = values[observed]
+    values[changed] = EntryRow {
+        flags = (false, true)
+        label = "changed"
+        ratio = 1.0
+        notes = []
+    }
+    (saved.flags.0, saved.label, saved.ratio)
+}
+
+fn selected_entries[T](left List[T], right List[T], choose_left Bool) List[T] {
+    if choose_left {
+        left
+    } else {
+        right
+    }
+}
+
+fn selected_label(left List[EntryRow], right List[EntryRow], choose_left Bool) Text
+requires length(left) > 0 && length(right) > 0
+ensures result == old(selected_entries(left, right, choose_left))[0].label
+{
+    let saved = selected_entries(left, right, choose_left)[0].label
+    left[0] = EntryRow {
+        flags = (false, true)
+        label = "left changed"
+        ratio = 0.0
+        notes = []
+    }
+    right[0] = EntryRow {
+        flags = (false, true)
+        label = "right changed"
+        ratio = 0.0
+        notes = []
+    }
+    saved
+}
+
+// result is evaluated on return; only the List is observed at entry.
+fn entry_label_index(values List[EntryRow], second Bool) Int
+requires length(values) > 1
+requires values[0].label == "first" && values[1].label == "second"
+ensures result >= 0 && result < length(old(values))
+ensures second || old(values)[result].label == "first"
+ensures !second || old(values)[result].label == "second"
+{
+    values[0] = EntryRow {
+        flags = (false, true)
+        label = "replaced"
+        ratio = 0.0
+        notes = []
+    }
+    values[1] = values[0]
+    if second {
+        1
+    } else {
+        0
+    }
+}
+
+fn entry_row(label Text, notes List[Int]) EntryRow {
+    EntryRow {
+        flags = (true, false)
+        label = label
+        ratio = -0.0
+        notes = notes
+    }
+}
+
+fn exercise_typed_entry_snapshots() {
+    let notes = [1]
+    let values = [entry_row("雪", notes), entry_row("other", notes)]
+    let saved = saved_columns(values, 0, 0)
+    assert saved.0 && saved.1 == "雪" && saved.2 == 0.0
+    notes[0] = 9
+    assert values[1].notes[0] == 9
+    assert selected_label([entry_row("left", notes)], [entry_row("right", notes)], true) == "left"
+    assert selected_label([entry_row("left", notes)], [entry_row("right", notes)], false) == "right"
+    let same = [entry_row("shared", notes)]
+    assert selected_label(same, same, false) == "shared"
+    assert entry_label_index([entry_row("first", notes), entry_row("second", notes)], false) == 0
+    assert entry_label_index([entry_row("first", notes), entry_row("second", notes)], true) == 1
+    append_snapshot(values, entry_row("appended", notes))
+    assert length(values) == 3
+    let nested = [notes]
+    append_snapshot(nested, notes)
+    notes[0] = 11
+    assert length(nested) == 2 && nested[0][0] == 11 && nested[1][0] == 11
+}
+
+test fn typed_entry_columns_and_generic_headers_do_not_freeze_shared_children() {
+    exercise_typed_entry_snapshots()
+}

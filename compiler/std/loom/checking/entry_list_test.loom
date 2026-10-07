@@ -24,3 +24,28 @@ test fn whole_entry_list_lengths_compose_without_a_solver_or_shallow_alias() {
         }
         """, true)
 }
+
+test fn entry_headers_are_generic_even_when_elements_have_shared_storage() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+
+        fn appended[T](values List[T], value T)
+        requires length(values) < 9223372036854775807
+        ensures length(values) == length(old(values)) + 1
+        {
+            push(values, value)
+        }
+
+        fn main() {
+            let labels = [(true, "雪")]
+            appended(labels, (false, "label"))
+            assert length(labels) == 2
+            let shared = [1]
+            let nested = [shared]
+            appended(nested, shared)
+            shared[0] = 9
+            assert length(nested) == 2 && nested[0][0] == 9
+        }
+        """, true)
+}

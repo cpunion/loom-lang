@@ -25,7 +25,9 @@ fn entry_list_type(program Program, ty Int, depth Int) Bool {
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         return entry_list_type(program, get(shape.fields, 0).ty, depth + 1)
     }
-    shape.kind == TypeKind.List && length(shape.arguments) == 1 && get(shape.arguments, 0) == 1
+    // This is one logical outer version, not a mutable alias or a deep copy.
+    // Immutable columns keep their own theories; opaque payloads stay opaque.
+    shape.kind == TypeKind.List && length(shape.arguments) == 1
 }
 
 fn entry_list_value(context Expansion, value Expr) Expr {

@@ -101,8 +101,9 @@ invalidation. Length-preserving loops can retain proved element bounds and
 storage conservation relations through induction. Bounded call-write analysis
 preserves untouched observations across extracted helpers without assuming
 unknown indices or handles are disjoint.
-Whole `List[Int]` logical entry values can now be queried at post-state indices
-without runtime copying. Bounded pure scans, array/histogram laws and checked
+Whole List logical entry values now preserve their outer shape and modeled
+immutable columns at post-state indices, without runtime copying or freezing
+shared children. Bounded pure scans, array/histogram laws and checked
 loop candidates now prove ordering and permutation for an ordinary in-place sort,
 including contracts over its returned List rather than only its input handle.
 Fresh-output copy loops now preserve disjoint input observations, and pointwise
