@@ -60,6 +60,7 @@ fn main() {
     construction_cases()
     float_solver_cases()
     division_cases()
+    search_cases()
 }
 
 test fn combined_contracts() {

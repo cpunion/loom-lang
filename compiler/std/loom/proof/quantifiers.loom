@@ -96,7 +96,7 @@ fn quantified_views(proof Verification, expr Expr, state State, inside Bool, dep
 
 fn execute_quantifier(proof Verification, expr Expr, state State) Result[List[Outcome], Text] {
     let current = quantified_views(proof, expr, state, false, 256)?
-    // A normal early-false result does not establish checks for later elements.
+    // A normal early return does not establish checks for later elements.
     // Require the stronger sufficient safety proof before using the abstraction.
     discard solver_defined(proof.query, expr, current, 256)?
     Result.Ok(outcomes(current, Value.Boolean(quantified_predicate(expr, current)?)))
