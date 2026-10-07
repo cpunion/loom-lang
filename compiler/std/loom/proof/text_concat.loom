@@ -53,6 +53,7 @@ fn text_literal(value TextValue) Bool {
     match value {
         TextValue.Literal(_) => true
         TextValue.Variable(_) => false
+        TextValue.Select(_, _, _) => false
         TextValue.Joined(parts) => {
             var index = 0
             while index < length(parts) {
@@ -66,7 +67,14 @@ fn text_literal(value TextValue) Bool {
     }
 }
 
-fn text_size_defined(size Linear, state State) Bool {
+fn text_size_defined(size IntegerTerm, state State) Bool {
+    match size {
+        IntegerTerm.Linear(term) => linear_text_size_defined(term, state)
+        _ => integer_interval("<=", size, IntegerTerm.Linear(constant(integer(9223372036854775807))), state.facts)
+    }
+}
+
+fn linear_text_size_defined(size Linear, state State) Bool {
     let goal = add(size, constant(integer(-9223372036854775807)))
     if holds(Predicate.Compare("<=", goal), state.facts) {
         return true
@@ -141,6 +149,13 @@ fn same_text_sequence(left TextValue, right TextValue) Bool {
                 _ => {
                     return false
                 }
+            }
+            TextValue.Select(identity, path, position) => {
+                if !same_text(l, r) {
+                    return false
+                }
+                a = a + 1
+                b = b + 1
             }
             _ => {
                 return false

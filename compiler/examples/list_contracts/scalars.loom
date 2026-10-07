@@ -1,0 +1,126 @@
+import std.list.clone
+import std.list.length
+import std.list.push
+import std.text.length
+import std.result.Result
+import std.result.ConstraintError
+import std.time.sleep_ms
+
+record Content {
+    flags (Bool, Bool)
+    label Text
+    ratio Float
+    notes List[Int]
+}
+
+fn valid_contents(values List[Content]) Bool {
+    var index = 0
+    while index < length(values) {
+        let row = values[index]
+        if !row.flags.0 || row.flags.1 || std.text.length(row.label) == 0 ||
+        !(row.ratio > 0.0 && row.ratio <= 1.0) {
+            return false
+        }
+        index = index + 1
+    }
+    length(values) > 0
+}
+
+type ValidContents = List[Content] where valid_contents(self)
+
+type ValidContent = Content where self.flags.0 && !self.flags.1 &&
+std.text.length(self.label) > 0 && self.ratio > 0.0 && self.ratio <= 1.0
+
+fn checked_contents(values List[Content]) Result[ValidContents, ConstraintError] {
+    ValidContents(clone(values))
+}
+
+fn replace_content(values ValidContents, index Int, value ValidContent) {
+    values[index] = value
+}
+
+fn append_content(values ValidContents, value ValidContent) {
+    push(values, value)
+}
+
+fn fill_contents(values List[Content], value ValidContent) {
+    var index = 0
+    while index < length(values) {
+        values[index] = value
+        index = index + 1
+    }
+}
+
+record ScalarContent {
+    ready Bool
+    label Text
+    ratio Float
+}
+
+fn restore_content(values List[ScalarContent], observed Int, changed Int)
+requires observed >= 0 && observed < length(values)
+requires changed >= 0 && changed < length(values)
+requires values[observed].ratio == values[observed].ratio
+ensures values[observed].ready == old(values[observed]).ready
+ensures values[observed].label == old(values[observed]).label
+ensures values[observed].ratio == old(values[observed]).ratio
+{
+    let saved = values[changed]
+    values[changed] = ScalarContent {
+        ready = false
+        label = "temporary"
+        ratio = -0.0
+    }
+    values[changed] = saved
+}
+
+async fn exercise_scalar_contents() {
+    let notes = [1]
+    let input = [Content {
+            flags = (true, false)
+            label = "initial"
+            ratio = 0.25
+            notes = notes
+        }]
+    let replacement = ValidContent(Content {
+            flags = (true, false)
+            label = "雪"
+            ratio = 1.0
+            notes = notes
+        })
+    assert match checked_contents(input) {
+        Result.Ok(values) => {
+            let alias = values
+            replace_content(values, 0, replacement)
+            append_content(values, replacement)
+            fill_contents(values, replacement)
+            notes[0] = -1
+            sleep_ms(1).await
+            length(alias) == 2 && alias[0].flags.0 && !alias[1].flags.1 &&
+            alias[0].label == "雪" && std.text.length(alias[0].label) == 3 &&
+            alias[1].ratio == 1.0 && alias[1].notes[0] == -1
+        }
+        Result.Err(_) => false
+    }
+    let saved = [ScalarContent {
+            ready = true
+            label = "雪"
+            ratio = -0.0
+        }]
+    restore_content(saved, 0, 0)
+    assert saved[0].ready && saved[0].label == "雪" && saved[0].ratio == 0.0
+    input[0] = Content {
+        flags = (true, false)
+        label = "valid label"
+        ratio = 0.0 / 0.0
+        notes = notes
+    }
+    assert match checked_contents(input) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
+
+test async fn mixed_scalar_columns_preserve_constraints_and_ieee_semantics() {
+    exercise_scalar_contents().await
+}

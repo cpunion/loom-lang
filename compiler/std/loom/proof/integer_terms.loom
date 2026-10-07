@@ -16,6 +16,43 @@ fn nonlinear_value(value Value) Bool {
     }
 }
 
+fn integer_value(term IntegerTerm) Value {
+    match term {
+        IntegerTerm.Linear(value) => Value.Number(value)
+        _ => Value.Nonlinear(term)
+    }
+}
+
+fn added_integer_terms(left IntegerTerm, right IntegerTerm) IntegerTerm {
+    match left {
+        IntegerTerm.Linear(a) => match right {
+            IntegerTerm.Linear(b) => {
+                return IntegerTerm.Linear(add(a, b))
+            }
+            _ => {
+            }
+        }
+        _ => {
+        }
+    }
+    IntegerTerm.Apply("+", [left, right])
+}
+
+fn integer_predicate(relation Text, left IntegerTerm, right IntegerTerm) Predicate {
+    match left {
+        IntegerTerm.Linear(a) => match right {
+            IntegerTerm.Linear(b) => {
+                return Predicate.Compare(relation, add(a, scale(b, integer(-1))))
+            }
+            _ => {
+            }
+        }
+        _ => {
+        }
+    }
+    Predicate.IntegerCompare(relation, left, right)
+}
+
 fn integer_operation(operator Text, left IntegerTerm, right IntegerTerm) Result[Value, Text] {
     if operator == "==" || operator == "!=" || operator == "<" || operator == "<=" || operator == ">" || operator == ">=" {
         return Result.Ok(Value.Boolean(Predicate.IntegerCompare(operator, left, right)))
@@ -35,6 +72,10 @@ fn same_integer_term(left IntegerTerm, right IntegerTerm, budget List[Int]) Bool
     }
     set(budget, 0, get(budget, 0) - 1)
     match left {
+        IntegerTerm.TextLength(text) => match right {
+            IntegerTerm.TextLength(other) => same_text(text, other)
+            _ => false
+        }
         IntegerTerm.Count(identity, inputs) => match right {
             IntegerTerm.Count(other, values) => {
                 if identity != other || length(inputs) != length(values) {
@@ -95,5 +136,5 @@ fn same_projection(left List[Int], right List[Int]) Bool {
 }
 
 fn integer_limit(relation Text, value IntegerTerm, limit Int) Predicate {
-    Predicate.IntegerCompare(relation, value, IntegerTerm.Linear(constant(integer(limit))))
+    integer_predicate(relation, value, IntegerTerm.Linear(constant(integer(limit))))
 }

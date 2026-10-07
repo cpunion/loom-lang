@@ -50,8 +50,7 @@ fn solver_defined(proof ProofQuery, expr Expr, state State, depth Int) Result[Bo
     if expr.kind == ExprKind.Intrinsic && expr.text == "text_concat" {
         return match pure(expr, state)? {
             Value.Text(value) => {
-                solver_fact(proof, Predicate.Compare("<=",
-                        add(text_length(value), constant(integer(-9223372036854775807)))), state)
+                solver_fact(proof, integer_limit("<=", text_length(value), 9223372036854775807), state)
                 Result.Ok(true)
             }
             _ => Result.Err(failure)

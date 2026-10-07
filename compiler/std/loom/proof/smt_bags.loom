@@ -123,10 +123,10 @@ fn count_predicate_extents(output List[Linear], value Predicate, depth Int) {
             count_term_extents(output, second, depth - 1)
         }
         Predicate.ArrayWrite(_, _, _, _, term) => {
-            count_term_extents(output, term, depth - 1)
+            count_scalar_extents(output, term, depth - 1)
         }
         Predicate.ArrayRead(_, _, _, term, guards) => {
-            count_term_extents(output, term, depth - 1)
+            count_scalar_extents(output, term, depth - 1)
             count_predicate_extents(output, get(guards, 0), depth - 1)
         }
         Predicate.Forall(_, _, _, conditions) => {
@@ -136,6 +136,15 @@ fn count_predicate_extents(output List[Linear], value Predicate, depth Int) {
         Predicate.Or(values) => count_predicate_list(output, values, depth - 1)
         Predicate.Equal(values) => count_predicate_list(output, values, depth - 1)
         Predicate.Not(values) => count_predicate_list(output, values, depth - 1)
+        _ => {
+        }
+    }
+}
+
+fn count_scalar_extents(output List[Linear], value ArrayScalar, depth Int) {
+    match value {
+        ArrayScalar.Integer(term) => count_term_extents(output, term, depth)
+        ArrayScalar.Boolean(values) => count_predicate_list(output, values, depth)
         _ => {
         }
     }

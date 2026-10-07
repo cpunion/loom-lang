@@ -8,6 +8,10 @@ fn integer_bounds(value IntegerTerm, facts List[Predicate], budget List[Int]) Re
     match value {
         IntegerTerm.Linear(term) => Result.Ok(range(term, facts))
         IntegerTerm.Select(_, _, _) => Result.Err("array selection needs established value bounds")
+        IntegerTerm.TextLength(_) => Result.Ok(Bounds {
+                low = integer(0)
+                high = integer(9223372036854775807)
+            })
         IntegerTerm.Count(_, inputs) => {
             if length(inputs) != 2 {
                 return Result.Err("invalid count operands")

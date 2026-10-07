@@ -22,6 +22,11 @@ fn same_float(left FloatValue, right FloatValue, budget List[Int]) Bool {
     }
     set(budget, 0, get(budget, 0) - 1)
     match left {
+        FloatValue.Select(identity, path, index) => match right {
+            FloatValue.Select(other, fields, position) => identity == other && same_projection(path, fields) &&
+            compare(index.constant, position.constant) == 0 && same_terms(index.terms, position.terms)
+            _ => false
+        }
         FloatValue.Literal(text) => match right {
             FloatValue.Literal(other) => text == other
             _ => false

@@ -3,7 +3,7 @@
 fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Value, Text] {
     if name == "text_len" {
         return match get(inputs, 0) {
-            Value.Text(text) => Result.Ok(Value.Number(text_length(text)))
+            Value.Text(text) => Result.Ok(integer_value(text_length(text)))
             _ => Result.Err("Text length proof requires immutable Text")
         }
     }
@@ -42,10 +42,18 @@ fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Va
 
 fn projected_value(contents Int, path List[Int], index Linear, ty Int) Value {
     if ty == 1 {
-        Value.Nonlinear(IntegerTerm.Select(contents, path, index))
-    } else {
-        Value.Projected(contents, path, index)
+        return Value.Nonlinear(IntegerTerm.Select(contents, path, index))
     }
+    if ty == 2 {
+        return Value.Boolean(Predicate.Select(contents, path, index))
+    }
+    if ty == 3 {
+        return Value.Text(TextValue.Select(contents, path, index))
+    }
+    if ty == 5 {
+        return Value.Float(FloatValue.Select(contents, path, index))
+    }
+    Value.Projected(contents, path, index)
 }
 
 // Check this operation only; composition has checked each operand under the

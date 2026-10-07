@@ -1,16 +1,17 @@
 // Immutable content equalities form finite classes of logical values. Follow
 // only established equality facts, never disjunctions or native pointer identity.
-fn text_length(value TextValue) Linear {
+fn text_length(value TextValue) IntegerTerm {
     match value {
-        TextValue.Literal(text) => constant(integer(std.text.length(text)))
+        TextValue.Literal(text) => IntegerTerm.Linear(constant(integer(std.text.length(text))))
         // This fresh identity denotes immutable bytes in the Text domain and
         // their byte length in the numeric domain, never another Int local.
-        TextValue.Variable(id) => variable(id)
+        TextValue.Variable(id) => IntegerTerm.Linear(variable(id))
+        TextValue.Select(_, _, _) => IntegerTerm.TextLength(value)
         TextValue.Joined(parts) => {
-            var size = constant(integer(0))
+            var size = IntegerTerm.Linear(constant(integer(0)))
             var index = 0
             while index < length(parts) {
-                size = add(size, text_length(get(parts, index)))
+                size = added_integer_terms(size, text_length(get(parts, index)))
                 index = index + 1
             }
             size
@@ -20,8 +21,8 @@ fn text_length(value TextValue) Linear {
 
 fn text_bounds(value Value, state State) State {
     match value {
-        Value.Text(text) => assume(assume(state, Predicate.Compare(">=", text_length(text))),
-            Predicate.Compare("<=", add(text_length(text), constant(integer(-9223372036854775807)))))
+        Value.Text(text) => assume(assume(state, integer_limit(">=", text_length(text), 0)),
+            integer_limit("<=", text_length(text), 9223372036854775807))
         Value.Record(fields) => {
             var bounded = state
             var index = 0

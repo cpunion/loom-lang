@@ -47,13 +47,43 @@ fn smt_named(writer SmtWriter, name Text, sort Text) Text {
 // Field indices are framed segments, not hashes or declaration names. Empty
 // paths describe scalar elements; nested paths describe inline projections.
 fn smt_array(writer SmtWriter, identity Int, path List[Int]) Text {
+    smt_array(writer, identity, path, ScalarDomain.Integer)
+}
+
+fn smt_array(writer SmtWriter, identity Int, path List[Int], domain ScalarDomain) Text {
     var name = concat("a", std.int.to_text(identity))
     var index = 0
     while index < length(path) {
         name = concat(name, concat("_f", std.int.to_text(get(path, index))))
         index = index + 1
     }
-    smt_named(writer, name, "(Array Int Int)")
+    let suffix, sort = match domain {
+        ScalarDomain.Integer => ("", "Int")
+        ScalarDomain.Boolean => ("_bool", "Bool")
+        ScalarDomain.Text => ("_text", "(Seq (_ BitVec 8))")
+        ScalarDomain.Float => ("_float", "(_ FloatingPoint 11 53)")
+    }
+    smt_named(writer, concat(name, suffix), concat("(Array Int ", concat(sort, ")")))
+}
+
+fn smt_select(writer SmtWriter, identity Int, path List[Int], index Linear,
+    domain ScalarDomain) Result[Text, Text] {
+    let array = smt_array(writer, identity, path, domain)
+    Result.Ok(concat("(select ", concat(array, concat(" ", concat(smt_linear(writer, index)?, ")")))))
+}
+
+fn smt_scalar(writer SmtWriter, value ArrayScalar, depth Int) Result[Text, Text] {
+    match value {
+        ArrayScalar.Integer(term) => smt_integer(writer, term, depth)
+        ArrayScalar.Boolean(values) => {
+            if length(values) != 1 {
+                return Result.Err("invalid Boolean array value")
+            }
+            smt_predicate(writer, get(values, 0), depth)
+        }
+        ArrayScalar.Text(term) => smt_text(writer, term, depth)
+        ArrayScalar.Float(term) => smt_float(writer, term, depth)
+    }
 }
 
 fn smt_number(value Number) Text {
@@ -99,6 +129,7 @@ fn smt_linear(writer SmtWriter, value Linear) Result[Text, Text] {
 fn smt_text(writer SmtWriter, value TextValue, depth Int) Result[Text, Text] {
     discard smt_step(writer, depth)?
     match value {
+        TextValue.Select(identity, path, index) => smt_select(writer, identity, path, index, ScalarDomain.Text)
         TextValue.Variable(id) => {
             let name = smt_name(writer, "t", id, "(Seq (_ BitVec 8))")
             let size = smt_name(writer, "n", id, "Int")
@@ -138,6 +169,29 @@ fn smt_pair(writer SmtWriter, operator Text, values List[Predicate], depth Int) 
     }
     let first = smt_predicate(writer, get(values, 0), depth + 1)?
     let second = smt_predicate(writer, get(values, 1), depth + 1)?
+    // Fold only propositional constants after encoding both operands. Source
+    // evaluation safety is proved separately; IEEE equality is not reflexive.
+    if operator == "and" || operator == "or" {
+        let absorbing = if operator == "and" {
+            "false"
+        } else {
+            "true"
+        }
+        let neutral = if operator == "and" {
+            "true"
+        } else {
+            "false"
+        }
+        if first == absorbing || second == absorbing {
+            return Result.Ok(absorbing)
+        }
+        if first == neutral {
+            return Result.Ok(second)
+        }
+        if second == neutral {
+            return Result.Ok(first)
+        }
+    }
     Result.Ok(concat("(", concat(operator, concat(" ", concat(first, concat(" ", concat(second, ")")))))))
 }
 
@@ -159,9 +213,11 @@ fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text
     match value {
         IntegerTerm.Linear(term) => smt_linear(writer, term)
         IntegerTerm.Count(identity, inputs) => smt_count(writer, identity, inputs, depth)
+        IntegerTerm.TextLength(text) => {
+            Result.Ok(concat("(seq.len ", concat(smt_text(writer, text, depth + 1)?, ")")))
+        }
         IntegerTerm.Select(identity, path, index) => {
-            let array = smt_array(writer, identity, path)
-            Result.Ok(concat("(select ", concat(array, concat(" ", concat(smt_linear(writer, index)?, ")")))))
+            smt_select(writer, identity, path, index, ScalarDomain.Integer)
         }
         IntegerTerm.Apply(operator, inputs) => {
             if (operator != "+" && operator != "-" && operator != "*") || length(inputs) != 2 {
@@ -177,6 +233,7 @@ fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text
 fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text] {
     discard smt_step(writer, depth)?
     match value {
+        Predicate.Select(identity, path, index) => smt_select(writer, identity, path, index, ScalarDomain.Boolean)
         Predicate.Constant(value) => Result.Ok(if value {
                 "true"
             } else {
@@ -190,6 +247,9 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
             let first = smt_linear(writer, start)?
             let last = smt_linear(writer, end)?
             let condition = smt_predicate(writer, get(conditions, 0), depth + 1)?
+            if condition == "true" {
+                return Result.Ok("true")
+            }
             let output = std.bytes.new()
             smt_append(output, concat("(forall ((", concat(bound, " Int)) (=> (and (<= ")))
             smt_append(output, concat(first, concat(" ", concat(bound, ") (< "))))
@@ -244,22 +304,23 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
             if length(valid) != 1 {
                 return Result.Err("invalid heap observation guard")
             }
-            let array = smt_array(writer, identity, path)
+            let array = smt_array(writer, identity, path, scalar_domain(value))
             let guard = smt_predicate(writer, get(valid, 0), depth + 1)?
             let position = smt_linear(writer, index)?
-            let term = smt_integer(writer, value, depth + 1)?
+            let term = smt_scalar(writer, value, depth + 1)?
             Result.Ok(concat("(=> ", concat(guard, concat(" (= (select ", concat(array,
                                 concat(" ", concat(position, concat(") ", concat(term, "))")))))))))
         }
         Predicate.ArrayWrite(before, after, path, index, value) => {
-            let previous = smt_array(writer, before, path)
-            let current = smt_array(writer, after, path)
+            let domain = scalar_domain(value)
+            let previous = smt_array(writer, before, path, domain)
+            let current = smt_array(writer, after, path, domain)
             let position = smt_linear(writer, index)?
-            let term = smt_integer(writer, value, depth + 1)?
+            let term = smt_scalar(writer, value, depth + 1)?
             let stored = concat("(store ", concat(previous, concat(" ", concat(position,
                             concat(" ", concat(term, ")"))))))
             let equation = concat("(= ", concat(current, concat(" ", concat(stored, ")"))))
-            if length(writer.counts) == 0 {
+            if length(writer.counts) == 0 || domain != ScalarDomain.Integer {
                 return Result.Ok(equation)
             }
             let output = std.bytes.new()
@@ -298,6 +359,11 @@ fn smt_query(obligations List[Obligation]) Result[Text, Text] {
     var index = 0
     while index < length(obligations) {
         let obligation = get(obligations, index)
+        let conclusion = smt_predicate(writer, obligation.conclusion, 0)?
+        if conclusion == "true" {
+            index = index + 1
+            continue
+        }
         smt_append(body, " (=> (and true")
         var fact = 0
         while fact < length(obligation.facts) {
@@ -306,7 +372,7 @@ fn smt_query(obligations List[Obligation]) Result[Text, Text] {
             fact = fact + 1
         }
         smt_append(body, ") ")
-        smt_append(body, smt_predicate(writer, obligation.conclusion, 0)?)
+        smt_append(body, conclusion)
         smt_append(body, ")")
         index = index + 1
     }
