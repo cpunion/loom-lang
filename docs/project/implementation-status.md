@@ -471,8 +471,11 @@ The [mixed-scalar example](../../compiler/examples/list_contracts/scalars.loom)
 uses the same rules for Bool, UTF-8 byte sequences and IEEE Float fields, importing
 pure helper constraints from typed replacements. Storage equality is distinct
 from Float numeric equality: restoring a value does not establish reflexivity
-without excluding NaN. Propositional tautologies are folded after evaluation
-safety has been modeled. Unobserved mutable siblings remain shared. Field equality
+without excluding NaN. Local proofs precede helper preparation and SMT; queries
+receive the established helper facts before search. Propositional tautologies
+are folded after evaluation safety has been modeled, and quantified conjunctions
+split by logical equivalence rather than sharing a cross-column trigger.
+Unobserved mutable siblings remain shared. Field equality
 supplies neither whole-record equality nor permutation; mutable graphs remain opaque.
 Whole `List[Int]` entry values now capture their logical length and content
 version through `old(values)`, including inline parameter fields, refined Lists

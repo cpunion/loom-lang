@@ -168,6 +168,14 @@ test fn tautological_quantifiers_do_not_repeat_the_context_or_assume_float_refle
                     facts = []
                     conclusion = Predicate.FloatCompare("==", ratio, ratio)
                 }]), "fp.eq")
+    let split = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.Forall(-1, constant(integer(0)), constant(integer(10)),
+                    [Predicate.And([Predicate.Select(10, [0], variable(-1)),
+                                Predicate.FloatCompare("==", ratio, ratio)])])
+            }])
+    assert contains(split, "(and (forall ((n-1 Int))")
+    assert contains(split, "(select a10_f0_bool (+ 0 (* 1 n-1))))) (forall ((n-1 Int))")
 }
 
 test fn pointwise_prefix_equality_supplies_only_the_matching_histogram_law() {

@@ -93,7 +93,9 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
         runtime_name = ""
         span = value.span
     }
-    match std.loom.proof.verify_with_helpers(program, probe, get(env.inputs, 0).build.proof_backend) {
+    // Try bounded local reasoning before preparing helper facts or invoking
+    // SMT. A solver query missing an established input predicate is wasted.
+    match std.loom.proof.verify_with_helpers(program, probe, std.loom.proof.no_proof_backend()) {
         Result.Ok(_) => true
         Result.Err(_) => match expanded_invariant_types(stage, probe) {
             Result.Ok(types) => match std.loom.proof.verify_with_helpers(proof_types(program, types),
@@ -198,7 +200,7 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
         runtime_name = ""
         span = value.span
     }
-    match std.loom.proof.verify_preservation(program, probe, get(env.inputs, 0).build.proof_backend, shared, protected) {
+    match std.loom.proof.verify_preservation(program, probe, std.loom.proof.no_proof_backend(), shared, protected) {
         Result.Ok(proved) => Result.Ok(proved)
         Result.Err(_) => {
             // Pure helper predicates belong to the value's established type,

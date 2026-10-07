@@ -169,6 +169,10 @@ fn smt_pair(writer SmtWriter, operator Text, values List[Predicate], depth Int) 
     }
     let first = smt_predicate(writer, get(values, 0), depth + 1)?
     let second = smt_predicate(writer, get(values, 1), depth + 1)?
+    Result.Ok(smt_boolean_pair(operator, first, second))
+}
+
+fn smt_boolean_pair(operator Text, first Text, second Text) Text {
     // Fold only propositional constants after encoding both operands. Source
     // evaluation safety is proved separately; IEEE equality is not reflexive.
     if operator == "and" || operator == "or" {
@@ -183,16 +187,61 @@ fn smt_pair(writer SmtWriter, operator Text, values List[Predicate], depth Int) 
             "false"
         }
         if first == absorbing || second == absorbing {
-            return Result.Ok(absorbing)
+            return absorbing
         }
         if first == neutral {
-            return Result.Ok(second)
+            return second
         }
         if second == neutral {
-            return Result.Ok(first)
+            return first
         }
     }
-    Result.Ok(concat("(", concat(operator, concat(" ", concat(first, concat(" ", concat(second, ")")))))))
+    concat("(", concat(operator, concat(" ", concat(first, concat(" ", concat(second, ")"))))))
+}
+
+// forall i. (P(i) && Q(i)) is the conjunction of the two quantifiers. Keep
+// unrelated scalar columns out of one multi-pattern; each clause can match its
+// own select/store terms. No source evaluation or safety obligation is removed.
+fn smt_quantified(writer SmtWriter, identity Int, start Linear, end Linear,
+    predicate Predicate, depth Int) Result[Text, Text] {
+    discard smt_step(writer, depth)?
+    match predicate {
+        Predicate.And(parts) => {
+            if length(parts) != 2 {
+                return Result.Err("invalid quantified conjunction")
+            }
+            let first = smt_quantified(writer, identity, start, end, get(parts, 0), depth + 1)?
+            let second = smt_quantified(writer, identity, start, end, get(parts, 1), depth + 1)?
+            return Result.Ok(smt_boolean_pair("and", first, second))
+        }
+        _ => {
+        }
+    }
+    let bound = concat("n", std.int.to_text(identity))
+    let first = smt_linear(writer, start)?
+    let last = smt_linear(writer, end)?
+    let condition = smt_predicate(writer, predicate, depth + 1)?
+    if condition == "true" {
+        return Result.Ok("true")
+    }
+    let output = std.bytes.new()
+    smt_append(output, concat("(forall ((", concat(bound, " Int)) (=> (and (<= ")))
+    smt_append(output, concat(first, concat(" ", concat(bound, ") (< "))))
+    smt_append(output, concat(bound, concat(" ", concat(last, ")) "))))
+    smt_append(output, concat(condition, "))"))
+    let quantified = std.bytes.to_text(output)
+    if length(writer.counts) != 0 {
+        match pointwise_bag(Predicate.Forall(identity, start, end, [predicate])) {
+            Option.Some(bag) => {
+                let law = concat("(=> ", concat(quantified,
+                        concat(" ", concat(smt_predicate(writer, bag, depth + 1)?, ")"))))
+                smt_append(writer.declarations, concat("(assert ", concat(bag_bound_scope(law, end), ")\n")))
+            }
+            Option.None => {
+            }
+        }
+    }
+    Result.Ok(quantified)
 }
 
 fn smt_relation(relation Text) Result[Text, Text] {
@@ -243,31 +292,7 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
             if length(conditions) != 1 {
                 return Result.Err("invalid quantified proof predicate")
             }
-            let bound = concat("n", std.int.to_text(identity))
-            let first = smt_linear(writer, start)?
-            let last = smt_linear(writer, end)?
-            let condition = smt_predicate(writer, get(conditions, 0), depth + 1)?
-            if condition == "true" {
-                return Result.Ok("true")
-            }
-            let output = std.bytes.new()
-            smt_append(output, concat("(forall ((", concat(bound, " Int)) (=> (and (<= ")))
-            smt_append(output, concat(first, concat(" ", concat(bound, ") (< "))))
-            smt_append(output, concat(bound, concat(" ", concat(last, ")) "))))
-            smt_append(output, concat(condition, "))"))
-            let quantified = std.bytes.to_text(output)
-            if length(writer.counts) != 0 {
-                match pointwise_bag(value) {
-                    Option.Some(bag) => {
-                        let law = concat("(=> ", concat(quantified,
-                                concat(" ", concat(smt_predicate(writer, bag, depth + 1)?, ")"))))
-                        smt_append(writer.declarations, concat("(assert ", concat(bag_bound_scope(law, end), ")\n")))
-                    }
-                    Option.None => {
-                    }
-                }
-            }
-            Result.Ok(quantified)
+            smt_quantified(writer, identity, start, end, get(conditions, 0), depth)
         }
         Predicate.Variable(id) => Result.Ok(smt_name(writer, "b", id, "Bool"))
         Predicate.BagEqual(before, size, after, count) => {
