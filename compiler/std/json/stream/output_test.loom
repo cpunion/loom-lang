@@ -42,6 +42,31 @@ test async fn json_output_awaits_each_chunk_and_reports_its_full_byte_count() {
     assert std.bytes.to_text(output) == expected
 }
 
+test async fn typed_json_output_uses_the_same_serial_sink() {
+    let value = StreamEntry {
+        name = "hé中",
+        values = [1, 2]
+    }
+    let output = std.bytes.new()
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        sleep_ms(0).await
+        var index = 0
+        while index < std.bytes.length(chunk) {
+            std.bytes.push(output, std.bytes.get(chunk, index))
+            index = index + 1
+        }
+        Result.Ok(index)
+    }
+    let expected = """
+        {"name":"hé中","values":[1,2]}
+        """
+    assert match write(value, 1, sink).await {
+        Result.Ok(count) => count == std.text.length(expected)
+        _ => false
+    }
+    assert std.bytes.to_text(output) == expected
+}
+
 test async fn json_output_stops_on_sink_encoding_and_count_errors() {
     let calls = [0]
     let fail = async fn(chunk Bytes) Result[Int, Text] {

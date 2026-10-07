@@ -33,6 +33,12 @@ then use normal checked construction for constrained application types. This
 keeps invariant checks at their explicit boundaries, including nested fields.
 Malformed input returns `DecodeError.Syntax(ParseError)`.
 
+`from_value[T](value Value)` uses the same typed construction on an existing
+tree, without a Text round trip. Manually constructed numeric spellings still
+need JSON grammar and the target number range. Recursive conversion caps
+container depth at 64 and returns `DecodeError.DepthExceeded`, including cycles.
+Selecting `Value` retains that representation rather than walking or isolating it.
+
 `Value.Number` stores a validated JSON number spelling as `Text`, so parsing
 does not round large integers or decimals through `Float`. A manually built
 number is validated when written. Objects retain source field order and reject
@@ -57,7 +63,10 @@ so serialize feeds. The same duplicate-key and 64-level nesting policy applies.
 [`std.json.stream`](stream/README.md) awaits an existing Stream and uses this
 decoder. It needs no JSON runtime or new producer protocol.
 
-`encoder(value, chunk_size)` and `next(encoder)` write a `Value` incrementally.
+`encoder(value, chunk_size)` and `next(encoder)` write a `Value` or a supported
+typed shape incrementally, with the same field/number policy as `encode`.
+Typed traversal specializes ordinary callbacks at compile time; it builds
+neither a complete `Value` tree nor a runtime schema registry.
 The chunk size must be positive. Each item is a fresh nonempty `Bytes` of at most
 that size; UTF-8 and escapes may split across chunks. Concatenate bytes before
 decoding Text. EOF is `None`; invalid numbers, duplicate keys or excessive depth
@@ -68,5 +77,7 @@ List views, not an isolated snapshot of the entire graph: shared element writes
 and not-yet-opened children remain observable. Synchronize application mutations
 when a consistent document is required. Encoding retains traversal state, key
 sets and the current output chunk, not a complete serialized document.
-The async writer uses the same cursor. Typed streaming encoding and
-record-at-a-time document sequences are not provided.
+Constrained Lists retain their constrained handle and starting length rather
+than exposing a writable unconstrained view; synchronize mutations while encoding.
+The async writer uses the same cursor. Record-at-a-time document sequences are
+not provided.

@@ -11,7 +11,7 @@ pub enum OutputError[E] {
 
 // The sink must finish writing each chunk or report an error. A mismatched
 // count is explicit, never silently dropped or retried as if no bytes escaped.
-pub async fn write[E](value Value, chunk_size Int, sink fn(Bytes) Task[Result[Int, E]])
+pub async fn write[T, E](value T, chunk_size Int, sink fn(Bytes) Task[Result[Int, E]])
 Result[Int, OutputError[E]]
 requires chunk_size > 0
 {

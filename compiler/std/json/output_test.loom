@@ -1,5 +1,7 @@
 import std.bytes.set
 
+type OutputPair = List[Int] where std.list.length(self) == 2
+
 fn json_output_matches(outcome Result[Text, WriteError], expected Text) Bool {
     match outcome {
         Result.Ok(value) => value == expected
@@ -21,7 +23,7 @@ fn json_output_eof(cursor Encoder) {
     }
 }
 
-fn json_written(input Value, width Int) Result[Text, WriteError] {
+fn json_written[T](input T, width Int) Result[Text, WriteError] {
     let cursor = encoder(input, width)
     let output = std.bytes.new()
     while true {
@@ -43,6 +45,35 @@ fn json_written(input Value, width Int) Result[Text, WriteError] {
         }
     }
     Result.Ok(to_text(output))
+}
+
+test fn typed_json_output_uses_the_same_shapes_without_a_value_tree() {
+    let entry = Entry {
+        name = "hé中",
+        values = [1, 2],
+        active = true
+    }
+    assert json_output_matches(json_written(entry, 1), encoded(entry))
+    let fields = ("😀\n", false, 42, 1.25, Value.Null)
+    assert json_output_matches(json_written(fields, 3), encoded(fields))
+    assert json_output_matches(json_written(tuple(), 1), "[]")
+    assert json_output_matches(json_written(Positive(2), 1), "2")
+    let refined = Nonempty(Count {
+            count = 2
+        })
+    assert json_output_matches(json_written(refined, 1), encoded(refined))
+    let pair = OutputPair([1, 2])
+    assert json_output_matches(json_written(pair, 1), encoded(pair))
+    let children = std.list.new[Tree]()
+    let root = Tree {
+        name = "root",
+        children = children
+    }
+    assert json_output_matches(json_written(root, 2), encoded(root))
+    push(children, root)
+    assert json_output_error(json_written(root, 1), WriteError.DepthExceeded)
+    assert json_output_error(json_written(0.0 / 0.0, 1), WriteError.InvalidNumber)
+    assert json_output_error(json_written(WriteError.InvalidNumber, 1), WriteError.UnsupportedType)
 }
 
 test fn json_output_chunks_match_stringify_at_byte_and_escape_boundaries() {

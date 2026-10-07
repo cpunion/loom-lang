@@ -1,0 +1,80 @@
+// Specialize field access, not a runtime schema registry or an intermediate
+// Value tree. Container callbacks retain only their input and current cursor.
+fn typed_frame[T](value T, depth Int) Result[EncodeFrame, WriteError] {
+    comptime if T == Value {
+        return Result.Ok(EncodeFrame.Value(value, depth))
+    }
+    comptime if encoding_kind[T]() == Kind.Bool {
+        return Result.Ok(EncodeFrame.Raw(if value {
+                    "true"
+                } else {
+                    "false"
+                }, 0))
+    }
+    comptime if encoding_kind[T]() == Kind.Int {
+        return Result.Ok(EncodeFrame.Raw(std.int.to_text(value), 0))
+    }
+    comptime if encoding_kind[T]() == Kind.Float {
+        if !is_finite(value) {
+            return Result.Err(WriteError.InvalidNumber)
+        }
+        return Result.Ok(EncodeFrame.Raw(std.float.to_text(value), 0))
+    }
+    comptime if encoding_kind[T]() == Kind.Text {
+        return Result.Ok(EncodeFrame.String(value, -1))
+    }
+    comptime if encoding_kind[T]() == Kind.List {
+        if depth >= 64 {
+            return Result.Err(WriteError.DepthExceeded)
+        }
+        comptime if describe[T]().types[describe[T]().root].kind == Kind.Refined {
+            let item = fn(index Int) Result[EncodeFrame, WriteError] {
+                typed_frame(std.list.get(value, index), depth + 1)
+            }
+            return Result.Ok(EncodeFrame.Items(item, std.list.length(value), -1))
+        } else {
+            let items = std.list.view.capture(value)
+            let item = fn(index Int) Result[EncodeFrame, WriteError] {
+                typed_frame(std.list.view.get(items, index), depth + 1)
+            }
+            return Result.Ok(EncodeFrame.Items(item, std.list.view.length(items), -1))
+        }
+    }
+    comptime if encoding_kind[T]() == Kind.Tuple {
+        if depth >= 64 {
+            return Result.Err(WriteError.DepthExceeded)
+        }
+        let count = comptime {
+            std.list.length(encoding_shape[T]().arguments)
+        }
+        let item = fn(index Int) Result[EncodeFrame, WriteError] {
+            comptime for position, field in value {
+                if index == position {
+                    return typed_frame(field, depth + 1)
+                }
+            }
+            Result.Err(WriteError.UnsupportedType)
+        }
+        return Result.Ok(EncodeFrame.Items(item, count, -1))
+    }
+    comptime if encoding_kind[T]() == Kind.Record {
+        if depth >= 64 {
+            return Result.Err(WriteError.DepthExceeded)
+        }
+        let count = comptime {
+            std.list.length(encoding_shape[T]().fields)
+        }
+        let item = fn(index Int) Result[(Text, EncodeFrame), WriteError] {
+            var position = 0
+            comptime for name, field in value {
+                if index == position {
+                    return Result.Ok((name, typed_frame(field, depth + 1)?))
+                }
+                position = position + 1
+            }
+            Result.Err(WriteError.UnsupportedType)
+        }
+        return Result.Ok(EncodeFrame.Fields(item, count, -1))
+    }
+    Result.Err(WriteError.UnsupportedType)
+}

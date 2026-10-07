@@ -1,0 +1,57 @@
+pub record StreamEntry {
+    name Text
+    values List[Int]
+}
+
+record HiddenEntry {
+    value Int
+}
+
+test async fn typed_stream_constructs_visible_shapes_after_fragmented_input() {
+    let source = from_iter(from_list([to_bytes("{\"name\":\"hé"), to_bytes("中\",\"values\":[1,"),
+                to_bytes("2]} ")]))
+    let decoded Result[StreamEntry, TypedError[Text]] = decode(source, raw).await
+    assert match decoded {
+        Result.Ok(value) => value.name == "hé中" && value.values[1] == 2
+        _ => false
+    }
+    let list Result[List[Int], TypedError[Text]] = decode(from_iter(from_list([to_bytes("[1,2]")])), raw).await
+    assert match list {
+        Result.Ok(value) => value[0] == 1 && value[1] == 2
+        _ => false
+    }
+}
+
+test async fn typed_stream_retains_input_syntax_and_conversion_errors() {
+    let opaque Result[HiddenEntry, TypedError[Text]] = decode(from_iter(from_list([
+                    to_bytes("{\"value\":1}")
+                ])), raw).await
+    assert match opaque {
+        Result.Err(TypedError.Conversion(DecodeError.UnsupportedType)) => true
+        _ => false
+    }
+    let missing Result[StreamEntry, TypedError[Text]] = decode(from_iter(from_list([
+                    to_bytes("{\"name\":\"loom\",\"other\":[]} ")
+                ])), raw).await
+    assert match missing {
+        Result.Err(TypedError.Conversion(DecodeError.MissingField(name))) => name == "values"
+        _ => false
+    }
+    let trailing Result[Bool, TypedError[Text]] = decode(from_iter(from_list([to_bytes("true false")])), raw).await
+    assert match trailing {
+        Result.Err(TypedError.Stream(StreamError.Syntax(_))) => true
+        _ => false
+    }
+    let items List[Result[Bytes, Text]] = [Result.Ok(to_bytes("true")), Result.Err("read failed"),
+        Result.Ok(to_bytes("suffix"))]
+    let source = from_iter(from_list(items))
+    let failed Result[Bool, TypedError[Text]] = decode(source, packet).await
+    assert match failed {
+        Result.Err(TypedError.Stream(StreamError.Input(message))) => message == "read failed"
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(Result.Ok(bytes)) => std.bytes.to_text(bytes) == "suffix"
+        _ => false
+    }
+}

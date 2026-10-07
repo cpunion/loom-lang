@@ -641,7 +641,8 @@ generic/dynamic async pulls, map/filter/take and sequential consumers. Callback
 errors, short-circuiting and cancellation retain ordinary Task semantics.
 [`TCP chunks`](../../compiler/std/net/tcp/chunks/README.md) borrow an explicitly
 closed socket, yield fresh buffers and distinguish errors from EOF.
-Source JSON now has an incremental byte decoder and an async Stream consumer.
+Source JSON now has an incremental byte decoder and an async Stream consumer,
+including typed construction from the parsed tree without a Text round trip.
 UTF-8, escapes and numbers may cross chunk boundaries; container state and the
 result tree grow without buffering the full document text. EOF/trailing input,
 producer errors and cancellation use existing library/Task semantics. The
@@ -650,7 +651,8 @@ O0/O2 under moving-GC stress. A source encoder now emits bounded fresh byte chun
 the async writer awaits each sink with checked full-chunk counts. JSON errors,
 sink errors and cancellation preserve partial-output and caller-managed resource
 semantics. Open containers retain fixed-shape views, not deep snapshots.
-Typed streaming encoding, document sequences, borrow-retaining adapters,
+Typed streaming encoding uses specialized source callbacks without a complete
+intermediate Value tree or runtime schema registry. Document sequences, borrow-retaining adapters,
 owned async resource pipelines and application-grade
 networking remain open.
 
