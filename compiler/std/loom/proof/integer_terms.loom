@@ -92,6 +92,12 @@ fn same_integer_term(left IntegerTerm, right IntegerTerm, budget List[Int]) Bool
     }
     set(budget, 0, get(budget, 0) - 1)
     match left {
+        IntegerTerm.TextByte(text, inputs) => match right {
+            IntegerTerm.TextByte(other, values) => same_text(text, other) &&
+            length(inputs) == 1 && length(values) == 1 &&
+            same_integer_term(get(inputs, 0), get(values, 0), budget)
+            _ => false
+        }
         IntegerTerm.TextLength(text) => match right {
             IntegerTerm.TextLength(other) => same_text(text, other)
             _ => false

@@ -31,6 +31,10 @@ fn integer_bounds(value IntegerTerm, facts List[Predicate], budget List[Int]) Re
                 low = integer(0)
                 high = integer(9223372036854775807)
             })
+        IntegerTerm.TextByte(_, _) => Result.Ok(Bounds {
+                low = integer(0)
+                high = integer(255)
+            })
         IntegerTerm.Count(_, inputs) => {
             if length(inputs) != 2 {
                 return Result.Err("invalid count operands")

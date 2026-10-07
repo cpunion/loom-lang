@@ -34,6 +34,7 @@ enum IntegerTerm {
     Select(Int, List[Int], Linear)
     Count(Int, List[IntegerTerm])
     TextLength(TextValue)
+    TextByte(TextValue, List[IntegerTerm])
 }
 
 enum ScalarDomain {

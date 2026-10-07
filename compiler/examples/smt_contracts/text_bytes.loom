@@ -1,0 +1,51 @@
+import std.text.byte
+import std.text.length
+
+fn observed_byte(value Text, index Int) Int
+ensures result >= 0 && result <= 255
+{
+    byte(value, index)
+}
+
+fn byte_range(value Text, index Int) Bool
+requires index >= 0 && index < length(value)
+ensures result
+{
+    byte(value, index) >= 0 && byte(value, index) <= 255
+}
+
+fn equal_text_bytes(left Text, right Text, index Int) Bool
+requires left == right
+requires index >= 0 && index < length(left)
+ensures result
+{
+    byte(left, index) == byte(right, index)
+}
+
+fn snow_lead() Int
+ensures result == 233
+{
+    byte("雪", 0)
+}
+
+fn hypothetical_byte(value Text, index Int) Bool
+requires index >= 0 && index < length(value)
+ensures byte(value, index) == byte(value, index)
+{
+    true
+}
+
+fn text_byte_cases() {
+    assert observed_byte("A", 0) == 65
+    assert observed_byte("é", 1) == 169
+    assert observed_byte("\0", 0) == 0
+    assert observed_byte("😀", 3) == 128
+    assert byte_range("雪", 2)
+    assert equal_text_bytes("雪", "雪", 1)
+    assert snow_lead() == 233
+    assert hypothetical_byte("雪", 2)
+}
+
+test fn immutable_text_byte_contracts_compose() {
+    text_byte_cases()
+}

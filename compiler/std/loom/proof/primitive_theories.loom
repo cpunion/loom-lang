@@ -10,6 +10,13 @@ fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Va
     if name == "text_concat" {
         return joined_text(get(inputs, 0), get(inputs, 1))
     }
+    if name == "text_byte" {
+        return match get(inputs, 0) {
+            Value.Text(text) => Result.Ok(Value.Nonlinear(
+                    IntegerTerm.TextByte(text, [integer_term(get(inputs, 1))?])))
+            _ => Result.Err("Text byte proof requires immutable Text")
+        }
+    }
     if name == "list_len" {
         return Result.Ok(Value.Number(list_value_extent(get(inputs, 0), state)?))
     }
@@ -65,6 +72,14 @@ fn intrinsic_defined(expr Expr, state State) Result[Bool, Text] {
     if expr.text == "list_get" {
         return element_bounds(expr, state)
     }
+    if expr.text == "text_byte" {
+        let guard = text_byte_guard(pure(get(expr.children, 0), state)?,
+            pure(get(expr.children, 1), state)?)?
+        if !holds(guard, state.facts) && !difference_holds(guard, state.facts) {
+            return Result.Err("postcondition Text byte index is not proved defined")
+        }
+        return Result.Ok(true)
+    }
     if expr.text == "text_concat" {
         let size = match pure(expr, state)? {
             Value.Text(text) => text_length(text)
@@ -102,13 +117,29 @@ fn execute_immutable_operation(proof Verification, expr Expr, name Text, state S
     while index < length(inputs) {
         let arguments = get(inputs, index)
         let value = intrinsic_value(name, expr.ty, arguments.values, arguments.state)?
+        let current = if name == "text_byte" {
+            assume(arguments.state, text_byte_guard(get(arguments.values, 0), get(arguments.values, 1))?)
+        } else {
+            arguments.state
+        }
         // Successful execution, unlike a hypothetical contract expression, may
         // establish result bounds. No equation permits reordering arguments.
         discard add_outcome(output, Outcome {
-                state = bounded(value, arguments.state)
+                state = bounded(value, current)
                 value = value
             })?
         index = index + 1
     }
     Result.Ok(output)
+}
+
+fn text_byte_guard(value Value, index Value) Result[Predicate, Text] {
+    match value {
+        Value.Text(text) => {
+            let position = integer_term(index)?
+            Result.Ok(Predicate.And(predicates(integer_limit(">=", position, 0),
+                        integer_predicate("<", position, text_length(text)))))
+        }
+        _ => Result.Err("Text byte proof requires immutable Text")
+    }
 }

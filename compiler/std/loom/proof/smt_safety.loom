@@ -60,6 +60,11 @@ fn solver_defined(proof ProofQuery, expr Expr, state State, depth Int) Result[Bo
             _ => Result.Err(failure)
         }
     }
+    if expr.kind == ExprKind.Intrinsic && expr.text == "text_byte" {
+        solver_fact(proof, text_byte_guard(pure(get(expr.children, 0), state)?,
+                pure(get(expr.children, 1), state)?)?, state)
+        return Result.Ok(true)
+    }
     if expr.kind == ExprKind.Intrinsic && expr.text == "list_get" {
         let size = list_value_extent(pure(get(expr.children, 0), state)?, state)?
         let index = list_value_index(pure(get(expr.children, 1), state)?)?

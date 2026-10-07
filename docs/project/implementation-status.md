@@ -359,6 +359,11 @@ fault obligations still apply. See the
 [range example](../../compiler/examples/smt_contracts/division_ranges.loom).
 Structural integer-term identity bypasses interval/SMT search without bypassing
 evaluation safety. See the [division example](../../compiler/examples/smt_contracts/division.loom).
+Immutable `std.text.byte` observations now compose with this same integer and
+UTF-8 sequence algebra. Normal-return bounds of 0–255 prove locally, including
+short-circuit branches; Text equality and concrete byte contents use SMT.
+Hypothetical accesses independently require a nonnegative, in-range byte index.
+See the [byte example](../../compiler/examples/smt_contracts/text_bytes.loom).
 General collection induction and content/type-dependent variadic proofs remain
 unsupported; nonlinear solver queries may still be unknown or time out.
 Constrained construction, stable scalar facts, pure-helper implication and

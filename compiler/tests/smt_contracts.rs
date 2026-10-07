@@ -18,6 +18,80 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn immutable_text_bytes_recheck_ranges_utf8_and_hypothetical_access_domains() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("bytes.loom");
+    let program = include_str!("../examples/smt_contracts/text_bytes.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace("result <= 255", "result <= 254"),
+        program.replace("ensures result == 233", "ensures result == 155"),
+        program.replace("requires left == right\n", ""),
+        program.replace(
+            "index >= 0 && index < length(value)",
+            "index < length(value)",
+        ),
+        program.replace("index >= 0 && index < length(value)", "index >= 0"),
+        program.replace("index < length(value)", "index <= length(value)"),
+    ] {
+        assert_ne!(changed, program, "test edit did not apply");
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(
+            !output.status.success(),
+            "unsound Text byte proof: {changed}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "{error}"
+        );
+    }
+    let local = r#"import std.text.byte
+import std.text.length
+
+fn observed(value Text, index Int) Int
+ensures result >= 0 && result <= 255
+{
+    byte(value, index)
+}
+
+fn bounded(value Text, index Int) Bool
+requires index >= 0 && index < length(value)
+ensures result
+{
+    byte(value, index) >= 0 && byte(value, index) <= 255
+}
+"#;
+    fs::write(&source, local).unwrap();
+    success(
+        &common::command(&["check", package.path().to_str().unwrap()])
+            .env("PATH", "")
+            .output()
+            .unwrap(),
+    );
+    fs::write(
+        &source,
+        format!("{program}\nfn main() {{\n    text_byte_cases()\n}}\n"),
+    )
+    .unwrap();
+    for mode in ["test", "run"] {
+        success(&common::loom(&[mode, package.path().to_str().unwrap()]));
+    }
+}
+
+#[test]
 fn integer_division_intervals_prove_without_a_solver_but_keep_fault_checks() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("ranges.loom");

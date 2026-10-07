@@ -265,6 +265,14 @@ fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text
         IntegerTerm.TextLength(text) => {
             Result.Ok(concat("(seq.len ", concat(smt_text(writer, text, depth + 1)?, ")")))
         }
+        IntegerTerm.TextByte(text, inputs) => {
+            if length(inputs) != 1 {
+                return Result.Err("invalid Text byte operands")
+            }
+            let value = smt_text(writer, text, depth + 1)?
+            let index = smt_integer(writer, get(inputs, 0), depth + 1)?
+            Result.Ok(concat("(ubv_to_int (seq.nth ", concat(value, concat(" ", concat(index, "))")))))
+        }
         IntegerTerm.Select(identity, path, index) => {
             smt_select(writer, identity, path, index, ScalarDomain.Integer)
         }

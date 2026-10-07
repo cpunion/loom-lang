@@ -38,6 +38,20 @@ test fn bounded_polynomial_safety_keeps_hypothetical_overflow_and_eager_faults()
     assert !verified(fixture(literal("0"), [], operation("==", eager, literal("0"))))
 }
 
+test fn nonlinear_interval_contradictions_prune_only_impossible_branches() {
+    let x = IntegerTerm.Linear(variable(0))
+    let square = IntegerTerm.Apply("*", [x, x])
+    let facts = [Predicate.Compare(">=", variable(0)),
+        Predicate.Compare("<=", add(variable(0), constant(integer(-3))))]
+    let impossible = predicates(integer_limit("<", square, 0))
+    push(impossible, get(facts, 0))
+    push(impossible, get(facts, 1))
+    assert holds(Predicate.Constant(false), impossible)
+    assert !holds(Predicate.Constant(false), facts)
+    assert !holds(Predicate.Constant(false), [integer_limit("<", square, 0)])
+    assert !holds(Predicate.Constant(false), [integer_limit("<", IntegerTerm.Select(4, [], variable(0)), 0)])
+}
+
 fn interval_result(value Result[Bounds, Text]) Bounds {
     match value {
         Result.Ok(bounds) => bounds

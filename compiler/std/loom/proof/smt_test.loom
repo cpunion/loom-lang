@@ -32,6 +32,17 @@ fn failed_solver(context Text, query Text) Result[Bool, Text] {
     Result.Err("test backend failure")
 }
 
+test fn text_byte_encoding_uses_unsigned_utf8_sequence_elements() {
+    let value = IntegerTerm.TextByte(TextValue.Literal("雪"), [IntegerTerm.Linear(constant(integer(0)))])
+    let query = encoding([Obligation {
+                facts = []
+                conclusion = integer_limit("==", value, 233)
+            }])
+    assert contains(query, "(ubv_to_int (seq.nth (seq.++ (as seq.empty (Seq (_ BitVec 8)))")
+    assert contains(query, "(_ bv233 8)") && contains(query, "(_ bv155 8)")
+    assert contains(query, "(_ bv170 8))) (+ 0))) (+ 233))")
+}
+
 test fn backend_failures_propagate_and_easy_or_unsupported_proofs_do_not_call_it() {
     let backend = ProofBackend {
         enabled = true
