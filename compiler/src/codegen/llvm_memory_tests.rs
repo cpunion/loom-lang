@@ -151,14 +151,14 @@ fn dead_inner_bindings_retire_without_releasing_their_result_handoff() {
         ],
     );
     let body = &source.functions[0].body;
-    let plan = gc_liveness::Plan::new(body, BTreeSet::new());
+    let plan = gc_liveness::Plan::new(body, 0, BTreeSet::new(), &BTreeSet::new(), false);
     assert_eq!(
         plan.retired[&(&body.statements[0] as *const checked::Stmt)],
         BTreeSet::from([0])
     );
     assert_eq!(
         plan.retired[&(&body.statements[2] as *const checked::Stmt)],
-        BTreeSet::from([1])
+        BTreeSet::new()
     );
     for optimization in [Optimization::O0, Optimization::O2] {
         let (ir, output) = emit_run(&source, optimization);

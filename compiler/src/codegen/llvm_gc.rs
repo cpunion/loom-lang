@@ -336,7 +336,7 @@ pub(super) fn runtime_function<'ctx>(
 }
 
 #[derive(Default)]
-struct TemporarySlots {
+pub(super) struct TemporarySlots {
     shared: bool,
     // Physical slots follow first source use, never HashMap iteration order.
     types: Vec<Type>,
@@ -347,7 +347,18 @@ struct TemporarySlots {
 }
 
 impl TemporarySlots {
-    fn may_allocate(&mut self, allocating: &BTreeSet<usize>, value: &checked::Expr) -> bool {
+    pub(super) fn allocation_query(shared: bool) -> Self {
+        Self {
+            shared,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn may_allocate(
+        &mut self,
+        allocating: &BTreeSet<usize>,
+        value: &checked::Expr,
+    ) -> bool {
         if self.shared {
             return true;
         }
@@ -410,7 +421,11 @@ impl TemporarySlots {
         result
     }
 
-    fn block_allocates(&mut self, allocating: &BTreeSet<usize>, body: &checked::Block) -> bool {
+    pub(super) fn block_allocates(
+        &mut self,
+        allocating: &BTreeSet<usize>,
+        body: &checked::Block,
+    ) -> bool {
         body.statements
             .iter()
             .any(|statement| match &statement.kind {

@@ -295,6 +295,20 @@ fn emit_checked(
         } else {
             gc::RootFrame::empty()
         };
+        let liveness = if roots.locals.is_empty() {
+            gc_liveness::Plan::default()
+        } else {
+            gc_liveness::Plan::new(
+                &source.body,
+                source.params.len(),
+                plans
+                    .iter()
+                    .flat_map(|plan| plan.captures.iter().copied())
+                    .collect(),
+                &allocating,
+                shared,
+            )
+        };
         let mut emitter = FunctionEmitter {
             context: &context,
             module: &module,
@@ -308,13 +322,7 @@ fn emit_checked(
             program,
             size_type,
             roots,
-            liveness: gc_liveness::Plan::new(
-                &source.body,
-                plans
-                    .iter()
-                    .flat_map(|plan| plan.captures.iter().copied())
-                    .collect(),
-            ),
+            liveness,
             tracers: &mut tracers,
             loop_targets: Vec::new(),
             cleanups: HashMap::new(),
@@ -1137,11 +1145,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     fn block(&mut self, block: &checked::Block) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
-        if let Some(live) = self.liveness.entries.get(&(block as *const checked::Block)) {
-            for local in 0..self.local_types.len() {
-                if !live.contains(&local) {
-                    self.clear_dead_local(local)?;
-                }
+        if let Some(retired) = self.liveness.entries.get(&(block as *const checked::Block)) {
+            for local in retired {
+                self.clear_dead_local(*local)?;
             }
         }
         for statement in &block.statements {

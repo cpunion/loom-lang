@@ -583,8 +583,11 @@ application-grade networking are not complete.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;
 large-object storage is separate and stress tests relocate all sizes. Ordinary
-nonallocating functions stay root-free. General local root liveness and
-generational/concurrent collection are not implemented. Source exposes no
+nonallocating functions stay root-free. Checked control-flow liveness retires
+dead local roots at block entry and complete statement boundaries; pending
+operands retain separate snapshots. Cleanup captures remain conservatively
+rooted. Expression-internal retirement and generational/concurrent collection
+are not implemented. Source exposes no
 addresses, finalizers, weak references or ownership/borrow syntax.
 
 The private [shared-heap boundary](../../compiler/runtime/src/shared_heap.rs)

@@ -325,6 +325,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 &borrowed,
                 self.tracers,
             )?;
+            let liveness = if roots.locals.is_empty() {
+                gc_liveness::Plan::default()
+            } else {
+                gc_liveness::Plan::new(plan.body, 0, BTreeSet::new(), self.allocating, self.shared)
+            };
             let mut callback = FunctionEmitter {
                 context: self.context,
                 module: self.module,
@@ -338,7 +343,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 program: self.program,
                 size_type: self.size_type,
                 roots,
-                liveness: gc_liveness::Plan::new(plan.body, BTreeSet::new()),
+                liveness,
                 tracers: self.tracers,
                 loop_targets: Vec::new(),
                 cleanups: HashMap::new(),
