@@ -62,6 +62,7 @@ fn main() {
     float_remainder_cases()
     division_cases()
     search_cases()
+    scan_branch_cases()
     division_range_cases()
     text_byte_cases()
     bitwise_cases()

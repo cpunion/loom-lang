@@ -1,0 +1,98 @@
+record ScanExit {
+    condition Expr
+    accepted Expr
+    all_false Bool
+    all_true Bool
+}
+
+// Every iteration starts from the same outer state except for its unit-step
+// cursor. Local branch rebinding is safe; writing an outer binding is not.
+fn scan_outer_write(value Expr, bindings List[ExpansionBinding], depth Int) Bool {
+    if depth <= 0 {
+        return true
+    }
+    if value.kind == ExprKind.Assign {
+        var index = 0
+        while index < length(bindings) {
+            if get(bindings, index).local == value.index {
+                return true
+            }
+            index = index + 1
+        }
+    }
+    var index = 0
+    while index < length(value.children) {
+        if scan_outer_write(get(value.children, index), bindings, depth - 1) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Reuse ordinary pure-helper paths and their guarded evaluation checks. Guards
+// retain within-iteration order; the caller models the first exiting iteration.
+fn scan_branches(context Expansion, body Expr, bindings List[ExpansionBinding],
+    locals List[Local], self Bool, calls Int, depth Int) Result[ScanExit, Text] {
+    let children = new[Expr]()
+    var index = 0
+    while index + 1 < length(body.children) {
+        let child = get(body.children, index)
+        if scan_outer_write(child, bindings, 256) {
+            return Result.Err("pure Boolean scan cannot rebind outer state before its unit step")
+        }
+        push(children, child)
+        index = index + 1
+    }
+    let prefix = proof_expr(body, ExprKind.Block, 0, "", -1, children)
+    let start = HelperPath {
+        guard = proof_bool(body, true)
+        bindings = clone(bindings)
+        value = proof_expr(body, ExprKind.Block, 0, "", -1, new[Expr]())
+        returned = false
+    }
+    let paths = helper_branch(context, prefix, start, locals, self, calls, depth + 1, true)?
+    var condition = proof_bool(body, false)
+    var accepted = proof_bool(body, false)
+    var all_false = true
+    var all_true = true
+    index = 0
+    while index < length(paths) {
+        let path = get(paths, index)
+        if path.returned && !is_bool(path.guard, false) {
+            all_false = all_false && is_bool(path.value, false)
+            all_true = all_true && is_bool(path.value, true)
+            condition = proof_not(proof_and(proof_not(condition), proof_not(path.guard)))
+            let success = proof_and(path.guard, path.value)
+            accepted = proof_not(proof_and(proof_not(accepted), proof_not(success)))
+        }
+        index = index + 1
+    }
+    Result.Ok(ScanExit {
+            condition = condition
+            accepted = accepted
+            all_false = all_false
+            all_true = all_true
+        })
+}
+
+fn scan_result(context Expansion, source Expr, summary ScanExit, identity Int,
+    start Expr, end Expr, continuation Expr) Expr {
+    let scanned = quantified_value(source, identity, start, end, proof_not(summary.condition))
+    if summary.all_false {
+        return proof_and(scanned, continuation)
+    }
+    if summary.all_true {
+        return guarded_value(scanned, continuation)
+    }
+    // A true exit wins exactly when there was no exit at an earlier index.
+    // Nested bounded quantifiers preserve source order without executing a
+    // hypothetical read or treating any later witness as the first one.
+    let previous = scan_binder(context)
+    let cursor = proof_expr(source, ExprKind.Intrinsic, 1, "proof_bound", identity, new[Expr]())
+    let prefix = quantified_value(source, previous, start, cursor,
+        rename_bound(proof_not(summary.condition), identity, previous))
+    let no_success = quantified_value(source, identity, start, end,
+        proof_not(proof_and(summary.accepted, prefix)))
+    guarded_value(no_success, proof_and(scanned, continuation))
+}

@@ -188,6 +188,111 @@ fn integer_division_intervals_prove_without_a_solver_but_keep_fault_checks() {
 }
 
 #[test]
+fn scan_branches_recheck_order_local_rebinding_and_guarded_evaluation() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("scans.loom");
+    let program = include_str!("../examples/smt_contracts/scan_branches.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace("if value > 100", "if value > 101"),
+        program.replace("if value < 1", "if value < 0"),
+        program.replace("accepted = value <= 100", "accepted = value <= 99"),
+        program.replace("return value == 0", "return value != 0"),
+        program.replace(
+            "if value < 0 {\n            return false",
+            "if value < 0 {\n            return true",
+        ),
+        program.replace(
+            "        if divisor <= 0 {\n            return false\n        }\n",
+            "",
+        ),
+        program.replace(
+            "        let value = values[index]",
+            "        index = index + 1\n        let value = values[index]",
+        ),
+    ] {
+        assert_ne!(changed, program, "test edit did not apply");
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(!output.status.success(), "unsound scan proof: {changed}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved") || error.contains("scan"),
+            "unexpected failure: {error}"
+        );
+    }
+    let unsafe_scan = r#"import std.list.length
+
+fn faulty(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        if values[index] == 0 {
+            return false
+        }
+        let ratio = 1 / 0
+        if ratio > 0 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn promised(values List[Int]) Bool
+requires length(values) > 0 && values[0] != 0
+ensures result == faulty(values)
+{
+    true
+}
+"#;
+    fs::write(&source, unsafe_scan).unwrap();
+    assert!(
+        !check().status.success(),
+        "unsafe scan evaluation was hidden"
+    );
+    fs::write(
+        &source,
+        format!("{program}\nfn main() {{\n    scan_branch_cases()\n}}\n"),
+    )
+    .unwrap();
+    success(&check());
+    for mode in ["test", "run"] {
+        success(&common::loom(&[mode, package.path().to_str().unwrap()]));
+    }
+    let artifact = common::executable(package.path(), "scans");
+    for optimization in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                package.path().to_str().unwrap(),
+                "--output",
+                artifact.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", optimization)
+            .output()
+            .unwrap(),
+        );
+        success(
+            &Command::new(&artifact)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
+}
+
+#[test]
 fn boolean_scans_recheck_duality_witnesses_and_guarded_suffix_safety() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("searches.loom");
