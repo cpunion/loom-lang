@@ -9,7 +9,7 @@ import std.loom.checking.with_proof_backend
 import std.text.contains
 
 fn analysis_test_backend(context Text, query Text) Result[Bool, Text] {
-    assert std.text.contains(query, "(check-sat)")
+    assert std.text.contains(query, "(check-sat-using ")
     Result.Err(context)
 }
 

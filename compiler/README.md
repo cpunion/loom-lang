@@ -2838,7 +2838,7 @@ True comparisons establish non-NaN endpoints, allowing reflexivity and reversal
 of negated ordered comparisons only for those endpoints. Contradictory order
 paths exclude unreachable branches, including short-circuit return paths.
 Numeric equality does not identify computations: signed zeros compare equal but
-have different reciprocals. No cancellation, reassociation or real-number
+have different reciprocals. No unguarded cancellation, reassociation or real-number
 arithmetic is inferred. See the [range/clamp example](examples/floats/order.loom).
 Float locals and literals may participate in proved loops, including variadic
 induction; assigned values are freshened at loop heads, not assumed to retain
@@ -2848,10 +2848,17 @@ theory, with `fp.eq`/ordered comparisons, negation and RNE-rounded `+`, `-`, `*`
 and `/` in source order. Literal conversion preserves subnormals, infinities,
 NaN and zero's sign. This proves magnitude and bounded scaling contracts without
 assuming finiteness, reassociation or real-number identities. Symbolic `%`
-remains unsupported: [SMT `fp.rem`](https://smt-lib.org/theories-FloatingPoint.shtml)
-and [LLVM `frem`](https://releases.llvm.org/22.1.0/docs/LangRef.html#frem-instruction)
-use different quotient rules. See the [Float trial](examples/floats/contracts.loom)
-and [arithmetic contracts](examples/smt_contracts/floats.loom). Source `std.float.abs`
+uses the magnitude correction in [C23 F.10.7.1](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf),
+not raw [SMT `fp.rem`](https://smt-lib.org/theories-FloatingPoint.shtml):
+[LLVM `frem`](https://releases.llvm.org/22.1.0/docs/LangRef.html#frem-instruction)
+truncates the quotient, whereas `fp.rem` rounds it to nearest. The encoding
+preserves signed zero, NaN, infinite divisors and exact subnormal remainders.
+IEEE classification rules avoid unnecessary circuits; a single explicit
+alternative may be split before branch-local equalities are substituted.
+Every branch remains a required proof under the original solver time budget.
+See the [Float trial](examples/floats/contracts.loom),
+[arithmetic contracts](examples/smt_contracts/floats.loom) and
+[remainder contracts](examples/smt_contracts/float_remainders.loom). Source `std.float.abs`
 uses ordinary branches/arithmetic, preserves NaN and maps both zero signs to
 positive zero. Its finite pure body supports checked caller contracts, which
 then compose at refinement boundaries.

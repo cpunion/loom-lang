@@ -1,0 +1,78 @@
+import std.float.is_nan
+import std.float.is_finite
+
+type WrappedFloat = Float where self >= 0.0 && self < 2.0
+
+fn wrap_two(value Float) Float
+requires value >= 0.0 && value <= 100.0
+ensures result >= 0.0 && result < 2.0 {
+    value % 2.0
+}
+
+fn checked_wrap(value Float) WrappedFloat
+requires value >= 0.0 && value <= 100.0 {
+    WrappedFloat(wrap_two(value))
+}
+
+fn negative_wrap(value Float) Float
+requires value >= -100.0 && value <= 0.0
+ensures result <= 0.0 && result > -2.0 {
+    value % -2.0
+}
+
+fn truncated_remainder(value Float, divisor Float) Float
+requires value == 3.5 && (divisor == 2.0 || divisor == -2.0)
+ensures result == 1.5 {
+    value % divisor
+}
+
+fn zero_remainder(value Float, divisor Float) Float
+requires value == 0.0 && divisor != 0.0 && !is_nan(divisor)
+ensures 1.0 / result == 1.0 / value {
+    value % divisor
+}
+
+fn invalid_remainder(value Float, divisor Float) Float
+requires !is_finite(value) || divisor == 0.0 || is_nan(divisor)
+ensures is_nan(result) {
+    value % divisor
+}
+
+fn infinite_divisor(value Float, divisor Float) Float
+requires is_finite(value) && (divisor == 1.0 / 0.0 || divisor == -1.0 / 0.0)
+ensures result == value {
+    value % divisor
+}
+
+fn subnormal_remainder(value Float) Float
+requires value == -1.5e-323
+ensures result == -5e-324 {
+    value % 1e-323
+}
+
+fn nested_remainder(value Float) Float
+requires value >= 0.0 && value <= 100.0
+ensures result >= 0.0 && result < 2.0 {
+    (value % 4.0) % 2.0
+}
+
+fn float_remainder_cases() {
+    assert checked_wrap(17.5) == 1.5
+    assert negative_wrap(-3.5) == -1.5
+    assert truncated_remainder(3.5, 2.0) == 1.5
+    assert truncated_remainder(3.5, -2.0) == 1.5
+    assert 1.0 / zero_remainder(-0.0, 2.0) == -1.0 / 0.0
+    assert 1.0 / zero_remainder(0.0, -2.0) == 1.0 / 0.0
+    assert is_nan(invalid_remainder(3.5, 0.0))
+    assert is_nan(invalid_remainder(1.0 / 0.0, 2.0))
+    assert is_nan(invalid_remainder(0.0 / 0.0, 2.0))
+    assert is_nan(invalid_remainder(3.5, 0.0 / 0.0))
+    assert infinite_divisor(-3.5, 1.0 / 0.0) == -3.5
+    assert infinite_divisor(3.5, -1.0 / 0.0) == 3.5
+    assert subnormal_remainder(-1.5e-323) == -5e-324
+    assert nested_remainder(17.5) == 1.5
+}
+
+test fn ieee_remainder_contracts() {
+    float_remainder_cases()
+}
