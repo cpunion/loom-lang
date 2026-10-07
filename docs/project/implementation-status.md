@@ -454,14 +454,21 @@ supply non-aliasing evidence. Immutable entry-element snapshots require entry
 bounds and survive writes, including through per-invocation summaries. See the
 [indexed example](../../compiler/examples/list_elements) and
 [List contract example](../../compiler/examples/list_contracts).
-The optional solver now models `List[Int]` content versions with guarded reads
-and `select`/`store` write equations. Arbitrary valid parameter indices can prove
+The optional solver models List content versions with guarded reads
+and `select`/`store` equations for integer elements and immutable integer field
+paths through nested inline records/tuples. Arbitrary valid parameter indices can prove
 write-then-restore and swap/frame contracts, without deciding index equality at
 each write or enumerating concrete indices. The finite observation cache stays
 the fast path. Alias uncertainty, opaque effects, loop havoc and shared
 interference discard current versions; immutable old equations cannot restore
 them. This adds no runtime copying.
 See the [heap example](../../compiler/examples/smt_contracts/heap.loom).
+The [projection example](../../compiler/examples/list_contracts/projections.loom)
+also proves replacement, append and source-loop preservation of a multi-field
+constraint. Bounded scans support local element observations and Boolean tails;
+their access domains and short-circuit guards remain proof obligations.
+Unobserved mutable siblings remain shared. Field equality supplies neither
+whole-record equality nor permutation, and non-integer columns remain unsupported.
 Whole `List[Int]` entry values now capture their logical length and content
 version through `old(values)`, including inline parameter fields, refined Lists
 and finite pure helper selections. Queries can use post-state indices such as

@@ -88,8 +88,16 @@ fn positive_accounts(values List[Account]) Bool {
 
 type PositiveAccounts = List[Account] where positive_accounts(self)
 
-// Put the per-value invariant on the element type when replacement is needed.
+// Validate each replacement before storing it in either constrained List form.
 type PositiveAccount = Account where self.amount > 0
+
+fn replace_account(values PositiveAccounts, value PositiveAccount) {
+    values[0] = value
+}
+
+fn append_account(values PositiveAccounts, value PositiveAccount) {
+    push(values, value)
+}
 
 fn first_amount(values Nonempty[PositiveAccount]) Int
 ensures result > 0
@@ -158,6 +166,13 @@ async fn exercise_observed_fields() {
             push(notes, 3)
             sleep_ms(1).await
             assert length(values) == 1 && values[0].amount == 10
+            let replacement = PositiveAccount(Account {
+                    amount = 20
+                    notes = notes
+                })
+            replace_account(values, replacement)
+            append_account(values, replacement)
+            assert length(values) == 2 && values[0].amount == 20 && values[1].amount == 20
             notes[0] == -2 && length(row.notes) == 2
         }
         Result.Err(_) => false

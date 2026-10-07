@@ -154,7 +154,7 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
     }
     let tail = scan_tail(get(value.children, position + 1))
     let counting = tail.kind == ExprKind.Local && tail.ty == 1
-    if !counting && !scan_return(tail, true) {
+    if !counting && tail.ty != 2 {
         return Result.Err("pure scan must return its Boolean result or zero-based count")
     }
     let iteration = get(value.children, position)
@@ -164,21 +164,38 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
     let limit_test = get(iteration.children, 0)
     let body = get(iteration.children, 1)
     if limit_test.kind != ExprKind.Binary || limit_test.text != "<" || length(limit_test.children) != 2 ||
-    body.kind != ExprKind.Block || length(body.children) != 2 {
+    body.kind != ExprKind.Block {
         return Result.Err("pure loop proof needs an exclusive upper bound")
+    }
+    var prefix = 0
+    while prefix < length(body.children) && get(body.children, prefix).kind == ExprKind.Let {
+        prefix = prefix + 1
+    }
+    if prefix + 2 != length(body.children) {
+        return Result.Err("pure scan needs local observations, one test and a unit step")
     }
     let cursor = get(limit_test.children, 0)
     if cursor.kind != ExprKind.Local || cursor.ty != 1 ||
     scan_mentions(get(limit_test.children, 1), cursor.index) ||
-    !scan_unit_step(get(body.children, 1), cursor.index) {
+    !scan_unit_step(get(body.children, prefix + 1), cursor.index) {
         return Result.Err("pure loop proof needs a stable bound and unit-step cursor")
     }
-    let branch = get(body.children, 0)
+    if !counting && scan_mentions(tail, cursor.index) {
+        return Result.Err("pure Boolean scan tail must not observe its updated cursor")
+    }
+    let branch = get(body.children, prefix)
     if branch.kind != ExprKind.If || length(branch.children) != 2 {
         return Result.Err("pure Boolean scan must return false on a failed element")
     }
     if counting {
         let arm = get(branch.children, 1)
+        var observation = 0
+        while observation < prefix {
+            if scan_mentions(get(body.children, observation), tail.index) {
+                return Result.Err("count scan observations must not depend on its updated accumulator")
+            }
+            observation = observation + 1
+        }
         let initial = expanded(context, tail, guard, bindings, locals, self, calls, depth + 1)?
         if tail.index == cursor.index || arm.kind != ExprKind.Block || length(arm.children) != 1 ||
         !scan_unit_step(get(arm.children, 0), tail.index) || initial.kind != ExprKind.Integer || initial.text != "0" ||
@@ -197,6 +214,12 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
             value = proof_expr(cursor, ExprKind.Intrinsic, 1, "proof_bound", identity, new[Expr]())
         })
     let inner = scan_context(context)
+    var observation = 0
+    while observation < prefix {
+        discard expanded_binding(inner, get(body.children, observation), proof_bool(value, true),
+            items, locals, self, calls, depth + 1)?
+        observation = observation + 1
+    }
     let condition = expanded(inner, get(branch.children, 0), proof_bool(value, true),
         items, locals, self, calls, depth + 1)?
     discard scan_checks(context, inner, value, guard, identity, start, end)?
@@ -206,5 +229,8 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
         }
         return counted_scan(context, value, condition, end, identity)
     }
-    Result.Ok(quantified_value(value, identity, start, end, proof_not(condition)))
+    let scanned = quantified_value(value, identity, start, end, proof_not(condition))
+    let continuation = expanded(context, tail, proof_and(guard, scanned),
+        bindings, locals, self, calls, depth + 1)?
+    Result.Ok(proof_and(scanned, continuation))
 }

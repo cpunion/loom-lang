@@ -122,10 +122,10 @@ fn count_predicate_extents(output List[Linear], value Predicate, depth Int) {
             count_term_extents(output, first, depth - 1)
             count_term_extents(output, second, depth - 1)
         }
-        Predicate.ArrayWrite(_, _, _, term) => {
+        Predicate.ArrayWrite(_, _, _, _, term) => {
             count_term_extents(output, term, depth - 1)
         }
-        Predicate.ArrayRead(_, _, term, guards) => {
+        Predicate.ArrayRead(_, _, _, term, guards) => {
             count_term_extents(output, term, depth - 1)
             count_predicate_extents(output, get(guards, 0), depth - 1)
         }

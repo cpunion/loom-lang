@@ -74,34 +74,58 @@ test fn array_encoding_preserves_versions_indices_and_observation_guards() {
     let index = variable(1)
     let value = IntegerTerm.Linear(variable(2))
     let query = encoding([Obligation {
-                facts = [Predicate.ArrayRead(10, index, value, [Predicate.Variable(3)]),
-                    Predicate.ArrayWrite(10, 11, index, value)]
-                conclusion = Predicate.IntegerCompare("==", IntegerTerm.Select(11, index), value)
+                facts = [Predicate.ArrayRead(10, [], index, value, [Predicate.Variable(3)]),
+                    Predicate.ArrayWrite(10, 11, [], index, value)]
+                conclusion = Predicate.IntegerCompare("==", IntegerTerm.Select(11, [], index), value)
             }])
     assert contains(query, "(declare-const a10 (Array Int Int))")
     assert contains(query, "(declare-const a11 (Array Int Int))")
     assert contains(query, "(=> b3 (= (select a10")
     assert contains(query, "(= a11 (store a10 (+ 0 (* 1 n1)) (+ 0 (* 1 n2))))")
     assert contains(query, "(= (select a11")
-    assert !integer_interval("==", IntegerTerm.Select(11, index), value, [])
-    assert immutable_snapshot(Value.Nonlinear(IntegerTerm.Select(11, index)))
+    assert !integer_interval("==", IntegerTerm.Select(11, [], index), value, [])
+    assert immutable_snapshot(Value.Nonlinear(IntegerTerm.Select(11, [], index)))
 }
 
 test fn bounded_quantifiers_keep_their_binder_inside_the_range_and_body() {
     let query = encoding([Obligation {
                 facts = []
                 conclusion = Predicate.Forall(-7, constant(integer(0)), constant(integer(2)),
-                    [Predicate.IntegerCompare(">=", IntegerTerm.Select(10, variable(-7)),
+                    [Predicate.IntegerCompare(">=", IntegerTerm.Select(10, [], variable(-7)),
                             IntegerTerm.Linear(constant(integer(0))))])
             }])
     assert contains(query, "(forall ((n-7 Int)) (=> (and (<= (+ 0) n-7) (< n-7 (+ 2))) ")
     assert contains(query, "(select a10 (+ 0 (* 1 n-7)))")
 }
 
+test fn projected_arrays_keep_nested_fields_distinct_from_elements_and_each_other() {
+    let index = variable(1)
+    let value = IntegerTerm.Linear(variable(2))
+    let query = encoding([Obligation {
+                facts = [Predicate.ArrayRead(10, [1, 23], index, value, [Predicate.Variable(3)]),
+                    Predicate.ArrayWrite(10, 11, [1, 23], index, value)]
+                conclusion = Predicate.IntegerCompare("==", IntegerTerm.Select(11, [12, 3], index), value)
+            }])
+    assert contains(query, "(declare-const a10_f1_f23 (Array Int Int))")
+    assert contains(query, "(declare-const a11_f1_f23 (Array Int Int))")
+    assert contains(query, "(declare-const a11_f12_f3 (Array Int Int))")
+    assert !contains(query, "(declare-const a11 (Array Int Int))")
+    let first = IntegerTerm.Select(11, [1, 23], index)
+    let second = IntegerTerm.Select(11, [12, 3], index)
+    assert !same_integer_term(first, second, [512])
+    assert !immutable_snapshot(Value.Projected(11, [1], index))
+    assert mutable_value(Value.Projected(11, [1], index))
+    let equality = Predicate.IntegerCompare("==", first, IntegerTerm.Select(10, [1, 23], index))
+    assert match pointwise_bag(Predicate.Forall(1, constant(integer(0)), variable(4), [equality])) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
+
 test fn pointwise_prefix_equality_supplies_only_the_matching_histogram_law() {
     let bound = variable(-7)
     let size = variable(4)
-    let equal = Predicate.IntegerCompare("==", IntegerTerm.Select(10, bound), IntegerTerm.Select(11, bound))
+    let equal = Predicate.IntegerCompare("==", IntegerTerm.Select(10, [], bound), IntegerTerm.Select(11, [], bound))
     let prefix = Predicate.Forall(-7, constant(integer(0)), size, [equal])
     let bag = Predicate.BagEqual(10, size, 11, size)
     assert match pointwise_bag(prefix) {
@@ -112,8 +136,8 @@ test fn pointwise_prefix_equality_supplies_only_the_matching_histogram_law() {
         Option.None => true
         _ => false
     }
-    let shifted = Predicate.IntegerCompare("==", IntegerTerm.Select(10, bound),
-        IntegerTerm.Select(11, add(bound, constant(integer(1)))))
+    let shifted = Predicate.IntegerCompare("==", IntegerTerm.Select(10, [], bound),
+        IntegerTerm.Select(11, [], add(bound, constant(integer(1)))))
     assert match pointwise_bag(Predicate.Forall(-7, constant(integer(0)), size, [shifted])) {
         Option.None => true
         _ => false

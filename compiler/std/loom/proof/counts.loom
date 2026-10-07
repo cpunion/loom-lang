@@ -88,8 +88,8 @@ fn bag_from_counts(value Predicate) Option[Predicate] {
                                 match get(first, 0) {
                                     IntegerTerm.Linear(size) => match get(second, 0) {
                                         IntegerTerm.Linear(count) => match get(first, 1) {
-                                            IntegerTerm.Select(array, index) => {
-                                                if !same_terms(index.terms, variable(identity).terms) ||
+                                            IntegerTerm.Select(array, path, index) => {
+                                                if length(path) != 0 || !same_terms(index.terms, variable(identity).terms) ||
                                                 compare(index.constant, integer(0)) != 0 {
                                                     return Option.None
                                                 }
@@ -199,10 +199,11 @@ fn pointwise_bag(value Predicate) Option[Predicate] {
                         return Option.None
                     }
                     match first {
-                        IntegerTerm.Select(before, left) => match second {
-                            IntegerTerm.Select(after, right) => {
+                        IntegerTerm.Select(before, first_path, left) => match second {
+                            IntegerTerm.Select(after, second_path, right) => {
                                 let bound = variable(identity)
-                                if same_terms(left.terms, bound.terms) && same_terms(right.terms, bound.terms) &&
+                                if length(first_path) == 0 && length(second_path) == 0 &&
+                                same_terms(left.terms, bound.terms) && same_terms(right.terms, bound.terms) &&
                                 compare(left.constant, integer(0)) == 0 && compare(right.constant, integer(0)) == 0 {
                                     return Option.Some(Predicate.BagEqual(before, end, after, end))
                                 }

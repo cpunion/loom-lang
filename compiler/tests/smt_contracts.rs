@@ -18,6 +18,53 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn record_projections_compose_and_cached_edits_recheck_every_store() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("main.loom");
+    let program = include_str!("../examples/list_contracts/projections.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace(
+            "    values[index] = value\n}",
+            "    values[index] = Row {\n        position = Position { amount = -1 }\n        bounds = (0, 10)\n        notes = []\n    }\n    values[index] = value\n}",
+        ),
+        program.replace(
+            "    push(values, value)\n}",
+            "    push(values, Row {\n        position = Position { amount = 11 }\n        bounds = (0, 10)\n        notes = []\n    })\n}",
+        ),
+        program.replace("    values[changed] = saved", "    discard saved"),
+        program.replace(
+            "    values[changed] = saved",
+            "    values[changed] = saved\n    values[observed] = Frame {\n        position = Position { amount = 99 }\n        bounds = (99, 100)\n    }",
+        ),
+        program.replace("    length(values) > 0\n}", "    index == 0\n}"),
+        program.replace("let row = values[index]", "let row = values[index + 1]"),
+    ] {
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(!output.status.success(), "unsound record proof: {changed}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved") || error.contains("scan"),
+            "unexpected failure: {error}"
+        );
+    }
+    fs::write(&source, program).unwrap();
+    success(&check());
+}
+
+#[test]
 fn copy_contracts_compose_and_cached_edits_cannot_retain_stale_heap_facts() {
     let package = tempfile::tempdir().unwrap();
     fs::write(
@@ -102,6 +149,10 @@ fn quantified_contracts_reject_wrong_algorithms_and_unexecuted_safety_facts() {
     };
     for program in [
         example.to_owned(),
+        example.replace(
+            "        if get(values, index) == needle {",
+            "        let candidate = get(values, index)\n        if candidate == needle {",
+        ),
         example
             .replace(
                 "fn sort(values",
@@ -162,6 +213,29 @@ requires !early_false(values)
 ensures result
 {
     false
+}
+"#
+        .to_owned(),
+        r#"import std.list.length
+
+fn dependent_count(values List[Int]) Int {
+    var index = 0
+    var count = 0
+    while index < length(values) {
+        let wanted = count
+        if values[index] == wanted {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    count
+}
+
+fn wrong(values List[Int]) Int
+requires length(values) == 2 && values[0] == 0 && values[1] == 1
+ensures result == dependent_count(values)
+{
+    1
 }
 "#
         .to_owned(),

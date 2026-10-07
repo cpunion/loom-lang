@@ -135,6 +135,7 @@ fn published_storage(state State) State {
 fn mutable_value(value Value) Bool {
     match value {
         Value.List(_) => true
+        Value.Projected(_, _, _) => true
         Value.Record(fields) => {
             var index = 0
             while index < length(fields) {

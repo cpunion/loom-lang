@@ -28,8 +28,33 @@ fn with_contents(identity Int, contents Int, state State) State {
 }
 
 fn array_observation(contents Int, index Linear, value Value, valid Predicate, state State) State {
+    array_projection_read(contents, new[Int](), index, value, valid, state)
+}
+
+fn projection_field(path List[Int], field Int) List[Int] {
+    let fields = clone(path)
+    push(fields, field)
+    fields
+}
+
+fn array_projection_read(contents Int, path List[Int], index Linear, value Value,
+    valid Predicate, state State) State {
+    match value {
+        Value.Record(fields) => {
+            var current = state
+            var field = 0
+            while field < length(fields) {
+                current = array_projection_read(contents, projection_field(path, field), index,
+                    get(fields, field), valid, current)
+                field = field + 1
+            }
+            return current
+        }
+        _ => {
+        }
+    }
     match integer_term(value) {
-        Result.Ok(term) => assume(state, Predicate.ArrayRead(contents, index, term, predicates(valid)))
+        Result.Ok(term) => assume(state, Predicate.ArrayRead(contents, path, index, term, predicates(valid)))
         Result.Err(_) => state
     }
 }
@@ -70,11 +95,30 @@ fn array_write(proof Verification, previous ListExtent, index Linear, value Valu
     }
     let contents = array_identity(proof)
     let current = with_contents(previous.identity, contents, state)
-    Result.Ok(match integer_term(value) {
-            Result.Ok(term) => assume(current, Predicate.ArrayWrite(previous.contents, contents, index, term))
-            // No integer interpretation is inferred for Bool, Text or shared payloads.
-            Result.Err(_) => current
-        })
+    Result.Ok(array_projection_write(previous.contents, contents, new[Int](), index, value, current))
+}
+
+fn array_projection_write(before Int, after Int, path List[Int], index Linear,
+    value Value, state State) State {
+    match value {
+        Value.Record(fields) => {
+            var current = state
+            var field = 0
+            while field < length(fields) {
+                current = array_projection_write(before, after, projection_field(path, field),
+                    index, get(fields, field), current)
+                field = field + 1
+            }
+            return current
+        }
+        _ => {
+        }
+    }
+    match integer_term(value) {
+        Result.Ok(term) => assume(state, Predicate.ArrayWrite(before, after, path, index, term))
+        // No integer interpretation is inferred for Bool, Text or shared payloads.
+        Result.Err(_) => state
+    }
 }
 
 // Snapshot equations refer only to immutable scalar symbols and past heap
@@ -85,8 +129,8 @@ fn captured_array_facts(entry State, current State) State {
     while index < length(entry.facts) {
         let fact = get(entry.facts, index)
         let array = match fact {
-            Predicate.ArrayRead(_, _, _, _) => true
-            Predicate.ArrayWrite(_, _, _, _) => true
+            Predicate.ArrayRead(_, _, _, _, _) => true
+            Predicate.ArrayWrite(_, _, _, _, _) => true
             _ => false
         }
         var found = false
