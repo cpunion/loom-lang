@@ -477,14 +477,17 @@ are folded after evaluation safety has been modeled, and quantified conjunctions
 split by logical equivalence rather than sharing a cross-column trigger.
 Unobserved mutable siblings remain shared. Field equality
 supplies neither whole-record equality nor permutation; mutable graphs remain opaque.
-Whole `List[Int]` entry values now capture their logical length and content
+Whole List entry values now capture their logical length and outer content
 version through `old(values)`, including inline parameter fields, refined Lists
-and finite pure helper selections. Queries can use post-state indices such as
+and finite pure helper selections. Int, Bool, Text and Float columns reuse the
+current-array theories, including nested inline fields beside shared siblings.
+Queries can use post-state indices such as
 `result`, but must establish bounds against the entry length. Checked read-only
 calls retain versions; possible writes retain only sound partial frames. Shared
 workers require private or validated read-only storage for a coherent whole entry
 value. This is not an alias, runtime copy or arbitrary graph snapshot. See the
-[snapshot example](../../compiler/examples/smt_contracts/snapshots.loom).
+[snapshot example](../../compiler/examples/smt_contracts/snapshots.loom) and
+[typed entry columns](../../compiler/examples/list_contracts/snapshots.loom).
 Ordinary bounded pure `List[Int]` scans now derive scoped universal predicates
 and occurrence counts. Finite histogram laws compose with array stores and
 verified call summaries; loop candidates derived from quantified postconditions

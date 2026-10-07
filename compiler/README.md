@@ -2552,7 +2552,7 @@ callee summary uses its own invocation's entry, after argument evaluation.
 Operands must be entry-derived and the observed result must be immutable;
 an immutable field can be selected beside an unobserved shared sibling, but
 whole record/tuple snapshots containing shared mutable storage reject; logical
-`List[Int]` snapshots are described below. Helper
+List snapshots are described below. Helper
 arguments and predicate arithmetic still require definedness, even when a
 helper ignores an argument. No entry computation or snapshot allocation enters
 native code. Callback parameters and result/body-local references remain
@@ -2621,8 +2621,8 @@ again merely because their facts survive. Bounds and eager fault obligations
 remain independent. No runtime snapshots or solver are emitted. See the
 [heap contract example](examples/smt_contracts/heap.loom).
 
-`old(values)` also captures a `List[Int]`'s complete logical entry length and
-content version. It is not a mutable alias or a runtime copy. Pure helpers can
+`old(values)` also captures any List's logical entry length and outer content
+version. It is not a mutable alias or a runtime copy. Pure helpers can
 query it with `length`/`get`/indexing, including `old(values)[result]`: the List
 comes from entry, while this index comes from return. In contrast,
 `old(values[result])` is invalid because `result` is not an entry operand.
@@ -2632,9 +2632,12 @@ optional array backend. Verified read-only calls retain their entry version;
 possible writes never restore it from a partial frame. Each invocation owns its
 snapshot. Shared workers may snapshot private or validated read-only storage, but
 an unprotected shared input cannot establish one coherent entry version. No implicit locking, freezing
-or ownership syntax is introduced. Mutable element graphs, other element domains
-and whole aggregates containing shared storage remain unsupported. See the
-[entry List example](examples/smt_contracts/snapshots.loom).
+or ownership syntax is introduced. Int, Bool, Text and Float queries use the same
+scalar theories as current arrays, including nested inline record/tuple fields
+beside shared siblings. Capturing an outer header does not freeze shared children:
+mutable element graphs and whole aggregates containing shared storage remain
+unsupported observations. See the [entry List example](examples/smt_contracts/snapshots.loom)
+and [typed entry columns](examples/list_contracts/snapshots.loom).
 
 Bounded pure scans can express List predicates over modeled integer elements or
 inline field paths without special

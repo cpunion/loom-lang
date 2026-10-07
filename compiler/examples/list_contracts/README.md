@@ -1,4 +1,4 @@
-# Stateful List length contracts
+# Stateful List contracts
 
 ```sh
 target/loom check compiler/examples/list_contracts
@@ -55,6 +55,13 @@ type. Text lengths count UTF-8 bytes. Float storage preserves its IEEE value:
 restoration proves numeric equality only when NaN has been excluded, and signed
 zeros retain their distinct representations. These are compile-time facts, not
 runtime copies or a solver dependency in the application.
+
+`snapshots.loom` queries Bool, Text and Float entry columns through nested inline
+fields with `old(values)[index]`, even when a row has shared notes. Pure generic
+selection helpers retain the chosen entry version, including overlapping inputs.
+Returned indices must satisfy entry bounds. Generic append observes only the
+outer header, so nested Lists retain ordinary sharing rather than becoming deep
+snapshots. Float numeric equality still requires excluding NaN.
 
 `entry.loom` proves append against `old(length(values))`, without an explicit
 size parameter. Two consecutive calls use different invocation-entry lengths;
