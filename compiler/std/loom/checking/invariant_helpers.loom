@@ -106,24 +106,33 @@ fn expanded_invariant_types(context Context, function Function) Result[List[Type
 }
 
 fn expanded_invariant_types(env Environment, function Function) Result[List[Type], Failure] {
+    expanded_invariant_types(env, [function])
+}
+
+fn expanded_invariant_types(env Environment, functions List[Function]) Result[List[Type], Failure] {
     let selected = new[Int]()
     let seen = new[Int]()
-    var index = 0
-    while index < length(function.params) {
-        value_invariant_types(env, get(function.params, index), seen, selected, 0)
-        index = index + 1
-    }
-    value_invariant_types(env, function.result, seen, selected, 0)
-    index = 0
-    while index < length(function.locals) {
-        value_invariant_types(env, get(function.locals, index).ty, seen, selected, 0)
-        index = index + 1
-    }
-    expression_invariant_types(env, function.body, seen, selected, 0)
-    index = 0
-    while index < length(function.postconditions) {
-        expression_invariant_types(env, get(function.postconditions, index), seen, selected, 0)
-        index = index + 1
+    var member = 0
+    while member < length(functions) {
+        let function = get(functions, member)
+        var index = 0
+        while index < length(function.params) {
+            value_invariant_types(env, get(function.params, index), seen, selected, 0)
+            index = index + 1
+        }
+        value_invariant_types(env, function.result, seen, selected, 0)
+        index = 0
+        while index < length(function.locals) {
+            value_invariant_types(env, get(function.locals, index).ty, seen, selected, 0)
+            index = index + 1
+        }
+        expression_invariant_types(env, function.body, seen, selected, 0)
+        index = 0
+        while index < length(function.postconditions) {
+            expression_invariant_types(env, get(function.postconditions, index), seen, selected, 0)
+            index = index + 1
+        }
+        member = member + 1
     }
     if length(selected) == 0 {
         return Result.Ok(env.types)
@@ -131,7 +140,7 @@ fn expanded_invariant_types(env Environment, function Function) Result[List[Type
     let first = get(selected, 0)
     let stage = staging(predicate_scope(env, first)?, predicate_node(env, get(env.types, first).symbol))?
     let predicates = new[Expr]()
-    index = 0
+    var index = 0
     while index < length(selected) {
         let ty = get(selected, index)
         let locals = predicate_scope(stage.env, ty)?.locals

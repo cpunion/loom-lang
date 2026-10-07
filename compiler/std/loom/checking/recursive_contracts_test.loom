@@ -1,0 +1,66 @@
+test fn recursive_contracts_use_joint_body_checks_not_staging_recursion() {
+    discard accepted("""
+        fn counted(value Int) Int
+        requires value >= 0 && value <= 100
+        ensures result == value {
+            if value == 0 {
+                0
+            } else {
+                counted(value - 1) + 1
+            }
+        }
+        fn main() {
+            assert counted(100) == 100
+        }
+        """)
+    let program = """
+        fn first(value Int) Int
+        requires value >= 0 && value <= 100
+        ensures result == value {
+            if value == 0 {
+                0
+            } else {
+                second(value - 1) + 1
+            }
+        }
+        fn second(value Int) Int
+        requires value >= 0 && value <= 100
+        ensures result == value {
+            if value == 0 {
+                0
+            } else {
+                first(value - 1) + 1
+            }
+        }
+        fn main() {
+            assert first(100) == 100
+        }
+        """
+    discard accepted(program)
+    rejects("""
+        fn false_base(value Int) Int
+        ensures result == value {
+            1
+        }
+        fn recursive(value Int) Int
+        requires value >= 0 && value <= 100
+        ensures result == value {
+            if value == 0 {
+                false_base(value)
+            } else {
+                recursive(value - 1) + 1
+            }
+        }
+        """)
+    // A recursive guarantee cannot make a recursive predicate total or true.
+    rejects("""
+        fn predicate(value Int) Bool
+        ensures result {
+            predicate(value)
+        }
+        fn keep(value Int) Int
+        ensures predicate(result) {
+            value
+        }
+        """)
+}

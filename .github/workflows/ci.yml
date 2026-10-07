@@ -120,12 +120,15 @@ jobs:
 
       - name: Install LLVM development libraries
         run: |
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
+          # The runner's mirror list can hang on Azure HTTP endpoints. Keep the
+          # Ubuntu suites/keyring but use the official HTTPS archive directly.
+          sudo sed -i 's|^URIs:.*|URIs: https://archive.ubuntu.com/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources
+          curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
           sudo install -m 644 "$RUNNER_TEMP/llvm-snapshot.asc" /usr/share/keyrings/llvm-snapshot.asc
           echo 'deb [signed-by=/usr/share/keyrings/llvm-snapshot.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' |
             sudo tee /etc/apt/sources.list.d/llvm-22.list
-          sudo apt-get update
-          sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y llvm-22-dev clang-22 libpolly-22-dev
           llvm-config-22 --version --system-libs
 
       - name: Install the compile-time proof solver

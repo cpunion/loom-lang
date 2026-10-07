@@ -166,7 +166,8 @@ fn caller_state(state State, boundary Int) State {
 }
 
 // These facts are established by real entry/arithmetic checks, or by a callee's
-// already verified postconditions. They are never hypothetical caller goals.
+// verified postconditions, or a contract group's hypotheses whose bodies must
+// all pass before publication. They are never hypothetical caller goals.
 // Execute only their call-free scalar expressions through the existing prover.
 fn established_checks(proof Verification, checks List[Evaluation], state State, depth Int) Result[List[Outcome], Text] {
     var paths = outcomes(state, Value.Empty)

@@ -1,0 +1,50 @@
+pub record ContractGroupFailure {
+    function Int
+    message Text
+}
+
+// Partial correctness by induction on finite call depth: each member may use
+// the group's declared normal-return guarantees, but every member body must
+// prove its own guarantee. No result escapes if any proof fails. Predicates
+// still expand actual finite pure bodies; recursion supplies no predicate axiom
+// or termination promise. Non-members are independently checked host evidence.
+pub fn verify_contract_group(program Program, members List[Bool], backend ProofBackend)
+Result[Program, ContractGroupFailure] {
+    if length(members) != length(program.functions) {
+        return Result.Err(ContractGroupFailure {
+                function = -1
+                message = "invalid contract group membership"
+            })
+    }
+    // Normalize each member's own obligations, but retain source-form summaries
+    // in the closure. Calls expand them at their invocation boundary; normalizing
+    // the entire closure first would expand safety clauses a second time.
+    var index = 0
+    while index < length(program.functions) {
+        if get(members, index) {
+            let proof = match contract_verification(program, get(program.functions, index), backend, false) {
+                Result.Ok(value) => value
+                Result.Err(message) => {
+                    return Result.Err(ContractGroupFailure {
+                            function = index
+                            message = message
+                        })
+                }
+            }
+            if length(proof.function.postconditions) != 0 {
+                match verify_body(proof) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(message) => {
+                        return Result.Err(ContractGroupFailure {
+                                function = index
+                                message = message
+                            })
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(program)
+}

@@ -1,0 +1,40 @@
+fn recursive_count(target Int, base Int) Function {
+    let value = local(0)
+    let recurse = helper_call(target, 1, [operation("-", value, literal("1"))])
+    let body = expression(ExprKind.If, 1, "", -1, [operation("==", value, literal("0")),
+            literal(std.int.to_text(base)), operation("+", recurse, literal("1"))])
+    contract_fixture([1], 1, body,
+        [operation(">=", value, literal("0")), operation("<=", value, literal("100"))],
+        [operation("==", local(1), value)])
+}
+
+test fn recursive_groups_check_every_base_and_do_not_publish_partial_proofs() {
+    assert match verify_contract_group(proof_helpers([recursive_count(0, 0)]), [true], no_proof_backend()) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert match verify_contract_group(proof_helpers([recursive_count(1, 0), recursive_count(0, 0)]),
+        [true, true], no_proof_backend()) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    // Checking only the first body would accept a circular promise. Both
+    // orders must reject when the other member has a false finite base case.
+    var order = 0
+    while order < 2 {
+        let functions = if order == 0 {
+            [recursive_count(1, 0), recursive_count(0, 1)]
+        } else {
+            [recursive_count(1, 1), recursive_count(0, 0)]
+        }
+        assert match verify_contract_group(proof_helpers(functions), [true, true], no_proof_backend()) {
+            Result.Err(_) => true
+            _ => false
+        }
+        order = order + 1
+    }
+    assert match verify_contract_group(proof_helpers([recursive_count(0, 0)]), [], no_proof_backend()) {
+        Result.Err(_) => true
+        _ => false
+    }
+}

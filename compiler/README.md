@@ -2725,6 +2725,15 @@ Completed sequential contract proofs are reused only within one binding/input
 snapshot and exact function instance; pending promises and captured/stored
 compile-time state are excluded, and shared-state proofs run independently.
 
+Self-recursive and mutually recursive body calls can compose declared
+normal-return contracts. The private typed helper closure checks every source
+member against the group's guarantees before publishing any result; a failed
+member rejects the whole group, including after cached source edits. This is
+partial correctness by induction on finite call depth, not a termination or
+fault-freedom promise. Contract predicates still expand actual finite pure
+bodies: a recursive predicate cannot become an axiom from its own `ensures`.
+See the [recursive contract example](examples/recursive_contracts/main.loom).
+
 Length-preserving loops can infer bounds/equalities for observed Int, Bool and
 Text elements, and scalar field relations in immutable inline elements. Source
 pre/postconditions may propose storage conservation laws; they are not assumed
@@ -2827,9 +2836,9 @@ must itself be defined within `Int` bounds.
 Pure-helper expansion supports the bounded scans above, but still excludes
 general loops, shared-storage mutation, cleanup and returns inside operands;
 verified callee summaries use the separate rules above.
-Recursive proof dependencies, dynamic calls without a usable declared contract,
-indirect calls remain outside
-this proof fragment. IEEE Float proofs reuse exact comparisons over immutable
+Recursive predicate expansion, dynamic calls without a usable declared contract
+and indirect calls remain outside this proof fragment. IEEE Float proofs reuse
+exact comparisons over immutable
 values, including constrained inputs/elements, verified returns and guarded
 entry observations. Constant expressions use binary64 evaluation; symbolic
 arithmetic retains its operand order and structure. A bounded comparison graph

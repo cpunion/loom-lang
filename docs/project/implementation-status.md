@@ -542,8 +542,15 @@ returns a read-only constrained sorted copy directly; unknown ordering keeps
 the checked `Result` boundary. CTFE ignores statically proved `ensures` metadata
 while retaining executable preconditions, bodies and faults.
 Completed sequential proofs are shared across private queues in the same checked
-snapshot, not across edits or via pending/cyclic promises. Shared verification
+snapshot, not across edits or via pending promises. Shared verification
 remains separate.
+Recursive body calls now use a closed typed group: every source member must prove
+its declared normal-return guarantees before any group result escapes. False
+base cases reject in either member order and after cached edits. This covers
+self, mutual and generic recursion, including scalar guarantees from List-backed
+tree traversal and loops, in the existing proof fragment. This is not termination
+or recursive predicate expansion. See the
+[recursive contract example](../../compiler/examples/recursive_contracts/main.loom).
 Bounded content refinements now establish sequential List entry observations,
 including nested fields and `old(values[0])`, without duplicate preconditions or
 runtime checks. Unknown alias writes invalidate them; disjunction alternatives

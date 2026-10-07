@@ -1,0 +1,104 @@
+import std.loom.proof.verify_contract_group
+
+// Build one finite typed helper closure, then check all its source guarantees
+// together. Calling checked_function here would recursively open another queue.
+fn prepared_contract_group(stage Context) Result[std.loom.typed.Program, Failure] {
+    let functions = new[Function]()
+    let members = new[Bool]()
+    let contexts = new[Context]()
+    let dynamic = new[List[Function]]()
+    var index = 0
+    var more = true
+    while more {
+        while index < length(stage.env.pending) {
+            let instance = get(stage.env.pending, index)
+            if abstract_method_instance(stage.env, instance.signature, instance.arguments) {
+                push(functions, declared_method_summary(stage.env, instance.signature,
+                        instance.arguments, instance.constants)?)
+                push(members, false)
+                push(contexts, stage)
+                push(dynamic, new[Function]())
+            } else {
+                let built = function_body(stage.env, instance.signature,
+                    instance.arguments, instance.constants, true)?
+                let node = symbol(stage.env, built.context.signature.symbol).node
+                let completed = completed_contract(built.context, instance.signature, built.function)
+                let clauses = if length(completed) != 0 {
+                    completed
+                } else {
+                    add_contracts(contracts(built.context, node, NodeKind.Ensures)?,
+                        inherited_contracts(built.context, NodeKind.Ensures)?)
+                }
+                let function = close_function(built.context,
+                    with_contracts(built.function, built.function.preconditions, clauses))
+                let summaries = new[Function]()
+                if length(completed) == 0 && length(clauses) != 0 {
+                    // Contract helpers may schedule more source instances;
+                    // collect them before closing the source worklist.
+                    discard collect_dynamic_contracts(built.context, function.body, summaries)?
+                }
+                push(functions, function)
+                push(members, length(completed) == 0)
+                push(contexts, built.context)
+                push(dynamic, summaries)
+            }
+            index = index + 1
+        }
+        more = activate_witnesses(stage.env, false)?
+    }
+    discard resource_functions(stage.env, functions)?
+    discard list_constraint_functions(stage.env, functions)?
+    // Dynamic guarantees are independently supplied by checked conformances.
+    // Keep their summary indices outside the source queue and group membership.
+    index = 0
+    while index < length(contexts) {
+        let function = get(functions, index)
+        let summaries = get(dynamic, index)
+        if length(summaries) != 0 {
+            let first = length(functions)
+            var summary = 0
+            while summary < length(summaries) {
+                push(functions, get(summaries, summary))
+                push(members, false)
+                summary = summary + 1
+            }
+            set(functions, index, with_body(function, proof_dynamic_calls(function.body, first, [0])))
+        }
+        index = index + 1
+    }
+    let program = std.loom.typed.Program {
+        types = stage.env.types
+        functions = functions
+        entry = -1
+        tests = new[Int]()
+        test_names = new[Text]()
+        exports = new[Int]()
+        interfaces = stage.env.interfaces
+        witnesses = stage.env.witnesses
+    }
+    match verify_contract_group(program, members, get(stage.env.inputs, 0).build.proof_backend) {
+        Result.Ok(checked) => Result.Ok(checked)
+        Result.Err(failed) => {
+            // Retain the existing pure-helper invariant fallback, with one
+            // coherent private type snapshot for every member of the group.
+            match expanded_invariant_types(stage.env, functions) {
+                Result.Ok(types) => match verify_contract_group(proof_types(program, types), members,
+                    get(stage.env.inputs, 0).build.proof_backend) {
+                    Result.Ok(checked) => {
+                        return Result.Ok(checked)
+                    }
+                    Result.Err(_) => {
+                    }
+                }
+                Result.Err(_) => {
+                }
+            }
+            let context = if failed.function >= 0 && failed.function < length(contexts) {
+                get(contexts, failed.function)
+            } else {
+                stage
+            }
+            Result.Err(error(context, symbol(context.env, context.signature.symbol).node, failed.message))
+        }
+    }
+}

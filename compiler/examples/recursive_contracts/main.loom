@@ -1,0 +1,98 @@
+import std.list.length
+import std.list.get
+
+type Count = Int where self >= 0 && self <= 100
+
+fn counted(value Int) Int
+requires value >= 0 && value <= 100
+ensures result == value {
+    if value == 0 {
+        0
+    } else {
+        counted(value - 1) + 1
+    }
+}
+
+fn even_count(value Int) Int
+requires value >= 0 && value <= 100
+ensures result == value {
+    if value == 0 {
+        0
+    } else {
+        odd_count(value - 1) + 1
+    }
+}
+
+fn odd_count(value Int) Int
+requires value >= 0 && value <= 100
+ensures result == value {
+    if value == 0 {
+        0
+    } else {
+        even_count(value - 1) + 1
+    }
+}
+
+fn generic_count[T](marker T, value Int) Int
+requires value >= 0 && value <= 100
+ensures result == value {
+    if value == 0 {
+        0
+    } else {
+        generic_count(marker, value - 1) + 1
+    }
+}
+
+record Marker {
+    notes List[Int]
+}
+
+record Tree {
+    children List[Tree]
+}
+
+fn nodes(tree Tree) Int
+ensures result >= 1 {
+    var count = 1
+    var index = 0
+    while index < length(tree.children) {
+        count = count + nodes(get(tree.children, index))
+        index = index + 1
+    }
+    count
+}
+
+fn checked_count(value Count) Count {
+    Count(counted(value))
+}
+
+fn recursive_cases() {
+    assert counted(0) == 0 && counted(100) == 100
+    assert even_count(99) == 99 && odd_count(100) == 100
+    let marker = Marker {
+        notes = [7]
+    }
+    assert generic_count(marker, 100) == 100
+    assert generic_count("unused", 3) == 3
+    assert length(marker.notes) == 1
+    assert checked_count(Count(100)) == 100
+    let leaf = Tree {
+        children = []
+    }
+    let root = Tree {
+        children = [leaf, leaf]
+    }
+    assert nodes(leaf) == 1 && nodes(root) == 3
+    let nested = Tree {
+        children = [root, leaf]
+    }
+    assert nodes(nested) == 5
+}
+
+fn main() {
+    recursive_cases()
+}
+
+test fn recursive_normal_return_contracts() {
+    recursive_cases()
+}
