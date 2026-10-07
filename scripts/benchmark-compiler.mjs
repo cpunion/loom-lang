@@ -40,8 +40,10 @@ macOS only: one unmeasured warmup per case, warm OS caches. --compare-cache
 also records an initial cache miss separately, then alternates measured order.
 Object-only variants check sources and link current artifacts. Frontend hits
 still load/parse sources and verify dependencies; native emission is unchanged.
---compare-edits copies each package, changes one private helper per sample pair,
-and requires a whole-closure miss with actual definition/body reuse. Both variants
+--compare-edits copies each package, calls a contracted private helper from main,
+changes that helper per sample pair, and requires a whole-closure miss with actual
+definition/body reuse. Each compiler must reject a bad helper contract after its
+initial warmup. Both variants
 check identical edited source. This measures an isolated edit, not a public API
 change; source files in the checkout are never edited.
 --baseline checks the same inputs with both compilers, warming each once and
@@ -134,9 +136,9 @@ const report = {
   generatedSizes: extended ? sizes : [],
   host: { os: platform(), release: release(), arch: arch(), cpu: cpus()[0]?.model },
   method: compareEdits && baseline
-    ? "fresh processes; copied packages; one private helper changes each pair; identical source per baseline/candidate pair; independent frontend caches; alternating order; initial misses separate; whole-closure hits forbidden; definition/body reuse required"
+    ? "fresh processes; copied packages; one called contracted helper changes each pair; invalid-contract canary rejected after warmup; identical source per baseline/candidate pair; independent frontend caches; alternating order; initial misses separate; whole-closure hits forbidden; definition/body reuse required"
     : compareEdits
-    ? "fresh processes; copied packages; one private helper changes each pair; identical source per uncached/incremental pair; alternating order; initial miss separate; whole-closure hits forbidden; definition/body reuse required"
+    ? "fresh processes; copied packages; one called contracted helper changes each pair; invalid-contract canary rejected after warmup; identical source per uncached/incremental pair; alternating order; initial miss separate; whole-closure hits forbidden; definition/body reuse required"
     : baseline
     ? "fresh processes; same source inputs; one warmup per compiler per case; paired samples alternate baseline/candidate order; sample indexes identify pairs; no incremental compiler cache"
     : compareFrontend
@@ -195,8 +197,15 @@ function generated(size) {
   const directory = join(temporary, `growth-${size}`);
   mkdirSync(join(directory, "data"), { recursive: true });
   writeFileSync(join(directory, "loom.toml"), '[module]\nname = "benchmark"\n');
-  writeFileSync(join(directory, "data/data.loom"),
-    "pub record Item { amount Int; label Text }\npub fn identity[T](value T) T { value }\n");
+  writeFileSync(join(directory, "data/data.loom"), `pub record Item {
+    amount Int
+    label Text
+}
+
+pub fn identity[T](value T) T {
+    value
+}
+`);
   const calls = Array.from({ length: size }, (_, index) => `    total = step_${index}(total)`);
   writeFileSync(join(directory, "main.loom"), `import benchmark.data.Item
 import benchmark.data.identity
@@ -217,7 +226,10 @@ ${calls.join("\n")}
     const functions = [];
     for (let index = start; index < Math.min(start + 10, size); index += 1) {
       functions.push(`fn step_${index}(value Int) Int {
-    let item = identity(Item { amount = value label = "item-${index}" })
+    let item = identity(Item {
+        amount = value
+        label = "item-${index}"
+    })
     let values = new[Int]()
     push(values, item.amount)
     get(values, 0) + ${index + 1}
@@ -275,7 +287,20 @@ function benchmark(name, mode, packagePath, generated) {
       copyFileSync(file, destination);
     }
     const probe = join(copied, "benchmark_edit_probe.loom");
-    const edit = revision => writeFileSync(probe, `fn benchmark_edit_probe() Int {\n    ${revision}\n}\n`);
+    const entry = join(copied, "main.loom");
+    const source = readFileSync(entry, "utf8");
+    const entryPattern = /^(?:pub )?fn main\(\)\s*\{/gm;
+    if ([...source.matchAll(entryPattern)].length !== 1) {
+      throw new Error(`${name}: expected one ordinary main in the benchmark fixture`);
+    }
+    writeFileSync(entry, source.replace(entryPattern, "$&\n    discard benchmark_edit_probe(0)"));
+    const edit = revision => writeFileSync(probe, `fn benchmark_edit_probe(value Int) Int
+requires value <= 9223372036854775707
+ensures result >= value
+{
+    value + ${revision}
+}
+`);
     edit(0);
     const compilers = baseline ? [baseline, compiler] : [compiler, compiler];
     const caches = [baseline ? join(temporary, `baseline-cache-${report.cases.length}`) : null,
@@ -287,6 +312,20 @@ function benchmark(name, mode, packagePath, generated) {
         : "initial miss (observation)");
       return sample;
     });
+    // A changed reachable body must be rechecked, not merely produce a cache
+    // miss marker. This canary keeps stale proof evidence out of measurements.
+    edit(-1);
+    for (const [variant, executable] of compilers.entries()) {
+      const arguments_ = ["check", copied, "--std", join(root, "compiler/std")];
+      if (caches[variant]) arguments_.push("--frontend-cache", caches[variant]);
+      const result = spawnSync(executable, arguments_, {
+        cwd: root, env: environment, encoding: "utf8", maxBuffer: 1024 * 1024,
+      });
+      if (result.error) throw result.error;
+      if (result.status === 0 || !/proof|proved/.test(result.stderr)) {
+        throw new Error(`${name}: invalid edited contract was not rejected:\n${result.stdout}${result.stderr}`);
+      }
+    }
     let revision = -1;
     const { samples, positions } = pairedSamples((variant, pair) => {
       if (revision !== pair) { edit(pair + 1); revision = pair; }
@@ -300,6 +339,8 @@ function benchmark(name, mode, packagePath, generated) {
       variant: baseline ? `${variant ? "candidate" : "baseline"}-incremental-edit`
         : variant ? "incremental-edit" : "uncached-edit",
       flags: caches[variant] ? ["--frontend-cache", caches[variant]] : [],
+      edit: { entry: "main.loom", helper: "benchmark_edit_probe.loom", reachable: true,
+        requiredContract: "result >= value", invalidContractRejected: true },
       samplePositions: positions[variant], ...(caches[variant] ? { firstMiss: firstMiss[variant] } : {}),
     });
     return;

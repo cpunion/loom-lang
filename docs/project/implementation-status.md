@@ -802,7 +802,10 @@ remain conservative. Failed checks do not publish evidence. Native objects are
 still whole-closure, and trusted-local snapshots are not portable proof artifacts.
 
 The [edited-source benchmark](../../compiler/README.md#frontend-cache) uses
-fresh processes and requires a whole-closure miss. One-shot CLI checks serialize
+fresh processes and requires a whole-closure miss. Its edited helper now has a
+required contract and a call from `main`; each warmed compiler/cache must reject
+a false-contract edit before measurements. Earlier uncalled-probe timings below
+describe the older workload, not this stronger one. One-shot CLI checks serialize
 and retire temporary source/body aliases before returning mutable results;
 resident editor caches still keep isolated copies. Body eligibility and concrete
 callee reconstruction are memoized only within the current check, never across
