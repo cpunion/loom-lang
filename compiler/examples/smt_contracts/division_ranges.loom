@@ -1,0 +1,69 @@
+// These interval contracts need no external solver, including nested operands.
+fn halved(value Int) Int
+requires value >= 0
+ensures result >= 0 && result <= 4611686018427387903
+{
+    value / 2
+}
+
+fn decimal_digit(value Int) Int
+requires value >= 0
+ensures result >= 0 && result <= 9
+{
+    value % -10
+}
+
+fn negative_digit(value Int) Int
+requires value <= 0
+ensures result >= -9 && result <= 0
+{
+    value % 10
+}
+
+fn bounded_quotient(value Int, divisor Int) Int
+requires value >= -100 && value <= 100
+requires divisor >= -10 && divisor <= -2
+ensures result >= -50 && result <= 50
+{
+    value / divisor
+}
+
+fn divided_difference(left Int, right Int) Int
+requires left >= 0 && left <= 20
+requires right >= 0 && right <= 20
+ensures result >= -10 && result <= 10
+{
+    (left - right) / 2
+}
+
+fn largest_divisor(value Int) Int
+ensures result >= 0 && result <= 1
+{
+    value / -9223372036854775808
+}
+
+fn remainder_identity(value Int) Bool
+requires value != -9223372036854775808
+ensures value % -1 == 0
+{
+    true
+}
+
+fn division_range_cases() {
+    assert halved(9223372036854775807) == 4611686018427387903
+    assert halved(0) == 0
+    assert decimal_digit(19) == 9 && decimal_digit(10) == 0
+    assert negative_digit(-19) == -9
+    assert negative_digit(-9223372036854775808) == -8
+    assert bounded_quotient(-100, -2) == 50
+    assert bounded_quotient(100, -2) == -50
+    assert divided_difference(0, 20) == -10
+    assert divided_difference(19, 0) == 9
+    assert largest_divisor(-9223372036854775808) == 1
+    assert largest_divisor(9223372036854775807) == 0
+    assert remainder_identity(9223372036854775807)
+}
+
+test fn signed_integer_ranges_compose_without_a_solver() {
+    division_range_cases()
+}

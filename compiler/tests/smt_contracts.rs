@@ -18,6 +18,44 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn integer_division_intervals_prove_without_a_solver_but_keep_fault_checks() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("ranges.loom");
+    let program = include_str!("../examples/smt_contracts/division_ranges.loom");
+    let check = || {
+        common::command(&["check", package.path().to_str().unwrap()])
+            .env("PATH", "")
+            .output()
+            .unwrap()
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    for changed in [
+        program.replace("result <= 9", "result <= 8"),
+        program.replace("requires value >= 0\n", ""),
+        program.replace("requires value != -9223372036854775808\n", ""),
+    ] {
+        assert_ne!(changed, program, "test edit did not apply");
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(!output.status.success(), "unsound interval: {changed}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "{error}"
+        );
+    }
+    fs::write(
+        &source,
+        format!("{program}\nfn main() {{\n    division_range_cases()\n}}\n"),
+    )
+    .unwrap();
+    for mode in ["test", "run"] {
+        success(&common::loom(&[mode, package.path().to_str().unwrap()]));
+    }
+}
+
+#[test]
 fn boolean_scans_recheck_duality_witnesses_and_guarded_suffix_safety() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("searches.loom");

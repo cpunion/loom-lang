@@ -69,6 +69,9 @@ fn integer_bounds(value IntegerTerm, facts List[Predicate], budget List[Int]) Re
                         high = subtract(left.high, right.low)
                     })
             }
+            if integer_division(operator) {
+                return integer_division_bounds(operator, left, right)
+            }
             if operator != "*" {
                 return Result.Err("unsupported integer interval operation")
             }
@@ -77,23 +80,7 @@ fn integer_bounds(value IntegerTerm, facts List[Predicate], budget List[Int]) Re
             push(products, product(left.low, right.high))
             push(products, product(left.high, right.low))
             push(products, product(left.high, right.high))
-            var low = get(products, 0)
-            var high = low
-            var index = 1
-            while index < length(products) {
-                let current = get(products, index)
-                if compare(current, low) < 0 {
-                    low = current
-                }
-                if compare(current, high) > 0 {
-                    high = current
-                }
-                index = index + 1
-            }
-            Result.Ok(Bounds {
-                    low = low
-                    high = high
-                })
+            Result.Ok(endpoint_bounds(products))
         }
     }
 }

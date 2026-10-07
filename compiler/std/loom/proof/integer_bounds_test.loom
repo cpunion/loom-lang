@@ -37,3 +37,83 @@ test fn bounded_polynomial_safety_keeps_hypothetical_overflow_and_eager_faults()
     let eager = operation("*", operation("+", x, literal("1")), literal("0"))
     assert !verified(fixture(literal("0"), [], operation("==", eager, literal("0"))))
 }
+
+fn interval_result(value Result[Bounds, Text]) Bounds {
+    match value {
+        Result.Ok(bounds) => bounds
+        Result.Err(_) => {
+            assert false
+            Bounds {
+                low = integer(0),
+                high = integer(0)
+            }
+        }
+    }
+}
+
+test fn division_intervals_keep_truncation_sign_and_mathematical_extremes() {
+    let dividend = Bounds {
+        low = integer(-7),
+        high = integer(8)
+    }
+    let divisor = Bounds {
+        low = integer(-5),
+        high = integer(-2)
+    }
+    let quotient = interval_result(integer_division_bounds("/", dividend, divisor))
+    assert compare(quotient.low, integer(-4)) == 0
+    assert compare(quotient.high, integer(3)) == 0
+    let remainder = interval_result(integer_division_bounds("%", dividend, divisor))
+    assert compare(remainder.low, integer(-4)) == 0
+    assert compare(remainder.high, integer(4)) == 0
+    let full = Bounds {
+        low = integer(-9223372036854775808),
+        high = integer(9223372036854775807)
+    }
+    let minus_one = Bounds {
+        low = integer(-1),
+        high = integer(-1)
+    }
+    let extreme = interval_result(integer_division_bounds("/", full, minus_one))
+    assert compare(extreme.low, integer(-9223372036854775807)) == 0
+    assert compare(extreme.high, negate(integer(-9223372036854775808))) == 0
+    let zero = interval_result(integer_division_bounds("%", full, minus_one))
+    assert compare(zero.low, integer(0)) == 0 && compare(zero.high, integer(0)) == 0
+    assert match integer_division_bounds("/", full, Bounds {
+            low = integer(-1),
+            high = integer(1)
+        }) {
+        Result.Err(_) => true
+        _ => false
+    }
+    let wide = Bounds {
+        low = integer(0),
+        high = product(full.high, full.high)
+    }
+    assert match integer_division_bounds("/", wide, minus_one) {
+        Result.Err(_) => true
+        _ => false
+    }
+}
+
+test fn signed_division_ranges_prove_locally_without_erasing_faults() {
+    let x = local(0)
+    let nonnegative = [operation(">=", x, literal("0"))]
+    let positive = operation("/", x, literal("2"))
+    let negative = operation("/", x, literal("-2"))
+    assert verified(fixture(positive, nonnegative, operation(">=", local(1), literal("0"))))
+    assert verified(fixture(negative, nonnegative, operation("<=", local(1), literal("0"))))
+    let remainder = operation("%", x, literal("10"))
+    let digit_range = operation("&&", operation(">=", local(1), literal("0")),
+        operation("<=", local(1), literal("9")))
+    assert verified(fixture(remainder, nonnegative, digit_range))
+    assert !verified(fixture(remainder, [], digit_range))
+    assert !verified(fixture(positive, nonnegative, operation("<", local(1), literal("0"))))
+    // A mathematical zero remainder still needs a defined source operation.
+    let overflow = operation("%", x, literal("-1"))
+    assert !verified(fixture(literal("0"), [], operation("==", overflow, literal("0"))))
+    let safe = [operation("!=", x, literal("-9223372036854775808"))]
+    assert verified(fixture(literal("0"), safe, operation("==", overflow, literal("0"))))
+    let eager = operation("%", operation("+", x, literal("1")), literal("1"))
+    assert !verified(fixture(literal("0"), [], operation("==", eager, literal("0"))))
+}

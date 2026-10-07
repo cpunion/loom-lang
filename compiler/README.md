@@ -2397,7 +2397,7 @@ Non-affine integer `+`, `-` and `*` remain symbolic terms over the same logical
 values. The [polynomial example](examples/smt_contracts/polynomials.loom) proves
 square nonnegativity, square expansion and difference-of-squares identities, with
 overflow obligations, immutable Text lengths and verified call summaries.
-Signed interval transfer composes integer `+`, `-` and `*` before SMT, using
+Signed interval transfer composes integer `+`, `-`, `*`, `/` and `%` before SMT, using
 mathematical endpoints and a bounded traversal. It discharges known scalar ranges
 and overflow safety without discarding eager operand checks; loose ranges remain
 unproved. The CLI also enables Z3's bounded polynomial normalization before search,
@@ -2405,6 +2405,10 @@ without extending the solver timeout. Signed symbolic `/` and `%` use mathematic
 magnitudes and a quotient truncated toward zero, not SMT's signed `div` directly.
 Their zero and `Int.min / -1` fault guards are independent of result bounds,
 including `%`; only an actually executed normal continuation supplies them.
+Fixed-sign divisor intervals use truncating quotient endpoints and remainder
+sign/magnitude bounds. Zero-containing or wider quotient intervals stay unproved
+locally. The [range example](examples/smt_contracts/division_ranges.loom) checks
+without Z3; mathematical endpoints do not erase source faults.
 See [division contracts](examples/smt_contracts/division.loom). Universal pack
 content/type proofs remain unsupported. Nonlinear solving is incomplete: unknown or timeout
 still blocks a proof.

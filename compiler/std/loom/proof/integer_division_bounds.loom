@@ -1,0 +1,84 @@
+fn magnitude_number(value Number) Number {
+    if value.negative {
+        negate(value)
+    } else {
+        value
+    }
+}
+
+fn largest_magnitude(bounds Bounds) Number {
+    let first = magnitude_number(bounds.low)
+    let second = magnitude_number(bounds.high)
+    if compare(first, second) >= 0 {
+        first
+    } else {
+        second
+    }
+}
+
+fn quotient_endpoint(value Int, divisor Int) Number {
+    // Endpoints are mathematical even when this source division would fault.
+    // Hypothetical source safety is checked independently by arithmetic_guard.
+    if divisor == -1 {
+        return negate(integer(value))
+    }
+    integer(value / divisor)
+}
+
+fn integer_division_bounds(operator Text, left Bounds, right Bounds) Result[Bounds, Text] {
+    if compare(right.low, integer(0)) <= 0 && compare(right.high, integer(0)) >= 0 {
+        return Result.Err("integer divisor interval includes zero")
+    }
+    if operator == "%" {
+        // The remainder has the dividend's sign and magnitude smaller than
+        // the divisor's, also bounded by the dividend's own magnitude.
+        var limit = subtract(largest_magnitude(right), integer(1))
+        let dividend = largest_magnitude(left)
+        if compare(dividend, limit) < 0 {
+            limit = dividend
+        }
+        return Result.Ok(Bounds {
+                low = if compare(left.low, integer(0)) >= 0 {
+                    integer(0)
+                } else {
+                    negate(limit)
+                }
+                high = if compare(left.high, integer(0)) <= 0 {
+                    integer(0)
+                } else {
+                    limit
+                }
+            })
+    }
+    // Truncating division is monotone in the dividend and piecewise monotone
+    // in a fixed-sign divisor. The four corners bound the entire rectangle.
+    // Wider mathematical endpoints conservatively fall back to the backend.
+    let first = machine(left.low)?
+    let last = machine(left.high)?
+    let low = machine(right.low)?
+    let high = machine(right.high)?
+    Result.Ok(endpoint_bounds([
+                quotient_endpoint(first, low), quotient_endpoint(first, high),
+                quotient_endpoint(last, low), quotient_endpoint(last, high),
+            ]))
+}
+
+fn endpoint_bounds(values List[Number]) Bounds {
+    var low = get(values, 0)
+    var high = low
+    var index = 1
+    while index < length(values) {
+        let value = get(values, index)
+        if compare(value, low) < 0 {
+            low = value
+        }
+        if compare(value, high) > 0 {
+            high = value
+        }
+        index = index + 1
+    }
+    Bounds {
+        low = low,
+        high = high
+    }
+}
