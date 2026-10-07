@@ -3899,7 +3899,10 @@ liveness clears dead local shadows at block entry and after complete statements,
 including branches, loop backedges and break/continue paths. Pending operands
 retain separate snapshots. Cleanup captures remain function-wide, and callbacks
 never clear borrowed owner slots; finer cleanup and expression-internal retirement
-remain future work.
+remain future work. Retirement is omitted when no later collection can benefit.
+Small objects carry private allocation/forwarding metadata beside their payload;
+page maps and base bitmaps replace per-object hash entries. Large objects remain
+separately tracked. Neither mechanism changes source layout or native callback ABI.
 Ordinary locals remain nonescaping SSA candidates; separate shadow slots mirror
 their source writes for the collector, including pattern bindings. After a
 possible allocation, used locals and pending expression snapshots reload updated
