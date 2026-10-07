@@ -1,0 +1,112 @@
+import std.net.tcp.listen
+import std.net.tcp.connect
+import std.net.tcp.accept
+import std.net.tcp.local_address
+import std.net.tcp.write_bytes
+import std.net.tcp.shutdown_write
+import std.net.tcp.close_listener
+import std.net.tcp.close_stream
+import std.net.tcp.abort
+import std.stream.collect
+import std.bytes.length
+import std.bytes.to_text
+import std.text.to_bytes
+import std.text.concat
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.Outcome
+import std.list.length
+
+async fn pair() Result[(std.net.tcp.Stream, std.net.tcp.Stream), TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let client = connect(local_address(listener)?).await?
+    var handed_off = false
+    defer {
+        if !handed_off {
+            discard close_stream(client)
+        }
+    }
+    let server = accept(listener).await?
+    handed_off = true
+    Result.Ok((client, server))
+}
+
+async fn chunks_fixture() Result[Bool, TcpError] {
+    let client, server = pair().await?
+    defer {
+        discard close_stream(client)
+        discard close_stream(server)
+    }
+    let source = read(server, 3)
+    discard write_bytes(client, to_bytes("abcdefgh")).await?
+    discard shutdown_write(client)?
+    let values = collect(source).await
+    var output = ""
+    var index = 0
+    while index < std.list.length(values) {
+        let bytes = values[index]?
+        assert length(bytes) > 0 && length(bytes) <= 3
+        output = concat(output, to_text(bytes))
+        index = index + 1
+    }
+    assert output == "abcdefgh"
+    assert match source.next().await {
+        Option.None => true
+        Option.Some(_) => false
+    }
+
+    let failed = read(server, 3)
+    discard abort(server)?
+    assert match failed.next().await {
+        Option.Some(Result.Err(_)) => true
+        _ => false
+    }
+    assert match failed.next().await {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    Result.Ok(true)
+}
+
+async fn cancellation_fixture() Result[Bool, TcpError] {
+    let client, server = pair().await?
+    defer {
+        discard close_stream(client)
+        discard close_stream(server)
+    }
+    let source = read(server, 32)
+    let pending = source.next()
+    sleep_ms(5).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    discard write_bytes(client, to_bytes("after cancellation")).await?
+    discard shutdown_write(client)?
+    let values = collect(source).await
+    var text = ""
+    var index = 0
+    while index < std.list.length(values) {
+        text = concat(text, to_text(values[index]?))
+        index = index + 1
+    }
+    assert text == "after cancellation"
+    Result.Ok(true)
+}
+
+test async fn tcp_chunks_preserve_buffers_and_distinguish_eof_from_error() {
+    assert match chunks_fixture().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
+
+test async fn cancellation_retires_the_read_lease_without_closing_the_socket() {
+    assert match cancellation_fixture().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}

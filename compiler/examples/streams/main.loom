@@ -1,0 +1,26 @@
+import std.iter.range
+import std.stream.Stream
+import std.stream.from_iter
+import std.stream.map
+import std.stream.take
+import std.stream.collect
+import std.time.sleep_ms
+import std.int.to_text
+import std.text.concat
+import std.io.write_text
+
+async fn label(value Int) Text {
+    let prefix = concat("item ", to_text(value))
+    sleep_ms(1).await
+    concat(prefix, " ready")
+}
+
+async fn main() {
+    let source dyn Stream[Item = Text] = map(from_iter(range(0, 10)), label)
+    let values = collect(take(source, 3)).await
+    assert values[0] == "item 0 ready"
+    assert values[2] == "item 2 ready"
+    discard write_text(concat(values[0], "\n"))
+    discard write_text(concat(values[1], "\n"))
+    discard write_text(concat(values[2], "\n"))
+}

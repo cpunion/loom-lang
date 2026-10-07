@@ -613,6 +613,12 @@ timings; local variables remain conservatively rooted for the function.
   with any/all. List iterators
   share fixed-view element identities and cursor state, not a copied snapshot.
   [The native example](examples/iterators) covers callback faults and cleanup.
+- [`std.stream`](std/stream/README.md) supplies the async counterpart with typed
+  `next().await`, generic/dynamic consumers and sequential Task callbacks.
+  Short-circuiting retains the suffix; cancellation drains pending pulls without
+  undoing their effects. [TCP chunks](std/net/tcp/chunks/README.md) use real socket
+  readiness and fresh buffers while leaving closure explicit. See the
+  [stream pipeline](examples/streams/README.md).
 - Source `std.option` and `std.result` provide `map`, `and_then`, and
   `unwrap_or_else`; Result also provides `map_err`. The selected branch invokes
   its callback once, while the other branch preserves its payload without
@@ -683,7 +689,8 @@ timings; local variables remain conservatively rooted for the function.
   The [line-counting example](examples/file_lines/README.md) does not retain the
   whole file. Factory overloads of map/filter/take compose new scoped resources;
   the [file pipeline](examples/file_pipeline/README.md) stops at a selected prefix.
-  Borrow-retaining iterator adapters and async streams remain open.
+  Borrow-retaining iterator adapters and owned asynchronous resource pipelines
+  remain open.
 - Source `std.io.read_bytes()` reads stdin to EOF; `write_bytes(Bytes)` writes
   stdout, and `write_error(Bytes)` writes stderr. These preserve arbitrary bytes,
   report byte counts/errors, and never close standard streams. `read_text()` still

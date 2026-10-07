@@ -1,0 +1,3 @@
+test async fn asynchronous_pipeline_keeps_typed_items() {
+    main().await
+}

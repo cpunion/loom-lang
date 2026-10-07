@@ -1,0 +1,202 @@
+import std.option.Option
+import std.result.Result
+import std.iter.Iterator
+import std.list.new
+import std.list.push
+
+// Each consumer awaits one pull at a time. Producers and callbacks keep their
+// ordinary effects, faults, cancellation and Task cleanup.
+pub concept Stream {
+    type Item
+    async fn next(self Self) Option[Self.Item]
+}
+
+pub record FromIterator[I Iterator] {
+    source I
+}
+
+pub fn from_iter[I Iterator](source I) FromIterator[I] {
+    FromIterator {
+        source = source
+    }
+}
+
+impl[I Iterator] Stream for FromIterator[I] {
+    type Item = I.Item
+
+    async fn next(self FromIterator[I]) Option[I.Item] {
+        self.source.next()
+    }
+}
+
+pub record Mapped[S Stream, T] {
+    source S
+    transform fn(S.Item) Task[T]
+}
+
+pub fn map[S Stream, T](source S, transform fn(S.Item) Task[T]) Mapped[S, T] {
+    Mapped {
+        source = source
+        transform = transform
+    }
+}
+
+impl[S Stream, T] Stream for Mapped[S, T] {
+    type Item = T
+
+    async fn next(self Mapped[S, T]) Option[T] {
+        match self.source.next().await {
+            Option.Some(value) => Option.Some((self.transform)(value).await)
+            Option.None => Option.None
+        }
+    }
+}
+
+pub record Filtered[S Stream] {
+    source S
+    predicate fn(S.Item) Task[Bool]
+}
+
+pub fn filter[S Stream](source S, predicate fn(S.Item) Task[Bool]) Filtered[S] {
+    Filtered {
+        source = source
+        predicate = predicate
+    }
+}
+
+impl[S Stream] Stream for Filtered[S] {
+    type Item = S.Item
+
+    async fn next(self Filtered[S]) Option[S.Item] {
+        while true {
+            match self.source.next().await {
+                Option.Some(value) => {
+                    if (self.predicate)(value).await {
+                        return Option.Some(value)
+                    }
+                }
+                Option.None => {
+                    return Option.None
+                }
+            }
+        }
+        Option.None
+    }
+}
+
+pub record Limited[S Stream] {
+    state LimitState[S]
+}
+
+record LimitState[S Stream] {
+    source S
+    remaining List[Int]
+}
+
+pub fn take[S Stream](source S, count Int) Limited[S]
+requires count >= 0
+{
+    Limited {
+        state = LimitState {
+            source = source
+            remaining = [count]
+        }
+    }
+}
+
+impl[S Stream] Stream for Limited[S] {
+    type Item = S.Item
+
+    async fn next(self Limited[S]) Option[S.Item] {
+        let remaining = self.state.remaining[0]
+        if remaining == 0 {
+            return Option.None
+        }
+        self.state.remaining[0] = remaining - 1
+        match self.state.source.next().await {
+            Option.Some(value) => Option.Some(value)
+            Option.None => {
+                self.state.remaining[0] = 0
+                Option.None
+            }
+        }
+    }
+}
+
+pub async fn collect[S Stream](source S) List[S.Item] {
+    let values = new[S.Item]()
+    while true {
+        match source.next().await {
+            Option.Some(value) => {
+                push(values, value)
+            }
+            Option.None => {
+                return values
+            }
+        }
+    }
+    values
+}
+
+pub async fn fold[S Stream, A](source S, initial A, combine fn(A, S.Item) Task[A]) A {
+    var accumulator = initial
+    while true {
+        match source.next().await {
+            Option.Some(value) => {
+                accumulator = combine(accumulator, value).await
+            }
+            Option.None => {
+                return accumulator
+            }
+        }
+    }
+    accumulator
+}
+
+// A callback Err is a value, not a Task fault. Stop without requesting a suffix.
+pub async fn try_fold[S Stream, A, E](source S, initial A, combine fn(A, S.Item) Task[Result[A, E]]) Result[A, E] {
+    var accumulator = initial
+    while true {
+        match source.next().await {
+            Option.Some(value) => {
+                accumulator = combine(accumulator, value).await?
+            }
+            Option.None => {
+                return Result.Ok(accumulator)
+            }
+        }
+    }
+    Result.Ok(accumulator)
+}
+
+pub async fn any[S Stream](source S, predicate fn(S.Item) Task[Bool]) Bool {
+    while true {
+        match source.next().await {
+            Option.Some(value) => {
+                if predicate(value).await {
+                    return true
+                }
+            }
+            Option.None => {
+                return false
+            }
+        }
+    }
+    false
+}
+
+pub async fn all[S Stream](source S, predicate fn(S.Item) Task[Bool]) Bool {
+    while true {
+        match source.next().await {
+            Option.Some(value) => {
+                if !predicate(value).await {
+                    return false
+                }
+            }
+            Option.None => {
+                return true
+            }
+        }
+    }
+    true
+}
