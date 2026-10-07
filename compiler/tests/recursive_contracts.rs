@@ -27,6 +27,7 @@ fn recursive_contracts_compile_and_cached_groups_reject_bad_finite_cases() {
         bad_member,
         program.replace("counted(value - 1) + 1", "counted(value - 1) + 2"),
         program.replace("ensures result == value", "ensures result == value + 1"),
+        program.replacen("var count = 1", "var count = 0", 1),
     ] {
         assert_ne!(changed, program, "test edit did not apply");
         fs::write(&source, changed).unwrap();

@@ -547,7 +547,8 @@ remains separate.
 Recursive body calls now use a closed typed group: every source member must prove
 its declared normal-return guarantees before any group result escapes. False
 base cases reject in either member order and after cached edits. This covers
-self, mutual and generic recursion in the existing proof fragment, not termination
+self, mutual and generic recursion, including scalar guarantees from List-backed
+tree traversal and loops, in the existing proof fragment. This is not termination
 or recursive predicate expansion. See the
 [recursive contract example](../../compiler/examples/recursive_contracts/main.loom).
 Bounded content refinements now establish sequential List entry observations,

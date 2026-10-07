@@ -1,4 +1,5 @@
 import std.list.length
+import std.list.get
 
 type Count = Int where self >= 0 && self <= 100
 
@@ -46,6 +47,21 @@ record Marker {
     notes List[Int]
 }
 
+record Tree {
+    children List[Tree]
+}
+
+fn nodes(tree Tree) Int
+ensures result >= 1 {
+    var count = 1
+    var index = 0
+    while index < length(tree.children) {
+        count = count + nodes(get(tree.children, index))
+        index = index + 1
+    }
+    count
+}
+
 fn checked_count(value Count) Count {
     Count(counted(value))
 }
@@ -60,6 +76,17 @@ fn recursive_cases() {
     assert generic_count("unused", 3) == 3
     assert length(marker.notes) == 1
     assert checked_count(Count(100)) == 100
+    let leaf = Tree {
+        children = []
+    }
+    let root = Tree {
+        children = [leaf, leaf]
+    }
+    assert nodes(leaf) == 1 && nodes(root) == 3
+    let nested = Tree {
+        children = [root, leaf]
+    }
+    assert nodes(nested) == 5
 }
 
 fn main() {
