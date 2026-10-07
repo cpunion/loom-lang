@@ -68,7 +68,9 @@ async fn trial() Result[Bool, TcpError] {
     discard writing.await?
     assert match parsed {
         Result.Ok(value) => match stringify(value) {
-            Result.Ok(text) => text == "{\"name\":\"hé中😀\",\"amount\":123456789012345678901234567890,\"items\":[true,null,{},\"😀\"]}"
+            Result.Ok(text) => text == """
+                {"name":"hé中😀","amount":123456789012345678901234567890,"items":[true,null,{},"😀"]}
+                """
             _ => false
         }
         _ => false
