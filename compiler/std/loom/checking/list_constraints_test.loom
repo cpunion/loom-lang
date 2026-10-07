@@ -212,6 +212,60 @@ test fn atomic_updates_reuse_only_stable_caller_conditions() {
         """))
 }
 
+test fn helper_mutations_preserve_the_invariant_at_each_write() {
+    let header = """
+    import std.list.length
+    import std.list.set
+    fn positive_head(values List[Int]) Bool {
+        length(values) > 0 && values[0] > 0
+    }
+    type PositiveHead = List[Int] where positive_head(self)
+
+    """
+    list_constraint_accept(concat(header, """
+        fn twice(values List[Int], value Int) {
+            let alias = values
+            set(alias, 0, value)
+            alias[0] = value
+        }
+        fn guarded(values List[Int], value Int) Int {
+            if value <= 0 {
+                return 0
+            }
+            twice(values, value)
+            return value
+        }
+        pub fn update(values PositiveHead, value Int) Int {
+            guarded(values, value)
+        }
+        fn main() {
+            let values = PositiveHead([1, 2])
+            twice(values, 3)
+            assert update(values, 4) == 4
+            assert update(values, -1) == 0 && values[0] == 4
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn temporary(values List[Int]) {
+            values[0] = -1
+            assert false
+            values[0] = 1
+        }
+        pub fn invalid(values PositiveHead) {
+            temporary(values)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn escaped(values List[Int], storage List[List[Int]]) {
+            std.list.push(storage, values)
+            values[0] = 1
+        }
+        pub fn invalid(values PositiveHead, storage List[List[Int]]) {
+            escaped(values, storage)
+        }
+        """))
+}
+
 test fn generic_list_extent_constraints_ignore_shared_element_contents() {
     list_constraint_accept("""
         import std.list.length

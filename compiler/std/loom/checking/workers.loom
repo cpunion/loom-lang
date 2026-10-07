@@ -26,14 +26,56 @@ fn worker_expression(value Expr) Bool {
     false
 }
 
-fn constraint_content_updates(env Environment, program std.loom.typed.Program, value Expr, modified List[Int]) {
+fn constraint_content_updates(env Environment, program std.loom.typed.Program, owner Int, value Expr, modified List[Int]) Result[Bool, Failure] {
     if std.loom.proof.single_list_update(program, value) &&
     constraint_weakened(env, get(value.children, 0)) {
         push(modified, get(get(value.children, 0).children, 0).ty)
     }
+    if value.kind == ExprKind.Call && !std.loom.proof.single_list_update(program, value) {
+        let inputs = new[InputOrigin]()
+        var borrowed = false
+        var index = 0
+        while index < length(value.children) {
+            let protected = constraint_weakened(env, get(value.children, index))
+            push(inputs, if protected {
+                    origin_input()
+                } else {
+                    origin_empty()
+                })
+            borrowed = borrowed || (protected && get(env.type_states,
+                    get(get(value.children, index).children, 0).ty).list_writes == 0)
+            index = index + 1
+        }
+        if borrowed {
+            let reads = invariant_reads(env, program.functions, value, true, 0, -1)
+            discard invariant_call(reads, value.index, inputs, 0)
+            if !get(reads.valid, 0) {
+                let preserved = match list_mutation_proof(env, value, true) {
+                    Result.Ok(proved) => proved
+                    Result.Err(failed) => {
+                        return Result.Err(list_constraint_error(env, owner, value,
+                                concat("constrained List mutation is not proved interference-safe: ",
+                                    failed.diagnostic.message)))
+                    }
+                }
+                if !preserved {
+                    return Result.Err(list_constraint_error(env, owner, value,
+                            "constrained List mutation is not proved interference-safe"))
+                }
+                index = 0
+                while index < length(value.children) {
+                    let argument = get(value.children, index)
+                    if constraint_weakened(env, argument) {
+                        push(modified, get(argument.children, 0).ty)
+                    }
+                    index = index + 1
+                }
+            }
+        }
+    }
     var index = 0
     while index < length(value.children) {
-        constraint_content_updates(env, program, get(value.children, index), modified)
+        discard constraint_content_updates(env, program, owner, get(value.children, index), modified)?
         index = index + 1
     }
     index = 0
@@ -41,11 +83,12 @@ fn constraint_content_updates(env Environment, program std.loom.typed.Program, v
         let body = get(value.arms, index).body
         var item = 0
         while item < length(body) {
-            constraint_content_updates(env, program, get(body, item), modified)
+            discard constraint_content_updates(env, program, owner, get(body, item), modified)?
             item = item + 1
         }
         index = index + 1
     }
+    Result.Ok(true)
 }
 
 // Cached sequential certificates never authorize a shared build. Reuse the
@@ -70,10 +113,10 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     index = 0
     while index < length(program.functions) {
         let function = get(program.functions, index)
-        constraint_content_updates(env, program, function.body, modified)
+        discard constraint_content_updates(env, program, function.symbol, function.body, modified)?
         var clause = 0
         while clause < length(function.preconditions) {
-            constraint_content_updates(env, program, get(function.preconditions, clause), modified)
+            discard constraint_content_updates(env, program, function.symbol, get(function.preconditions, clause), modified)?
             clause = clause + 1
         }
         index = index + 1

@@ -29,6 +29,23 @@ fn replace_guarded(values PositiveValues, index Int, value Int) {
     set(values, index, replacement)
 }
 
+fn replace_twice(values List[Int], index Int, value Int) {
+    let alias = values
+    alias[index] = value
+    set(alias, index, value)
+}
+
+fn fill_positive(values List[Int], value Int) {
+    if value <= 0 {
+        return
+    }
+    var index = 0
+    while index < length(values) {
+        replace_twice(values, index, value)
+        index = index + 1
+    }
+}
+
 fn pair_length(values List[Int]) Bool {
     let inspect = fn() Int {
         length(values)
@@ -96,6 +113,10 @@ fn list_constraint_scope() Bool {
     replace_guarded(literal_alias, 0, 4)
     replace_guarded(literal, 0, -1)
     assert literal[0] == 4 && values_sum(literal_alias) == 9
+    replace_twice(literal_alias, 0, PositiveElement(6))
+    fill_positive(literal_alias, 7)
+    fill_positive(literal, -1)
+    assert literal[0] == 7 && values_sum(literal_alias) == 14
     let pair = IntPair([1, 2])
     let pair_alias = pair
     pair[0] = -7

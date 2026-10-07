@@ -185,7 +185,18 @@ fn constraint_operation(env Environment, functions List[Function], value Expr, e
     }
     let reads = invariant_reads(env, functions, value, true, writes, -1)
     let output = invariant_call(reads, value.index, inputs, 0)
-    get(reads.valid, 0) && (!origin_shared(output) || constraint_output_independent(env, value))
+    if get(reads.valid, 0) && (!origin_shared(output) || constraint_output_independent(env, value)) {
+        return true
+    }
+    if writes != 0 || env.expanding_helpers {
+        return false
+    }
+    // First prove that the helper cannot publish the protected header. Then
+    // discharge the complete invariant at every store, never only at return.
+    let mutable = invariant_reads(env, functions, value, true, 1, -1)
+    let returned = invariant_call(mutable, value.index, inputs, 0)
+    get(mutable.valid, 0) && (!origin_shared(returned) || constraint_output_independent(env, value)) &&
+    proved_list_mutation(env, value, false)
 }
 
 fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr) Result[Bool, Failure] {
