@@ -711,9 +711,10 @@ pub fn verify_with_types(types List[Type], function Function, backend ProofBacke
 // Contract calls belong to this checked helper closure. Expansion is symbolic,
 // not evaluation of samples. Body calls use the same closure without changing
 // the caller's emitted body or exposing temporary proof-local bindings.
-// The caller must have independently verified every callee's postconditions in
-// program.functions: no pending or cyclic proof promises. This is not a verifier
-// for an arbitrary hand-built Program; callee summaries are trusted here.
+// The caller must have verified every callee's postconditions in program.functions,
+// independently or as a completed contract group: no pending proof promises.
+// This is not a verifier for an arbitrary hand-built Program; callee summaries
+// are trusted here.
 // With no postconditions, entry predicates still validate their helper closure
 // but do not invoke the narrower required-proof arithmetic fragment.
 pub fn verify_with_helpers(program Program, function Function) Result[List[Expr], Text] {

@@ -152,7 +152,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             // Call-free declaration checking needs no queue. For a body proof,
             // rebuild once from a fresh entry scope, retaining its actual type
             // arguments, not one later concrete caller. Every direct Call now
-            // addresses this private queue. Callees still verify normally.
+            // addresses this private queue. Callee bodies verify as one group.
             let built = function_body(stage.env, id, context.arguments, context.constants, true)?
             with_contracts(built.function, built.function.preconditions,
                 add_contracts(contracts(built.context, node, NodeKind.Ensures)?, inherited_contracts(built.context, NodeKind.Ensures)?))
@@ -162,7 +162,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
         }
         let summaries = new[Function]()
         if body_calls { discard collect_dynamic_contracts(stage, proof.body, summaries)? }
-        let program = prepared_in(stage, true)?
+        let program = prepared_contract_group(stage)?
         let first = length(program.functions)
         var index = 0
         while index < length(summaries) {
