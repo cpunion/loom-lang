@@ -1,0 +1,151 @@
+import std.iter.range
+import std.iter.from_list
+import std.time.sleep_ms
+import std.text.concat
+import std.text.contains
+import std.task.cancel
+import std.task.outcome
+import std.task.Outcome
+import std.list.length
+
+async fn decorate(value Text) Text {
+    let prefix = concat("[", value)
+    sleep_ms(1).await
+    concat(prefix, "]")
+}
+
+async fn even(value Int) Bool {
+    sleep_ms(0).await
+    value % 2 == 0
+}
+
+async fn add(left Int, right Int) Int {
+    sleep_ms(0).await
+    left + right
+}
+
+async fn before_three(left Int, right Int) Result[Int, Text] {
+    sleep_ms(0).await
+    if right == 3 {
+        return Result.Err("three")
+    }
+    Result.Ok(left + right)
+}
+
+test async fn typed_and_dynamic_streams_keep_managed_values_and_shared_cursors() {
+    let source = from_iter(from_list([concat("o", "ne"), "two"]))
+    let dynamic dyn Stream[Item = Text] = map(source, decorate)
+    let values = collect(dynamic).await
+    assert length(values) == 2
+    assert values[0] == "[one]"
+    assert values[1] == "[two]"
+
+    let cursor = from_iter(range(0, 10))
+    let filtered = filter(cursor, even)
+    let limited = take(filtered, 2)
+    assert length(collect(limited).await) == 2
+    assert match cursor.next().await {
+        Option.Some(value) => value == 3
+        Option.None => false
+    }
+    assert match limited.next().await {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert fold(take(from_iter(range(1, 5)), 4), 0, add).await == 10
+}
+
+test async fn consumers_stop_at_the_deciding_item_and_retain_the_suffix() {
+    let empty = from_iter(range(0, 0))
+    assert all(empty, even).await
+    assert !any(empty, even).await
+    let source = from_iter(range(1, 6))
+    assert any(source, even).await
+    assert match source.next().await {
+        Option.Some(value) => value == 3
+        Option.None => false
+    }
+    assert !all(source, even).await
+    assert match source.next().await {
+        Option.None => true
+        Option.Some(_) => false
+    }
+
+    let fallible = from_iter(range(1, 6))
+    assert match try_fold(fallible, 0, before_three).await {
+        Result.Err(error) => error == "three"
+        Result.Ok(_) => false
+    }
+    assert match fallible.next().await {
+        Option.Some(value) => value == 4
+        Option.None => false
+    }
+}
+
+record Waiting {
+    events List[Text]
+}
+
+impl Stream for Waiting {
+    type Item = Text
+
+    async fn next(self Waiting) Option[Text] {
+        defer {
+            push(self.events, "producer cleaned")
+        }
+        push(self.events, "producer started")
+        sleep_ms(10000).await
+        Option.Some("late")
+    }
+}
+
+async fn consume[S Stream](source S, events List[Text]) List[S.Item] {
+    defer {
+        push(events, "consumer cleaned")
+    }
+    collect(source).await
+}
+
+test async fn cancellation_and_callback_faults_drain_nested_pulls() {
+    let events = new[Text]()
+    let empty = take(Waiting {
+            events = events
+        }, 0)
+    assert match empty.next().await {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert length(events) == 0
+    let pending = consume(Waiting {
+            events = events
+        }, events)
+    sleep_ms(5).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert length(events) == 3
+    assert events[0] == "producer started"
+    assert events[1] == "producer cleaned"
+    assert events[2] == "consumer cleaned"
+
+    let fail = async fn(value Text) Text {
+        defer {
+            push(events, "callback cleaned")
+        }
+        sleep_ms(1).await
+        assert false
+        value
+    }
+    let source = from_iter(from_list(["first", "unrequested"]))
+    assert match outcome(consume(map(source, fail), events)).await {
+        Outcome.Faulted(error) => contains(error.message, "assertion failed")
+        _ => false
+    }
+    assert events[3] == "callback cleaned"
+    assert events[4] == "consumer cleaned"
+    assert match source.next().await {
+        Option.Some(value) => value == "unrequested"
+        Option.None => false
+    }
+}

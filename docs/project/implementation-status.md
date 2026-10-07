@@ -578,7 +578,12 @@ synchronous UTF-8 file lines with explicit error items and scoped closure,
 including direct generic consumers. Resource factory overloads of map/filter/take
 compose owned scoped pipelines without copying a live borrow; nested disposal
 uses the existing compiler rules. Collection hash/order laws remain caller
-obligations; streaming JSON, borrow-retaining adapters, async streams and
+obligations. Source [`std.stream`](../../compiler/std/stream/README.md) now supplies
+generic/dynamic async pulls, map/filter/take and sequential consumers. Callback
+errors, short-circuiting and cancellation retain ordinary Task semantics.
+[`TCP chunks`](../../compiler/std/net/tcp/chunks/README.md) borrow an explicitly
+closed socket, yield fresh buffers and distinguish errors from EOF.
+Streaming JSON, borrow-retaining adapters, owned async resource pipelines and
 application-grade networking are not complete.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;

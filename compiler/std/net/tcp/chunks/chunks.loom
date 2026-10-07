@@ -1,0 +1,55 @@
+import std.stream.Stream
+import std.net.tcp.Stream
+import std.net.tcp.TcpError
+import std.net.tcp.read
+import std.option.Option
+import std.result.Result
+import std.bytes.new
+
+pub record Chunks {
+    state State
+}
+
+record State {
+    connection std.net.tcp.Stream
+    limit Int
+    ended List[Bool]
+}
+
+// Borrow a socket identity; the caller closes it after pending pulls drain.
+// Each yielded buffer is fresh, so later reads cannot overwrite earlier chunks.
+pub fn read(connection std.net.tcp.Stream, limit Int) Chunks
+requires limit > 0
+{
+    Chunks {
+        state = State {
+            connection = connection
+            limit = limit
+            ended = [false]
+        }
+    }
+}
+
+impl std.stream.Stream for Chunks {
+    type Item = Result[Bytes, TcpError]
+
+    async fn next(self Chunks) Option[Result[Bytes, TcpError]] {
+        if self.state.ended[0] {
+            return Option.None
+        }
+        let buffer = new()
+        match std.net.tcp.read(self.state.connection, buffer, self.state.limit).await {
+            Result.Ok(count) => {
+                if count == 0 {
+                    self.state.ended[0] = true
+                    return Option.None
+                }
+                Option.Some(Result.Ok(buffer))
+            }
+            Result.Err(error) => {
+                self.state.ended[0] = true
+                Option.Some(Result.Err(error))
+            }
+        }
+    }
+}
