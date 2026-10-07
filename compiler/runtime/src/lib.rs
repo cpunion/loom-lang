@@ -61,6 +61,7 @@ unsafe extern "C" fn trace_pointer(address: *mut u8) {
     unsafe { *address.cast::<*mut u8>() = loom_rt_visit(*address.cast::<*mut u8>()) };
 }
 
+#[derive(Clone, Copy)]
 struct Allocation {
     size: usize,
     trace: Option<Trace>,
@@ -90,7 +91,7 @@ impl Allocation {
 
 fn occupied(layout: Layout) -> usize {
     if layout.size() < LARGE_OBJECT_THRESHOLD {
-        layout.pad_to_align().size()
+        HEADER_SIZE + layout.pad_to_align().size()
     } else {
         layout.size()
     }
@@ -118,39 +119,161 @@ impl Hasher for AddressHasher {
     }
 }
 
-type Objects = HashMap<usize, Allocation, BuildHasherDefault<AddressHasher>>;
+type AddressMap<T> = HashMap<usize, T, BuildHasherDefault<AddressHasher>>;
+
+#[derive(Default)]
+struct Objects {
+    large: AddressMap<Allocation>,
+    arena: Arena,
+}
+
+impl Objects {
+    fn get(&self, address: &usize) -> Option<&Allocation> {
+        if let Some(header) = self.arena.header(*address) {
+            // SAFETY: Registered bases have an initialized private heap header.
+            Some(unsafe { header.as_ref() })
+        } else {
+            self.large.get(address)
+        }
+    }
+
+    fn get_mut(&mut self, address: &usize) -> Option<&mut Allocation> {
+        if let Some(mut header) = self.arena.header(*address) {
+            // SAFETY: The owning heap's exclusive borrow covers this header.
+            Some(unsafe { header.as_mut() })
+        } else {
+            self.large.get_mut(address)
+        }
+    }
+
+    fn contains_key(&self, address: &usize) -> bool {
+        self.arena.header(*address).is_some() || self.large.contains_key(address)
+    }
+
+    fn insert(&mut self, address: usize, allocation: Allocation) {
+        if let Some(header) = self.arena.header(address) {
+            // SAFETY: Storage registered this new base before publication.
+            unsafe { header.as_ptr().write(allocation) };
+        } else {
+            self.large.insert(address, allocation);
+        }
+    }
+
+    fn remove(&mut self, address: &usize) -> Option<Allocation> {
+        if let Some(header) = self.arena.header(*address) {
+            // SAFETY: This initialized header belongs to the abandoned slice.
+            let allocation = unsafe { *header.as_ptr() };
+            self.arena.unregister(*address);
+            Some(allocation)
+        } else {
+            self.large.remove(address)
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.large.is_empty() && self.arena.count == 0
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.large.len() + self.arena.count
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &Allocation> {
+        self.large
+            .values()
+            .chain(self.arena.pages.iter().flat_map(|page| {
+                page.bases.iter().enumerate().flat_map(move |(word, bits)| {
+                    (0..usize::BITS as usize).filter_map(move |bit| {
+                        if bits & (1 << bit) == 0 {
+                            return None;
+                        }
+                        let offset = (word * usize::BITS as usize + bit) * 16 - HEADER_SIZE;
+                        // SAFETY: Set bits identify initialized private headers.
+                        Some(unsafe { &*page.pointer.as_ptr().add(offset).cast::<Allocation>() })
+                    })
+                })
+            }))
+    }
+
+    fn clear(&mut self) {
+        self.large.clear();
+        self.arena.clear();
+    }
+}
+
+struct Page {
+    pointer: NonNull<u8>,
+    bases: Box<[usize; PAGE_WORDS]>,
+}
 
 #[derive(Default)]
 struct Arena {
-    pages: Vec<NonNull<u8>>,
+    pages: Vec<Page>,
+    indices: AddressMap<usize>,
     used: usize,
+    count: usize,
 }
 
 impl Arena {
     fn allocate(&mut self, layout: Layout) -> NonNull<u8> {
-        let size = layout.pad_to_align().size();
+        let size = occupied(layout);
         if self.pages.is_empty() || self.used + size > PAGE_SIZE {
-            let layout = Layout::from_size_align(PAGE_SIZE, 16).unwrap();
-            // SAFETY: Small objects fit within a page and are aligned to 16 bytes.
+            let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
+            // SAFETY: Page alignment supplies a constant-time page identity.
             let page =
                 NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| fatal("out of memory"));
-            self.pages.push(page);
+            self.indices
+                .insert(page.as_ptr() as usize, self.pages.len());
+            self.pages.push(Page {
+                pointer: page,
+                bases: Box::new([0; PAGE_WORDS]),
+            });
             self.used = 0;
         }
-        // SAFETY: The page owns this aligned, disjoint range until arena clear.
-        let pointer =
-            unsafe { NonNull::new_unchecked(self.pages.last().unwrap().as_ptr().add(self.used)) };
+        let page = self.pages.last_mut().unwrap();
+        let offset = self.used + HEADER_SIZE;
+        let bit = offset / 16;
+        page.bases[bit / usize::BITS as usize] |= 1 << (bit % usize::BITS as usize);
+        // SAFETY: Header and payload own this aligned range until arena clear.
+        let pointer = unsafe { NonNull::new_unchecked(page.pointer.as_ptr().add(offset)) };
         self.used += size;
+        self.count += 1;
         pointer
     }
 
+    fn header(&self, address: usize) -> Option<NonNull<Allocation>> {
+        let base = address & !(PAGE_SIZE - 1);
+        let page = &self.pages[*self.indices.get(&base)?];
+        let offset = address - base;
+        let bit = offset / 16;
+        if offset % 16 != 0
+            || page.bases[bit / usize::BITS as usize] & (1 << (bit % usize::BITS as usize)) == 0
+        {
+            return None;
+        }
+        // SAFETY: The bitmap identifies an allocation base after its header.
+        Some(unsafe { NonNull::new_unchecked((address - HEADER_SIZE) as *mut Allocation) })
+    }
+
+    fn unregister(&mut self, address: usize) {
+        let base = address & !(PAGE_SIZE - 1);
+        let page = &mut self.pages[self.indices[&base]];
+        let bit = (address - base) / 16;
+        page.bases[bit / usize::BITS as usize] &= !(1 << (bit % usize::BITS as usize));
+        self.count -= 1;
+    }
+
     fn clear(&mut self) {
-        let layout = Layout::from_size_align(PAGE_SIZE, 16).unwrap();
+        let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
         for page in self.pages.drain(..) {
             // SAFETY: All page slots are dead before the owning arena is cleared.
-            unsafe { dealloc(page.as_ptr(), layout) };
+            unsafe { dealloc(page.pointer.as_ptr(), layout) };
         }
+        self.indices.clear();
         self.used = 0;
+        self.count = 0;
     }
 }
 
@@ -163,8 +286,6 @@ impl Drop for Arena {
 struct Heap {
     objects: Objects,
     previous: Objects,
-    space: Arena,
-    previous_space: Arena,
     collecting: bool,
     work: Vec<(*mut u8, Trace)>,
     bytes: usize, // Occupied slots, including abandoned growth slices until GC.
@@ -178,14 +299,14 @@ struct Heap {
 const MIN_THRESHOLD: usize = 64 * 1024;
 const LARGE_OBJECT_THRESHOLD: usize = 64 * 1024;
 const PAGE_SIZE: usize = 256 * 1024;
+const PAGE_WORDS: usize = PAGE_SIZE / 16 / usize::BITS as usize;
+const HEADER_SIZE: usize = (size_of::<Allocation>() + 15) & !15;
 
 impl Default for Heap {
     fn default() -> Self {
         Self {
             objects: Objects::default(),
             previous: Objects::default(),
-            space: Arena::default(),
-            previous_space: Arena::default(),
             collecting: false,
             work: Vec::new(),
             bytes: 0,
@@ -201,8 +322,9 @@ impl Default for Heap {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        for (address, allocation) in self.objects.iter().chain(
+        for (address, allocation) in self.objects.large.iter().chain(
             self.previous
+                .large
                 .iter()
                 .filter(|(address, object)| object.forwarded as usize != **address),
         ) {
@@ -249,9 +371,9 @@ fn allocate(size: usize, trace: Option<Trace>) -> *mut u8 {
     allocate_storage(size, trace, true)
 }
 
-fn storage(arena: &mut Arena, layout: Layout, zeroed: bool) -> NonNull<u8> {
+fn storage(objects: &mut Objects, layout: Layout, zeroed: bool) -> NonNull<u8> {
     if layout.size() < LARGE_OBJECT_THRESHOLD {
-        let pointer = arena.allocate(layout);
+        let pointer = objects.arena.allocate(layout);
         if zeroed {
             // SAFETY: This fresh slot has layout.size() writable bytes.
             unsafe { ptr::write_bytes(pointer.as_ptr(), 0, layout.size()) };
@@ -286,7 +408,7 @@ fn allocate_storage(size: usize, trace: Option<Trace>, zeroed: bool) -> *mut u8 
     }
     HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
-        let pointer = storage(&mut heap.space, layout, zeroed);
+        let pointer = storage(&mut heap.objects, layout, zeroed);
         heap.bytes += occupied(layout);
         heap.objects.insert(
             pointer.as_ptr() as usize,
@@ -341,7 +463,6 @@ extern "C" fn loom_rt_visit(pointer: *mut u8) -> *mut u8 {
         let Heap {
             objects,
             previous,
-            space,
             bytes,
             work,
             ..
@@ -362,7 +483,7 @@ extern "C" fn loom_rt_visit(pointer: *mut u8) -> *mut u8 {
         } else {
             // SAFETY: Keep from-space alive until all root/field rewriting ends.
             // Bytewise copy preserves raw capacity; stress moves every size.
-            let moved = storage(space, layout, false);
+            let moved = storage(objects, layout, false);
             unsafe { ptr::copy_nonoverlapping(pointer, moved.as_ptr(), layout.size()) };
             moved
         };
@@ -396,16 +517,11 @@ fn collect_roots(roots: &[*mut RootFrame]) {
         }
         heap.collecting = true;
         heap.work.clear();
-        // The empty from-space table retains its buckets for the next live set.
+        // Small metadata moves with its page; only large objects need a table.
         let Heap {
-            objects,
-            previous,
-            space,
-            previous_space,
-            ..
+            objects, previous, ..
         } = &mut *heap;
         std::mem::swap(objects, previous);
-        std::mem::swap(space, previous_space);
         heap.bytes = 0;
     });
     for mut frame in roots.iter().copied() {
@@ -464,7 +580,7 @@ fn collect_roots(roots: &[*mut RootFrame]) {
             unsafe { (*view.source).watched = 1 };
             true
         });
-        for (address, object) in &heap.previous {
+        for (address, object) in heap.previous.large.iter() {
             if object.individually_owned() && object.forwarded as usize != *address {
                 // SAFETY: Roots/fields now address to-space; self-forwarded
                 // allocations belong to objects and must not be freed here.
@@ -472,7 +588,6 @@ fn collect_roots(roots: &[*mut RootFrame]) {
             }
         }
         heap.previous.clear();
-        heap.previous_space.clear();
         heap.threshold = heap.bytes.saturating_mul(2).max(MIN_THRESHOLD);
         heap.collecting = false;
     });
@@ -1085,7 +1200,10 @@ unsafe fn reserve(owner: *mut u8, additional: usize, stride: usize) -> *mut Buff
                 .unwrap_or_else(|_| fault("allocation size overflow"));
             let collect = HEAP.with(|heap| {
                 let heap = heap.borrow();
-                let previous = &heap.objects[&(old.data as usize)];
+                let previous = heap
+                    .objects
+                    .get(&(old.data as usize))
+                    .expect("live buffer allocation");
                 heap.stress
                     || heap.bytes.saturating_add(previous.growth_cost(layout)) >= heap.threshold
             });
@@ -1106,7 +1224,7 @@ unsafe fn reserve(owner: *mut u8, additional: usize, stride: usize) -> *mut Buff
                     NonNull::new(unsafe { realloc(current, previous.layout(), layout.size()) })
                         .unwrap_or_else(|| fatal("out of memory"))
                 } else {
-                    let pointer = storage(&mut heap.space, layout, false);
+                    let pointer = storage(&mut heap.objects, layout, false);
                     // SAFETY: Arena slices cannot be reallocated individually.
                     // Copy initialized elements; the abandoned slice dies with
                     // its arena. No collection occurs before header publication.
@@ -1517,6 +1635,25 @@ mod tests {
 
     fn live() -> usize {
         HEAP.with(|heap| heap.borrow().objects.len())
+    }
+
+    #[test]
+    fn small_metadata_tracks_exact_bases_and_relocates_with_the_object() {
+        let large = HEAP.with(|heap| heap.borrow().objects.large.len());
+        rooted([text("inline header")], |slots| unsafe {
+            let original = *slots;
+            HEAP.with(|heap| {
+                let heap = heap.borrow();
+                assert_eq!(heap.objects.large.len(), large);
+                assert!(heap.objects.contains_key(&(original as usize)));
+                assert!(!heap.objects.contains_key(&(original.add(16) as usize)));
+            });
+            loom_rt_collect();
+            assert_ne!(*slots, original);
+            assert_eq!(text_bytes(*slots), b"inline header");
+            assert!(HEAP.with(|heap| heap.borrow().objects.contains_key(&(*slots as usize))));
+        });
+        loom_rt_collect();
     }
 
     #[test]

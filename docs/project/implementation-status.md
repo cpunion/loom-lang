@@ -583,9 +583,15 @@ application-grade networking are not complete.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;
 large-object storage is separate and stress tests relocate all sizes. Ordinary
-nonallocating functions stay root-free. General local root liveness and
-generational/concurrent collection are not implemented. Source exposes no
+nonallocating functions stay root-free. Checked control-flow liveness retires
+dead local roots at block entry and complete statement boundaries; pending
+operands retain separate snapshots. Cleanup captures remain conservatively
+rooted. Expression-internal retirement and generational/concurrent collection
+are not implemented. Source exposes no
 addresses, finalizers, weak references or ownership/borrow syntax.
+Small allocation and forwarding metadata lives in private heap headers, with
+page-indexed base bitmaps rather than per-object hash tables; large objects remain
+separately tracked. This avoids object-table capacity cliffs during large restores.
 
 The private [shared-heap boundary](../../compiler/runtime/src/shared_heap.rs)
 separates mutator root chains from object storage. Native tests cover concurrent
@@ -778,6 +784,12 @@ Private decoded IR shares empty lists only within its read-only snapshot. Replay
 and resident-cache detachment still create independent mutable public lists.
 Raw bundle buffers and decoded metadata retire before restoring cached IR; only
 the authenticated snapshot text remains live across that phase boundary.
+Nine alternating macOS pairs with the same private source edit measured
+1828/1006 ms and 795/458 MiB before/after checked local-root retirement and inline
+small-object metadata. Both compilers reused 2189 definitions and 3494 bodies;
+each edit required a whole-closure miss. Small packages were mostly unchanged.
+An uncached nine-pair self-check measured 1704/1244 ms and 439/274 MiB.
+These are individual macOS workloads, not completion of the feedback gate.
 See [native benchmarks](../../benchmarks/basic/README.md) separately; compiler
 latency is not interpreter or application runtime performance.
 

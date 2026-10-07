@@ -40,7 +40,52 @@ fn describe(choice Choice) Text {
     }
 }
 fn join(first Text, second Text) Text { concat(first, second) }
+fn exercise_local_liveness() {
+    let carried = concat("car", "ried")
+    var text = concat("s", "")
+    var index = 0
+    while index < 4 {
+        text = concat(text, "!")
+        index = index + 1
+        if index == 2 {
+            discard concat("allocate", "-before-continue")
+            continue
+        }
+        let transient = concat("scratch", "!")
+        assert transient == "scratch!"
+        discard concat("allocate", "-after-last-use")
+        if index == 3 {
+            break
+        }
+    }
+    assert text == "s!!!" && carried == "carried"
+    let branch = if index == 3 {
+        let inside = concat("branch", "-result")
+        discard concat("allocate", "-before-tail")
+        inside
+    } else {
+        concat("wrong", "-branch")
+    }
+    discard concat("allocate", "-after-tail")
+    assert branch == "branch-result"
+    let closure = {
+        let captured = concat("cap", "tured")
+        fn() Text {
+            discard concat("allocate", "-inside-closure")
+            captured
+        }
+    }
+    discard concat("allocate", "-after-capture")
+    assert closure() == "captured"
+    let cleanup_value = concat("clean", "up")
+    defer {
+        discard concat("allocate", "-inside-cleanup")
+        assert cleanup_value == "cleanup"
+    }
+    discard concat("allocate", "-before-cleanup")
+}
 fn main() {
+    exercise_local_liveness()
     var saved = concat("or", "iginal")
     discard concat("replace", "-old-temporaries")
     let combined = join(saved, {
