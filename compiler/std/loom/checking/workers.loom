@@ -26,12 +26,16 @@ fn worker_expression(value Expr) Bool {
     false
 }
 
-fn constraint_content_updates(env Environment, program std.loom.typed.Program, owner Int, value Expr, modified List[Int]) Result[Bool, Failure] {
-    if std.loom.proof.single_list_update(program, value) &&
+fn constraint_content_updates(env Environment, program std.loom.typed.Program, owner Int, value Expr, modified List[InputGuarantee]) Result[Bool, Failure] {
+    let store = std.loom.proof.single_list_write(program, value)
+    if store > 0 &&
     constraint_weakened(env, get(value.children, 0)) {
-        push(modified, get(get(value.children, 0).children, 0).ty)
+        push(modified, InputGuarantee {
+                ty = get(get(value.children, 0).children, 0).ty
+                writes = store
+            })
     }
-    if value.kind == ExprKind.Call && !std.loom.proof.single_list_update(program, value) {
+    if value.kind == ExprKind.Call && store == 0 {
         let inputs = new[InputOrigin]()
         var borrowed = false
         var index = 0
@@ -50,7 +54,8 @@ fn constraint_content_updates(env Environment, program std.loom.typed.Program, o
             let reads = invariant_reads(env, program.functions, value, true, 0, -1)
             discard invariant_call(reads, value.index, inputs, 0)
             if !get(reads.valid, 0) {
-                let preserved = match list_mutation_proof(env, value, true) {
+                let writes = constraint_mutation_writes(env, program.functions, value, inputs)
+                let preserved = match list_mutation_proof(env, value, true, writes) {
                     Result.Ok(proved) => proved
                     Result.Err(failed) => {
                         return Result.Err(list_constraint_error(env, owner, value,
@@ -66,7 +71,10 @@ fn constraint_content_updates(env Environment, program std.loom.typed.Program, o
                 while index < length(value.children) {
                     let argument = get(value.children, index)
                     if constraint_weakened(env, argument) {
-                        push(modified, get(argument.children, 0).ty)
+                        push(modified, InputGuarantee {
+                                ty = get(argument.children, 0).ty
+                                writes = writes
+                            })
                     }
                     index = index + 1
                 }
@@ -106,10 +114,10 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     if !shared {
         return Result.Ok(true)
     }
-    // A guarded replacement preserves the predicate, not a particular cell's
-    // old value. Retain read-only precision only for types with no such writes
+    // A store preserves the predicate, not old cells or an append's old extent.
+    // Retain precise evidence only for types without the corresponding writes
     // in this checked build; never reuse sequential certificates across workers.
-    let modified = new[Int]()
+    let modified = new[InputGuarantee]()
     index = 0
     while index < length(program.functions) {
         let function = get(program.functions, index)
@@ -127,9 +135,10 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
         if constrained_list(env, index) {
             var writes = get(env.type_states, index).list_writes
             var changed = 0
-            while writes == 0 && changed < length(modified) {
-                if get(modified, changed) == index {
-                    writes = 1
+            while changed < length(modified) {
+                let update = get(modified, changed)
+                if update.ty == index && update.writes > writes {
+                    writes = update.writes
                 }
                 changed = changed + 1
             }

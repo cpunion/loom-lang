@@ -302,6 +302,56 @@ test fn helper_mutations_preserve_the_invariant_at_each_write() {
         """))
 }
 
+test fn appends_prove_the_complete_constraint_without_publishing_storage() {
+    let header = """
+    import std.list.length
+    import std.list.push
+    type PositiveHead = List[Int] where length(self) > 0 && self[0] > 0
+    fn append_twice(values List[Int], value Int) {
+        push(values, value)
+        push(values, value)
+    }
+
+    """
+    list_constraint_accept(concat(header, """
+        pub fn append(values PositiveHead, value Int) {
+            push(values, value)
+            append_twice(values, value)
+        }
+        fn main() {
+            let values = PositiveHead([1])
+            let alias = values
+            append(values, -1)
+            assert length(alias) == 4 && alias[0] == 1 && alias[3] == -1
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        type Pair = List[Int] where length(self) == 2 && self[0] > 0
+        pub fn invalid(values Pair) {
+            push(values, 1)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn temporary(values List[Int]) {
+            push(values, 1)
+            values[0] = -1
+            assert false
+        }
+        pub fn invalid(values PositiveHead) {
+            temporary(values)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn escaped(values List[Int], storage List[List[Int]]) {
+            push(storage, values)
+            push(values, 1)
+        }
+        pub fn invalid(values PositiveHead, storage List[List[Int]]) {
+            escaped(values, storage)
+        }
+        """))
+}
+
 test fn generic_list_extent_constraints_ignore_shared_element_contents() {
     list_constraint_accept("""
         import std.list.length

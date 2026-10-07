@@ -35,18 +35,27 @@ fn forwarded_list_operation(program Program, function Function, depth Int) Text 
     forwarded_list_operation(program, get(program.functions, body.index), depth + 1)
 }
 
-// A checked atomic replacement, including ordinary argument-preserving
-// forwarders. This describes structure, not a promise attached to a name.
-pub fn single_list_update(program Program, value Expr) Bool {
-    if value.ty != 0 || length(value.children) != 3 {
-        return false
+// Classify one atomic store: 1 replaces an element, 2 appends. Ordinary
+// argument-preserving forwarders count; source names grant no promise.
+pub fn single_list_write(program Program, value Expr) Int {
+    if value.ty != 0 {
+        return 0
     }
-    if value.kind == ExprKind.Intrinsic {
-        return value.text == "list_set"
+    let operation = if value.kind == ExprKind.Intrinsic {
+        value.text
+    } else if value.kind == ExprKind.Call && value.index >= 0 &&
+    value.index < length(program.functions) {
+        forwarded_list_operation(program, get(program.functions, value.index), 0)
+    } else {
+        ""
     }
-    value.kind == ExprKind.Call && value.index >= 0 &&
-    value.index < length(program.functions) &&
-    forwarded_list_operation(program, get(program.functions, value.index), 0) == "list_set"
+    if operation == "list_set" && length(value.children) == 3 {
+        1
+    } else if operation == "list_push" && length(value.children) == 2 {
+        2
+    } else {
+        0
+    }
 }
 
 fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArguments) Result[List[Outcome], Text] {

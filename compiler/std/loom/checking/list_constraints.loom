@@ -1,11 +1,11 @@
 import std.loom.proof.fresh_list_factory
-import std.loom.proof.single_list_update
+import std.loom.proof.single_list_write
 
 // A constrained List has no pre-existing writable outer aliases. Content
 // predicates may observe immutable fields, not nested shared mutable storage.
 // Copies retain the constrained type and ordinary sharing.
-// Plain List borrows must not escape. Element writes require an independent
-// predicate or a proved atomic replacement; no runtime monitor is needed.
+// Plain List borrows must not escape. Stores require a proved preserving
+// operation; no runtime monitor is needed.
 fn constrained_list(env Environment, ty Int) Bool {
     let shape = get(env.types, ty)
     shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
@@ -161,7 +161,7 @@ fn constraint_operation(env Environment, functions List[Function], value Expr, e
             })
         index = index + 1
     }
-    if writes == 0 && invariant_intrinsic_allowed(true, 1, "list_set", inputs) {
+    if writes == 0 {
         let program = std.loom.typed.Program {
             types = env.types
             functions = functions
@@ -172,7 +172,14 @@ fn constraint_operation(env Environment, functions List[Function], value Expr, e
             interfaces = env.interfaces
             witnesses = env.witnesses
         }
-        if std.loom.proof.single_list_update(program, value) && (established || proved_list_update(env, value)) {
+        let store = std.loom.proof.single_list_write(program, value)
+        if store > 0 && invariant_intrinsic_allowed(true, store,
+            if store == 1 {
+                "list_set"
+            } else {
+                "list_push"
+            }, inputs) &&
+        (established || proved_list_update(env, value, store)) {
             return true
         }
     }
@@ -193,10 +200,22 @@ fn constraint_operation(env Environment, functions List[Function], value Expr, e
     }
     // First prove that the helper cannot publish the protected header. Then
     // discharge the complete invariant at every store, never only at return.
-    let mutable = invariant_reads(env, functions, value, true, 1, -1)
+    let mutable = invariant_reads(env, functions, value, true, 2, -1)
     let returned = invariant_call(mutable, value.index, inputs, 0)
     get(mutable.valid, 0) && (!origin_shared(returned) || constraint_output_independent(env, value)) &&
-    proved_list_mutation(env, value, false)
+    proved_list_mutation(env, value, false, constraint_mutation_writes(env, functions, value, inputs))
+}
+
+// A checked footprint distinguishes replacement from resizing. It supplies
+// storage permissions, not evidence that either operation preserves a predicate.
+fn constraint_mutation_writes(env Environment, functions List[Function], value Expr, inputs List[InputOrigin]) Int {
+    let replacements = invariant_reads(env, functions, value, true, 1, -1)
+    discard invariant_call(replacements, value.index, inputs, 0)
+    if get(replacements.valid, 0) {
+        1
+    } else {
+        2
+    }
 }
 
 fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr) Result[Bool, Failure] {

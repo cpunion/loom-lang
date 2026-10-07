@@ -533,10 +533,12 @@ contract also supplies nonnegativity for arbitrary `View[T]` parameters.
 Explicitly isolated Lists with immutable elements
 support constrained construction; copies of the constrained value share.
 Length-only predicates permit element writes, and bounded preservation proofs
-admit some appends. Content-dependent predicates admit proved atomic replacements
-and multi-step helpers whose every store preserves the predicate; unproved writes
+admit some appends. Content-dependent predicates admit proved atomic replacements,
+appends and multi-step helpers whose every store preserves the predicate; unproved writes
 remain forbidden. Shared builds withdraw read-only content evidence
 for nominal types with such writes in the checked program, including after cached edits.
+Admitted appends also withdraw fixed-extent evidence. Shared helper preservation
+does not treat a sampled length/content guard as a reservation against other aliases.
 There is no implicit copy, monitor or alias-triggered runtime failure.
 
 Scalar, List and supported inline aggregate loops infer entry/guard bounds and

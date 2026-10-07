@@ -136,6 +136,18 @@ fn fill_positive(values List[Int], value Int) {
         index = index + 1
     }
 }
+
+fn append_positive(values List[Int], value Int) {
+    if value <= 0 {
+        return
+    }
+    let alias = values
+    var index = 0
+    while index < 2 {
+        push(alias, value)
+        index = index + 1
+    }
+}
 "#;
 
 #[test]
@@ -173,6 +185,10 @@ fn main() {
     fill_positive(values, -1)
     values[0] = 5
     assert alias[0] == 5 && values[1] == 4 && length(values) == 2
+    push(values, PositiveElement(6))
+    append_positive(alias, 7)
+    append_positive(values, -1)
+    assert length(alias) == 5 && values[2] == 6 && values[4] == 7
 }
 
 test fn preserved_updates() {
@@ -263,6 +279,20 @@ pub fn invalid(values PositiveValues) {
 }
 "#,
         r#"
+pub fn invalid(values PositiveValues) {
+    push(values, -1)
+}
+"#,
+        r#"
+fn bad_append(values List[Int]) {
+    push(values, -1)
+    assert false
+}
+pub fn invalid(values PositiveValues) {
+    bad_append(values)
+}
+"#,
+        r#"
 fn temporary(values List[Int])
 ensures positive_elements(values)
 {
@@ -335,14 +365,16 @@ async fn main() {
     let values = PositiveValues([1, 2])
     let writer = run(fn() Int {
         fill_positive(values, 3)
+        append_positive(values, 5)
         0
     })
     discard run(fn() Int {
         replace_twice(values, 1, PositiveElement(4))
+        push(values, PositiveElement(6))
         0
     }).await
     discard writer.await
-    assert values[0] > 0 && values[1] > 0 && length(values) == 2
+    assert values[0] > 0 && values[1] > 0 && length(values) == 5
 }
 "#,
     ]
@@ -428,4 +460,66 @@ async fn main() {
     assert!(String::from_utf8_lossy(&changed.stderr).contains("interference-safe"));
     fs::write(&main, readonly).unwrap();
     success(&check());
+
+    // A proved append withdraws fixed-extent evidence from every alias, not
+    // just read-only element evidence. Cache hits must observe changed bodies.
+    let fixed = r#"
+import std.task.worker.run
+fn sampled_size(values PositiveValues) Int
+ensures result == old(length(values))
+{
+    length(values)
+}
+async fn main() {
+    let values = PositiveValues([1, 2])
+    discard run(fn() Int {
+        sampled_size(values)
+    }).await
+}
+"#;
+    let unchanged = [UPDATE_TYPES, fixed].concat();
+    fs::write(&main, &unchanged).unwrap();
+    success(&check());
+    let growing = unchanged.replace(
+        "        sampled_size(values)",
+        "        append_positive(values, 3)\n        sampled_size(values)",
+    );
+    fs::write(&main, growing).unwrap();
+    let changed = check();
+    assert!(!changed.status.success());
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("interference-safe"));
+    fs::write(&main, unchanged).unwrap();
+    success(&check());
+
+    // A sampled guard permits growth sequentially, but cannot reserve room
+    // across independently guarded accesses by other workers.
+    let guarded_growth = r#"
+import std.list.length
+import std.list.push
+import std.task.worker.run
+type HeadLimit = List[Int] where length(self) > 0 && length(self) <= self[0]
+fn append_if_room(values List[Int]) {
+    if length(values) < values[0] {
+        push(values, 0)
+    }
+}
+fn main() {
+    let values = HeadLimit([3, 0])
+    append_if_room(values)
+    assert length(values) == 3
+}
+"#;
+    fs::write(&main, guarded_growth).unwrap();
+    success(&check());
+    fs::write(
+        &main,
+        guarded_growth.replace("fn main()", "async fn main()").replace(
+            "    append_if_room(values)",
+            "    discard run(fn() Int {\n        append_if_room(values)\n        0\n    }).await",
+        ),
+    )
+    .unwrap();
+    let stale_guard = check();
+    assert!(!stale_guard.status.success());
+    assert!(String::from_utf8_lossy(&stale_guard.stderr).contains("interference-safe"));
 }

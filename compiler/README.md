@@ -2146,7 +2146,7 @@ the predicate at length `n` implies it at `n + 1`, including helper precondition
 and arithmetic definedness. Thus `length(self) > 0` permits `push` and source
 append helpers, while fixed length and upper bounds do not. Capacity/length
 overflow faults before mutation. Unsupported proofs do not grant permission.
-A content predicate can also admit a single atomic replacement when the state
+A content predicate can also admit an atomic replacement or append when the state
 proof establishes the complete predicate after that store:
 
 ```loom
@@ -2154,6 +2154,10 @@ type PositiveElement = Int where self > 0
 
 fn replace_positive(values PositiveValues, index Int, value PositiveElement) {
     values[index] = value
+}
+
+fn append_positive(values PositiveValues, value PositiveElement) {
+    push(values, value)
 }
 ```
 
@@ -2167,8 +2171,8 @@ type PositiveHead = List[Int] where length(self) > 0 && self[0] > 0
 Nested shared mutable storage remains inadmissible; the length guard also
 ensures the indexed predicate is defined.
 
-Atomic replacement composes the admitted List predicate with the replacement's type invariant
-or literal value. Ordinary argument-preserving `set` forwarders use the same
+An atomic store composes the admitted List predicate with the stored value's type invariant
+or literal value. Ordinary argument-preserving `set` and `push` forwarders use the same
 rule, inferred from their checked bodies, not their names. Bounds faults precede
 mutation. The proof does not replay arguments or change their evaluation order,
 and adds no runtime predicate check. A callee's normal-return promise cannot
@@ -2195,10 +2199,12 @@ Mutable bindings, heap observations and effectful arguments supply no stable
 caller facts. Arguments still execute once in source order; a failed guard or
 bounds check precedes the write.
 
-Finite source helpers can also borrow the representation for multiple updates,
+Finite source helpers can also borrow the representation for replacements and appends,
 branches and supported loops. Their checked bodies execute in the same proof
 engine, and the complete List predicate is required immediately after **every**
-store, including stores before an early return or fault. For example:
+store, including stores before an early return or fault. Appends update both the
+extent and contents in this algebra; a positive-head constraint can admit a
+negative tail, whereas an all-positive constraint cannot. For example:
 
 ```loom
 fn fill_positive(values List[Int], value Int) {
@@ -2221,6 +2227,8 @@ unsupported bodies and mutating fault cleanup reject conservatively.
 Strengthening pre-existing writable aliases remains later analysis work.
 Shared builds with admitted content writes no longer treat that nominal type's
 contents as read-only; old-cell equality still requires interference-safe proof.
+Admitted appends also withdraw fixed-extent evidence across all aliases. A
+sampled size/content guard cannot reserve room for a later shared append.
 Multi-step helpers are re-proved with interference before each source access.
 The continuing predicate describes a primitive store's atomic transition, not
 stable values across accesses: copying a previously read cell can be sequentially
