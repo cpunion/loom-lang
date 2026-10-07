@@ -368,8 +368,15 @@ fn operation(proof Verification, expr Expr, state State, depth Int) Result[List[
                 while other < length(right) {
                     let second = get(right, other)
                     let value = binary(expr.text, first.value, second.value)?
+                    var current = bounded(value, second.state)
+                    if expr.ty == 1 && integer_division(expr.text) {
+                        // These operands actually executed. Only their normal
+                        // continuation may assume the runtime fault checks passed.
+                        current = assume(current, integer_division_guard(integer_term(first.value)?,
+                                integer_term(second.value)?))
+                    }
                     discard add_outcome(output, Outcome {
-                            state = bounded(value, second.state)
+                            state = current
                             value = value
                         })?
                     other = other + 1
@@ -617,7 +624,8 @@ fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, 
     while index < length(function.params) {
         let ty = get(function.params, index)
         let value = parameter_value(proof, ty, index)?
-        state = list_bounds(value, text_bounds(value, assigned(state, index, value)))
+        state = integer_input_bounds(value,
+            list_bounds(value, text_bounds(value, assigned(state, index, value))))
         index = index + 1
     }
     index = 0

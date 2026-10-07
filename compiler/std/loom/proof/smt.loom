@@ -269,14 +269,36 @@ fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text
             smt_select(writer, identity, path, index, ScalarDomain.Integer)
         }
         IntegerTerm.Apply(operator, inputs) => {
-            if (operator != "+" && operator != "-" && operator != "*") || length(inputs) != 2 {
+            if (operator != "+" && operator != "-" && operator != "*" && !integer_division(operator)) || length(inputs) != 2 {
                 return Result.Err("unsupported SMT integer operation")
             }
             let first = smt_integer(writer, get(inputs, 0), depth + 1)?
             let second = smt_integer(writer, get(inputs, 1), depth + 1)?
+            if integer_division(operator) {
+                return Result.Ok(smt_truncated_division(operator, first, second))
+            }
             Result.Ok(concat("(", concat(operator, concat(" ", concat(first, concat(" ", concat(second, ")")))))))
         }
     }
+}
+
+// SMT div is not source signed division. Divide mathematical magnitudes, then
+// restore the quotient's sign; remainder is dividend - quotient * divisor.
+// Lexical lets encode operands once and work for MIN without machine abs.
+// Safety is a separate obligation; these total SMT terms authorize no faults.
+fn smt_truncated_division(operator Text, left Text, right Text) Text {
+    let output = std.bytes.new()
+    smt_append(output, concat("(let ((loom_dividend ", concat(left,
+                concat(") (loom_divisor ", concat(right, ")) ")))))
+    smt_append(output, "(let ((loom_magnitude (div (ite (< loom_dividend 0) (- loom_dividend) loom_dividend) (ite (< loom_divisor 0) (- loom_divisor) loom_divisor)))) ")
+    smt_append(output, "(let ((loom_quotient (ite (= (< loom_dividend 0) (< loom_divisor 0)) loom_magnitude (- loom_magnitude)))) ")
+    smt_append(output, if operator == "/" {
+            "loom_quotient"
+        } else {
+            "(- loom_dividend (* loom_quotient loom_divisor))"
+        })
+    smt_append(output, ")))")
+    std.bytes.to_text(output)
 }
 
 fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text] {

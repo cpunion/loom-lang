@@ -349,8 +349,13 @@ these terms handles bounded safety/range obligations before SMT, with mathematic
 endpoints and unchanged eager operand checks. Polynomial identities, safety
 bounds and verified call summaries compose with Text lengths; see the
 [polynomial example](../../compiler/examples/smt_contracts/polynomials.loom).
-Nonconstant integer division, general collection induction and content/type-dependent
-variadic proofs remain unsupported; nonlinear solver queries may still be unknown or time out.
+Symbolic integer division and remainder now preserve signed truncation toward
+zero. Zero and `Int.min / -1` guards remain independent obligations for both
+operations; hypothetical arithmetic supplies no successful-check assumption.
+Structural integer-term identity bypasses interval/SMT search without bypassing
+evaluation safety. See the [division example](../../compiler/examples/smt_contracts/division.loom).
+General collection induction and content/type-dependent variadic proofs remain
+unsupported; nonlinear solver queries may still be unknown or time out.
 Constrained construction, stable scalar facts, pure-helper implication and
 supported List-append preservation now share the same optional backend and
 batched safety/truth obligations. Unknown or failed implication retains the

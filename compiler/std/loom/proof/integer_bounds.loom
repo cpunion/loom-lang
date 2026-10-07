@@ -1,5 +1,24 @@
 // Interval transfer over the integer expression algebra. Bounds use mathematical
 // Numbers, never wrapping machine arithmetic or a guessed sign for a product.
+// Source Int inputs have a finite domain. Keep that fact in the query state,
+// including inline leaves; never globally constrain mathematical/bound symbols.
+fn integer_input_bounds(value Value, state State) State {
+    match value {
+        Value.Number(_) => bounded(value, state)
+        Value.Nonlinear(_) => bounded(value, state)
+        Value.Record(fields) => {
+            var current = state
+            var index = 0
+            while index < length(fields) {
+                current = integer_input_bounds(get(fields, index), current)
+                index = index + 1
+            }
+            current
+        }
+        _ => state
+    }
+}
+
 fn integer_bounds(value IntegerTerm, facts List[Predicate], budget List[Int]) Result[Bounds, Text] {
     if get(budget, 0) <= 0 {
         return Result.Err("integer interval budget exhausted")
@@ -80,6 +99,11 @@ fn integer_bounds(value IntegerTerm, facts List[Predicate], budget List[Int]) Re
 }
 
 fn integer_interval(relation Text, left IntegerTerm, right IntegerTerm, facts List[Predicate]) Bool {
+    // Identity is independent of interval precision. Source evaluation safety
+    // is still checked separately before a hypothetical expression is used.
+    if same_integer_term(left, right, [256]) {
+        return relation == "==" || relation == "<=" || relation == ">="
+    }
     let budget = new[Int]()
     push(budget, 256)
     let first = match integer_bounds(left, facts, budget) {

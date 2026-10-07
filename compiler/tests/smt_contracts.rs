@@ -18,6 +18,101 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn symbolic_division_rechecks_truncation_and_independent_fault_domains() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("division.loom");
+    let program = include_str!("../examples/smt_contracts/division.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace("    value / divisor\n}", "    value % divisor\n}"),
+        program.replace("    value % divisor\n}", "    value / divisor\n}"),
+        program.replace("ensures result == value / divisor", "ensures result >= 0"),
+        program.replace(
+            "value / 3 * 3 + value % 3 == value",
+            "value / 3 * 3 + value % 3 == 0",
+        ),
+    ] {
+        assert_ne!(changed, program, "test edit did not apply");
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(
+            !output.status.success(),
+            "unsound integer division: {changed}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "{error}"
+        );
+    }
+    for unproved in [
+        r#"fn unsafe(value Int, divisor Int) Bool
+ensures value / divisor == value / divisor
+{ true }
+"#,
+        r#"fn unsafe(value Int, divisor Int) Bool
+requires divisor != 0
+ensures value % divisor == value % divisor
+{ true }
+"#,
+        r#"fn unsafe(value Int, divisor Int) Bool
+ensures 0 * (value / divisor) == 0
+{ true }
+"#,
+        r#"fn wrong_floor(value Int) Int
+requires value == -7
+ensures result == -3
+{ value / 3 }
+"#,
+    ] {
+        fs::write(&source, unproved).unwrap();
+        let output = check();
+        assert!(
+            !output.status.success(),
+            "unsound division domain: {unproved}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "{error}"
+        );
+    }
+    fs::write(&source, program).unwrap();
+    success(&check());
+    let artifact = common::executable(package.path(), "division");
+    for (operation, value, divisor, message) in [
+        ("integer_quotient", 1_i64, 0_i64, "division by zero"),
+        ("integer_remainder", i64::MIN, -1, "integer overflow"),
+    ] {
+        fs::write(
+            &source,
+            format!("{program}\nfn main() {{\n    discard {operation}({value}, {divisor})\n}}\n"),
+        )
+        .unwrap();
+        success(&common::loom(&[
+            "build",
+            package.path().to_str().unwrap(),
+            "--output",
+            artifact.to_str().unwrap(),
+        ]));
+        let output = Command::new(&artifact).output().unwrap();
+        assert!(!output.status.success(), "division fault check disappeared");
+        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+    }
+}
+
+#[test]
 fn typed_entry_snapshots_recheck_content_domains_and_post_state_indices() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("snapshots.loom");
