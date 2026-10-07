@@ -209,23 +209,6 @@ fn json_structure(previous DecoderState, current Int) Result[DecoderState, Parse
 
 fn json_byte(previous DecoderState, current Int) Result[DecoderState, ParseError] {
     var state = previous
-    if state.mode == JsonToken.String || state.mode == JsonToken.Escape {
-        std.bytes.push(state.token, current)
-        if state.mode == JsonToken.Escape {
-            state = DecoderState {
-                mode = JsonToken.String
-                ..state
-            }
-        } else if current == 92 {
-            state = DecoderState {
-                mode = JsonToken.Escape
-                ..state
-            }
-        } else if current == 34 {
-            return json_token(state)
-        }
-        return Result.Ok(state)
-    }
     let structural = current == 91 || current == 93 || current == 123 ||
     current == 125 || current == 44 || current == 58
     if state.mode == JsonToken.Scalar {
@@ -272,6 +255,41 @@ fn json_byte(previous DecoderState, current Int) Result[DecoderState, ParseError
     Result.Ok(state)
 }
 
+// Carry only the lexical mode through a string span, rather than copying the
+// complete parse state for every byte. Short scalar tokens keep the direct path.
+fn json_scan(previous DecoderState, chunk Bytes, start Int) Result[DecoderState, ParseError] {
+    let end = std.bytes.length(chunk)
+    var index = start
+    var mode = previous.mode
+    while index < end {
+        let current = std.bytes.get(chunk, index)
+        std.bytes.push(previous.token, current)
+        index = index + 1
+        if mode == JsonToken.Escape {
+            mode = JsonToken.String
+        } else if mode == JsonToken.String {
+            if current == 92 {
+                mode = JsonToken.Escape
+            } else if current == 34 {
+                let state = json_token(DecoderState {
+                        offset = previous.offset + index - start - 1
+                        mode = JsonToken.String
+                        ..previous
+                    })?
+                return Result.Ok(DecoderState {
+                        offset = state.offset + 1
+                        ..state
+                    })
+            }
+        }
+    }
+    Result.Ok(DecoderState {
+            offset = previous.offset + index - start
+            mode = mode
+            ..previous
+        })
+}
+
 fn json_failed(previous DecoderState, failed ParseError) DecoderState {
     DecoderState {
         failure = Option.Some(failed)
@@ -297,20 +315,33 @@ pub fn feed(decoder Decoder, chunk Bytes) Result[Int, ParseError] {
     if state.finished {
         return Result.Err(error(state.offset, "JSON decoder is finished"))
     }
+    let end = std.bytes.length(chunk)
     var index = 0
-    while index < std.bytes.length(chunk) {
-        state = match json_byte(state, std.bytes.get(chunk, index)) {
-            Result.Ok(next) => next
-            Result.Err(failed) => {
-                std.list.set(decoder.state, 0, json_failed(state, failed))
-                return Result.Err(failed)
+    while index < end {
+        if state.mode != JsonToken.String && state.mode != JsonToken.Escape {
+            state = match json_byte(state, std.bytes.get(chunk, index)) {
+                Result.Ok(next) => next
+                Result.Err(failed) => {
+                    std.list.set(decoder.state, 0, json_failed(state, failed))
+                    return Result.Err(failed)
+                }
             }
+            state = DecoderState {
+                offset = state.offset + 1
+                ..state
+            }
+            index = index + 1
+        } else {
+            let offset = state.offset
+            state = match json_scan(state, chunk, index) {
+                Result.Ok(next) => next
+                Result.Err(failed) => {
+                    std.list.set(decoder.state, 0, json_failed(state, failed))
+                    return Result.Err(failed)
+                }
+            }
+            index = index + state.offset - offset
         }
-        state = DecoderState {
-            offset = state.offset + 1
-            ..state
-        }
-        index = index + 1
     }
     std.list.set(decoder.state, 0, state)
     Result.Ok(index)

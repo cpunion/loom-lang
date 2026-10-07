@@ -42,6 +42,13 @@ fn json_chunked(input Bytes, width Int) Result[Value, ParseError] {
     finish(cursor)
 }
 
+fn json_split(input Bytes, split Int) Result[Value, ParseError] {
+    let cursor = decoder()
+    discard feed(cursor, json_bytes(input, 0, split))?
+    discard feed(cursor, json_bytes(input, split, std.bytes.length(input)))?
+    finish(cursor)
+}
+
 test fn incremental_json_accepts_every_split_and_keeps_exact_scalar_rules() {
     let document = """
         {"hé中":"😀\\\"\uD83D\uDE00", "items":[true,false,null,{},[],
@@ -78,9 +85,21 @@ test fn incremental_json_rejects_bad_grammar_eof_utf8_and_sticks_to_first_error(
     var index = 0
     while index < std.list.length(sources) {
         let source = get(sources, index)
-        assert match json_chunked(to_bytes(source), 1) {
-            Result.Err(_) => true
-            _ => false
+        let input = to_bytes(source)
+        let expected = match json_chunked(input, 1) {
+            Result.Err(failed) => failed
+            _ => {
+                assert false
+                error(-1, "unreachable")
+            }
+        }
+        var split = 0
+        while split <= std.bytes.length(input) {
+            assert match json_split(input, split) {
+                Result.Err(failed) => failed.offset == expected.offset && failed.message == expected.message
+                _ => false
+            }
+            split = split + 1
         }
         index = index + 1
     }
