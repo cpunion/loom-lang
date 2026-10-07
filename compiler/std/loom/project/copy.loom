@@ -4,7 +4,7 @@ import std.list.push
 import std.list.length
 
 fn copy_node(node Node) Node {
-    let children = new[Node]()
+    let children = new[Node](length(node.children))
     var index = 0
     while index < length(node.children) {
         push(children, copy_node(get(node.children, index)))
@@ -19,17 +19,17 @@ fn copy_node(node Node) Node {
 }
 
 pub fn snapshot(project Project) Project {
-    let modules = new[ModuleInstance]()
+    let modules = new[ModuleInstance](length(project.modules))
     var index = 0
     while index < length(project.modules) {
         push(modules, get(project.modules, index))
         index = index + 1
     }
-    let packages = new[Package]()
+    let packages = new[Package](length(project.packages))
     index = 0
     while index < length(project.packages) {
         let package = get(project.packages, index)
-        let imports = new[PackageImport]()
+        let imports = new[PackageImport](length(package.imports))
         var edge = 0
         while edge < length(package.imports) {
             push(imports, get(package.imports, edge))
@@ -42,7 +42,7 @@ pub fn snapshot(project Project) Project {
             })
         index = index + 1
     }
-    let files = new[SourceFile]()
+    let files = new[SourceFile](length(project.files))
     index = 0
     while index < length(project.files) {
         let file = get(project.files, index)
