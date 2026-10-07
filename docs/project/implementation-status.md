@@ -303,6 +303,8 @@ input resizing cannot change the copy's extent, and nested updates remain visibl
 Content constraints may observe immutable element fields beside unobserved shared
 siblings. The checker tracks reads through elements and rejects nested mutable
 observations, including same-type recursive headers; this is not a deep freeze.
+Direct `self[index]` predicates use these same observation rules as pure getter
+helpers; nested shared mutable reads remain rejected.
 For mutable element slots, the example instead composes an extent constraint
 with a constrained element type. Already validated replacements preserve element
 invariants; reading an immutable amount supplies its required positive-return

@@ -367,10 +367,7 @@ async fn main() {
     let sequential = r#"
 import std.list.length
 import std.task.worker.run
-fn ordered(values List[Int]) Bool {
-    length(values) == 2 && values[0] >= 0 && values[0] <= values[1]
-}
-type Ordered = List[Int] where ordered(self)
+type Ordered = List[Int] where length(self) == 2 && self[0] >= 0 && self[0] <= self[1]
 fn copy_right_to_left(values List[Int]) {
     let right = values[1]
     values[0] = right

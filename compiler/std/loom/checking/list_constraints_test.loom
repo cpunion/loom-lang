@@ -212,6 +212,42 @@ test fn atomic_updates_reuse_only_stable_caller_conditions() {
         """))
 }
 
+test fn direct_invariant_reads_use_the_existing_observation_rules() {
+    list_constraint_accept("""
+        import std.list.length
+        type Positive = Int where self > 0
+        type PositiveHead = List[Int] where length(self) > 0 && self[0] > 0
+        fn same(values List[Int]) List[Int] {
+            values
+        }
+        type ViaGetter = List[Int] where length(self) > 0 && same(self)[0] > 0
+        fn replace(values PositiveHead, value Positive) {
+            values[0] = value
+        }
+        fn main() {
+            let values = PositiveHead([1, 2])
+            replace(values, Positive(3))
+            assert values[0] == 3
+            let via = ViaGetter([4, 5])
+            assert via[0] == 4
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type PositiveHead = List[Int] where length(self) > 0 && self[0] > 0
+        pub fn invalid(values PositiveHead) {
+            values[0] = -1
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Nested = List[List[Int]] where length(self) > 0 && length(self[0]) > 0
+        fn main() {
+            discard Nested([[1]])
+        }
+        """)
+}
+
 test fn helper_mutations_preserve_the_invariant_at_each_write() {
     let header = """
     import std.list.length

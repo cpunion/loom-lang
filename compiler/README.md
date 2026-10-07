@@ -2157,7 +2157,17 @@ fn replace_positive(values PositiveValues, index Int, value PositiveElement) {
 }
 ```
 
-This composes the admitted List predicate with the replacement's type invariant
+Indexing in a `where` predicate uses the same purity and storage-observation
+rules as a pure getter, without requiring a wrapper function:
+
+```loom
+type PositiveHead = List[Int] where length(self) > 0 && self[0] > 0
+```
+
+Nested shared mutable storage remains inadmissible; the length guard also
+ensures the indexed predicate is defined.
+
+Atomic replacement composes the admitted List predicate with the replacement's type invariant
 or literal value. Ordinary argument-preserving `set` forwarders use the same
 rule, inferred from their checked bodies, not their names. Bounds faults precede
 mutation. The proof does not replay arguments or change their evaluation order,
