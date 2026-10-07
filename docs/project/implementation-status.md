@@ -493,8 +493,12 @@ workers require private or validated read-only storage for a coherent whole entr
 value. This is not an alias, runtime copy or arbitrary graph snapshot. See the
 [snapshot example](../../compiler/examples/smt_contracts/snapshots.loom) and
 [typed entry columns](../../compiler/examples/list_contracts/snapshots.loom).
-Ordinary bounded pure `List[Int]` scans now derive scoped universal predicates
-and occurrence counts. Finite histogram laws compose with array stores and
+Ordinary bounded pure Boolean scans derive scoped universal predicates and
+their existential duals from constant early returns. Guarded tails, immutable
+typed columns and loop-write proofs use the same rules; see the
+[search example](../../compiler/examples/smt_contracts/searches.loom).
+Complete equality scans over `List[Int]` also derive occurrence counts.
+Finite histogram laws compose with array stores and
 verified call summaries; loop candidates derived from quantified postconditions
 must pass entry/backedge proofs and rechecking after removal. The
 [quantified example](../../compiler/examples/smt_contracts/quantified.loom)

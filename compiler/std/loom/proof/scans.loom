@@ -185,8 +185,9 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
     }
     let branch = get(body.children, prefix)
     if branch.kind != ExprKind.If || length(branch.children) != 2 {
-        return Result.Err("pure Boolean scan must return false on a failed element")
+        return Result.Err("pure Boolean scan needs one constant early return")
     }
+    let early_true = scan_return(get(branch.children, 1), true)
     if counting {
         let arm = get(branch.children, 1)
         var observation = 0
@@ -202,8 +203,8 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
         scan_mentions(get(branch.children, 0), tail.index) || scan_mentions(get(limit_test.children, 1), tail.index) {
             return Result.Err("count scan needs a zero-based independent accumulator")
         }
-    } else if !scan_return(get(branch.children, 1), false) {
-        return Result.Err("pure Boolean scan must return false on a failed element")
+    } else if !early_true && !scan_return(get(branch.children, 1), false) {
+        return Result.Err("pure Boolean scan needs one constant early return")
     }
     let start = expanded(context, cursor, guard, bindings, locals, self, calls, depth + 1)?
     let end = expanded(context, get(limit_test.children, 1), guard, bindings, locals, self, calls, depth + 1)?
@@ -232,5 +233,11 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
     let scanned = quantified_value(value, identity, start, end, proof_not(condition))
     let continuation = expanded(context, tail, proof_and(guard, scanned),
         bindings, locals, self, calls, depth + 1)?
-    Result.Ok(proof_and(scanned, continuation))
+    // scanned means no early return occurred. Existential search is the
+    // logical dual of the same bounded universal, not another array theory.
+    Result.Ok(if early_true {
+            guarded_value(scanned, continuation)
+        } else {
+            proof_and(scanned, continuation)
+        })
 }

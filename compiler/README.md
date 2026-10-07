@@ -2646,8 +2646,13 @@ and [typed entry columns](examples/list_contracts/snapshots.loom).
 Bounded pure scans can express List predicates over modeled integer elements or
 inline field paths without special
 helper names or a new source quantifier syntax. The current fragment recognizes
-a stable exclusive upper bound, an `Int` cursor incremented by one, and an
-early-false Boolean test followed by a Boolean tail expression. Local element
+a stable exclusive upper bound, an `Int` cursor incremented by one, and a
+constant Boolean early return followed by a Boolean tail expression. Returning
+false derives a universal predicate; returning true derives its logical dual,
+an existential search. The tail executes only if no early return occurred.
+The [search example](examples/smt_contracts/searches.loom) composes these duals,
+write witnesses and loop clearing over immutable fields beside shared children.
+Local element
 observations expand within the iteration; the tail cannot depend on the updated
 cursor. A complete equality scan over `List[Int]` with a
 separate zero-based accumulator derives occurrence counts. Equal lengths and
@@ -2662,7 +2667,7 @@ and on every backedge, and survivors are rechecked after removal. The
 [ordinary sorting example](examples/smt_contracts/quantified.loom) proves both
 ordering and permutation without trusting the algorithm. Bound symbols remain
 scoped through nested scans, helper substitution, choices and `old` snapshots.
-Sufficient full-range safety is proved separately: an early-false scan does not
+Sufficient full-range safety is proved separately: an early return does not
 establish checks for elements it never visited. Shared observations still require
 private storage. Unsupported scan shapes, other mutable element domains and
 exhausted inference reject required proofs; this is not general heap induction

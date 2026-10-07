@@ -1,0 +1,118 @@
+import std.list.length
+
+record SearchRow {
+    label Text
+    active Bool
+    notes List[Int]
+}
+
+fn present(values List[SearchRow], needle Text) Bool {
+    var index = 0
+    while index < length(values) {
+        let row = values[index]
+        if row.active && row.label == needle {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn absent(values List[SearchRow], needle Text) Bool {
+    var index = 0
+    while index < length(values) {
+        let row = values[index]
+        if row.active && row.label == needle {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn search_complements(values List[SearchRow], needle Text) Bool
+ensures result
+{
+    present(values, needle) == !absent(values, needle)
+}
+
+// The suffix executes only when the scan has found no witness.
+fn present_or(values List[SearchRow], needle Text, fallback Bool) Bool {
+    var index = 0
+    while index < length(values) {
+        let row = values[index]
+        if row.active && row.label == needle {
+            return true
+        }
+        index = index + 1
+    }
+    fallback
+}
+
+fn search_fallback(values List[SearchRow], needle Text, fallback Bool) Bool
+ensures result == (present(values, needle) || fallback)
+{
+    present_or(values, needle, fallback)
+}
+
+fn mark_present(values List[SearchRow], needle Text)
+requires length(values) > 0
+ensures present(values, needle)
+ensures !absent(values, needle)
+{
+    let previous = values[0]
+    values[0] = SearchRow {
+        label = needle
+        active = true
+        notes = previous.notes
+    }
+}
+
+fn clear_labels(values List[SearchRow], needle Text)
+requires needle != ""
+ensures !present(values, needle)
+{
+    var index = 0
+    while index < length(values) {
+        let previous = values[index]
+        values[index] = SearchRow {
+            label = ""
+            active = previous.active
+            notes = previous.notes
+        }
+        index = index + 1
+    }
+}
+
+fn search_cases() {
+    let notes = [7]
+    let values = [
+        SearchRow {
+            label = "雪",
+            active = false,
+            notes = notes
+        },
+        SearchRow {
+            label = "other",
+            active = true,
+            notes = notes
+        },
+    ]
+    assert search_complements(values, "雪") && !present(values, "雪")
+    assert search_complements(values, "other") && present(values, "other")
+    assert search_fallback(values, "雪", true)
+    assert !search_fallback(values, "雪", false)
+    assert search_fallback(values, "other", false)
+    assert search_complements([], "missing")
+    assert !search_fallback([], "missing", false)
+    mark_present(values, "雪")
+    assert present(values, "雪")
+    clear_labels(values, "雪")
+    assert !present(values, "雪")
+    notes[0] = 9
+    assert values[0].notes[0] == 9 && values[1].notes[0] == 9
+}
+
+test fn dual_scans_and_loop_writes_compose_without_freezing_shared_children() {
+    search_cases()
+}

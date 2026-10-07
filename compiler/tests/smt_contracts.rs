@@ -18,6 +18,85 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn boolean_scans_recheck_duality_witnesses_and_guarded_suffix_safety() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("searches.loom");
+    let program = include_str!("../examples/smt_contracts/searches.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace("== !absent(values, needle)", "== absent(values, needle)"),
+        program.replace("    fallback\n}", "    !fallback\n}"),
+        program.replace(
+            "        active = true\n        notes = previous.notes",
+            "        active = false\n        notes = previous.notes",
+        ),
+        program.replace("requires needle != \"\"\n", ""),
+        program.replace("index = index + 1", "index = index + 2"),
+    ] {
+        assert_ne!(changed, program, "test edit did not apply");
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(!output.status.success(), "unsound scan proof: {changed}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved") || error.contains("scan"),
+            "unexpected failure: {error}"
+        );
+    }
+    let suffix = r#"import std.list.length
+
+fn or_fault(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        if values[index] == 0 {
+            return true
+        }
+        index = index + 1
+    }
+    values[length(values)] == 0
+}
+
+fn found(values List[Int]) Bool
+requires length(values) > 0 && values[0] == 0
+ensures result == or_fault(values)
+{
+    true
+}
+"#;
+    fs::write(&source, suffix).unwrap();
+    success(&check()); // A proved witness makes the faulty suffix unreachable.
+    for changed in [
+        suffix.replace("values[0] == 0\n", "values[0] == 1\n"),
+        suffix.replace("if values[index] == 0", "if values[index + 1] == 0"),
+    ] {
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(
+            !output.status.success(),
+            "unsafe search abstraction: {changed}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "{error}"
+        );
+    }
+    fs::write(&source, program).unwrap();
+    success(&check());
+}
+
+#[test]
 fn symbolic_division_rechecks_truncation_and_independent_fault_domains() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("division.loom");
