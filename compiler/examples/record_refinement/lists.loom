@@ -68,6 +68,20 @@ fn add_two(values List[Int], value Int) {
     push(values, value)
 }
 
+fn append_positive(values List[Int], value Int) {
+    if value <= 0 {
+        return
+    }
+    add_two(values, value)
+}
+
+fn append_guarded(values PositiveValues, value Int) {
+    if value <= 0 {
+        return
+    }
+    push(values, value)
+}
+
 fn positive_copy(values List[Int]) Result[PositiveValues, ConstraintError] {
     PositiveValues(clone(values))
 }
@@ -119,11 +133,20 @@ fn list_constraint_scope() Bool {
     fill_positive(literal_alias, 7)
     fill_positive(literal, -1)
     assert literal[0] == 7 && values_sum(literal_alias) == 14
+    push(literal, PositiveElement(8))
+    append_positive(literal_alias, 9)
+    append_positive(literal, -1)
+    assert length(literal_alias) == 5 && values_sum(literal) == 40
+    append_guarded(literal_alias, 10)
+    append_guarded(literal, -1)
+    assert length(literal) == 6 && values_sum(literal_alias) == 50
     let head = PositiveHead([1, -1])
     let head_alias = head
     set(head, 0, PositiveElement(3))
     head_alias[1] = -2
     assert head[0] == 3 && head[1] == -2
+    push(head_alias, -3)
+    assert length(head) == 3 && head[0] == 3 && head[2] == -3
     let pair = IntPair([1, 2])
     let pair_alias = pair
     pair[0] = -7

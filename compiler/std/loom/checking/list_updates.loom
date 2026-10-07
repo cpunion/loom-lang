@@ -12,7 +12,7 @@ fn update_input(env Environment, value Expr) Expr {
     value
 }
 
-fn proved_list_update(env Environment, value Expr) Bool {
+fn proved_list_update(env Environment, value Expr, writes Int) Bool {
     let receiver = get(value.children, 0)
     if !constraint_weakened(env, receiver) {
         return false
@@ -43,7 +43,11 @@ fn proved_list_update(env Environment, value Expr) Bool {
             return false
         }
     }
-    let params = [receiver.ty, 1, update_input(env, get(value.children, 2)).ty]
+    let params = if writes == 1 {
+        [receiver.ty, 1, update_input(env, get(value.children, 2)).ty]
+    } else {
+        [receiver.ty, update_input(env, get(value.children, 1)).ty]
+    }
     let locals = new[Local]()
     let arguments = new[Expr]()
     var index = 0
@@ -67,8 +71,8 @@ fn proved_list_update(env Environment, value Expr) Bool {
         index = index + 1
     }
     // Construction established the complete predicate immediately before this
-    // atomic operation. Normal continuation models the native bounds check and
-    // one store; a bounds fault happens before any mutation. No transient broken
+    // atomic operation. Normal continuation models one store and any bounds
+    // check; a bounds fault happens before any mutation. No transient broken
     // state or callee normal-return promise can justify this admission.
     let probe = Function {
         is_async = false
@@ -80,7 +84,12 @@ fn proved_list_update(env Environment, value Expr) Bool {
         preconditions = [predicate]
         postconditions = [predicate]
         result_local = -1
-        body = expression(ExprKind.Intrinsic, 0, node, "list_set", -1, arguments, true)
+        body = expression(ExprKind.Intrinsic, 0, node,
+            if writes == 1 {
+                "list_set"
+            } else {
+                "list_push"
+            }, -1, arguments, true)
         runtime_name = ""
         span = value.span
     }
@@ -90,14 +99,14 @@ fn proved_list_update(env Environment, value Expr) Bool {
     }
 }
 
-fn proved_list_mutation(env Environment, value Expr, shared Bool) Bool {
-    match list_mutation_proof(env, value, shared) {
+fn proved_list_mutation(env Environment, value Expr, shared Bool, writes Int) Bool {
+    match list_mutation_proof(env, value, shared, writes) {
         Result.Ok(proved) => proved
         Result.Err(_) => false
     }
 }
 
-fn list_mutation_proof(env Environment, value Expr, shared Bool) Result[Bool, Failure] {
+fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Result[Bool, Failure] {
     if value.kind != ExprKind.Call || value.index < 0 || env.expanding_helpers || env.stage_depth >= 32 {
         return Result.Ok(false)
     }
@@ -155,7 +164,13 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool) Result[Bool, Fa
             push(predicates, refinement_expression(predicate_context(helpers, ty, locals, index, true)?, ty)?)
             push(protected, std.loom.proof.InputGuarantee {
                     ty = ty
-                    writes = 1
+                    // Another admitted helper may append through a shared
+                    // alias. Never assume a fixed extent from this body alone.
+                    writes = if shared {
+                        2
+                    } else {
+                        writes
+                    }
                 })
         }
         index = index + 1
@@ -188,8 +203,9 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool) Result[Bool, Fa
 fn flow_list_update(context Context, node Node, value Expr) Expr {
     if !context.emit || !context.env.has_refinements || context.env.expanding_helpers ||
     context.env.stage_depth >= 32 || context.fact_head < 0 || value.ty != 0 ||
-    length(value.children) != 3 || (value.kind != ExprKind.Call &&
-        (value.kind != ExprKind.Intrinsic || value.text != "list_set")) {
+    (length(value.children) != 2 && length(value.children) != 3) ||
+    (value.kind != ExprKind.Call && (value.kind != ExprKind.Intrinsic ||
+            (value.text != "list_set" && value.text != "list_push"))) {
         return value
     }
     let receiver = get(value.children, 0)
@@ -233,7 +249,7 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
     let bindings = [-1]
     let inputs = [expression(ExprKind.Local, get(params, 0), node, "", 0, new[Expr](), true)]
     var index = 1
-    while index < 3 {
+    while index < length(value.children) {
         let argument = get(value.children, index)
         let input = construction_input(context, update_input(context.env, argument), bindings, params, locals, 0)
         push(inputs, if input.ty == argument.ty {
@@ -247,7 +263,8 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
     let scope = predicate_context(env, ty, locals, 0, true)?
     let predicate = refinement_expression(scope, ty)?
     let program = prepared_in(scope, true)?
-    if !std.loom.proof.single_list_update(program, selected) {
+    let writes = std.loom.proof.single_list_write(program.functions, selected)
+    if writes == 0 {
         return Result.Ok(false)
     }
     let established = established_construction_premises(program, locals, premises)
@@ -262,7 +279,12 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
         preconditions = established
         postconditions = expressions(predicate)
         result_local = -1
-        body = expression(ExprKind.Intrinsic, 0, node, "list_set", -1, inputs, true)
+        body = expression(ExprKind.Intrinsic, 0, node,
+            if writes == 1 {
+                "list_set"
+            } else {
+                "list_push"
+            }, -1, inputs, true)
         runtime_name = ""
         span = node.span
     }

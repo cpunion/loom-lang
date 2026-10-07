@@ -12,7 +12,7 @@ fn loop_storage_writes(proof Verification, value Expr, entry State, modified Lis
         if value.index < 0 || value.index >= length(proof.program.functions) {
             push(modified, -1)
         } else {
-            primitive = forwarded_list_operation(proof.program,
+            primitive = forwarded_list_operation(proof.program.functions,
                 get(proof.program.functions, value.index), 0)
             if primitive == "" && !(if contents {
                     elements_preserving(proof.program, value)
