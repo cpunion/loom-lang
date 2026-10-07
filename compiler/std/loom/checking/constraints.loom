@@ -37,14 +37,22 @@ fn predicate_form(node Node, calls Bool) Bool {
     if node.kind == NodeKind.Select {
         return predicate_form(child(node, 0), calls)
     }
-    if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall {
+    // Brackets remain ambiguous until typing selects indexing/application.
+    // Validate their receiver and arguments here; the typed observation pass
+    // still rejects external/nested mutable storage. Scalar-only fast rules do
+    // not gain hypothetical heap reads.
+    let brackets = node.kind == NodeKind.Apply || node.kind == NodeKind.Index
+    if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall || brackets {
         if !calls {
             return false
         }
-        let arguments = child(node, if node.kind == NodeKind.Call {
-                1
-            } else {
+        if brackets && !predicate_form(child(node, 0), calls) {
+            return false
+        }
+        let arguments = child(node, if node.kind == NodeKind.MacroCall {
                 0
+            } else {
+                1
             }).children
         var index = 0
         while index < length(arguments) {
