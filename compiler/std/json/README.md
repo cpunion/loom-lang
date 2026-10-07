@@ -43,4 +43,17 @@ Both directions cap array/object nesting at 64 levels; this also makes a
 manually constructed cyclic `Value` return `WriteError.DepthExceeded` instead
 of recursing forever. `encode` uses the same limit, including recursive records
 with shared Lists. Typed decoding uses the parser's same nesting limit. These
-are in-memory APIs, not streaming parsers or writers.
+are in-memory APIs.
+
+`decoder()`, `feed(decoder, Bytes)` and `finish(decoder)` parse one document
+incrementally. Arbitrary chunk boundaries may split UTF-8, escapes or numbers.
+Only the current scalar token and the growing `Value` tree are retained, not
+the full input text. Completed tokens reuse `parse` for the same scalar rules;
+container grammar carries across feeds. `feed` reports consumed bytes, while
+`finish` requires EOF and returns the value. Errors retain absolute byte offsets
+and stick across later calls; finish is terminal. Decoder copies share a cursor,
+so serialize feeds. The same duplicate-key and 64-level nesting policy applies.
+
+[`std.json.stream`](stream/README.md) awaits an existing Stream and uses this
+decoder. It needs no JSON runtime or new producer protocol. Streaming writers
+and record-at-a-time document sequences are not provided.

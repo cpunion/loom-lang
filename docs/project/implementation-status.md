@@ -636,8 +636,14 @@ generic/dynamic async pulls, map/filter/take and sequential consumers. Callback
 errors, short-circuiting and cancellation retain ordinary Task semantics.
 [`TCP chunks`](../../compiler/std/net/tcp/chunks/README.md) borrow an explicitly
 closed socket, yield fresh buffers and distinguish errors from EOF.
-Streaming JSON, borrow-retaining adapters, owned async resource pipelines and
-application-grade networking are not complete.
+Source JSON now has an incremental byte decoder and an async Stream consumer.
+UTF-8, escapes and numbers may cross chunk boundaries; container state and the
+result tree grow without buffering the full document text. EOF/trailing input,
+producer errors and cancellation use existing library/Task semantics. The
+[real TCP trial](../../compiler/examples/json_stream/main.loom) also runs at
+O0/O2 under moving-GC stress. Streaming writers/document sequences,
+borrow-retaining adapters, owned async resource pipelines and application-grade
+networking remain open.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;
 large-object storage is separate and stress tests relocate all sizes. Ordinary

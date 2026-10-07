@@ -1,0 +1,142 @@
+import std.text.to_bytes
+
+fn json_fed(outcome Result[Int, ParseError]) {
+    assert match outcome {
+        Result.Ok(_) => true
+        _ => false
+    }
+}
+
+fn json_parsed(outcome Result[Value, ParseError]) Value {
+    match outcome {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            Value.Null
+        }
+    }
+}
+
+fn json_bytes(input Bytes, start Int, end Int) Bytes {
+    let output = std.bytes.new()
+    var index = start
+    while index < end {
+        std.bytes.push(output, std.bytes.get(input, index))
+        index = index + 1
+    }
+    output
+}
+
+fn json_chunked(input Bytes, width Int) Result[Value, ParseError] {
+    let cursor = decoder()
+    var index = 0
+    while index < std.bytes.length(input) {
+        let end = if std.bytes.length(input) - index < width {
+            std.bytes.length(input)
+        } else {
+            index + width
+        }
+        discard feed(cursor, json_bytes(input, index, end))?
+        index = end
+    }
+    finish(cursor)
+}
+
+test fn incremental_json_accepts_every_split_and_keeps_exact_scalar_rules() {
+    let document = """
+        {"hé中":"😀\\\"\uD83D\uDE00", "items":[true,false,null,{},[],
+          -123456789012345678901234567890.001e+42,0,1.0]}
+        """
+    let bytes = to_bytes(document)
+    let expected = rendered(decoded(document))
+    var split = 0
+    while split <= std.bytes.length(bytes) {
+        let cursor = decoder()
+        assert match feed(cursor, json_bytes(bytes, 0, split)) {
+            Result.Ok(count) => count == split
+            _ => false
+        }
+        json_fed(feed(cursor, json_bytes(bytes, split, std.bytes.length(bytes))))
+        assert rendered(json_parsed(finish(cursor))) == expected
+        split = split + 1
+    }
+    assert rendered(json_parsed(json_chunked(bytes, 1))) == expected
+    let sources = ["null", "true", "false", "-0", "1e-10", "\"hé中😀\"", "[]", "{}"]
+    var index = 0
+    while index < std.list.length(sources) {
+        let source = get(sources, index)
+        assert rendered(json_parsed(json_chunked(to_bytes(source), 1))) == rendered(decoded(source))
+        index = index + 1
+    }
+}
+
+test fn incremental_json_rejects_bad_grammar_eof_utf8_and_sticks_to_first_error() {
+    let sources = ["", "true false", "truefalse", "1[2]", "[1,]", "{\"a\":1,}",
+        "{\"a\":1,\"\\u0061\":2}", "{a:1}", "{\"a\" 1}", "[}", "{]", "[1:2]",
+        "01", "-01", "1.", "1e+", "+1", "\"\\uD83D\"", "\"\\uDE00\"", "\"raw\nline\"",
+        "[", "{\"a\":", "\"\\u12", "\"\\", "\"unterminated"]
+    var index = 0
+    while index < std.list.length(sources) {
+        let source = get(sources, index)
+        assert match json_chunked(to_bytes(source), 1) {
+            Result.Err(_) => true
+            _ => false
+        }
+        index = index + 1
+    }
+    let cursor = decoder()
+    let alias = cursor
+    let first = std.bytes.new()
+    std.bytes.push(first, 34)
+    std.bytes.push(first, 195)
+    json_fed(feed(cursor, first))
+    let second = std.bytes.new()
+    std.bytes.push(second, 40)
+    std.bytes.push(second, 34)
+    let problem = match feed(cursor, second) {
+        Result.Err(failed) => failed
+        _ => {
+            assert false
+            error(-1, "unreachable")
+        }
+    }
+    assert problem.offset == 0
+    assert match finish(alias) {
+        Result.Err(failed) => failed.offset == problem.offset && failed.message == problem.message
+        _ => false
+    }
+    assert match feed(alias, to_bytes("null")) {
+        Result.Err(failed) => failed.message == problem.message
+        _ => false
+    }
+    assert match json_chunked(to_bytes(" [0,]"), 1) {
+        Result.Err(failed) => failed.offset == 4
+        _ => false
+    }
+}
+
+test fn incremental_json_has_the_same_depth_limit_and_terminal_document_boundary() {
+    var source = "0"
+    var depth = 0
+    while depth < 64 {
+        source = std.text.concat("[", std.text.concat(source, "]"))
+        depth = depth + 1
+    }
+    assert rendered(json_parsed(json_chunked(to_bytes(source), 1))) == source
+    let too_deep = std.text.concat("[", std.text.concat(source, "]"))
+    assert match json_chunked(to_bytes(too_deep), 7) {
+        Result.Err(failed) => failed.offset == 64
+        _ => false
+    }
+    let cursor = decoder()
+    json_fed(feed(cursor, to_bytes("null")))
+    discard json_parsed(finish(cursor))
+    assert match feed(cursor, std.bytes.new()) {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert match finish(cursor) {
+        Result.Err(_) => true
+        _ => false
+    }
+}

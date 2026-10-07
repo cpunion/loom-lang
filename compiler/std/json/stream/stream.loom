@@ -1,0 +1,46 @@
+import std.stream.Stream
+import std.json.Value
+import std.json.ParseError
+import std.json.decoder
+import std.json.feed
+import std.json.finish
+import std.option.Option
+import std.result.Result
+
+pub enum StreamError[E] {
+    Input(E)
+    Syntax(ParseError)
+}
+
+// The callback makes the input/error boundary explicit without another producer
+// protocol. Pull serially to EOF; a syntax/input error stops before the suffix.
+pub async fn parse[S Stream, E](source S, bytes fn(S.Item) Result[Bytes, E])
+Result[Value, StreamError[E]] {
+    let cursor = decoder()
+    while true {
+        match source.next().await {
+            Option.Some(item) => {
+                let chunk = match bytes(item) {
+                    Result.Ok(value) => value
+                    Result.Err(failed) => {
+                        return Result.Err(StreamError.Input(failed))
+                    }
+                }
+                match feed(cursor, chunk) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(failed) => {
+                        return Result.Err(StreamError.Syntax(failed))
+                    }
+                }
+            }
+            Option.None => {
+                break
+            }
+        }
+    }
+    match finish(cursor) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(failed) => Result.Err(StreamError.Syntax(failed))
+    }
+}
