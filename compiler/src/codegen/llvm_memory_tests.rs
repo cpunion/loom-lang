@@ -192,6 +192,76 @@ fn dead_inner_bindings_retire_without_releasing_their_result_handoff() {
 }
 
 #[test]
+fn match_edge_retirement_preserves_a_fresh_binding_reused_by_another_arm() {
+    let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
+    let mut source = program(
+        vec![Type::Text; 2],
+        vec![
+            statement(S::Let {
+                local: 0,
+                value: concat(text("old"), text("-value")),
+            }),
+            statement(S::Let {
+                local: 1,
+                value: value(
+                    Type::Text,
+                    E::Match {
+                        value: Box::new(value(
+                            Type::Data(1),
+                            E::Variant {
+                                variant: 0,
+                                fields: vec![concat(text("fresh"), text("-binding"))],
+                            },
+                        )),
+                        arms: vec![
+                            checked::MatchArm {
+                                variant: Some(0),
+                                bindings: vec![Some(0)],
+                                whole: None,
+                                body: checked::Block {
+                                    statements: vec![statement(S::Discard(concat(
+                                        text("allocate"),
+                                        text("-inside-arm"),
+                                    )))],
+                                    tail: Some(Box::new(local(Type::Text, 0))),
+                                    falls_through: true,
+                                },
+                            },
+                            checked::MatchArm {
+                                variant: Some(1),
+                                bindings: vec![],
+                                whole: None,
+                                body: checked::Block {
+                                    statements: vec![],
+                                    tail: Some(Box::new(local(Type::Text, 0))),
+                                    falls_through: true,
+                                },
+                            },
+                        ],
+                    },
+                ),
+            }),
+            equal(local(Type::Text, 1), text("fresh-binding")),
+        ],
+    );
+    source.types.push(checked::Data {
+        name: "Choice".into(),
+        kind: checked::DataKind::Enum(vec![
+            ("Value".into(), vec![Type::Text]),
+            ("Other".into(), vec![]),
+        ]),
+    });
+    for optimization in [Optimization::O0, Optimization::O2] {
+        let (_, output) = emit_run(&source, optimization);
+        assert!(
+            output.status.success(),
+            "{optimization:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn match_payload_handoffs_survive_later_allocation_without_losing_other_local_roots() {
     let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
     let matched = |id, statements| {

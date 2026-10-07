@@ -311,6 +311,10 @@ impl Plan {
                         future,
                         collections,
                     );
+                    // Bindings are assigned before entering the arm. Keep
+                    // their body uses when retiring edge roots, even when the
+                    // same slot is an incoming value on another arm.
+                    let entry = before.clone();
                     for id in arm.bindings.iter().chain([&arm.whole]).flatten() {
                         before.remove(id);
                         definitions.insert(*id);
@@ -318,7 +322,7 @@ impl Plan {
                     branches.extend(&before);
                     let collects = future || collections.block(&arm.body);
                     collecting |= collects;
-                    incoming.push((&arm.body, before, collects));
+                    incoming.push((&arm.body, entry, collects));
                 }
                 for (body, before, collects) in incoming {
                     self.entries.insert(
