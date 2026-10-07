@@ -59,6 +59,7 @@ fn main() {
     copy_cases()
     construction_cases()
     float_solver_cases()
+    division_cases()
 }
 
 test fn combined_contracts() {

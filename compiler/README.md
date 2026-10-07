@@ -2401,7 +2401,11 @@ Signed interval transfer composes integer `+`, `-` and `*` before SMT, using
 mathematical endpoints and a bounded traversal. It discharges known scalar ranges
 and overflow safety without discarding eager operand checks; loose ranges remain
 unproved. The CLI also enables Z3's bounded polynomial normalization before search,
-without extending the solver timeout. Nonconstant division and universal pack
+without extending the solver timeout. Signed symbolic `/` and `%` use mathematical
+magnitudes and a quotient truncated toward zero, not SMT's signed `div` directly.
+Their zero and `Int.min / -1` fault guards are independent of result bounds,
+including `%`; only an actually executed normal continuation supplies them.
+See [division contracts](examples/smt_contracts/division.loom). Universal pack
 content/type proofs remain unsupported. Nonlinear solving is incomplete: unknown or timeout
 still blocks a proof.
 
@@ -2798,7 +2802,7 @@ Pure-helper expansion supports the bounded scans above, but still excludes
 general loops, shared-storage mutation, cleanup and returns inside operands;
 verified callee summaries use the separate rules above.
 Recursive proof dependencies, dynamic calls without a usable declared contract,
-indirect calls and nonconstant integer division remain outside
+indirect calls remain outside
 this proof fragment. IEEE Float proofs reuse exact comparisons over immutable
 values, including constrained inputs/elements, verified returns and guarded
 entry observations. Constant expressions use binary64 evaluation; symbolic

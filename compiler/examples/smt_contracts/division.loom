@@ -1,0 +1,44 @@
+// Faults remain possible. These contracts concern normal returns only.
+fn integer_quotient(value Int, divisor Int) Int
+ensures result == value / divisor
+{
+    value / divisor
+}
+
+fn integer_remainder(value Int, divisor Int) Int
+ensures result == value % divisor
+{
+    value % divisor
+}
+
+fn division_identity(value Int) Bool
+ensures value / 3 * 3 + value % 3 == value
+{
+    true
+}
+
+fn nonnegative_quotient(value Int, divisor Int) Int
+requires value >= 0 && divisor > 0
+ensures result >= 0
+{
+    integer_quotient(value, divisor)
+}
+
+fn division_cases() {
+    assert integer_quotient(-7, 3) == -2 && integer_quotient(7, -3) == -2
+    assert integer_quotient(-7, -3) == 2 && integer_quotient(7, 3) == 2
+    assert integer_remainder(-7, 3) == -1 && integer_remainder(7, -3) == 1
+    assert integer_remainder(-7, -3) == -1
+    assert integer_quotient(-9223372036854775808, 1) == -9223372036854775808
+    assert integer_quotient(-9223372036854775808, 3) == -3074457345618258602
+    assert integer_quotient(9223372036854775807, -9223372036854775808) == 0
+    assert integer_remainder(-9223372036854775808, 3) == -2
+    assert integer_remainder(9223372036854775807, -9223372036854775808) == 9223372036854775807
+    assert division_identity(-9223372036854775808) && division_identity(9223372036854775807)
+    assert division_identity(-7) && division_identity(0) && division_identity(7)
+    assert nonnegative_quotient(7, 3) == 2
+}
+
+test fn signed_division_contracts_match_native_truncation_and_extremes() {
+    division_cases()
+}

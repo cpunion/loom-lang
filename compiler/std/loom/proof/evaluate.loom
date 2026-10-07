@@ -57,7 +57,7 @@ fn numeric(operator Text, a Linear, b Linear) Result[Value, Text] {
     }
     if operator == "/" || operator == "%" {
         if length(a.terms) != 0 || length(b.terms) != 0 {
-            return Result.Err("nonconstant proof division")
+            return integer_operation(operator, IntegerTerm.Linear(a), IntegerTerm.Linear(b))
         }
         let left = machine(a.constant)?
         let right = machine(b.constant)?
@@ -345,6 +345,9 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
     }
     if (expr.kind == ExprKind.Unary && expr.text == "-") ||
     (expr.kind == ExprKind.Binary && (expr.text == "+" || expr.text == "-" || expr.text == "*" || expr.text == "/" || expr.text == "%")) {
+        if !holds(arithmetic_guard(expr, state)?, state.facts) {
+            return Result.Err("postcondition division is not proved defined")
+        }
         let value = pure(expr, state)?
         match value {
             Value.Float(_) => {

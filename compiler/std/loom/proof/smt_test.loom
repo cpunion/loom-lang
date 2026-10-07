@@ -49,8 +49,15 @@ test fn backend_failures_propagate_and_easy_or_unsupported_proofs_do_not_call_it
         _ => false
     }
     assert match verify_with_types([], fixture(literal("0"), [],
-            operation(">", operation("/", x, literal("0")), x)), backend) {
+            operation(">", expression(ExprKind.Binary, 1, "&", -1, nodes(x, literal("1"))), x)), backend) {
         Result.Err(message) => message != "test backend failure"
+        _ => false
+    }
+    // Division is modeled, but neither a failed backend nor result bounds
+    // can discharge an unproved divisor domain.
+    assert match verify_with_types([], fixture(literal("0"), [],
+            operation(">", operation("/", x, literal("0")), x)), backend) {
+        Result.Err(message) => message == "test backend failure"
         _ => false
     }
 }

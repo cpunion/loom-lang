@@ -31,6 +31,10 @@ fn solver_defined(proof ProofQuery, expr Expr, state State, depth Int) Result[Bo
         return Result.Ok(true)
     }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary {
+        let guard = arithmetic_guard(expr, state)?
+        if !holds(guard, state.facts) {
+            solver_fact(proof, guard, state)
+        }
         return match pure(expr, state)? {
             Value.Nonlinear(term) => {
                 solver_fact(proof, integer_limit(">=", term, -9223372036854775808), state)

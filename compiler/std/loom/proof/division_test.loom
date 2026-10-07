@@ -1,0 +1,16 @@
+test fn executed_integer_division_supplies_only_its_normal_return_domain() {
+    let x = local(0)
+    let quotient = operation("/", x, literal("3"))
+    let remainder = operation("%", x, literal("-3"))
+    assert verified(fixture(quotient, [], operation("==", local(1), quotient)))
+    assert verified(fixture(remainder, [], operation("==", local(1), remainder)))
+    let missing_zero_guard = operation("/", x, x)
+    let overflowing = operation("/", x, literal("-1"))
+    let overflowing_remainder = operation("%", x, literal("-1"))
+    assert !verified(fixture(literal("0"), [], operation("==", missing_zero_guard, missing_zero_guard)))
+    assert !verified(fixture(literal("0"), [], operation("==", overflowing, overflowing)))
+    assert !verified(fixture(literal("0"), [], operation("==", overflowing_remainder, overflowing_remainder)))
+    // A zero product does not make its eagerly evaluated divisor safe.
+    let eager = operation("*", literal("0"), missing_zero_guard)
+    assert !verified(fixture(literal("0"), [], operation("==", eager, literal("0"))))
+}
