@@ -364,6 +364,10 @@ UTF-8 sequence algebra. Normal-return bounds of 0–255 prove locally, including
 short-circuit branches; Text equality and concrete byte contents use SMT.
 Hypothetical accesses independently require a nonnegative, in-range byte index.
 See the [byte example](../../compiler/examples/smt_contracts/text_bytes.loom).
+Signed Int bit operations now share this expression model: mask ranges and XOR
+parity normalize locally; remaining supported word relationships use SMT.
+Shift counts and eager arithmetic still need independent safety proofs.
+See the [bit example](../../compiler/examples/smt_contracts/bitwise.loom).
 General collection induction and content/type-dependent variadic proofs remain
 unsupported; nonlinear solver queries may still be unknown or time out.
 Constrained construction, stable scalar facts, pure-helper implication and

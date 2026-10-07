@@ -15,6 +15,19 @@ fn boolean(value Value) Result[Predicate, Text] {
 }
 
 fn unary(operator Text, value Value) Result[Value, Text] {
+    if operator == "~" {
+        let term = integer_term(value)?
+        match term {
+            IntegerTerm.Linear(number) => {
+                if length(number.terms) == 0 {
+                    return Result.Ok(Value.Number(constant(integer(~machine(number.constant)?))))
+                }
+            }
+            _ => {
+            }
+        }
+        return Result.Ok(Value.Nonlinear(IntegerTerm.Apply(operator, [term])))
+    }
     match value {
         Value.Float(term) => float_unary(operator, term)
         Value.Nonlinear(term) => {
@@ -40,6 +53,12 @@ fn unary(operator Text, value Value) Result[Value, Text] {
 }
 
 fn numeric(operator Text, a Linear, b Linear) Result[Value, Text] {
+    if integer_bitwise(operator) {
+        if length(a.terms) == 0 && length(b.terms) == 0 {
+            return integer_bitwise_literal(operator, machine(a.constant)?, machine(b.constant)?)
+        }
+        return integer_operation(operator, IntegerTerm.Linear(a), IntegerTerm.Linear(b))
+    }
     if operator == "+" {
         return Result.Ok(Value.Number(add(a, b)))
     }
@@ -344,9 +363,10 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
         return intrinsic_defined(expr, state)
     }
     if (expr.kind == ExprKind.Unary && expr.text == "-") ||
-    (expr.kind == ExprKind.Binary && (expr.text == "+" || expr.text == "-" || expr.text == "*" || expr.text == "/" || expr.text == "%")) {
+    (expr.kind == ExprKind.Binary && (expr.text == "+" || expr.text == "-" || expr.text == "*" || expr.text == "/" || expr.text == "%" ||
+            expr.text == "<<" || expr.text == ">>")) {
         if !holds(arithmetic_guard(expr, state)?, state.facts) {
-            return Result.Err("postcondition division is not proved defined")
+            return Result.Err("postcondition arithmetic operand domain is not proved defined")
         }
         let value = pure(expr, state)?
         match value {

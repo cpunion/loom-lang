@@ -57,7 +57,10 @@ fn integer_operation(operator Text, left IntegerTerm, right IntegerTerm) Result[
     if operator == "==" || operator == "!=" || operator == "<" || operator == "<=" || operator == ">" || operator == ">=" {
         return Result.Ok(Value.Boolean(Predicate.IntegerCompare(operator, left, right)))
     }
-    if operator != "+" && operator != "-" && operator != "*" && !integer_division(operator) {
+    if operator == "^" {
+        return xor_value(left, right)
+    }
+    if operator != "+" && operator != "-" && operator != "*" && !integer_division(operator) && !integer_bitwise(operator) {
         return Result.Err("unsupported symbolic integer operation")
     }
     let inputs = new[IntegerTerm]()
@@ -70,6 +73,15 @@ fn integer_division(operator Text) Bool {
     operator == "/" || operator == "%"
 }
 
+fn integer_bitwise(operator Text) Bool {
+    operator == "~" || operator == "&" || operator == "|" || operator == "^" ||
+    operator == "<<" || operator == ">>"
+}
+
+fn integer_shift_guard(count IntegerTerm) Predicate {
+    Predicate.And(predicates(integer_limit(">=", count, 0), integer_limit("<", count, 64)))
+}
+
 // Both operations fault on zero and MIN / -1, even though the mathematical
 // remainder would be zero. Result bounds alone cannot establish definedness.
 fn integer_division_guard(left IntegerTerm, right IntegerTerm) Predicate {
@@ -79,6 +91,10 @@ fn integer_division_guard(left IntegerTerm, right IntegerTerm) Predicate {
 }
 
 fn arithmetic_guard(expr Expr, state State) Result[Predicate, Text] {
+    if expr.kind == ExprKind.Binary && expr.ty == 1 && (expr.text == "<<" || expr.text == ">>") {
+        let count = integer_term(pure(get(expr.children, 1), state)?)?
+        return Result.Ok(integer_shift_guard(count))
+    }
     if expr.kind == ExprKind.Binary && expr.ty == 1 && integer_division(expr.text) {
         return Result.Ok(integer_division_guard(integer_term(pure(get(expr.children, 0), state)?)?,
                 integer_term(pure(get(expr.children, 1), state)?)?))

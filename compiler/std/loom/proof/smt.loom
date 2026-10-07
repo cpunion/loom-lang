@@ -277,6 +277,9 @@ fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text
             smt_select(writer, identity, path, index, ScalarDomain.Integer)
         }
         IntegerTerm.Apply(operator, inputs) => {
+            if integer_bitwise(operator) {
+                return smt_bitwise(writer, operator, inputs, depth)
+            }
             if (operator != "+" && operator != "-" && operator != "*" && !integer_division(operator)) || length(inputs) != 2 {
                 return Result.Err("unsupported SMT integer operation")
             }
