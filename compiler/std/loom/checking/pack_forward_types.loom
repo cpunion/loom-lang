@@ -1,0 +1,227 @@
+fn pack_forward_pack(caller Node, parameter Int) Int {
+    let parameters = group(caller, NodeKind.TypeParameters)
+    var index = 0
+    var pack = 0
+    while index < length(parameters) {
+        if get(parameters, index).kind == NodeKind.TypePack {
+            if index == parameter {
+                return pack
+            }
+            pack = pack + 1
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn pack_forward_element(caller Node, schema Node) Int {
+    let parameter = pack_schema_parameter(schema)
+    if parameter >= 0 {
+        return pack_forward_pack(caller, parameter)
+    }
+    var index = 0
+    while index < length(schema.children) {
+        let found = pack_forward_element(caller, child(schema, index))
+        if found >= 0 {
+            return found
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn pack_forward_extent(context Context, caller Node, sequence List[Node], site Node) Result[Node, Failure] {
+    var extent = pack_node(site, NodeKind.Integer, "0", new[Node]())
+    var index = 0
+    while index < length(sequence) {
+        let item = get(sequence, index)
+        var count = pack_node(site, NodeKind.Integer, "1", new[Node]())
+        if item.kind == NodeKind.Spread {
+            let pack = pack_forward_element(caller, item)
+            if pack < 0 {
+                return Result.Err(error(context, site, "forwarded expansion needs an established source width"))
+            }
+            count = pack_node(site, NodeKind.Name, pack_proof_width(pack), new[Node]())
+        }
+        extent = pack_node(site, NodeKind.Binary, "+", [extent, count])
+        index = index + 1
+    }
+    Result.Ok(extent)
+}
+
+fn pack_forward_source_node(context Context, caller Node, node Node, depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(error(context, node, "forwarded type pattern nesting limit exceeded"))
+    }
+    let root = slice(node.value, 0, first_dot(node.value))
+    let packs = declared_packs(caller)
+    var pack = false
+    var index = 0
+    while index < length(packs) {
+        pack = pack || root == get(packs, index).value
+        index = index + 1
+    }
+    let parameters = type_parameters(context.env, context.signature.symbol)
+    var fixed = root == "Self"
+    index = 0
+    while index < length(parameters) {
+        fixed = fixed || root == get(parameters, index).value
+        index = index + 1
+    }
+    if node.kind == NodeKind.Type && fixed && !pack {
+        return Result.Ok(meta_reference(node, resolve_bound(context.env, context.signature.symbol,
+                    node, context.arguments, context.signature.requirements, 0)?))
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(node.children) {
+        push(children, pack_forward_source_node(context, caller, child(node, index), depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}
+
+fn pack_forward_source_schema(context Context, caller Node, node Node) Result[Node, Failure] {
+    type_pattern_schema(context.env, pack_proof_caller(context),
+        pack_forward_source_node(context, caller, node, 0)?, true, 0, true)
+}
+
+// Recover the source node in this same snapshot, validating the complete schema
+// as well as its span. Generated nodes may share spans, but not binding identity.
+fn pack_forward_raw(context Context, node Node, schema Node, depth Int) Option[Node] {
+    if depth >= 64 {
+        return Option.None
+    }
+    if node.kind == schema.kind && node.span.start == schema.span.start && node.span.end == schema.span.end {
+        match pack_forward_source_schema(context, symbol(context.env, pack_proof_caller(context)).node, node) {
+            Result.Ok(checked) => {
+                if pack_schema_equal(checked, schema) {
+                    return Option.Some(node)
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        match pack_forward_raw(context, child(node, index), schema, depth + 1) {
+            Option.Some(found) => {
+                return Option.Some(found)
+            }
+            Option.None => {
+            }
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
+fn pack_forward_fixed_node(context Context, caller Node, node Node, depth Int) Result[Node, Failure] {
+    if depth >= 64 || node.kind == NodeKind.Spread {
+        return Result.Err(error(context, node, "forwarded fixed type needs an established layout"))
+    }
+    let packs = declared_packs(caller)
+    var index = 0
+    while index < length(packs) {
+        if node.value == get(packs, index).value && length(node.children) == 0 {
+            return Result.Ok(pack_node(node, NodeKind.Type, pack_proof_element_type(index), new[Node]()))
+        }
+        index = index + 1
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(node.children) {
+        push(children, pack_forward_fixed_node(context, caller, child(node, index), depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}
+
+fn pack_forward_type(context Context, caller Node, schema Node) Result[Int, Failure] {
+    let node = match pack_forward_raw(context, child(caller, part(caller, NodeKind.Parameters)), schema, 0) {
+        Option.Some(node) => pack_forward_fixed_node(context, caller, node, 0)?
+        Option.None => {
+            return Result.Err(error(context, schema, "forwarded fixed type needs an established source binding"))
+        }
+    }
+    // Resolve as a header, not through same-spelled mutable body bindings.
+    let ty = resolve_bound(context.env, context.signature.symbol, node, context.arguments, context.signature.requirements, 0)?
+    discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?
+    Result.Ok(ty)
+}
+
+fn pack_forward_invoke(context Context, node Node, caller Node, callee Node, bindings PackForwardMatch,
+    signature Int, values List[Node], expected Int) Result[Expr, Failure] {
+    let parameters = group(callee, NodeKind.TypeParameters)
+    let selected = get(context.env.signatures, signature)
+    let arguments = supplied_call(context, node, new[Node](), selected)?
+    var ordinary = 0
+    var index = 0
+    while index < length(parameters) {
+        if get(parameters, index).kind != NodeKind.TypePack {
+            if get(bindings.known, index) {
+                set(arguments, ordinary, pack_forward_type(context, caller, get(get(bindings.values, index), 0))?)
+            }
+            ordinary = ordinary + 1
+        }
+        index = index + 1
+    }
+    var pack = 0
+    index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if parameter.kind == NodeKind.TypePack {
+            if !get(bindings.known, index) {
+                return Result.Err(error(context, node, "variadic forwarding cannot infer an unbound pack"))
+            }
+            let sequence = get(bindings.values, index)
+            var element = -1
+            var member = 0
+            while member < length(sequence) && element < 0 {
+                element = pack_forward_element(caller, get(sequence, member))
+                member = member + 1
+            }
+            if length(parameter.children) != 0 {
+                if length(sequence) != 1 || get(sequence, 0).kind != NodeKind.Spread ||
+                pack_schema_parameter(child(get(sequence, 0), 0)) < 0 || element < 0 {
+                    return Result.Err(error(context, node, "bounded forwarding needs one source pack with declared element requirements"))
+                }
+            }
+            // Unconstrained summaries cannot observe element types/identity.
+            // An existing abstract domain also represents an empty sequence.
+            if element < 0 {
+                element = 0
+            }
+            let value = pack_node(node, NodeKind.Name, pack_proof_element_value(element), new[Node]())
+            push(values, value)
+            push(values, pack_forward_extent(context, caller, sequence, node)?)
+            set(arguments, ordinary + pack, context_type(context,
+                    pack_node(node, NodeKind.Type, pack_proof_element_type(element), new[Node]()))?)
+            pack = pack + 1
+        }
+        index = index + 1
+    }
+    let inputs = plain_inputs(values)
+    let checked = new[Expr]()
+    index = 0
+    while index < length(values) {
+        let value = input_value(context, inputs, index, hint(context, get(selected.params, index), arguments, node)?, false)?
+        push(checked, value)
+        discard infer(context.env, get(selected.params, index), value.ty, arguments)
+        index = index + 1
+    }
+    if !complete(arguments) && expected >= 0 {
+        discard infer(context.env, selected.result, expected, arguments)
+    }
+    if !complete(arguments) {
+        return Result.Err(error(context, node, "variadic forwarding cannot infer its fixed type arguments"))
+    }
+    let types = new[Node]()
+    index = 0
+    while index < length(arguments) {
+        push(types, meta_reference(node, get(arguments, index)))
+        index = index + 1
+    }
+    invoke(context, node, ints(signature), types, inputs, checked, expected)
+}

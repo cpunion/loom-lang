@@ -930,12 +930,12 @@ fields, repeated/independent groups, elementwise expansions and global tuple
 indices. This broadens input shapes, not the scalar invariant fragment. Element
 observations through declared method contracts are described below; mixed
 structural elements cannot borrow one pack's concept bounds. Type reflection,
-pack-dependent result shapes and non-tuple structural sources remain unsupported
-in family proofs. Shadowed erased sources and loop control that would change
+pack-dependent result shapes and iteration over non-tuple structural sources
+remain unsupported in family proofs. Shadowed erased sources and loop control that would change
 its target reject. Executing a few selected arities is never a universal proof.
 
-Family proofs can forward a named sequence into another synchronous family's
-bare `Ts...` or `(Ts...)` parameter and compose its declared postconditions:
+Family proofs can forward named pack-bearing inputs into another synchronous
+family and compose its declared postconditions:
 
 ```loom
 fn tuple_count[Ts...](values (Ts...)) Int
@@ -946,14 +946,25 @@ ensures result >= 0 {
 
 The callee's universal proof remains mandatory, even with no concrete caller.
 Fixed arguments retain ordinary evaluation, preconditions and effects; symbolic
-widths and abstract element evidence stay in the private proof closure. Repeated
-inputs require the same ordered type schema, not just equal widths. Bounds must
-follow from a bare source pack's declared requirements; mixed structural tuples
-can forward only to unconstrained packs. The
+widths and abstract element evidence stay in the private proof closure. Bare,
+structural tuple and nominal patterns reuse the constructor schema used for impl
+overlap checks. A bounded symbolic-word match jointly determines the callee's
+type/sequence bindings across all inputs. Fixed fields, repeated/independent
+packs and corresponding elementwise constructors retain their ordered schemas;
+equal widths alone do not establish equal types. An unknown source word is not
+split or sampled, and ambiguous or exhausted matches reject. Fixed type bindings
+reuse header resolution, unaffected by same-spelled body locals or another
+package's nominal declarations. Bounds must follow from a bare source pack's
+declared requirements; mixed captured sequences can forward only to unconstrained
+packs. The
 [forwarding example](examples/variadics/forwarding.loom) covers independent groups,
-CTFE, callbacks, inherited dyn methods and shared List effects. Forwarding to
-structural callee patterns, overloaded/indirect/async callees, explicit type
-arguments and freshly assembled sequences remains unsupported in family proofs.
+CTFE, callbacks, inherited dyn methods and shared List effects. The
+[structural forwarding example](examples/variadics/structural_forwarding.loom)
+adds fixed fields, jointly inferred groups, nested constructors, nominal inputs
+and generic/default method scopes. Overloaded/indirect/async callees, explicit
+type arguments, freshly assembled sequences, unresolved associated callee
+patterns and fixed types with unknown expanded layouts remain unsupported in
+family proofs.
 Normal selected calls retain their existing checks and static expansion.
 
 A structural parameter can supply arity without a direct value pack. This

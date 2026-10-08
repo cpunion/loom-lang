@@ -1,0 +1,149 @@
+fn framed_callee[Ts...](values (Int, Ts..., Bool)) Int
+ensures result >= 2 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+fn framed_forward[Us...](values (Int, Us..., Bool)) Int
+ensures result >= 2 {
+    framed_callee(values)
+}
+
+fn framed_extra[Us...](values (Int, Text, Us..., Bool)) Int
+ensures result >= 2 {
+    framed_callee(values)
+}
+
+fn repeat_callee[Ts...](values (Ts..., Int, Ts...)) Int
+ensures result >= 1 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+fn repeat_forward[Us...](values (Us..., Int, Us...)) Int
+ensures result >= 1 {
+    repeat_callee(values)
+}
+
+fn joined_callee[As..., Bs...](first (As...), second (Bs...), both (As..., Bs...)) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in both {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+fn joined_forward[Us..., Vs...](first (Us...), second (Vs...), both (Us..., Vs...)) Int
+ensures result >= 0 {
+    joined_callee(first, second, both)
+}
+
+fn tagged_callee[T, Ts...](values (T, Ts..., Bool)) Int
+ensures result >= 2 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+fn tagged_forward[U, Us...](values (U, Us..., Bool)) Int
+ensures result >= 2 {
+    let U = true
+    discard U
+    tagged_callee(values)
+}
+
+concept FrameForward {
+    fn forward_frame[Ts...](self Self, values (Self, Ts..., Bool)) Int
+    ensures result >= 2 {
+        tagged_callee(values)
+    }
+}
+
+impl FrameForward for Bool {
+}
+
+record ForwardOwner[T] {
+    value T
+}
+
+impl[T] FrameForward for ForwardOwner[T] {
+    fn forward_frame[Us...](self ForwardOwner[T], values (ForwardOwner[T], Us..., Bool)) Int {
+        tagged_callee(values)
+    }
+}
+
+fn mapped_callee[Ts...](values (Int, List[Ts]..., Bool)) Int
+ensures result >= 2 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+fn mapped_forward[Us...](values (Int, List[Us]..., Bool)) Int
+ensures result >= 2 {
+    mapped_callee(values)
+}
+
+record ForwardGroup[Ts...] {
+    values (Ts...)
+}
+
+fn nominal_callee[Ts...](values ForwardGroup[Ts...]) Int
+ensures result == 42 {
+    42
+}
+
+fn nominal_forward[Us...](values ForwardGroup[Us...]) Int
+ensures result == 42 {
+    nominal_callee(values)
+}
+
+fn exercise_structural_forwarding() {
+    assert framed_forward((1, true)) == 2
+    assert framed_forward((1, "text", [2], false)) == 4
+    assert framed_extra((1, "fixed", true)) == 3
+    assert repeat_forward((1,)) == 1
+    assert repeat_forward((true, "a", 1, false, "b")) == 5
+    assert joined_forward(pack(), pack(), pack()) == 0
+    assert joined_forward((1,), (true, "text"), (1, true, "text")) == 3
+    assert tagged_forward(("tag", true)) == 2
+    assert tagged_forward((1, "middle", false)) == 3
+    assert true.forward_frame((false, "default", true)) == 3
+    let owner = ForwardOwner {
+        value = 42
+    }
+    assert owner.forward_frame((owner, "override", false)) == 3
+    assert mapped_forward((1, true)) == 2
+    assert mapped_forward((1, [true], [42], false)) == 4
+    assert nominal_forward(ForwardGroup {
+            values = (true, "nominal")
+        }) == 42
+    assert comptime {
+        framed_forward((1, "compiled", false))
+    } == 3
+    let callback fn((Int, Text, Bool)) Int = framed_forward
+    assert callback((1, "callback", false)) == 3
+    let log List[Int] = []
+    assert framed_forward((mark(log, 1), mark(log, 2), true)) == 3
+    assert length(log) == 2 && log[0] == 1 && log[1] == 2
+    let shared = [3]
+    assert framed_forward((1, shared, shared, false)) == 4
+    shared[0] = 4
+    assert shared[0] == 4
+}

@@ -1,0 +1,216 @@
+test fn structural_forwarding_matches_ordered_words_and_shared_bindings() {
+    discard accepted("""
+        fn count[Ts...](values (Int, Ts..., Bool)) Int
+        ensures result >= 2 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn forward[Us...](values (Int, Us..., Bool)) Int
+        ensures result >= 2 {
+            count(values)
+        }
+        fn extra[Us...](values (Int, Text, Us..., Bool)) Int
+        ensures result >= 2 {
+            count(values)
+        }
+        fn repeated[Ts...](values (Ts..., Int, Ts...)) Int
+        ensures result >= 1 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn forward_repeated[Us...](values (Us..., Int, Us...)) Int
+        ensures result >= 1 {
+            repeated(values)
+        }
+        fn joined[As..., Bs...](first (As...), second (Bs...), both (As..., Bs...)) Int
+        ensures result >= 0 {
+            0
+        }
+        fn forward_joined[Us..., Vs...](first (Us...), second (Vs...), both (Us..., Vs...)) Int
+        ensures result >= 0 {
+            joined(first, second, both)
+        }
+        fn tagged[T, Ts...](values (T, Ts..., Bool)) Int
+        ensures result >= 2 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn forward_tagged[U, Us...](values (U, Us..., Bool)) Int
+        ensures result >= 2 {
+            let U = true
+            discard U
+            tagged(values)
+        }
+        concept Framed {
+            fn forward_frame[Ts...](self Self, values (Self, Ts..., Bool)) Int
+            ensures result >= 2 {
+                tagged(values)
+            }
+        }
+        fn mapped[Ts...](values (Int, List[Ts]..., Bool)) Int
+        ensures result >= 2 {
+            2
+        }
+        fn forward_mapped[Us...](values (Int, List[Us]..., Bool)) Int
+        ensures result >= 2 {
+            mapped(values)
+        }
+        record Group[Ts...] {
+            values (Ts...)
+        }
+        fn nominal[Ts...](values Group[Ts...]) Int
+        ensures result == 42 {
+            42
+        }
+        fn forward_nominal[Us...](values Group[Us...]) Int
+        ensures result == 42 {
+            nominal(values)
+        }
+        """)
+}
+
+test fn structural_forwarding_rejects_ambiguous_words_and_changed_types() {
+    rejects("""
+        fn split[As..., Bs...](values (As..., Bs...)) Int
+        ensures result >= 0 {
+            0
+        }
+        fn forward[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            split(values)
+        }
+        """)
+    rejects("""
+        fn repeated[Ts...](values (Ts..., Int, Ts...)) Int
+        ensures result >= 0 {
+            0
+        }
+        fn wrong[As..., Bs...](values (As..., Int, Bs...)) Int
+        ensures result >= 0 {
+            repeated(values)
+        }
+        """)
+    rejects("""
+        fn count[Ts...](values (Int, Ts..., Bool)) Int
+        ensures result >= 0 {
+            0
+        }
+        fn wrong[Us...](values (Bool, Us..., Int)) Int
+        ensures result >= 0 {
+            count(values)
+        }
+        """)
+    rejects("""
+        fn same[T, Ts...](tag T, values (T, Ts..., Bool)) Int
+        ensures result == 42 {
+            42
+        }
+        fn wrong[Us...](values (Int, Us..., Bool)) Int
+        ensures result == 42 {
+            same(true, values)
+        }
+        """)
+}
+
+test fn structural_forwarding_preserves_nominal_scope_and_element_requirements() {
+    let files = source_files("""
+        import rules.count
+        record Marker {
+            value Int
+        }
+        fn wrong[Us...](values (Marker, Us..., Bool)) Int
+        ensures result == 42 {
+            count(values)
+        }
+        """)
+    push(files, source_file("rules", """
+        pub record Marker {
+            value Int
+        }
+        pub fn count[Ts...](values (Marker, Ts..., Bool)) Int
+        ensures result == 42 {
+            42
+        }
+        """, false))
+    assert match checked(files) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let requirements = """
+        concept Value {
+            fn value(self Self) Int
+            ensures result >= 0
+        }
+        fn count[Ts... Value](frame (Int, Ts..., Bool), values (Ts...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """
+    discard accepted(concat(requirements, """
+        fn forward[Us... Value](frame (Int, Us..., Bool), values (Us...)) Int
+        ensures result >= 0 {
+            count(frame, values)
+        }
+        """))
+    rejects(concat(requirements, """
+        fn wrong[Us...](frame (Int, Us..., Bool), values (Us...)) Int
+        ensures result >= 0 {
+            count(frame, values)
+        }
+        """))
+}
+
+test fn structural_forwarding_restored_cache_rechecks_true_callee_edits() {
+    let source = """
+        fn count[Ts...](values (Int, Ts..., Bool)) Int
+        ensures result == 42 {
+            42
+        }
+        pub fn forward[Us...](values (Int, Us..., Bool)) Int
+        ensures result == 42 {
+            count(values)
+        }
+        pub fn answer() Int {
+            forward((1, true))
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, concat(source, "\nfn unrelated() {}\n")) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let boundary = std.text.find(source, "pub fn forward")
+    assert boundary > 0
+    let callee = slice(source, 0, boundary)
+    let changed = concat(std.text.join(std.text.split(callee, "42"), "43"), slice(source, boundary, length(source)))
+    // The edited callee remains valid; the unchanged caller's proof does not.
+    assert match cached_source(restored_definition_cache(initial), changed) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

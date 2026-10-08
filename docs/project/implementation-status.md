@@ -246,15 +246,24 @@ elementwise expansions retain the shared width selected by shape checking. The
 covers global indices, List effects, CTFE, function references and inherited
 native/dyn methods. Mixed elements do not inherit a single pack's concept bounds,
 and the existing scalar invariant fragment is unchanged.
-Named sequences can now forward into a synchronous family's bare value/tuple
-packs and compose universally checked postconditions. Fixed inputs and effects
-use ordinary call rules; repeated inputs retain the same ordered type schema.
+Named pack-bearing inputs can forward into a synchronous family and compose
+universally checked postconditions. Bare, structural tuple and nominal patterns
+share constructor identities with impl overlap checks. Bounded symbolic-word
+matching jointly binds fixed types and ordered sequences across all inputs;
+repeated/independent groups and corresponding elementwise constructors retain
+their source schema. Ambiguity, exhausted search and splitting unknown words
+reject, without enumerating expansion widths. Fixed inputs and effects use
+ordinary call rules; type bindings resolve in the header scope.
 The [forwarding example](../../compiler/examples/variadics/forwarding.loom) covers
 declared bounds, independent groups, CTFE, callbacks and inherited dyn methods.
-Structural callee patterns, overloaded/indirect/async callees, explicit type
-arguments and newly assembled sequences still reject in family proofs.
+The [structural forwarding example](../../compiler/examples/variadics/structural_forwarding.loom)
+covers fixed fields, nested constructors, nominal inputs and generic/default
+method scopes. Mixed captured sequences cannot supply element requirements.
+Overloaded/indirect/async callees, explicit type arguments, newly assembled
+sequences, unresolved associated callee patterns and unknown fixed layouts
+still reject in family proofs.
 Type-dependent induction, opaque element escape, pack-dependent results and
-non-tuple structural sources still reject. A
+iteration over non-tuple structural sources still reject. A
 single type pack can
 have fixed parameters before and after it, including concept methods and impl
 families; the same ordered expansion and width rule applies to each.
