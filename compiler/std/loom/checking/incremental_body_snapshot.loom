@@ -53,6 +53,7 @@ fn body_copy_function(value Function) Function {
         locals = locals
         preconditions = body_copy_expressions(value.preconditions)
         postconditions = body_copy_expressions(value.postconditions)
+        result_cleanup = body_copy_expressions(value.result_cleanup)
         result_local = value.result_local
         body = body_copy_expression(value.body)
         runtime_name = value.runtime_name

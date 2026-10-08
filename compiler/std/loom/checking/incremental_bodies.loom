@@ -323,6 +323,13 @@ fn body_supported(reuse BodyReuse, target BodyTarget, value Function) Bool {
         }
         index = index + 1
     }
+    index = 0
+    while index < length(value.result_cleanup) {
+        if !body_expression_supported(reuse, get(value.result_cleanup, index), value.span, seen) {
+            return false
+        }
+        index = index + 1
+    }
     body_expression_supported(reuse, value.body, value.span, seen)
 }
 
@@ -541,6 +548,7 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
                 locals = locals
                 preconditions = body_contracts(env, reuse, target, value.preconditions, NodeKind.Requires)?
                 postconditions = body_contracts(env, reuse, target, value.postconditions, NodeKind.Ensures)?
+                result_cleanup = body_expressions(env, reuse, value.result_cleanup, concrete_owner, offset)?
                 result_local = value.result_local
                 body = body_expression(env, reuse, value.body, concrete_owner, offset)?
                 runtime_name = value.runtime_name

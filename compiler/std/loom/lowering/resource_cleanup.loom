@@ -164,8 +164,29 @@ fn resource_cleanup_program(source Program) Program {
                 push(counts, 0)
                 local = local + 1
             }
-            set(program.functions, index, function_body(function,
-                    resource_cleanup_expression(program, function, function.body, callbacks, counts)))
+            let body = resource_cleanup_expression(program, function, function.body, callbacks, counts)
+            let result_cleanup = new[Expr]()
+            local = 0
+            while local < length(function.result_cleanup) {
+                push(result_cleanup, resource_cleanup_expression(program, function,
+                        get(function.result_cleanup, local), callbacks, counts))
+                local = local + 1
+            }
+            set(program.functions, index, Function {
+                    is_async = function.is_async
+                    symbol = function.symbol
+                    arguments = function.arguments
+                    params = function.params
+                    result = function.result
+                    locals = function.locals
+                    preconditions = function.preconditions
+                    postconditions = function.postconditions
+                    result_cleanup = result_cleanup
+                    result_local = function.result_local
+                    body = body
+                    runtime_name = function.runtime_name
+                    span = function.span
+                })
         }
         index = index + 1
     }

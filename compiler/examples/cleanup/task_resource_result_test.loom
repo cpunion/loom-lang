@@ -1,0 +1,192 @@
+import std.task.cancel
+import std.time.sleep_ms
+import std.text.contains
+import std.result.Result
+
+async fn acquire_async(id Int, trace List[Int]) Leaf {
+    sleep_ms(0).await
+    acquire(id, trace)
+}
+
+async fn acquire_pair_async(trace List[Int], fail_dispose Bool) Pair {
+    sleep_ms(0).await
+    pair_resources(trace, false, fail_dispose)
+}
+
+test async fn task_results_transfer_to_the_receivers_scope_once() {
+    let trace List[Int] = []
+    {
+        let pending = acquire_async(1, trace)
+        sleep_ms(0).await
+        scoped value = pending.await
+        assert value.id == 1
+        sleep_ms(0).await
+        assert length(trace) == 1
+    }
+    assert length(trace) == 2 && trace[0] == 10 && trace[1] == 1
+}
+
+test async fn resource_outcomes_dispose_the_active_completed_payload() {
+    let trace List[Int] = []
+    {
+        scoped finished = outcome(acquire_async(1, trace)).await
+        assert length(trace) == 1
+    }
+    assert length(trace) == 2 && trace[1] == 1
+}
+
+async fn abandon_completed_pair(trace List[Int]) {
+    let pending = acquire_pair_async(trace, true)
+    while length(trace) < 2 {
+        sleep_ms(0).await
+    }
+    assert false
+    scoped unreachable = pending.await
+}
+
+test async fn abandoned_completed_results_drain_after_the_first_fault() {
+    let trace List[Int] = []
+    match outcome(abandon_completed_pair(trace)).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "task_resource_result_test.loom:")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 5
+    assert trace[0] == 10 && trace[1] == 20
+    assert trace[2] == 3 && trace[3] == 2 && trace[4] == 1
+}
+
+test async fn cancellation_keeps_completed_resources_and_drops_pending_results() {
+    let trace List[Int] = []
+    {
+        let pending = acquire_async(1, trace)
+        while length(trace) == 0 {
+            sleep_ms(0).await
+        }
+        scoped finished = cancel(pending)
+        assert length(trace) == 1
+    }
+    assert length(trace) == 2 && trace[1] == 1
+    {
+        scoped finished = cancel(acquire_async(2, trace))
+    }
+    assert length(trace) == 2
+}
+
+async fn acquire_tree_async(trace List[Int]) ResourceTree {
+    sleep_ms(0).await
+    resource_tree(2, 1, trace)
+}
+
+test async fn recursive_resource_results_keep_typed_drain_helpers() {
+    let trace List[Int] = []
+    {
+        scoped tree = acquire_tree_async(trace).await
+        assert leaf_count(tree) == 4 && length(trace) == 4
+    }
+    assert length(trace) == 8
+    var index = 0
+    while index < 4 {
+        assert trace[4 + index] == 4 - index
+        index = index + 1
+    }
+}
+
+concept AsyncAcquire {
+    async fn acquire(self Self, trace List[Int]) Leaf
+}
+
+impl AsyncAcquire for Int {
+    async fn acquire(self Int, trace List[Int]) Leaf {
+        acquire_async(self, trace).await
+    }
+}
+
+test async fn dynamic_and_captured_async_factories_transfer_resource_results() {
+    let trace List[Int] = []
+    {
+        let factory dyn AsyncAcquire = 1
+        scoped first = factory.acquire(trace).await
+        let captured = async fn(id Int) Leaf {
+            acquire_async(id, trace).await
+        }
+        scoped second = captured(2).await
+        assert first.id + second.id == 3
+    }
+    assert length(trace) == 4 && trace[2] == 2 && trace[3] == 1
+}
+
+async fn try_acquire_async(trace List[Int], fail Bool) Result[Leaf, Text] {
+    sleep_ms(0).await
+    if fail {
+        Result.Err("unavailable")
+    } else {
+        Result.Ok(acquire(1, trace))
+    }
+}
+
+async fn use_fallible_resource(trace List[Int], fail Bool) Result[Int, Text] {
+    scoped value = try_acquire_async(trace, fail).await?
+    Result.Ok(value.id)
+}
+
+test async fn fallible_resource_factories_preserve_postfix_propagation() {
+    let trace List[Int] = []
+    match use_fallible_resource(trace, false).await {
+        Result.Ok(value) => {
+            assert value == 1
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 2 && trace[1] == 1
+    match use_fallible_resource(trace, true).await {
+        Result.Err(message) => {
+            assert message == "unavailable"
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 2
+    {
+        scoped finished = try_acquire_async(trace, false).await
+        match finished {
+            Result.Ok(value) => {
+                assert value.id == 1
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 4 && trace[3] == 1
+}
+
+async fn failing_result_exit(trace List[Int]) Leaf {
+    defer {
+        push(trace, 4)
+        assert false
+    }
+    acquire_async(1, trace).await
+}
+
+test async fn async_resource_return_fault_cleans_before_outcome_completion() {
+    let trace List[Int] = []
+    {
+        scoped finished = outcome(failing_result_exit(trace)).await
+        match finished {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "task_resource_result_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 3 && trace[0] == 10 && trace[1] == 4 && trace[2] == 1
+}

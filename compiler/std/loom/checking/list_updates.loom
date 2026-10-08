@@ -98,6 +98,7 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
         locals = locals
         preconditions = [predicate]
         postconditions = [predicate]
+        result_cleanup = new[Expr]()
         result_local = -1
         body = expression(ExprKind.Intrinsic, 0, node,
             if writes == 1 {
@@ -210,6 +211,7 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
         locals = locals
         preconditions = predicates
         postconditions = predicates
+        result_cleanup = new[Expr]()
         result_local = -1
         body = expression(ExprKind.Call, value.ty, node, "", target, inputs, true)
         runtime_name = ""
@@ -312,6 +314,7 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
         locals = locals
         preconditions = established
         postconditions = expressions(predicate)
+        result_cleanup = new[Expr]()
         result_local = -1
         body = expression(ExprKind.Intrinsic, 0, node,
             if writes == 1 {

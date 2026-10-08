@@ -189,6 +189,7 @@ fn versioned_drafts(env Environment, current Function, originals List[Expr], can
         locals = scope.locals
         preconditions = current.preconditions
         postconditions = current.postconditions
+        result_cleanup = current.result_cleanup
         result_local = current.result_local
         body = body
         runtime_name = current.runtime_name

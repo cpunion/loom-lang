@@ -1,6 +1,14 @@
+import std.resource.Dispose
+
 pub enum Result[T, E] {
     Ok(T)
     Err(E)
+}
+
+// Scoped traversal drains only the active MustScope payload, after this hook.
+impl[T, E] Dispose for Result[T, E] {
+    fn dispose(self Result[T, E]) {
+    }
 }
 
 pub enum ConstraintError {

@@ -772,6 +772,19 @@ impl Converter<'_> {
                     return Err("checked task cleanup pop requires an Int identity".into());
                 }
             }
+            Primitive::TaskResultCleanupPush => {
+                let Type::Function(id) = arguments[0].ty else {
+                    return Err("checked task result cleanup requires a function pointer".into());
+                };
+                let signature = &self.program.function_types[id];
+                if result != Type::Unit
+                    || signature.params.len() != 1
+                    || signature.result != Type::Unit
+                {
+                    return Err("checked task result cleanup signature mismatch".into());
+                }
+                self.coroutine_frame(signature.params[0])?;
+            }
             Primitive::TaskReturn => {
                 self.task_result(arguments[0].ty)?;
                 if result != arguments[0].ty {
@@ -1569,6 +1582,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_adopt" => P::TaskAdopt,
         "task_return" => P::TaskReturn,
         "task_cleanup_push" => P::TaskCleanupPush,
+        "task_result_cleanup_push" => P::TaskResultCleanupPush,
         "task_cleanup_pop" => P::TaskCleanupPop,
         "task_await" => P::TaskAwait,
         "task_observe" => P::TaskObserve,
@@ -1666,6 +1680,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskAwait
         | P::TaskReturn
         | P::TaskCleanupPop
+        | P::TaskResultCleanupPush
         | P::TaskResult
         | P::TaskWorkerResult
         | P::TaskRelease

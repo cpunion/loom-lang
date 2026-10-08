@@ -12,6 +12,9 @@ enum Case {
     Normal,
     DuplicatePop,
     CleanupFault,
+    ExtractResult,
+    ReleaseResult,
+    ExtractResultTwice,
 }
 
 thread_local! {
@@ -138,6 +141,76 @@ fn run(constructor: Constructor, expected: Option<&[u8]>, events: &[&str]) {
 fn suspended_captures_survive_gc_and_normal_cleanup_is_lifo() {
     CASE.set(Case::Normal);
     run(construct_suspended, None, &["inner", "outer", "last"]);
+}
+
+unsafe extern "C-unwind" fn resource_producer(frame: *mut u8) -> i64 {
+    rooted([frame], |slots| unsafe {
+        let text = loom_rt_text_new(b"last".as_ptr(), 4);
+        (*(*slots).cast::<Frame>()).text = text;
+        (*(*slots).cast::<Frame>()).result = 42;
+        loom_rt_task_result_cleanup_push(last_cleanup);
+        loom_rt_task_result_cleanup_push(outer_cleanup);
+        loom_rt_task_result_cleanup_push(inner_cleanup);
+        0
+    })
+}
+
+unsafe extern "C-unwind" fn resource_consumer(frame: *mut u8) -> i64 {
+    rooted([frame], |slots| unsafe {
+        if (*(*slots).cast::<Frame>()).state == 0 {
+            let child = task(resource_producer);
+            (*(*slots).cast::<Frame>()).first = child;
+            (*(*slots).cast::<Frame>()).state = 1;
+        }
+        let child = (*(*slots).cast::<Frame>()).first;
+        if loom_rt_task_await(child) == 0 {
+            return 1;
+        }
+        loom_rt_collect();
+        match CASE.get() {
+            Case::ReleaseResult => loom_rt_task_release(child),
+            Case::ExtractResult | Case::ExtractResultTwice => {
+                assert_eq!((*loom_rt_task_result(child).cast::<Frame>()).result, 42);
+                if CASE.get() == Case::ExtractResultTwice {
+                    loom_rt_task_result(child);
+                }
+                loom_rt_task_release(child);
+                return 0;
+            }
+            _ => fault("consumer failed before extraction"),
+        }
+        unreachable!()
+    })
+}
+
+unsafe extern "C-unwind" fn construct_resource_consumer() -> u64 {
+    unsafe { task(resource_consumer) }
+}
+
+#[test]
+fn completed_resource_results_transfer_once_or_drain_all_typed_callbacks() {
+    CASE.set(Case::ExtractResult);
+    run(construct_resource_consumer, None, &[]);
+    CASE.set(Case::ExtractResultTwice);
+    run(
+        construct_resource_consumer,
+        Some(b"task result already extracted"),
+        &[],
+    );
+    CASE.set(Case::ReleaseResult);
+    run(
+        construct_resource_consumer,
+        Some(b"task release requires extracting its resource result"),
+        &["inner", "outer", "last"],
+    );
+    for case in [Case::Normal, Case::CleanupFault] {
+        CASE.set(case);
+        run(
+            construct_resource_consumer,
+            Some(b"consumer failed before extraction"),
+            &["inner", "outer", "last"],
+        );
+    }
 }
 
 unsafe extern "C-unwind" fn pending_result(frame: *mut u8) -> i64 {

@@ -52,6 +52,7 @@ fn task_list_visit(visits TaskVisits, value Expr, owner Expr, returning Bool) Ex
         locals = locals
         preconditions = new[Expr]()
         postconditions = new[Expr]()
+        result_cleanup = new[Expr]()
         result_local = -1
         body = empty(value.span)
         runtime_name = ""

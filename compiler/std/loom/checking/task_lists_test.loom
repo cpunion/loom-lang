@@ -29,7 +29,7 @@ test fn task_lists_transfer_dynamic_groups_without_copying_elements() {
     task_list_checked("async fn wrong() { let values = [item(1)]\nmatch take(values) { Option.Some(_) => {}, Option.None => {} } }", false)
     task_list_checked("async fn wrong(flag Bool) List[Task[Int]] { [item(1), { if flag { return [] }\nitem(2) }] }", false)
     task_list_checked("fn empty() List[Task[Int]] { [] }\nasync fn wrong() List[Task[Int]] { comptime { empty() } }", false)
-    resource_reject(concat(resource_header(), "fn pass(value List[Task[Handle]]) List[Task[Handle]] { value }"))
+    resource_accept(concat(resource_header(), "fn pass(value List[Task[Handle]]) List[Task[Handle]] { value }"))
     suspension_reject(concat(suspension_header(), "fn pass(value List[Task[Token]]) List[Task[Token]] { value }"), "Task results cannot contain NoSuspend values")
 }
 

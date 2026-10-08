@@ -1,4 +1,11 @@
+import std.resource.Dispose
+
 pub enum Option[T] {
     Some(T)
     None
+}
+
+impl[T] Dispose for Option[T] {
+    fn dispose(self Option[T]) {
+    }
 }

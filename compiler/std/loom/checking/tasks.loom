@@ -208,9 +208,6 @@ fn task_transfer_visit(env Environment, signature Signature, ty Int, node Node, 
             index = index + 1
         }
     }
-    if payload != ty && resource_type(env, signature.symbol, signature.requirements, payload, new[Int]())? {
-        return Result.Err(failure(env, signature.symbol, node, "Task results containing MustScope resources are not yet implemented"))
-    }
     if payload != ty && marker_type(env, signature.symbol, signature.requirements, payload,
         resource_concept(env, "NoSuspend"), new[Int]())? {
         return Result.Err(failure(env, signature.symbol, node, "Task results cannot contain NoSuspend values"))

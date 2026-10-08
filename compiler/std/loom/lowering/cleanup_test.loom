@@ -57,6 +57,42 @@ fn cleanup_program(types List[Type], function Function) Program {
     }
 }
 
+test fn completed_result_callbacks_read_only_the_typed_frame_result() {
+    let span = test_span()
+    let types = test_types()
+    let locals = new[Local]()
+    push(locals, test_local(1))
+    let cleanups = one(node(ExprKind.Discard, 0, span, -1,
+            one(node(ExprKind.Local, 1, span, 0, new[Expr]()))))
+    let source = test_function(new[Int](), 1, locals, block(one(integer(7, span)), 1, span, true))
+    let function = Function {
+        is_async = true
+        symbol = source.symbol
+        arguments = source.arguments
+        params = source.params
+        result = source.result
+        locals = source.locals
+        preconditions = source.preconditions
+        postconditions = source.postconditions
+        result_cleanup = cleanups
+        result_local = 0
+        body = source.body
+        runtime_name = ""
+        span = span
+    }
+    let lowered = lower(cleanup_program(types, function))
+    assert length(lowered.functions) == 3
+    let callback = get(lowered.functions, 1)
+    let resume = get(lowered.functions, 2)
+    assert callback.body.kind == ExprKind.Block
+    assert length(callback.locals) == 1
+    let result_reads = cleanup_nodes(callback.body, ExprKind.Field, 0)
+    assert length(result_reads) == 1
+    assert get(get(result_reads, 0).children, 0).index == 0
+    assert operations(resume.body, "task_result_cleanup_push") == 1
+    assert operations(resume.body, "task_cleanup_push") == 0
+}
+
 test fn async_cleanup_captures_are_authoritative_and_callback_locals_stay_native() {
     let span = test_span()
     let types = test_types()

@@ -221,8 +221,12 @@ Async MustScope parameters are checked borrows when their call is directly
 awaited. The caller retains the owner through completion or cancellation drain;
 the borrowing Task cannot be saved, forwarded, joined or returned. Checked
 direct calls also retain Dispose-only borrows; indirect calls require MustScope.
-NoSuspend parameters and MustScope Task results remain rejected. Async resource
-acquisition and general borrowing Tasks require further lifetime support.
+NoSuspend parameters/results remain rejected. Fresh MustScope results are owned
+by their completed Task until one-shot extraction; an unextracted result drains
+through typed frame callbacks on fault/cancellation. Extraction transfers to a
+receiver's `scoped`, including after `.await?`. Scoped/borrowed resources cannot
+be returned or transferred into a Task. Resource-bearing tuple/List joins and
+general borrowing Tasks remain unfinished.
 See the [method example](../../compiler/examples/async_methods).
 
 Named async references have type `fn(A) Task[B]`, shared with synchronous Task
@@ -318,8 +322,9 @@ waits for a running call to finish before cleanup. Open/create and normal close
 also use workers: an open result owns its File until extraction or cancellation;
 close removes its owner-local token before fallible setup. Tokens are never reused.
 Duplication and failure-cleanup close remain synchronous; a stuck native call can
-delay drain. This is not a general source-level blocking-work executor or support
-for resource-bearing Task results.
+delay drain. This is not a general source-level blocking-work executor. Source
+resource-bearing Task results use independent typed result-cleanup callbacks,
+not the native File token's special result path.
 
 `std.net.dns.resolve` uses the same pool for OS hostname resolution, including
 hosts-file entries. Native workers snapshot Text inputs and return numeric socket

@@ -69,3 +69,44 @@ test fn async_resource_borrows_require_the_exact_call_to_be_awaited() {
         }
         """, "a borrowed Task argument cannot leave its resource scope before the call")
 }
+
+test fn task_resource_results_require_fresh_producers_and_scoped_extraction() {
+    let header = concat(resource_header(), """
+        async fn acquire(log List[Int]) Handle {
+            make(log)
+        }
+        fn forward(task Task[Handle]) Task[Handle] {
+            task
+        }
+        """)
+    resource_accept(concat(header, """
+        async fn run(log List[Int]) {
+            let pending = forward(acquire(log))
+            scoped value = pending.await
+            assert value.use() == 7
+        }
+        """))
+    resource_reject(concat(header, """
+        async fn copied(value Handle) Handle {
+            value
+        }
+        """))
+    resource_reject(concat(header, """
+        async fn run(log List[Int]) {
+            let value = acquire(log).await
+            discard value
+        }
+        """))
+    resource_reject(concat(header, """
+        async fn run(log List[Int]) {
+            discard acquire(log).await
+        }
+        """))
+    resource_reject(concat(header, """
+        async fn run(log List[Int]) {
+            let pending = acquire(log)
+            scoped first = pending.await
+            scoped second = pending.await
+        }
+        """))
+}

@@ -3799,7 +3799,15 @@ including creation-site diagnostics and Task argument adoption. Synchronous dyna
 methods can forward Task parameters/results without installing an owner. See the
 [method example](examples/async_methods). MustScope receivers/parameters may be
 borrowed by directly awaited calls, without transferring ownership. NoSuspend
-parameters and MustScope Task results still reject. Resource factory overloads
+parameters still reject. Fresh MustScope results stay owned by the completed
+Task until one-shot extraction; abandoned results drain typed cleanup callbacks.
+The receiver uses `scoped`, including after `.await?` for a fallible factory.
+`Outcome`, `Result` and `Option` supply container hooks; only active MustScope
+payloads receive recursive cleanup. Scoped or borrowed resources still cannot
+be returned or transferred into another Task. Resource-bearing tuple/List joins
+remain unfinished; the existing join APIs currently cover discardable results.
+See the [native resource-result tests](examples/cleanup/task_resource_result_test.loom).
+Resource factory overloads
 of [`std.stream`](std/stream/README.md) compose scoped async pipelines from
 fallible or infallible factories. [`std.file.lines.stream`](std/file/lines/README.md)
 opens lazily and uses bounded file workers for asynchronous line reads; its

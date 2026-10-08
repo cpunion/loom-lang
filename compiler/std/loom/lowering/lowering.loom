@@ -74,6 +74,7 @@ fn generated(source Function, params List[Int], output Int, locals List[Local], 
         locals = locals
         preconditions = new[Expr]()
         postconditions = new[Expr]()
+        result_cleanup = new[Expr]()
         result_local = -1
         body = body
         runtime_name = ""
@@ -91,6 +92,7 @@ fn function_body(source Function, body Expr) Function {
         locals = source.locals
         preconditions = source.preconditions
         postconditions = source.postconditions
+        result_cleanup = source.result_cleanup
         result_local = source.result_local
         body = body
         runtime_name = source.runtime_name
@@ -213,8 +215,9 @@ fn async_function(program Program, callbacks List[Int], visits TaskVisits, id In
             variants = new[Variant]()
             constraint = new[Expr]()
         })
+    let result_callbacks = result_cleanup_callbacks(program, source, frame)
     let resume_body = if length(cleanups) == 0 {
-        emitted(graph, spills, live)
+        emitted(graph, spills, live, result_callbacks)
     } else {
         let saved = clone(spills)
         index = 0
@@ -243,7 +246,7 @@ fn async_function(program Program, callbacks List[Int], visits TaskVisits, id In
             callbacks = callbacks
         }
         cleanup_callbacks(program, source, rewrite)
-        cleanup_rewrite(rewrite, emitted(graph, saved, live))
+        cleanup_rewrite(rewrite, emitted(graph, saved, live, result_callbacks))
     }
     let resume = length(program.functions)
     push(program.functions, generated(source, ints(frame), 1, graph.locals, resume_body))
@@ -295,8 +298,8 @@ fn async_function(program Program, callbacks List[Int], visits TaskVisits, id In
             let parameter = get(source.params, index)
             if task_present(program.types, visits.cache, parameter) {
                 push(body, task_visit(visits, constructor_locals,
-                    node(ExprKind.Local, parameter, source.span, index, new[Expr]()),
-                    node(ExprKind.Local, task, source.span, owner, new[Expr]()), false))
+                        node(ExprKind.Local, parameter, source.span, index, new[Expr]()),
+                        node(ExprKind.Local, task, source.span, owner, new[Expr]()), false))
             }
             index = index + 1
         }
@@ -315,6 +318,7 @@ fn async_function(program Program, callbacks List[Int], visits TaskVisits, id In
         locals = constructor_locals
         preconditions = new[Expr]()
         postconditions = new[Expr]()
+        result_cleanup = new[Expr]()
         result_local = -1
         body = block(body, task, source.span, true)
         runtime_name = ""
@@ -407,7 +411,11 @@ pub fn lower(original Program) Program {
         witnesses = source.witnesses
     }
     let callbacks = new[Int]()
-    let visits = TaskVisits { program = program cache = new[Int]() helpers = new[TaskVisitor]() }
+    let visits = TaskVisits {
+        program = program
+        cache = new[Int]()
+        helpers = new[TaskVisitor]()
+    }
     index = 0
     while index < length(source.functions) {
         let function = get(source.functions, index)

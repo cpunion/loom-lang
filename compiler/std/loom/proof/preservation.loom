@@ -165,6 +165,7 @@ fn preserving_call(proof Verification, call Expr, function Function, state State
                 locals = locals
                 preconditions = preconditions
                 postconditions = new[Expr]()
+                result_cleanup = new[Expr]()
                 result_local = -1
                 body = preservation_at(function.body, boundary, 256)?
                 runtime_name = ""

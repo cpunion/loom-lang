@@ -128,7 +128,13 @@ fn close_function(context Context, function Function) Function {
     index = 0
     while index < length(function.postconditions) { push(postconditions, close_expression(scope, get(function.postconditions, index), captured))
         index = index + 1 }
+    let result_cleanup = new[Expr]()
+    index = 0
+    while index < length(function.result_cleanup) {
+        push(result_cleanup, close_expression(scope, get(function.result_cleanup, index), captured))
+        index = index + 1
+    }
     Function { is_async = function.is_async symbol = function.symbol arguments = function.arguments params = params result = function.result
-        locals = locals preconditions = preconditions postconditions = postconditions result_local = closure_local(scope, function.result_local, captured)
+        locals = locals preconditions = preconditions postconditions = postconditions result_cleanup = result_cleanup result_local = closure_local(scope, function.result_local, captured)
         body = close_expression(scope, function.body, captured) runtime_name = function.runtime_name span = function.span }
 }

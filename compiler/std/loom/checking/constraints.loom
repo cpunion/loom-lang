@@ -431,6 +431,7 @@ fn proven_record(context Context, node Node, base Int, value Expr, predicate Exp
         locals = locals
         preconditions = new[Expr]()
         postconditions = expressions(predicate)
+        result_cleanup = new[Expr]()
         result_local = 0
         body = value
         runtime_name = ""

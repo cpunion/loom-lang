@@ -660,6 +660,7 @@ fn expanded_contracts(program Program, function Function, observations List[Int]
             locals = function.locals
             preconditions = preconditions
             postconditions = postconditions
+            result_cleanup = function.result_cleanup
             result_local = function.result_local
             body = function.body
             runtime_name = function.runtime_name

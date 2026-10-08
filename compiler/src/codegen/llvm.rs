@@ -829,7 +829,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskCleanupPush
             | Primitive::CleanupEach
             | Primitive::TaskWaitWorker => Some(1),
-            Primitive::TaskRun => Some(0),
+            Primitive::TaskRun | Primitive::TaskResultCleanupPush => Some(0),
             _ => None,
         };
         if let Some(index) = callback {
@@ -867,6 +867,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskReturn
             | Primitive::TaskCleanupPush
             | Primitive::TaskCleanupPop
+            | Primitive::TaskResultCleanupPush
             | Primitive::TaskAwait
             | Primitive::TaskObserve
             | Primitive::TaskWaitNext

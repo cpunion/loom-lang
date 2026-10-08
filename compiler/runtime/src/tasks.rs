@@ -86,6 +86,7 @@ struct Task {
     // the count afterward to reject a second extraction without another set.
     returned: usize,
     returned_to_parent: bool,
+    result_extracted: bool,
     cleanups: Vec<TaskCleanup>,
     waiter: Option<u64>,
     observation: Option<Box<Observation>>,
@@ -311,7 +312,7 @@ impl Owner {
                 if children_done
                     && task.external.is_none()
                     && task.operation.is_none()
-                    && task.cleanups.is_empty() =>
+                    && task.cleanups.iter().all(|cleanup| cleanup.site == -1) =>
             {
                 Ok(())
             }
@@ -702,6 +703,22 @@ pub(super) extern "C-unwind" fn loom_rt_task_cleanup_push(site: i64, callback: C
     });
 }
 
+// A completed Task owns its typed result until extraction. These callbacks use
+// the same rooted frame and fault-tolerant drain as lexical cleanup, but survive
+// successful completion. The runtime never inspects the result's type/layout.
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_result_cleanup_push(callback: CleanupCallback) {
+    edit(|_, core| {
+        let id = core.current.ok_or("task result cleanup outside a resume")?;
+        let task = core.tasks.get_mut(&id).unwrap();
+        if !matches!(task.state, State::Running) {
+            return Err("invalid task result cleanup registration");
+        }
+        task.cleanups.push(TaskCleanup { site: -1, callback });
+        Ok(())
+    });
+}
+
 // Normal lexical exit pops before a generated direct call to callback(frame).
 // Only fault/cancellation dispatches callbacks indirectly through this stack.
 #[unsafe(no_mangle)]
@@ -709,7 +726,7 @@ pub(super) extern "C-unwind" fn loom_rt_task_cleanup_pop(site: i64) {
     edit(|_, core| {
         let id = core.current.ok_or("task cleanup outside a resume")?;
         let task = core.tasks.get_mut(&id).unwrap();
-        if !matches!(task.state, State::Running) {
+        if site < 0 || !matches!(task.state, State::Running) {
             return Err("invalid task cleanup registration order");
         }
         // Pending return resources remain registered while older lexical
@@ -822,6 +839,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
                 children: BTreeSet::new(),
                 returned: 0,
                 returned_to_parent: false,
+                result_extracted: false,
                 cleanups: Vec::new(),
                 waiter: None,
                 observation: None,
@@ -883,6 +901,9 @@ pub(super) extern "C-unwind" fn loom_rt_task_result(child: u64) -> *mut u8 {
         }
         match &task.state {
             State::Completed(_) => {
+                if task.result_extracted {
+                    return Err("task result already extracted");
+                }
                 let frame = task.frame;
                 if task.returned != 0 {
                     if task.children.len() != task.returned {
@@ -899,6 +920,9 @@ pub(super) extern "C-unwind" fn loom_rt_task_result(child: u64) -> *mut u8 {
                         reparent(core, returned, child, parent);
                     }
                 }
+                let task = core.tasks.get_mut(&child).unwrap();
+                task.result_extracted = true;
+                task.cleanups.clear();
                 Ok(Ok(owner.roots().get(frame).expect("rooted task result")))
             }
             State::Faulted(failure, _) => Ok(Err(OwnedFault {
@@ -925,6 +949,9 @@ pub(super) extern "C-unwind" fn loom_rt_task_release(child: u64) {
         }
         if !task.children.is_empty() {
             return Err("task release requires extracting its Task result");
+        }
+        if !task.cleanups.is_empty() {
+            return Err("task release requires extracting its resource result");
         }
         let task = core.tasks.remove(&child).unwrap();
         core.tasks.get_mut(&parent).unwrap().children.remove(&child);

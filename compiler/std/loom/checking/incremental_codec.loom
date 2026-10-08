@@ -344,6 +344,7 @@ fn cache_function(output Bytes, value Function) Result[Bool, Text] {
     }
     discard cache_expressions(output, value.preconditions, 0)?
     discard cache_expressions(output, value.postconditions, 0)?
+    discard cache_expressions(output, value.result_cleanup, 0)?
     cache_int(output, value.result_local)
     discard cache_expression(output, value.body, 0)?
     cache_text(output, value.runtime_name)
@@ -371,6 +372,7 @@ fn cache_read_function(reader CacheReader) Result[Function, Text] {
     }
     let preconditions = cache_read_expressions(reader, 0)?
     let postconditions = cache_read_expressions(reader, 0)?
+    let result_cleanup = cache_read_expressions(reader, 0)?
     let result_local = cache_read_int(reader)?
     let body = cache_read_expression(reader, 0)?
     let runtime_name = cache_read_text(reader)?
@@ -384,6 +386,7 @@ fn cache_read_function(reader CacheReader) Result[Function, Text] {
             locals = locals
             preconditions = preconditions
             postconditions = postconditions
+            result_cleanup = result_cleanup
             result_local = result_local
             body = body
             runtime_name = runtime_name

@@ -58,7 +58,7 @@ test fn loop_control_cannot_escape_evaluation_or_called_functions() {
     assert rejected(empty(), looped(transfer(ExprKind.Break), grouped(new[Expr]())), 0).message == escaped
     let program = empty()
     push(program.functions, Function {
-        is_async = false
+            is_async = false
             symbol = 0
             arguments = new[Int]()
             params = new[Int]()
@@ -66,6 +66,7 @@ test fn loop_control_cannot_escape_evaluation_or_called_functions() {
             locals = new[Local]()
             preconditions = new[Expr]()
             postconditions = new[Expr]()
+            result_cleanup = new[Expr]()
             result_local = -1
             body = transfer(ExprKind.Break)
             runtime_name = ""
