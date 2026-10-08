@@ -1,0 +1,311 @@
+import std.list.clone
+
+fn package_fixture(label Text, directory Text, files List[File]) PackageRevision {
+    let identities = new[Identity]()
+    var index = 0
+    while index < length(files) {
+        let file = get(files, index)
+        let tree = package_tree(file.text)
+        var declaration = 0
+        while declaration < length(tree.children) {
+            let node = get(tree.children, declaration)
+            if node.kind != NodeKind.Import {
+                let key = match declaration_key(node) {
+                    Result.Ok(value) => value
+                    Result.Err(_) => {
+                        assert false
+                        ""
+                    }
+                }
+                push(identities, Identity {
+                        id = concat(label, concat(":", concat(node.value, key)))
+                        path = file.path
+                        kind = node.kind
+                        name = node.value
+                        key = key
+                    })
+            }
+            declaration = declaration + 1
+        }
+        index = index + 1
+    }
+    PackageRevision {
+        directory = directory
+        revision = Revision {
+            package_name = label
+            files = files
+            identities = identities
+        }
+    }
+}
+
+fn batch_fixture(lib_moved Bool, lib_edited Bool, app_moved Bool, app_edited Bool) List[PackageRevision] {
+    let library = if lib_edited {
+        "pub fn amount() Int { 2 }\n"
+    } else {
+        "pub fn amount() Int { 1 }\n"
+    }
+    let app = if app_edited {
+        "pub fn entry() Int { assert false\namount() + 10 }\n"
+    } else {
+        "pub fn entry() Int { assert false\namount() }\n"
+    }
+    [package_fixture("sample.lib", "/module/lib", [File {
+                    path = "value.loom"
+                    text = if lib_moved {
+                        ""
+                    } else {
+                        library
+                    }
+                }, File {
+                    path = "moved.loom"
+                    text = if lib_moved {
+                        library
+                    } else {
+                        ""
+                    }
+                }, File {
+                    path = "value_test.loom"
+                    text = "test fn positive() { assert amount() > 0 }\n"
+                }]),
+        package_fixture("sample.app", "/module/app", [File {
+                    path = "main.loom"
+                    text = concat("import sample.lib.amount\n", if app_moved {
+                            ""
+                        } else {
+                            app
+                        })
+                }, File {
+                    path = "entry.loom"
+                    text = if app_moved {
+                        app
+                    } else {
+                        ""
+                    }
+                }, File {
+                    path = "main_test.loom"
+                    text = "test fn available() { assert entry() >= 1 }\n"
+                }])]
+}
+
+fn batch_context(base List[PackageRevision], tests Bool) Project {
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(base) {
+        let selected = get(base, index)
+        var source = 0
+        while source < length(selected.revision.files) {
+            let file = get(selected.revision.files, source)
+            let testing = ends_with(file.path, "_test.loom")
+            if tests || !testing {
+                push(files, SourceFile {
+                        package = index
+                        path = join_path(selected.directory, file.path)
+                        text = file.text
+                        tree = package_tree(file.text)
+                        test_only = testing
+                        trusted_std = false
+                    })
+            }
+            source = source + 1
+        }
+        index = index + 1
+    }
+    let pinned = "import sample.lib.amount\npub fn read() Int { amount() }\n"
+    push(files, SourceFile {
+            package = 2
+            path = "/module/reader/main.loom"
+            text = pinned
+            tree = package_tree(pinned)
+            test_only = false
+            trusted_std = false
+        })
+    Project {
+        files = files
+        modules = [ModuleInstance {
+                name = "sample"
+                source = "/module"
+            }]
+        packages = [Package {
+                instance = 0
+                relative = "lib"
+                imports = new[PackageImport]()
+            }, Package {
+                instance = 0
+                relative = "app"
+                imports = [PackageImport {
+                        spelling = "sample.lib"
+                        target = 0
+                    }]
+            }, Package {
+                instance = 0
+                relative = "reader"
+                imports = [PackageImport {
+                        spelling = "sample.lib"
+                        target = 0
+                    }]
+            }]
+        root = 1
+    }
+}
+
+test fn package_batch_combines_opposite_moves_and_edits_against_one_program_basis() {
+    let base = batch_fixture(false, false, false, false)
+    let left = batch_fixture(true, false, false, true)
+    let right = batch_fixture(false, true, true, false)
+    let production = batch_context(base, false)
+    let tests = batch_context(base, true)
+    var order = 0
+    while order < 2 {
+        let branches = [left, right]
+        let merged = match merge_packages(base, get(branches, order), get(branches, 1 - order), production, tests) {
+            Result.Ok(value) => value
+            Result.Err(failed) => {
+                discard write_error(failed)
+                assert false
+                base
+            }
+        }
+        assert get(get(merged, 0).revision.files, 0).text == ""
+        assert contains(get(get(merged, 0).revision.files, 1).text, "{ 2 }")
+        assert get(get(merged, 1).revision.files, 0).text == "import sample.lib.amount\n"
+        assert contains(get(get(merged, 1).revision.files, 1).text, "amount() + 10")
+        order = order + 1
+    }
+}
+
+test fn package_batch_checks_every_packages_private_tests_and_exact_baseline() {
+    let base = batch_fixture(false, false, false, false)
+    let left = batch_fixture(true, false, false, false)
+    let right = batch_fixture(false, true, false, false)
+    let production = batch_context(base, false)
+    let tests = batch_context(base, true)
+    let bad_files = std.list.clone(get(right, 0).revision.files)
+    set(bad_files, 2, File {
+            path = "value_test.loom"
+            text = "test fn positive() { assert amount() == true }\n"
+        })
+    let invalid = std.list.clone(right)
+    set(invalid, 0, package_fixture("sample.lib", "/module/lib", bad_files))
+    assert match merge_packages(base, left, invalid, production, tests) {
+        Result.Err(message) => contains(message, "package merge requires checked source:")
+        Result.Ok(_) => false
+    }
+    assert match merge_packages(right, left, right, production, tests) {
+        Result.Err(message) => contains(message, "exact baseline")
+        Result.Ok(_) => false
+    }
+    assert match merge_packages(base, [get(left, 1), get(left, 0)], right, production, tests) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
+test fn package_batch_keeps_contract_conflicts_and_identities_across_package_boundaries() {
+    let base = batch_fixture(false, false, false, false)
+    let left = std.list.clone(base)
+    let files = std.list.clone(get(base, 0).revision.files)
+    set(files, 0, File {
+            path = "value.loom"
+            text = "pub fn amount() Int ensures result > 0 { 1 }\n"
+        })
+    set(left, 0, package_fixture("sample.lib", "/module/lib", files))
+    let right = batch_fixture(false, false, false, true)
+    let production = batch_context(base, false)
+    let tests = batch_context(base, true)
+    assert match merge_packages(base, left, right, production, tests) {
+        Result.Err(message) => contains(message, "contract or deletion versus edit")
+        Result.Ok(_) => false
+    }
+    let repeated = std.list.clone(base)
+    let app = get(repeated, 1)
+    let identity = get(app.revision.identities, 0)
+    let identities = std.list.clone(app.revision.identities)
+    set(identities, 0, Identity {
+            id = get(get(base, 0).revision.identities, 0).id
+            ..identity
+        })
+    set(repeated, 1, PackageRevision {
+            revision = Revision {
+                identities = identities
+                ..app.revision
+            }
+            ..app
+        })
+    assert match merge_packages(base, repeated, base, production, tests) {
+        Result.Err(message) => contains(message, "identity appears in two packages")
+        Result.Ok(_) => false
+    }
+}
+
+fn package_tree(source Text) Node {
+    match parse(source) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            discard write_error(failed.message)
+            assert false
+            package_tree("")
+        }
+    }
+}
+
+test fn package_batch_detects_rebinding_in_an_unedited_consumer() {
+    let base = batch_fixture(false, false, false, false)
+    let files = std.list.clone(get(base, 0).revision.files)
+    set(files, 0, File {
+            path = "value.loom"
+            text = """
+                pub fn amount() Int { 1 }
+                pub fn input() Int { 1 }
+                pub fn pick(value Int) Int { 2 }
+                pub fn pick(value Bool) Int { 3 }
+                """
+        })
+    set(base, 0, package_fixture("sample.lib", "/module/lib", files))
+    let changed_files = std.list.clone(files)
+    set(changed_files, 0, File {
+            path = "value.loom"
+            text = """
+                pub fn amount() Int { 1 }
+                pub fn input() Bool { true }
+                pub fn pick(value Int) Int { 2 }
+                pub fn pick(value Bool) Int { 3 }
+                """
+        })
+    let changed = package_fixture("sample.lib", "/module/lib", changed_files)
+    let left = std.list.clone(base)
+    set(left, 0, changed)
+    let contexts = [batch_context(base, false), batch_context(base, true)]
+    var index = 0
+    while index < length(contexts) {
+        let context = get(contexts, index)
+        var file = 0
+        while file < length(context.files) {
+            let source = get(context.files, file)
+            if source.package == 2 {
+                let text = "import sample.lib.pick\nimport sample.lib.input\npub fn read() Int { pick(input()) }\n"
+                set(context.files, file, SourceFile {
+                        text = text
+                        tree = package_tree(text)
+                        ..source
+                    })
+            }
+            file = file + 1
+        }
+        index = index + 1
+    }
+    assert match merge_packages(base, left, base, get(contexts, 0), get(contexts, 1)) {
+        Result.Err(message) => {
+            if !contains(message, "retained checked reference binding") {
+                discard write_error(message)
+                false
+            } else {
+                true
+            }
+        }
+        Result.Ok(_) => {
+            discard write_error("unexpectedly accepted an unedited consumer's rebound call")
+            false
+        }
+    }
+}
