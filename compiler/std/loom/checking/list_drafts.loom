@@ -45,11 +45,27 @@ fn draft_raw_use(value Expr, frame InvariantFrame, depth Int) Bool {
     false
 }
 
+fn draft_place(value Expr, depth Int) Bool {
+    depth < 64 && (value.kind == ExprKind.Local ||
+        (value.kind == ExprKind.Field && length(value.children) == 1 &&
+            draft_place(get(value.children, 0), depth + 1)))
+}
+
+fn same_draft_place(left Expr, right Expr, depth Int) Bool {
+    if depth >= 64 || left.kind != right.kind || left.index != right.index {
+        return false
+    }
+    if left.kind == ExprKind.Local {
+        return true
+    }
+    left.kind == ExprKind.Field && length(left.children) == 1 && length(right.children) == 1 &&
+    same_draft_place(get(left.children, 0), get(right.children, 0), depth + 1)
+}
+
 fn same_draft_construction(left Expr, right Expr) Bool {
     left.kind == right.kind && left.ty == right.ty && left.text == right.text &&
     left.span.start == right.span.start && left.span.end == right.span.end &&
-    draft_input(left).kind == ExprKind.Local && draft_input(right).kind == ExprKind.Local &&
-    draft_input(left).index == draft_input(right).index
+    same_draft_place(draft_input(left), draft_input(right), 0)
 }
 
 // A matching source range alone is not an occurrence identity: generated code
@@ -88,7 +104,7 @@ fn draft_candidates(env Environment, value Expr, candidates List[Expr], depth In
     if depth >= 256 {
         return
     }
-    if draft_construction(env, value) && draft_input(value).kind == ExprKind.Local {
+    if draft_construction(env, value) && draft_place(draft_input(value), 0) {
         push(candidates, value)
     }
     if value.kind == ExprKind.Block && value.text == "checked list" {

@@ -16,6 +16,10 @@ test fn persistent_constraints_preserve_unobserved_shared_data() {
     assert comptime {
         draft_reader_scope()
     }
+    assert structural_draft_scope()
+    assert comptime {
+        structural_draft_scope()
+    }
     assert comptime {
         list_constraint_scope()
     }

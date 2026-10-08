@@ -1,0 +1,34 @@
+record DraftBuilder[T] {
+    payload (T, List[Int])
+    notes List[Text]
+}
+
+fn publish_builder[T](tag T, notes List[Text]) Result[PositiveValues, ConstraintError] {
+    let builder = DraftBuilder {
+        payload = (tag, [1, 2])
+        notes = notes
+    }
+    let copied = builder
+    let draft = copied.payload.1
+    push(draft, 3)
+    let published = PositiveValues(copied.payload.1)
+    push(builder.notes, "published")
+    assert values_sum(builder.payload.1) == 6
+    match published {
+        Result.Ok(values) => replace_positive(values, 0, PositiveElement(4))
+        Result.Err(_) => {
+        }
+    }
+    assert values_sum(draft) == 9
+    published
+}
+
+fn structural_draft_scope() Bool {
+    let notes = ["building"]
+    let published = publish_builder(true, notes)
+    assert length(notes) == 2 && notes[1] == "published"
+    match published {
+        Result.Ok(values) => values_sum(values) == 9
+        Result.Err(_) => false
+    }
+}

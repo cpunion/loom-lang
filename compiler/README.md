@@ -2177,15 +2177,19 @@ After construction, raw aliases and known captures may perform checked
 non-publishing reads, including from `defer` and `scoped` cleanup. They cannot
 mutate or export the protected storage. Local copies retain their origins;
 returning a raw handle, including an implicit aggregate return, rejects.
-The analysis follows immutable local copies back to fresh storage and the
+The analysis follows immutable local copies and record/tuple field projections
+back to fresh storage. A builder may hold the fresh header directly in a nested
+inline field; unrelated shared siblings retain their own permissions. The
 construction's checked execution path through blocks, branches, matches and
-eager expressions. Alternatives are not treated as later executions, and a
-return ends its path. Unrelated awaits do not expose a private builder. Pending
+eager expressions is analyzed separately. Alternatives are not treated as later
+executions, and a return ends its path. Unrelated awaits do not expose a private builder. Pending
 arguments/initializers still cannot transport raw aliases across publication.
 Active lexical cleanup must satisfy the same read-only, non-publishing rules,
 including fault-only exits. Loop-local publication,
 mutable binding origins and unsupported draft operations remain conservative.
 Unknown predicates keep the ordinary `Result` boundary.
+The [structural builder example](examples/record_refinement/structural_drafts.loom)
+uses a generic record with a tuple field and an independently writable notes List.
 `PositiveValues(existing_list)` still rejects when the input can have external
 writable aliases or unsafe later raw uses. No automatic copy, ownership syntax or
 runtime monitor is installed. Copies of a constrained value keep sharing its storage.
