@@ -270,7 +270,9 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
                     })
                 index = index + 1
             }
-            let types = pack_proof_tree(env, owner, declaration, child(node, 0), erased, elements, count, depth + 1)?
+            // Keep symbolic type words until the forwarding matcher can bind
+            // them jointly with the actual arguments. They are not values.
+            let types = child(node, 0)
             return Result.Ok(pack_node(node, NodeKind.Call, concat("$packcall#", node.value),
                     [types, pack_node(arguments, NodeKind.Arguments, "", values)]))
         }

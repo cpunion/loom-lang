@@ -14,6 +14,11 @@ test fn type_values_flow_through_pure_functions_and_select_concrete_types() {
             let T = comptime { select(true, Int, Bool) }
             let value T = 42
             assert identity[T](value) == 42
+            assert comptime {
+                let Selected = List[Bool]
+                let values Selected = [true]
+                values[0]
+            }
         }
         """)
 }

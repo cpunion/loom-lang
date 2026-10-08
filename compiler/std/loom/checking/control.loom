@@ -87,7 +87,9 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
             -1
         }
         let value = expr(context, child(node, length(node.children) - 1), annotation)?
-        if context.env.stage_depth == 0 && kind == NodeKind.Let && value.kind == ExprKind.TypeValue {
+        // A known type identity is a lexical alias at every checking stage.
+        // Unknown/type-producing computations still retain their ordinary IR.
+        if kind == NodeKind.Let && value.kind == ExprKind.TypeValue {
             return bind_meta(context, node, value, boundary)
         }
         discard resource_binding(context, node, value)?

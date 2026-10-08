@@ -954,15 +954,19 @@ packs and corresponding elementwise constructors retain their ordered schemas;
 equal widths alone do not establish equal types. An unknown source word is not
 split or sampled, and ambiguous or exhausted matches reject. Fixed type bindings
 reuse header resolution, unaffected by same-spelled body locals or another
-package's nominal declarations. Bounds must follow from a bare source pack's
+package's nominal declarations. Explicit type arguments participate in this same
+joint match, for example `counted[Ts...](values...)`. Selected immutable type
+aliases and structural types use ordinary type-value normalization; explicit
+arguments cannot contradict the input shapes or split an unknown source word.
+Bounds must follow from a bare source pack's
 declared requirements; mixed captured sequences can forward only to unconstrained
 packs. The
 [forwarding example](examples/variadics/forwarding.loom) covers independent groups,
 CTFE, callbacks, inherited dyn methods and shared List effects. The
 [structural forwarding example](examples/variadics/structural_forwarding.loom)
-adds fixed fields, jointly inferred groups, nested constructors, nominal inputs
-and generic/default method scopes. Overloaded/indirect/async callees, explicit
-type arguments, freshly assembled sequences, unresolved associated callee
+adds fixed fields, jointly inferred groups, explicit type words and selected aliases,
+nested constructors, nominal inputs and generic/default method scopes.
+Overloaded/indirect/async callees, freshly assembled sequences, unresolved associated callee
 patterns and fixed types with unknown expanded layouts remain unsupported in
 family proofs.
 Normal selected calls retain their existing checks and static expansion.
