@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Allow checked scoped-resource borrows through directly awaited async calls;
+  reject escaping borrowing Tasks and keep NoSuspend/Task-result restrictions.
+  Add source Stream factory pipelines with ordinary nested cleanup, cancellation
+  drain and a real file-line trial. No ownership syntax or runtime bridge added.
+
 - Remove shared-access guards for proven invocation-local storage, retaining
   moving-GC roots and cancellation checkpoints. Preserve private List facts and
   prove fresh-result contracts in worker builds; publication and loop backedges

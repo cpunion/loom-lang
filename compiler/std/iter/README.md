@@ -65,5 +65,5 @@ is checked before the factory runs. Successful wrappers retain MustScope for
 further factory composition, while ordinary non-resource adapters stay ordinary.
 See the [file pipeline](../../examples/file_pipeline/README.md).
 [`std.stream`](../stream/README.md) supplies the separate async pull protocol and
-TCP byte sources. Borrow-retaining adapters and owned async resource pipelines
-remain unsupported.
+TCP byte sources, including scoped factory pipelines. General borrow-retaining
+adapters remain unsupported.

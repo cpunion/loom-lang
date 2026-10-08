@@ -693,8 +693,8 @@ timings; local variables remain conservatively rooted for the function.
   The [line-counting example](examples/file_lines/README.md) does not retain the
   whole file. Factory overloads of map/filter/take compose new scoped resources;
   the [file pipeline](examples/file_pipeline/README.md) stops at a selected prefix.
-  Borrow-retaining iterator adapters and owned asynchronous resource pipelines
-  remain open.
+  [`std.stream`](std/stream/README.md) adds scoped factory pipelines with directly
+  awaited resource borrows. General borrow-retaining adapters remain open.
 - Source `std.io.read_bytes()` reads stdin to EOF; `write_bytes(Bytes)` writes
   stdout, and `write_error(Bytes)` writes stderr. These preserve arbitrary bytes,
   report byte counts/errors, and never close standard streams. `read_text()` still
@@ -3458,9 +3458,11 @@ from each factory call. Construction preallocates the outer List; if a factory
 fails, already-created elements still close. Scope exit cleans elements in reverse
 order, continuing through nested cleanup faults. Read-only calls and indexing
 borrow the scoped container; they cannot copy, return, capture, re-scope, mutate,
-or manually dispose resource elements. Synchronous MustScope parameters are
-checked borrows, including indirect calls; callers must scope fresh arguments
-first. No borrowing syntax is required. See the
+or manually dispose resource elements. MustScope parameters are checked borrows,
+including indirect calls; callers must scope fresh arguments first. Async borrows
+require a directly awaited call, so the owner outlives its child Tasks and their
+cleanup. The borrowing Task cannot be saved, forwarded or returned. No borrowing
+syntax is required. See the
 [List cleanup tests](examples/cleanup/resource_list_test.loom).
 Recursive record/enum layouts through Lists also clean up through finite typed
 helpers. Recursive factories retain the fresh-return requirement; read-only
@@ -3671,8 +3673,12 @@ bodies, associated results and type/comptime method parameters. The implementati
 async modifier must match its concept. Witnesses invoke the same typed constructors,
 including creation-site diagnostics and Task argument adoption. Synchronous dynamic
 methods can forward Task parameters/results without installing an owner. See the
-[method example](examples/async_methods). Async parameters cannot contain MustScope
-or NoSuspend values, and scoped receivers cannot escape into child Tasks.
+[method example](examples/async_methods). MustScope receivers/parameters may be
+borrowed by directly awaited calls, without transferring ownership. NoSuspend
+parameters and MustScope Task results still reject. Resource factory overloads
+of [`std.stream`](std/stream/README.md) compose scoped async pipelines; their
+pending pulls drain before lexical disposal. General borrowing Tasks that outlive
+their call expression remain unsupported.
 Named async functions can also be passed as ordinary function values:
 
 ```loom

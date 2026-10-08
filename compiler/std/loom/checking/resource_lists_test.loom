@@ -38,8 +38,13 @@ test fn resource_list_arguments_borrow_but_cannot_transfer_or_mutate() {
             values[0].dispose()
         }
         """))
-    resource_reject(concat(resource_header(), """
-        async fn escape(values List[Handle]) {
+    resource_accept(concat(resource_header(), """
+        async fn inspect(values List[Handle]) Int {
+            values[0].use()
+        }
+        async fn run() {
+            scoped values = [make([0])]
+            assert inspect(values).await == 7
         }
         """))
 }

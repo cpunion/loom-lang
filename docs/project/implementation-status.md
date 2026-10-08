@@ -652,8 +652,14 @@ the async writer awaits each sink with checked full-chunk counts. JSON errors,
 sink errors and cancellation preserve partial-output and caller-managed resource
 semantics. Open containers retain fixed-shape views, not deep snapshots.
 Typed streaming encoding uses specialized source callbacks without a complete
-intermediate Value tree or runtime schema registry. Document sequences, borrow-retaining adapters,
-owned async resource pipelines and application-grade
+intermediate Value tree or runtime schema registry. Source Stream resource
+factories now compose owned `from_iter`/map/filter/take pipelines with a final
+scoped owner. Directly awaited borrows keep that owner alive while child Tasks
+drain on cancellation and faults; saving or forwarding a borrowing Task rejects.
+The [file pipeline](../../compiler/examples/stream_lines/README.md) covers real
+input, early termination and errors at O0/O2 under moving GC. Lifting synchronous
+file lines does not provide nonblocking file I/O. Document sequences, general
+borrow-retaining adapters, async resource acquisition and application-grade
 networking remain open.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;
@@ -685,7 +691,9 @@ language faults, suspension and cancellation. MustScope freshness/escape checks
 and typed cleanup cover nested records/enums/Lists and recursive resource trees.
 Cleanup drains after secondary faults while retaining the first diagnostic;
 OOM/external termination offer no guarantee. Scoped resources cannot transfer
-into Tasks. See [cleanup](../../compiler/README.md#lexical-cleanup).
+into Tasks, but directly awaited calls may borrow them until all child cleanup
+finishes. NoSuspend guards retain their stronger suspension restriction.
+See [cleanup](../../compiler/README.md#lexical-cleanup).
 
 Source `std.sync.mutex` provides shared mutex identities and lexical
 `MustScope`/`NoSuspend` guards. Normal exit, returns and faults release the lock;

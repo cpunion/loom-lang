@@ -1,0 +1,71 @@
+test fn async_resource_borrows_require_the_exact_call_to_be_awaited() {
+    let header = concat(resource_header(), """
+        async fn read(value Handle) Int {
+            value.use()
+        }
+        async fn invoke[T MustScope](value T, callback fn(T) Task[Int]) Int {
+            callback(value).await
+        }
+        """)
+    resource_accept(concat(header, """
+        async fn run() {
+            scoped value = make([0])
+            assert read(value).await == 7
+            assert invoke(value, read).await == 7
+        }
+        """))
+    resource_reject_reason(concat(header, """
+        async fn run() {
+            scoped value = make([0])
+            let pending = read(value)
+            assert pending.await == 7
+        }
+        """), "a Task borrowing a scoped resource must be awaited directly")
+    resource_reject_reason(concat(header, """
+        async fn run() {
+            assert {
+                scoped value = make([0])
+                read(value)
+            }.await == 7
+        }
+        """), "a Task borrowing a scoped resource must be awaited directly")
+    resource_reject_reason(concat(header, """
+        fn forward(value Handle) Task[Int] {
+            read(value)
+        }
+        """), "a Task borrowing a scoped resource must be awaited directly")
+    resource_reject(concat(header, """
+        async fn run() {
+            assert read(make([0])).await == 7
+        }
+        """))
+    resource_reject(concat(header, """
+        async fn steal(value Handle) Handle {
+            value
+        }
+        """))
+    resource_reject(concat(header, """
+        async fn dispose_borrow(value Handle) {
+            value.dispose()
+        }
+        """))
+    resource_reject_reason("""
+        import std.resource.Dispose
+        record Guard {
+            id Int
+        }
+        impl Dispose for Guard {
+            fn dispose(self Guard) {
+            }
+        }
+        async fn read(value Guard) Int {
+            value.id
+        }
+        async fn run() {
+            assert read({
+                scoped value = Guard { id = 7 }
+                value
+            }).await == 7
+        }
+        """, "a borrowed Task argument cannot leave its resource scope before the call")
+}

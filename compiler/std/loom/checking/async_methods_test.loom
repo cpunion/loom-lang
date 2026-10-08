@@ -43,9 +43,8 @@ test fn async_method_effects_and_task_obligations_cannot_be_erased() {
 test fn async_method_receivers_keep_resource_and_no_suspend_boundaries() {
     suspension_reject(concat(suspension_header(), "concept C { async fn read(self Self) Int }\nimpl C for Token { async fn read(self Token) Int { self.id } }"),
         "async parameters cannot contain NoSuspend values")
-    suspension_reject(concat(resource_header(), "concept C { async fn read(self Self) Int }\nimpl C for Handle { async fn read(self Handle) Int { 7 } }"),
-        "async parameters cannot contain MustScope resources")
-    resource_reject("import std.resource.Dispose\nconcept C { async fn read(self Self) Int }\nrecord Guard {}\nimpl Dispose for Guard { fn dispose(self Guard) {} }\nimpl C for Guard { async fn read(self Guard) Int { 7 } }\nasync fn main() { scoped guard = Guard {}\ndiscard guard.read().await }")
+    resource_accept(concat(resource_header(), "concept C { async fn read(self Self) Int }\nimpl C for Handle { async fn read(self Handle) Int { 7 } }\nasync fn main() { scoped value = make([0])\nassert value.read().await == 7 }"))
+    resource_accept("import std.resource.Dispose\nconcept C { async fn read(self Self) Int }\nrecord Guard {}\nimpl Dispose for Guard { fn dispose(self Guard) {} }\nimpl C for Guard { async fn read(self Guard) Int { 7 } }\nasync fn main() { scoped guard = Guard {}\ndiscard guard.read().await }")
     let files = source_files("import std.resource.Dispose\nfn main() {}")
     push(files, source_file("std.resource", "pub concept Dispose { async fn dispose(self Self) }", true))
     assert match checked(files) {

@@ -1,0 +1,75 @@
+import std.stream.FromIterator
+import std.stream.Filtered
+import std.stream.from_iter
+import std.stream.filter
+import std.stream.take
+import std.stream.try_fold
+import std.file.lines.Lines
+import std.file.lines.read
+import std.file.FileError
+import std.result.Result
+import std.list.new
+import std.list.push
+import std.list.length
+import std.io.write_text
+import std.io.write_error
+import std.process.arguments
+import std.process.exit_code
+import std.text.concat
+import std.time.sleep_ms
+
+fn open_lines(path Text) Result[FromIterator[Lines], FileError] {
+    from_iter(read, path)
+}
+
+async fn nonempty(line Result[Text, FileError]) Bool {
+    sleep_ms(1).await
+    match line {
+        Result.Ok(text) => text != ""
+        Result.Err(_) => true
+    }
+}
+
+fn selected_lines(path Text) Result[Filtered[FromIterator[Lines]], FileError] {
+    filter(open_lines, path, nonempty)
+}
+
+async fn append_line(values List[Text], line Result[Text, FileError]) Result[List[Text], FileError] {
+    push(values, line?)
+    sleep_ms(1).await
+    Result.Ok(values)
+}
+
+async fn first_lines(path Text) Result[List[Text], FileError] {
+    scoped source = take(selected_lines, path, 2)?
+    try_fold(source, new[Text](), append_line).await
+}
+
+async fn main() {
+    let args = arguments()
+    if length(args) != 2 {
+        discard write_error("usage: stream_lines FILE\n")
+        exit_code(2)
+        return
+    }
+    match first_lines(args[1]).await {
+        Result.Ok(lines) => {
+            var index = 0
+            while index < length(lines) {
+                match write_text(concat(lines[index], "\n")) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(_) => {
+                        exit_code(1)
+                        return
+                    }
+                }
+                index = index + 1
+            }
+        }
+        Result.Err(_) => {
+            discard write_error("cannot read UTF-8 lines\n")
+            exit_code(1)
+        }
+    }
+}
