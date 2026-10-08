@@ -988,8 +988,8 @@ value-path targets prevent silent nominal or intermediate-field binding drift.
 Applying creates a new tree. The source library also checks fixed-package batches
 against one pinned production/test basis, including private tests in each package
 and unchanged module consumers whose overload bindings could drift. Module
-directory preview/apply uses the ordinary multi-root loader and preserves unchanged
-configuration and binary assets through reviewed staged publication. Module Git
+directory preview/apply uses the ordinary multi-root loader, pins configuration
+and merges independent asset changes by exact bytes through reviewed staged publication. Module Git
 input, batch renames, package/import-graph changes, arbitrary edits and automatic
 identity tracking are not implemented.
 

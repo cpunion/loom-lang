@@ -157,12 +157,6 @@ fn frame_assets(bytes Bytes, assets List[Asset]) {
     }
 }
 
-fn asset_stamp(assets List[Asset]) Text {
-    let bytes = std.bytes.new()
-    frame_assets(bytes, assets)
-    hex(bytes)
-}
-
 fn module_stamp(snapshot ModuleSnapshot) Text {
     let bytes = std.bytes.new()
     frame(bytes, snapshot.directory)
@@ -249,9 +243,7 @@ fn module_package(snapshot ModuleSnapshot, relative Text) Result[Loaded, Text] {
 }
 
 fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot, context Context) Result[ModuleReview, Text] {
-    if asset_stamp(base.assets) != asset_stamp(left.assets) || asset_stamp(base.assets) != asset_stamp(right.assets) {
-        return Result.Err("module manifest, lock or non-source assets changed; explicit resolution required")
-    }
+    let assets = merge_assets(base.assets, left.assets, right.assets)?
     let merged = merge_packages(module_revisions(base, context.directory),
         module_revisions(left, context.directory), module_revisions(right, context.directory),
         context.production, context.tests)?
@@ -263,6 +255,7 @@ fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
     frame(bytes, module_stamp(left))
     frame(bytes, module_stamp(right))
     frame(bytes, context.stamp)
+    frame_assets(bytes, assets)
     var index = 0
     while index < length(merged) {
         let package = get(base.packages, index)
@@ -284,7 +277,7 @@ fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
     Result.Ok(ModuleReview {
             packages = packages
             relative = relative
-            assets = base.assets
+            assets = assets
             token = hex(bytes)
         })
 }
@@ -305,7 +298,7 @@ fn show_module(value ModuleReview) Text {
     index = 0
     while index < length(value.assets) {
         let asset = get(value.assets, index)
-        output = concat(output, concat("preserved asset ", concat(asset.relative, concat(" sha256 ", concat(hex(asset.bytes), "\n")))))
+        output = concat(output, concat("asset ", concat(asset.relative, concat(" sha256 ", concat(hex(asset.bytes), "\n")))))
         index = index + 1
     }
     output
