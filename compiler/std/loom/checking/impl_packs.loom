@@ -186,6 +186,10 @@ fn type_pattern_schema(env Environment, owner Int, node Node, element Bool, dept
     if node.kind != NodeKind.Type {
         return Result.Err(failure(env, owner, node, "expected an implementation target type pattern"))
     }
+    if identities && std.text.starts_with(node.value, "$type#") {
+        let ty = resolve_bound(header_environment(env), owner, node, new[Int](), new[Requirement](), 0)?
+        return Result.Ok(impl_type_schema(env, ty, node, true))
+    }
     let constructor = if node.value == "List" || node.value == "Task" {
         if length(children) != 1 || child(node, 0).kind == NodeKind.Spread {
             return Result.Err(failure(env, owner, node, "List and Task require one element type"))
@@ -288,17 +292,17 @@ fn implementation_overlap(env Environment, first Implementation, second Implemen
     let a = if first.state < 0 {
         impl_target_schema(env, first.symbol, child(symbol(env, first.symbol).node, 1), false, 0)?
     } else {
-        impl_type_schema(env, first.ty, symbol(env, first.symbol).node)
+        impl_type_schema(env, first.ty, symbol(env, first.symbol).node, false)
     }
     let b = if second.state < 0 {
         impl_target_schema(env, second.symbol, child(symbol(env, second.symbol).node, 1), false, 0)?
     } else {
-        impl_type_schema(env, second.ty, symbol(env, second.symbol).node)
+        impl_type_schema(env, second.ty, symbol(env, second.symbol).node, false)
     }
     Result.Ok(impl_schemas_overlap(a, b))
 }
 
-fn impl_type_schema(env Environment, ty Int, node Node) Node {
+fn impl_type_schema(env Environment, ty Int, node Node, identities Bool) Node {
     let shape = get(env.types, ty)
     let children = new[Node]()
     if length(shape.pack_widths) > 1 {
@@ -312,14 +316,14 @@ fn impl_type_schema(env Environment, ty Int, node Node) Node {
                 let elements = new[Node]()
                 var element = 0
                 while element < width {
-                    push(elements, impl_type_schema(env, get(shape.arguments, offset + element), node))
+                    push(elements, impl_type_schema(env, get(shape.arguments, offset + element), node, identities))
                     element = element + 1
                 }
                 push(children, pack_node(node, NodeKind.TupleType, "tuple", elements))
                 offset = offset + width
                 pack = pack + 1
             } else {
-                push(children, impl_type_schema(env, get(shape.arguments, offset), node))
+                push(children, impl_type_schema(env, get(shape.arguments, offset), node, identities))
                 offset = offset + 1
             }
             parameter = parameter + 1
@@ -328,11 +332,15 @@ fn impl_type_schema(env Environment, ty Int, node Node) Node {
     }
     var index = 0
     while index < length(shape.arguments) {
-        push(children, impl_type_schema(env, get(shape.arguments, index), node))
+        push(children, impl_type_schema(env, get(shape.arguments, index), node, identities))
         index = index + 1
     }
     if shape.kind == TypeKind.Parameter {
-        return pack_node(node, NodeKind.Type, "$parameter", children)
+        return pack_node(node, NodeKind.Type, if identities {
+                std.int.to_text(ty)
+            } else {
+                "$parameter"
+            }, children)
     }
     if shape.kind == TypeKind.Tuple {
         return pack_node(node, NodeKind.TupleType, "tuple", children)
@@ -357,7 +365,7 @@ fn impl_type_schema(env Environment, ty Int, node Node) Node {
 
 fn impl_pack_shape(env Environment, owner Int, node Node, ty Int) Result[List[Int], Failure] {
     let schema = impl_target_schema(env, owner, node, false, 0)?
-    if !impl_schemas_overlap(schema, impl_type_schema(env, ty, node)) {
+    if !impl_schemas_overlap(schema, impl_type_schema(env, ty, node, false)) {
         return Result.Ok(new[Int]())
     }
     let names = pack_names(declared_packs(symbol(env, owner).node))

@@ -58,8 +58,8 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
     let callee = symbol(context.env, target)
     let declaration = callee.node
     if callee.owner >= 0 || declaration.kind != NodeKind.Function || pack_parameter(declaration) < 0 ||
-    !has(declaration, NodeKind.Ensures) || has(declaration, NodeKind.Async) || length(child(node, 0).children) != 0 {
-        return Result.Err(error(context, node, "variadic forwarding proof needs a synchronous family with declared postconditions and inferred type arguments"))
+    !has(declaration, NodeKind.Ensures) || has(declaration, NodeKind.Async) {
+        return Result.Err(error(context, node, "variadic forwarding proof needs a synchronous family with declared postconditions"))
     }
     let parameters = group(declaration, NodeKind.Parameters)
     let inputs = child(node, 1).children
@@ -68,6 +68,7 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
     }
     let sources = group(caller.node, NodeKind.Parameters)
     let work = new[PackForwardShape]()
+    let types = pack_forward_explicit(context, node, caller.node, target, work)?
     let values = new[Node]()
     var index = 0
     while index < length(parameters) {
@@ -94,5 +95,6 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
     }
     let bindings = pack_forward_shapes(context, caller.node, declaration, work)?
     let signature = erased_pack_signature(context.env, target)?
-    pack_forward_invoke(context, node, caller.node, declaration, bindings, signature, values, expected)
+    let call = pack_node(node, node.kind, node.value, [types, child(node, 1)])
+    pack_forward_invoke(context, call, caller.node, declaration, bindings, signature, values, expected)
 }

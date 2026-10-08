@@ -10,7 +10,7 @@ ensures result >= 2 {
 
 fn framed_forward[Us...](values (Int, Us..., Bool)) Int
 ensures result >= 2 {
-    framed_callee(values)
+    framed_callee[Us...](values)
 }
 
 fn framed_extra[Us...](values (Int, Text, Us..., Bool)) Int
@@ -30,7 +30,7 @@ ensures result >= 1 {
 
 fn repeat_forward[Us...](values (Us..., Int, Us...)) Int
 ensures result >= 1 {
-    repeat_callee(values)
+    repeat_callee[Us...](values)
 }
 
 fn joined_callee[As..., Bs...](first (As...), second (Bs...), both (As..., Bs...)) Int
@@ -45,7 +45,7 @@ ensures result >= 0 {
 
 fn joined_forward[Us..., Vs...](first (Us...), second (Vs...), both (Us..., Vs...)) Int
 ensures result >= 0 {
-    joined_callee(first, second, both)
+    joined_callee[Us..., Vs...](first, second, both)
 }
 
 fn tagged_callee[T, Ts...](values (T, Ts..., Bool)) Int
@@ -62,13 +62,32 @@ fn tagged_forward[U, Us...](values (U, Us..., Bool)) Int
 ensures result >= 2 {
     let U = true
     discard U
-    tagged_callee(values)
+    tagged_callee[U, Us...](values)
+}
+
+fn alias_forward[Us...](values (List[Bool], Us..., Bool)) Int
+ensures result >= 2 {
+    let Selected = List[Bool]
+    tagged_callee[Selected, Us...](values)
+}
+
+fn selected_callee[T, Ts...](value Int, values (Ts...)) Int
+ensures result == value {
+    value
+}
+
+fn selected_forward[Us...](value Int, values (Us...)) Int
+ensures result == value {
+    let Selected = comptime {
+        std.meta.tuple([Bool, Int])
+    }
+    selected_callee[Selected, Us...](value, values)
 }
 
 concept FrameForward {
     fn forward_frame[Ts...](self Self, values (Self, Ts..., Bool)) Int
     ensures result >= 2 {
-        tagged_callee(values)
+        tagged_callee[Self, Ts...](values)
     }
 }
 
@@ -81,7 +100,7 @@ record ForwardOwner[T] {
 
 impl[T] FrameForward for ForwardOwner[T] {
     fn forward_frame[Us...](self ForwardOwner[T], values (ForwardOwner[T], Us..., Bool)) Int {
-        tagged_callee(values)
+        tagged_callee[ForwardOwner[T], Us...](values)
     }
 }
 
@@ -97,7 +116,7 @@ ensures result >= 2 {
 
 fn mapped_forward[Us...](values (Int, List[Us]..., Bool)) Int
 ensures result >= 2 {
-    mapped_callee(values)
+    mapped_callee[Us...](values)
 }
 
 record ForwardGroup[Ts...] {
@@ -111,7 +130,7 @@ ensures result == 42 {
 
 fn nominal_forward[Us...](values ForwardGroup[Us...]) Int
 ensures result == 42 {
-    nominal_callee(values)
+    nominal_callee[Us...](values)
 }
 
 fn exercise_structural_forwarding() {
@@ -124,6 +143,11 @@ fn exercise_structural_forwarding() {
     assert joined_forward((1,), (true, "text"), (1, true, "text")) == 3
     assert tagged_forward(("tag", true)) == 2
     assert tagged_forward((1, "middle", false)) == 3
+    assert alias_forward(([true], "selected", false)) == 3
+    assert selected_forward(42, (true, "selected")) == 42
+    assert comptime {
+        selected_forward(42, (true, "compiled"))
+    } == 42
     assert true.forward_frame((false, "default", true)) == 3
     let owner = ForwardOwner {
         value = 42
@@ -147,3 +171,5 @@ fn exercise_structural_forwarding() {
     shared[0] = 4
     assert shared[0] == 4
 }
+
+import std.meta.tuple

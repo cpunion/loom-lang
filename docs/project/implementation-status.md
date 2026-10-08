@@ -256,12 +256,15 @@ repeated/independent groups and corresponding elementwise constructors retain
 their source schema. Ambiguity, exhausted search and splitting unknown words
 reject, without enumerating expansion widths. Fixed inputs and effects use
 ordinary call rules; type bindings resolve in the header scope.
+Explicit type words join the same input-shape match, including fixed parameters,
+independent packs and selected immutable type aliases. Structural type identities
+retain their ordinary constructors; no expansion widths or element types are sampled.
 The [forwarding example](../../compiler/examples/variadics/forwarding.loom) covers
 declared bounds, independent groups, CTFE, callbacks and inherited dyn methods.
 The [structural forwarding example](../../compiler/examples/variadics/structural_forwarding.loom)
 covers fixed fields, nested constructors, nominal inputs and generic/default
 method scopes. Mixed captured sequences cannot supply element requirements.
-Overloaded/indirect/async callees, explicit type arguments, newly assembled
+Overloaded/indirect/async callees, newly assembled
 sequences, unresolved associated callee patterns and unknown fixed layouts
 still reject in family proofs.
 Type-dependent induction, opaque element escape, pack-dependent results and

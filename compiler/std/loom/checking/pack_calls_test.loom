@@ -1,5 +1,108 @@
 import std.text.find
 
+test fn explicit_pack_types_join_input_shapes_and_selected_type_values() {
+    discard accepted("""
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn tuple_count[Ts...](values (Ts...)) Int
+        ensures result >= 0 {
+            count[Ts...](values...)
+        }
+        fn tagged[T, Ts...](values (T, Ts..., Bool)) Int
+        ensures result >= 2 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn forward[U, Us...](values (U, Us..., Bool)) Int
+        ensures result >= 2 {
+            let U = true
+            discard U
+            tagged[U, Us...](values)
+        }
+        fn alias_forward[Us...](values (List[Bool], Us..., Bool)) Int
+        ensures result >= 2 {
+            let Choice = List[Bool]
+            tagged[Choice, Us...](values)
+        }
+        fn split[As..., Bs...](first (As...), second (Bs...), values (As..., Bs...)) Int
+        ensures result >= 0 {
+            tuple_count(values)
+        }
+        fn joined[Us..., Vs...](first (Us...), second (Vs...), both (Us..., Vs...)) Int
+        ensures result >= 0 {
+            split[Us..., Vs...](first, second, both) + count[Vs...](second...) + tuple_count[Us...](first)
+        }
+        fn keep[T, Ts...](value Int, values (Ts...)) Int
+        ensures result == value {
+            value
+        }
+        fn selected[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            let Choice = List[Bool]
+            let direct = keep[List[Bool], Us...](value, values)
+            let tuple = keep[(Bool, Int), Us...](direct, values)
+            keep[Choice, Us...](tuple, values)
+        }
+        fn main() {
+            assert tuple_count(pack()) == 0
+            assert tuple_count((true, "text")) == 2
+            assert forward((42, "middle", true)) == 3
+            assert alias_forward(([true], "middle", false)) == 3
+            assert joined(pack(), pack(), pack()) == 0
+            assert joined((1,), (true,), (1, true)) == 4
+            assert selected(42, (true, "context")) == 42
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        """)
+}
+
+test fn explicit_pack_proofs_reject_changed_type_words_and_false_summaries() {
+    rejects("""
+        fn keep[Ts...](values (Ts...)) Int
+        ensures result >= 0 {
+            0
+        }
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            keep[Int, Us...](values)
+        }
+        """)
+    rejects("""
+        fn keep[T, Ts...](values (T, Ts..., Bool)) Int
+        ensures result >= 2 {
+            2
+        }
+        fn wrong[Us...](values (Int, Us..., Bool)) Int
+        ensures result >= 2 {
+            let Choice = Bool
+            keep[Choice, Us...](values)
+        }
+        """)
+    rejects("""
+        fn keep[Ts...](values (Ts...)) Int
+        ensures result > 0 {
+            0
+        }
+        fn wrong[Us...](values (Us...)) Int
+        ensures result > 0 {
+            keep[Us...](values)
+        }
+        """)
+}
+
 test fn pack_forwarding_composes_universal_summaries_without_concrete_callers() {
     discard accepted("""
         fn count[Ts...](values Ts...) Int
@@ -95,7 +198,7 @@ test fn pack_forwarding_resolves_the_defining_packages_private_helpers() {
         }
         fn forward[Us...](value Int, values (Us...)) Int
         ensures result == value {
-            keep(value, values...)
+            keep[Us...](value, values...)
         }
         fn main() {
             assert forward(42, (true, "context")) == 42
@@ -216,7 +319,7 @@ test fn pack_forwarding_cache_replay_rechecks_edited_family_guarantees() {
         }
         pub fn forward[Us...](value Int, values (Us...)) Int
         ensures result == value {
-            keep(value, values...)
+            keep[Us...](value, values...)
         }
         pub fn answer() Int {
             forward(42, (true, "context"))
@@ -233,6 +336,14 @@ test fn pack_forwarding_cache_replay_rechecks_edited_family_guarantees() {
         Result.Err(_) => false
     }
     assert bodies_reused(restored) >= 1
+    let call = "keep[Us...]"
+    let call_offset = std.text.find(source, call)
+    assert call_offset >= 0
+    let wrong_types = concat(slice(source, 0, call_offset), concat("keep[Int, Us...]", slice(source, call_offset + length(call), length(source))))
+    assert match cached_source(restored_definition_cache(initial), wrong_types) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
     let clause = "ensures result == value"
     let offset = std.text.find(source, clause)
     assert offset >= 0
