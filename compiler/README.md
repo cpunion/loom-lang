@@ -2780,7 +2780,11 @@ See the [relational contract example](examples/relational_contracts).
 prove normal-return contracts through inferred invariants, without new annotations.
 The prover freshens scalar leaves and List handles of written locals, then
 proposes per-path entry/range bounds, List length bounds and weakened relational
-guards. Rebinding a List preserves no handle identity. If a loop can both rebind
+guards. Written Int guard cursors also propose entry-difference relations with
+other written Int locals, after existing storage/quantifier proposals and within
+the same candidate budget. These mathematical relations can connect separately
+updated counters and symbolic offsets; source arithmetic still needs its own
+definedness proof. Rebinding a List preserves no handle identity. If a loop can both rebind
 handles and resize storage, all tracked extents are freshened before induction;
 its initial binding cannot identify every later resize target. Whole-value
 reconstruction does not retain stale sibling fields. Other unsupported leaves

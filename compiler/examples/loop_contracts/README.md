@@ -13,6 +13,14 @@ weakened continuation bounds, then retains only predicates established on entry
 and preserved by every symbolic backedge. Removing one candidate triggers a
 recheck of the others. Zero-iteration exits are checked separately.
 
+Written Int cursors also propose entry-difference relations with other written
+Int locals, within the same candidate budget. The
+[difference example](differences.loom) proves separately updated counters,
+symbolic offsets, helper/cleanup updates and minimum sizes of structural packs.
+These are mathematical candidates, not assumptions that two updates match;
+conditional writes, early returns and every `continue` remain checked. Source
+contract arithmetic still requires its own definedness proof.
+
 The current subset includes Int/Bool local assignments, branches, early returns
 and nested loops. `break` preserves the state at its exit; `continue` must
 preserve the invariant at its backedge. Both target the nearest loop, including
