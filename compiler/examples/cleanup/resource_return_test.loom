@@ -34,8 +34,8 @@ async fn return_resource_fault(trace List[Int], early Bool) {
 async fn check_return_resource_fault(early Bool) {
     let trace List[Int] = []
     match outcome(return_resource_fault(trace, early)).await {
-        Outcome.Faulted(message) => {
-            assert contains(message, "assert !fail")
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
         }
         _ => {
             assert false
@@ -65,8 +65,9 @@ async fn return_pair_fault(trace List[Int]) {
 test async fn failed_return_drains_all_members_and_keeps_the_first_fault() {
     let trace List[Int] = []
     match outcome(return_pair_fault(trace)).await {
-        Outcome.Faulted(message) => {
-            assert contains(message, "assert !fail")
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+            assert !contains(error.message, "resource_test.loom:")
         }
         _ => {
             assert false
@@ -95,8 +96,8 @@ async fn check_block_resource_cleanup(fail Bool) {
         Outcome.Completed(_) => {
             assert !fail
         }
-        Outcome.Faulted(message) => {
-            assert fail && contains(message, "assert !fail")
+        Outcome.Faulted(error) => {
+            assert fail && contains(error.message, "assertion failed")
         }
         _ => {
             assert false
