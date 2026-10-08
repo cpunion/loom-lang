@@ -21,9 +21,9 @@ fn incremental_json_parses_fragmented_input_with_real_io_and_moving_gc() {
     }
     let example = "compiler/examples/json_stream";
     for mode in ["check", "test", "run"] {
-        success(&common::run_task_command(&mut common::command(&[
-            mode, example,
-        ])));
+        // Compiler/linker time is not Task drain time. Emitted O0/O2 programs
+        // below retain the bounded run_tasks check.
+        success(&common::loom(&[mode, example]));
     }
     for level in ["0", "2"] {
         success(
