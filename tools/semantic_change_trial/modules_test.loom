@@ -18,6 +18,7 @@ fn module_fixture(directory Text) Result[Text, Text] {
     discard create_dir(path(directory, "app"))
     discard create_dir(path(directory, "lib"))
     discard create_dir(path(directory, "checks"))
+    discard create_dir(path(directory, "checks/nested"))
     discard std.file.write_text(path(directory, "app/main.loom"), """
         import sample.lib.amount
 
@@ -40,7 +41,7 @@ fn module_fixture(directory Text) Result[Text, Text] {
         }
         """)
     discard std.file.write_text(path(directory, "lib/value_test.loom"), "test fn private_secret() { assert secret() == 7 }\n")
-    discard std.file.write_text(path(directory, "checks/check_test.loom"), "test fn standalone() { assert true }\n")
+    discard std.file.write_text(path(directory, "checks/nested/check_test.loom"), "test fn standalone() { assert true }\n")
     let data = std.bytes.new()
     std.bytes.push(data, 0)
     std.bytes.push(data, 255)
@@ -49,7 +50,7 @@ fn module_fixture(directory Text) Result[Text, Text] {
     discard initialize("sample", directory)?
     discard initialize("sample.app", path(directory, "app"))?
     discard initialize("sample.lib", path(directory, "lib"))?
-    discard initialize("sample.checks", path(directory, "checks"))?
+    discard initialize("sample.checks.nested", path(directory, "checks/nested"))?
     Result.Ok("module fixture created")
 }
 
@@ -165,7 +166,7 @@ fn module_lifecycle(staging Text) Result[Text, Text] {
     let preview = preview_module("compiler/std", base, left, right)?
     assert contains(preview, concat("review token: ", reviewed.token))
     assert contains(preview, "=== lib/moved.loom ===")
-    assert contains(preview, "=== checks/.loom-ids ===")
+    assert contains(preview, "=== checks/nested/.loom-ids ===")
     assert contains(preview, "preserved asset data.bin sha256 ")
     let output = path(staging, "output")
     discard apply_module(reviewed.token, output, "compiler/std", base, left, right)?

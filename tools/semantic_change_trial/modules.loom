@@ -1,6 +1,7 @@
 import semantic_change.PackageRevision
 import semantic_change.merge_packages
 import std.loom.project.load_packages
+import std.loom.project.package_label
 import std.file.read_bytes
 import std.file.write_bytes
 import std.fs.rename
@@ -196,7 +197,16 @@ fn module_context(base ModuleSnapshot, standard Text) Result[Context, Text] {
     while index < length(tests.packages) {
         let package = get(tests.packages, index)
         if package.instance == test_owner {
-            discard module_package(base, package.relative)?
+            let label = package_label(tests.modules, tests.packages, index)
+            var selected = false
+            var source = 0
+            while source < length(base.packages) {
+                selected = selected || get(base.packages, source).loaded.revision.package_name == label
+                source = source + 1
+            }
+            if !selected {
+                return Result.Err("module import reaches a package excluded from the snapshot")
+            }
         }
         index = index + 1
     }
