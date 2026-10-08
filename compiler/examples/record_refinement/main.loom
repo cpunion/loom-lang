@@ -61,6 +61,7 @@ fn prepared() ActiveCount {
 fn main() {
     assert literal_constraint_scope()
     assert list_constraint_scope()
+    assert draft_constraint_scope()
     assert invariant_callback_scope()
     assert shared_invariant_scope()
     assert invariant_effect_scope()

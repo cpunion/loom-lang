@@ -359,6 +359,15 @@ type graph cannot contain the protected outer header; recursive backreferences,
 opaque captures and unresolved types remain conservative. Cyclic invariant construction rejects
 before recursive expansion exhausts the compiler stack.
 
+Fresh local List drafts can now be populated through finite non-publishing
+helpers, aliases and loops before a top-level checked publication boundary.
+Existing origin analysis validates publication effects; raw aliases and captures
+must have no later use, including cleanup. The built header is retained without
+copying or a runtime monitor, and unknown predicates still return checked Results.
+The [draft example](../../compiler/examples/record_refinement/drafts.loom) covers
+CTFE, shared constrained updates and suspension. Conditional/loop-local publication,
+mutable binding origins and general nested graph publication remain open.
+
 Every declared `ensures` requires a static proof. The CLI submits remaining
 supported obligations to a compile-time Z3 process after the fast rules fail.
 One query combines a function's unresolved return paths. Bool, mathematical

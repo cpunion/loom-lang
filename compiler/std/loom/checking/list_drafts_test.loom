@@ -1,0 +1,133 @@
+test fn unpublished_local_drafts_reuse_fresh_headers_after_building() {
+    list_constraint_accept(concat(list_constraint_source(), """
+        fn fill(values List[Int], count Int) List[Int] {
+            var index = 0
+            while index < count {
+                push(values, index + 1)
+                index = index + 1
+            }
+            values
+        }
+        pub fn build(count Int) Result[Positive, ConstraintError] {
+            let draft List[Int] = []
+            let alias = fill(draft, count)
+            let observe = fn() Int {
+                length(alias)
+            }
+            assert observe() >= 0
+            Positive(draft)
+        }
+        pub fn copied(values List[Int]) Result[Positive, ConstraintError] {
+            let draft = clone(values)
+            let envelope = (draft, true)
+            envelope.0[0] = 4
+            let published = Positive(draft)
+            published
+        }
+        """))
+}
+
+test fn draft_publication_rejects_surviving_raw_aliases_and_captures() {
+    let header = list_constraint_source()
+    let setup = concat("""
+        pub fn invalid() Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let alias = draft
+            let callback = fn() Int {
+                length(alias)
+            }
+            let published = Positive(draft)
+        """, "\n")
+    list_constraint_reject(concat(header, concat(setup, """
+            push(draft, -1)
+            published
+        }
+        """)))
+    list_constraint_reject(concat(header, concat(setup, """
+            alias[0] = -1
+            published
+        }
+        """)))
+    list_constraint_reject(concat(header, concat(setup, """
+            discard callback()
+            published
+        }
+        """)))
+    list_constraint_reject(concat(header, """
+        pub fn invalid() Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            defer {
+                draft[0] = -1
+            }
+            let published = Positive(draft)
+            published
+        }
+        """))
+}
+
+test fn draft_freshness_does_not_hide_external_publication_or_input_aliases() {
+    let header = list_constraint_source()
+    list_constraint_reject(concat(header, """
+        pub fn invalid(input List[Int]) Result[Positive, ConstraintError] {
+            let draft = input
+            Positive(draft)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn publish(output List[List[Int]], values List[Int]) {
+            push(output, values)
+        }
+        pub fn invalid(output List[List[Int]]) Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            publish(output, draft)
+            Positive(draft)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(flag Bool) Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            var alias List[Int] = []
+            if flag {
+                alias = draft
+            }
+            let published = Positive(draft)
+            alias[0] = -1
+            published
+        }
+        """))
+}
+
+test fn restored_draft_checks_revalidate_helper_publication_effects() {
+    let source = concat(list_constraint_source(), """
+        fn fill(output List[List[Int]], values List[Int]) {
+            push(values, 3)
+        }
+        pub fn build(output List[List[Int]]) Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            fill(output, draft)
+            Positive(draft)
+        }
+        """)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(list_constraint_files(concat(source, "\nfn unrelated() {}\n"))),
+        false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(source, "push(values, 3)"), "push(output, values)")
+    assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

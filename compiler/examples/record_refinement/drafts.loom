@@ -1,0 +1,59 @@
+// Raw builder aliases stop at publication. The checked boundary retains the
+// exact built header; only constrained handles can be used afterwards.
+fn fill_draft(values List[Int], count Int) List[Int] {
+    var index = 0
+    while index < count {
+        push(values, index + 1)
+        index = index + 1
+    }
+    values
+}
+
+fn build_positive(count Int, events List[Int]) Result[PositiveValues, ConstraintError] {
+    let draft List[Int] = []
+    let alias = fill_draft(draft, count)
+    let inspect = fn() Int {
+        length(alias)
+    }
+    push(events, inspect())
+    let published = PositiveValues(draft)
+    published
+}
+
+fn draft_constraint_scope() Bool {
+    let events List[Int] = []
+    assert match build_positive(3, events) {
+        Result.Ok(values) => {
+            assert length(values) == 3 && values_sum(values) == 6
+            let alias = values
+            replace_positive(values, 0, PositiveElement(4))
+            alias[0] == 4 && values_sum(alias) == 9
+        }
+        Result.Err(_) => false
+    }
+    assert match build_positive(0, events) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    length(events) == 2 && events[0] == 3 && events[1] == 0
+}
+
+async fn publish_then_suspend() PositiveValues {
+    let events List[Int] = []
+    let published = match build_positive(2, events) {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            assert false
+            return PositiveValues([1])
+        }
+    }
+    let child = retain_positive_values(published)
+    let alias = published
+    replace_positive(alias, 0, PositiveElement(5))
+    child.await
+}
+
+test async fn published_drafts_keep_their_constraints_across_suspension() {
+    let values = publish_then_suspend().await
+    assert values[0] == 5 && values_sum(values) == 7
+}

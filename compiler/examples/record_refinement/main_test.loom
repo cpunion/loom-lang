@@ -4,6 +4,10 @@ test fn persistent_constraints_preserve_unobserved_shared_data() {
         literal_constraint_scope()
     }
     assert list_constraint_scope()
+    assert draft_constraint_scope()
+    assert comptime {
+        draft_constraint_scope()
+    }
     assert comptime {
         list_constraint_scope()
     }

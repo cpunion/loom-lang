@@ -1,0 +1,173 @@
+// Publishing a local draft transfers no runtime value and installs no monitor.
+// Its outer header must be fresh, unpublished, and no longer reachable through
+// a source-level raw use after the construction boundary. Existing origin and
+// call-footprint analysis accounts for aliases, captures, branches and loops.
+fn draft_construction(env Environment, value Expr) Bool {
+    (value.kind == ExprKind.Block && value.text == "checked list") ||
+    (value.kind == ExprKind.Coerce && constrained_list(env, value.ty) &&
+        !constraint_restored(env, value))
+}
+
+fn draft_input(value Expr) Expr {
+    if value.kind == ExprKind.Block {
+        get(get(value.children, 0).children, 0)
+    } else {
+        get(value.children, 0)
+    }
+}
+
+fn draft_statement(value Expr) Expr {
+    var current = value
+    var depth = 0
+    while depth < 32 && (current.kind == ExprKind.Let || current.kind == ExprKind.Return) &&
+    length(current.children) == 1 {
+        current = get(current.children, 0)
+        depth = depth + 1
+    }
+    current
+}
+
+fn draft_raw_use(value Expr, frame InvariantFrame, depth Int) Bool {
+    if depth >= 256 {
+        return true
+    }
+    if value.kind == ExprKind.Local && origin_shared(get(frame.locals, value.index)) {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if draft_raw_use(get(value.children, index), frame, depth + 1) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if draft_raw_use(get(body, item), frame, depth + 1) {
+                return true
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn unpublished_draft(env Environment, functions List[Function], current Function,
+    statements List[Expr], boundary Int, local Int) Bool {
+    if local < length(current.params) || local >= length(current.locals) ||
+    get(current.locals, local).mutable {
+        return false
+    }
+    var definition = -1
+    var index = 0
+    while index < boundary {
+        let statement = get(statements, index)
+        if statement.kind == ExprKind.Let && statement.index == local &&
+        length(statement.children) == 1 && constraint_fresh(env, functions, get(statement.children, 0)) {
+            definition = index
+        }
+        index = index + 1
+    }
+    if definition < 0 {
+        return false
+    }
+    let frame = invariant_frame(length(current.locals), new[InputOrigin]())
+    invariant_bind(frame, local, origin_input())
+    let reads = invariant_reads(env, functions, current.body, true, 2, -1)
+    var more = true
+    var rounds = 0
+    while more && get(reads.valid, 0) && rounds < 256 {
+        set(frame.changed, 0, false)
+        index = definition + 1
+        while index < boundary && get(reads.valid, 0) {
+            discard invariant_origin(reads, frame, get(statements, index), 0)
+            index = index + 1
+        }
+        more = get(frame.changed, 0)
+        rounds = rounds + 1
+    }
+    if more || !get(reads.valid, 0) || origin_shared(get(frame.returned, 0)) {
+        return false
+    }
+    index = boundary + 1
+    while index < length(statements) {
+        if draft_raw_use(get(statements, index), frame, 0) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn same_draft_construction(left Expr, right Expr) Bool {
+    left.kind == right.kind && left.ty == right.ty && left.text == right.text &&
+    left.span.start == right.span.start && left.span.end == right.span.end &&
+    draft_input(left).kind == ExprKind.Local && draft_input(right).kind == ExprKind.Local &&
+    draft_input(left).index == draft_input(right).index
+}
+
+// A matching source range alone is not an occurrence identity: generated code
+// may reuse ranges. Ambiguous occurrences never inherit publication evidence.
+fn draft_occurrences(env Environment, value Expr, candidate Expr, depth Int) Int {
+    if depth >= 256 {
+        return 2
+    }
+    var count = if draft_construction(env, value) && same_draft_construction(value, candidate) {
+        1
+    } else {
+        0
+    }
+    var index = 0
+    while index < length(value.children) && count < 2 {
+        count = count + draft_occurrences(env, get(value.children, index), candidate, depth + 1)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) && count < 2 {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) && count < 2 {
+            count = count + draft_occurrences(env, get(body, item), candidate, depth + 1)
+            item = item + 1
+        }
+        index = index + 1
+    }
+    count
+}
+
+fn unpublished_drafts(env Environment, functions List[Function], current Function) List[Expr] {
+    let drafts = new[Expr]()
+    if current.body.kind != ExprKind.Block {
+        return drafts
+    }
+    let statements = current.body.children
+    var index = 0
+    while index < length(statements) {
+        let candidate = draft_statement(get(statements, index))
+        if draft_construction(env, candidate) {
+            let input = draft_input(candidate)
+            if input.kind == ExprKind.Local &&
+            draft_occurrences(env, current.body, candidate, 0) == 1 &&
+            unpublished_draft(env, functions, current, statements, index, input.index) {
+                push(drafts, candidate)
+            }
+        }
+        index = index + 1
+    }
+    drafts
+}
+
+fn established_draft(value Expr, drafts List[Expr]) Bool {
+    var index = 0
+    while index < length(drafts) {
+        if same_draft_construction(value, get(drafts, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}

@@ -209,6 +209,10 @@ fn constraint_mutation_writes(env Environment, functions List[Function], value E
 }
 
 fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr) Result[Bool, Failure] {
+    list_constraint_expression(env, functions, owner, value, new[Expr]())
+}
+
+fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr, drafts List[Expr]) Result[Bool, Failure] {
     // Only original typing can emit this certificate. Cached bodies retain its
     // definition dependencies; recheck the non-publishing operation structure.
     if value.kind == ExprKind.Block && value.text == "proved list update" && length(value.children) == 1 {
@@ -224,7 +228,7 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
                     get(child.children, 0)
                 } else {
                     child
-                })?
+                }, drafts)?
             index = index + 1
         }
         return Result.Ok(true)
@@ -233,18 +237,19 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
     // only by the validated predicate and the successful refined result.
     if value.kind == ExprKind.Block && value.text == "checked list" {
         let input = get(get(value.children, 0).children, 0)
-        if !constraint_fresh(env, functions, input) {
+        if !constraint_fresh(env, functions, input) && !established_draft(value, drafts) {
             return Result.Err(list_constraint_error(env, owner, input,
-                    "a List constraint requires a fresh literal or a proved non-publishing factory; explicitly copy existing storage"))
+                    "a List constraint requires fresh unpublished storage; use a fresh literal, a proved factory, an unpublished local draft or an explicit copy"))
         }
-        discard list_constraint_expression(env, functions, owner, input)?
-        discard list_constraint_expression(env, functions, owner, get(get(value.children, 1).children, 0))?
+        discard list_constraint_expression(env, functions, owner, input, drafts)?
+        discard list_constraint_expression(env, functions, owner, get(get(value.children, 1).children, 0), drafts)?
         return Result.Ok(true)
     }
     if value.kind == ExprKind.Coerce && constrained_list(env, value.ty) &&
-    !constraint_restored(env, value) && !constraint_fresh(env, functions, get(value.children, 0)) {
+    !constraint_restored(env, value) && !constraint_fresh(env, functions, get(value.children, 0)) &&
+    !established_draft(value, drafts) {
         return Result.Err(list_constraint_error(env, owner, value,
-                "a List constraint requires a fresh literal or a proved non-publishing factory; explicitly copy existing storage"))
+                "a List constraint requires fresh unpublished storage; use a fresh literal, a proved factory, an unpublished local draft or an explicit copy"))
     }
     var borrowed = false
     var index = 0
@@ -270,7 +275,7 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
                 get(child.children, 0)
             } else {
                 child
-            })?
+            }, drafts)?
         index = index + 1
     }
     index = 0
@@ -278,7 +283,7 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
         let arm = get(value.arms, index)
         var item = 0
         while item < length(arm.body) {
-            discard list_constraint_expression(env, functions, owner, get(arm.body, item))?
+            discard list_constraint_expression(env, functions, owner, get(arm.body, item), drafts)?
             item = item + 1
         }
         index = index + 1
@@ -290,7 +295,8 @@ fn list_constraint_function(env Environment, functions List[Function], current F
     if !env.has_refinements {
         return Result.Ok(true)
     }
-    discard list_constraint_expression(env, functions, current.symbol, current.body)?
+    let drafts = unpublished_drafts(env, functions, current)
+    discard list_constraint_expression(env, functions, current.symbol, current.body, drafts)?
     var index = 0
     while index < length(current.preconditions) {
         discard list_constraint_expression(env, functions, current.symbol, get(current.preconditions, index))?
