@@ -386,15 +386,20 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
                 } else {
                     imports
                 }
-                // Tuple await uses the trusted source implementation of
-                // std.task.all. This loads its package without making any
-                // names visible to ordinary source lookup.
-                if package != "std.task" && contains_await(tree) {
-                    include(selected_imports, "std.task")
-                }
                 var item = 0
                 while item < length(tree.children) {
                     let node = get(tree.children, item)
+                    // Await loads trusted std.task helpers without exposing
+                    // names. Embedded tests extend the completed production
+                    // package, just like declarations in *_test.loom files.
+                    if package != "std.task" && contains_await(node) {
+                        let await_imports = if test_only || (node.kind == NodeKind.Function && has(node, NodeKind.Test)) {
+                            test_imports
+                        } else {
+                            imports
+                        }
+                        include(await_imports, "std.task")
+                    }
                     if node.kind == NodeKind.Refined && package != "std.result" {
                         include(selected_imports, "std.result")
                     }
