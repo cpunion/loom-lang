@@ -1,0 +1,269 @@
+import std.loom.binding.bind
+import std.bytes.get
+import std.bytes.length
+import std.list.get
+import std.text.contains
+
+fn module_fixture(directory Text) Result[Text, Text] {
+    discard create_dir(directory)
+    discard std.file.write_text(path(directory, "loom.toml"), "[module]\nname = \"sample\"\nversion = \"0.1.0\"\n")
+    discard std.file.write_text(path(directory, "loom.lock"), "loom-lock 3\n")
+    discard std.file.write_text(path(directory, "main.loom"), """
+        import sample.app.entry
+
+        pub fn main() {
+            assert entry() == 12
+        }
+        """)
+    discard create_dir(path(directory, "app"))
+    discard create_dir(path(directory, "lib"))
+    discard create_dir(path(directory, "checks"))
+    discard create_dir(path(directory, "checks/nested"))
+    discard std.file.write_text(path(directory, "app/main.loom"), """
+        import sample.lib.amount
+
+        fn bonus() Int {
+            0
+        }
+
+        pub fn entry() Int {
+            amount() + bonus()
+        }
+        """)
+    discard std.file.write_text(path(directory, "app/main_test.loom"), "test fn private_bonus() { assert bonus() == 0 }\n")
+    discard std.file.write_text(path(directory, "lib/value.loom"), """
+        fn secret() Int {
+            7
+        }
+
+        pub fn amount() Int {
+            1
+        }
+        """)
+    discard std.file.write_text(path(directory, "lib/value_test.loom"), "test fn private_secret() { assert secret() == 7 }\n")
+    discard std.file.write_text(path(directory, "checks/nested/check_test.loom"), "test fn standalone() { assert true }\n")
+    let data = std.bytes.new()
+    std.bytes.push(data, 0)
+    std.bytes.push(data, 255)
+    std.bytes.push(data, 10)
+    discard write_bytes(path(directory, "data.bin"), data)
+    discard initialize("sample", directory)?
+    discard initialize("sample.app", path(directory, "app"))?
+    discard initialize("sample.lib", path(directory, "lib"))?
+    discard initialize("sample.checks.nested", path(directory, "checks/nested"))?
+    Result.Ok("module fixture created")
+}
+
+fn moved_identity(directory Text, name Text, file Text) Result[Text, Text] {
+    let snapshot = read(directory)?
+    var index = 0
+    while index < length(snapshot.revision.identities) {
+        let identity = get(snapshot.revision.identities, index)
+        if identity.name == name {
+            return refresh(directory, [Resolution {
+                        id = identity.id
+                        path = file
+                        name = name
+                        key = identity.key
+                        deletion = false
+                    }])
+        }
+        index = index + 1
+    }
+    Result.Err("fixture declaration not found")
+}
+
+fn module_fixture_branches(staging Text) Result[Text, Text] {
+    discard create_dir(staging)
+    let base = path(staging, "base")
+    let left = path(staging, "left")
+    let right = path(staging, "right")
+    discard module_fixture(base)?
+    discard module_fixture(left)?
+    discard module_fixture(right)?
+    discard std.file.write_text(path(left, "lib/value.loom"), """
+        fn secret() Int {
+            7
+        }
+        """)
+    discard std.file.write_text(path(left, "lib/moved.loom"), """
+        pub fn amount() Int {
+            1
+        }
+        """)
+    discard moved_identity(path(left, "lib"), "amount", "moved.loom")?
+    discard std.file.write_text(path(left, "app/main.loom"), """
+        import sample.lib.amount
+
+        fn bonus() Int {
+            0
+        }
+
+        pub fn entry() Int {
+            amount() + bonus() + 10
+        }
+        """)
+    discard std.file.write_text(path(right, "lib/value.loom"), """
+        fn secret() Int {
+            7
+        }
+
+        pub fn amount() Int {
+            2
+        }
+        """)
+    discard std.file.write_text(path(right, "app/main.loom"), """
+        import sample.lib.amount
+
+        fn bonus() Int {
+            0
+        }
+        """)
+    discard std.file.write_text(path(right, "app/entry.loom"), """
+        pub fn entry() Int {
+            amount() + bonus()
+        }
+        """)
+    discard moved_identity(path(right, "app"), "entry", "entry.loom")?
+    Result.Ok("module branches created")
+}
+
+fn remove_module_fixture(directory Text) {
+    let names = match entries(directory) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            new[Text]()
+        }
+    }
+    var index = 0
+    while index < length(names) {
+        let target = path(directory, get(names, index))
+        match entry_kind(target) {
+            Result.Ok(FileKind.Directory) => {
+                remove_module_fixture(target)
+            }
+            Result.Ok(FileKind.File) => {
+                discard remove_file(target)
+            }
+            _ => {
+                assert false
+            }
+        }
+        index = index + 1
+    }
+    discard remove_empty_dir(directory)
+}
+
+fn module_lifecycle(staging Text) Result[Text, Text] {
+    discard module_fixture_branches(staging)?
+    let base = path(staging, "base")
+    let left = path(staging, "left")
+    let right = path(staging, "right")
+    let original = read_module(base)?
+    let context = module_context(original, "compiler/std")?
+    let reviewed = review_module(original, read_module(left)?, read_module(right)?, context)?
+    let preview = preview_module("compiler/std", base, left, right)?
+    assert contains(preview, concat("review token: ", reviewed.token))
+    assert contains(preview, "=== lib/moved.loom ===")
+    assert contains(preview, "=== checks/nested/.loom-ids ===")
+    assert contains(preview, "preserved asset data.bin sha256 ")
+    let output = path(staging, "output")
+    discard apply_module(reviewed.token, output, "compiler/std", base, left, right)?
+    assert contains(text_at(path(output, "lib/moved.loom")), "2")
+    assert contains(text_at(path(output, "app/entry.loom")), "+ 10")
+    let binary = match read_bytes(path(output, "data.bin")) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("missing copied binary asset")
+        }
+    }
+    assert std.bytes.length(binary) == 3 && std.bytes.get(binary, 0) == 0 && std.bytes.get(binary, 1) == 255
+    assert text_at(path(output, "loom.lock")) == text_at(path(base, "loom.lock"))
+    let published = read_module(output)?
+    let reloaded = module_context(published, "compiler/std")?
+    discard review_module(published, published, published, reloaded)?
+    var package = 0
+    let owner = get(reloaded.tests.packages, reloaded.tests.root).instance
+    while package < length(reloaded.tests.packages) {
+        if get(reloaded.tests.packages, package).instance == owner {
+            let bindings = match bind(Project {
+                    root = package
+                    ..reloaded.tests
+                }, true) {
+                Result.Ok(value) => value
+                Result.Err(failed) => {
+                    return Result.Err(failed.diagnostic.message)
+                }
+            }
+            var symbol = 0
+            while symbol < length(bindings.symbols) {
+                let declaration = get(bindings.symbols, symbol)
+                if declaration.test_only {
+                    assert get(bindings.files, declaration.file).package == package
+                }
+                symbol = symbol + 1
+            }
+        }
+        package = package + 1
+    }
+    assert match apply_module(reviewed.token, output, "compiler/std", base, left, right) {
+        Result.Err(message) => contains(message, "already exists")
+        Result.Ok(_) => false
+    }
+    remove_module_fixture(staging)
+    Result.Ok("module lifecycle completed")
+}
+
+test fn module_move_edit_preview_and_publication_keep_private_tests_and_binary_assets() {
+    let staging = concat("tools/semantic_change_trial/target/module-lifecycle-", to_text(monotonic_ns()))
+    assert successful(module_lifecycle(staging)) == "module lifecycle completed"
+}
+
+fn module_rejections(staging Text) Result[Text, Text] {
+    discard module_fixture_branches(staging)?
+    let base = path(staging, "base")
+    let left = path(staging, "left")
+    let right = path(staging, "right")
+    let original = read_module(base)?
+    let context = module_context(original, "compiler/std")?
+    let a = read_module(left)?
+    let b = read_module(right)?
+    let plan = review_module(original, a, b, context)?
+    let destination = path(staging, "must-not-exist")
+    let metadata_path = path(left, "lib/.loom-ids")
+    let metadata = text_at(metadata_path)
+    discard std.file.write_text(metadata_path, concat(metadata, "# edited after review\n"))
+    assert match apply_module(plan.token, destination, "compiler/std", base, left, right) {
+        Result.Err(message) => contains(message, "review token")
+        Result.Ok(_) => false
+    }
+    discard vacant(destination)?
+    let stage = path(staging, "recovery-stage")
+    discard create_dir(stage)
+    assert match publish_module(stage, destination, plan, original, a, b, context, "compiler/std") {
+        Result.Err(message) => contains(message, "changed before publication")
+        Result.Ok(_) => false
+    }
+    discard vacant(destination)?
+    assert contains(text_at(path(stage, "app/entry.loom")), "+ 10")
+    discard std.file.write_text(metadata_path, metadata)
+    discard std.file.write_text(path(right, "lib/value_test.loom"), "test fn private_secret() { assert secret() == true }\n")
+    assert match preview_module("compiler/std", base, left, right) {
+        Result.Err(message) => contains(message, "package merge requires checked source:")
+        Result.Ok(_) => false
+    }
+    discard std.file.write_text(path(right, "lib/value_test.loom"), "test fn private_secret() { assert secret() == 7 }\n")
+    discard std.file.write_text(path(right, "loom.lock"), "loom-lock 3\n# changed\n")
+    assert match preview_module("compiler/std", base, left, right) {
+        Result.Err(message) => contains(message, "manifest, lock or non-source assets changed")
+        Result.Ok(_) => false
+    }
+    remove_module_fixture(staging)
+    Result.Ok("module rejections completed")
+}
+
+test fn module_review_rejects_stale_identity_private_test_errors_and_unreviewed_config() {
+    let staging = concat("tools/semantic_change_trial/target/module-rejections-", to_text(monotonic_ns()))
+    assert successful(module_rejections(staging)) == "module rejections completed"
+}

@@ -17,7 +17,7 @@ syntax, APIs and supported proof fragment.
 | Metaprogramming | Pure compile-time execution, type/value/function parameters, packs, typed macros, reflection and tracked inputs. | Staging and visibility still apply; no arbitrary compile-time I/O. |
 | Memory/resources/async | Moving GC, lexical cleanup, stackless Tasks, real timers, files, DNS/TCP/TLS, tuple/List joins and explicit shared CPU workers. | Conservative shared-build instrumentation and interference proofs; no concurrent/generational GC. |
 | Programming tools | Directory tests, formatter, LSP/VS Code, public parser/analysis libraries, checked function/type/concept/record-field edits. | Unaccounted/generated uses, external-consumer API edits and broader erroneous-source queries remain open. |
-| Evolution tools | Reviewed single-package semantic merge and a real offline SQLite migration trial. | Bounded prototypes, not general semantic VCS or deployment compatibility proof. |
+| Evolution tools | Reviewed fixed-package semantic merges and a real offline SQLite migration trial. | Bounded prototypes, not general semantic VCS or deployment compatibility proof. |
 
 ## Build and programming experience
 
@@ -987,8 +987,10 @@ Public/generic rename composition remains unsupported. Pinned contexts and check
 value-path targets prevent silent nominal or intermediate-field binding drift.
 Applying creates a new tree. The source library also checks fixed-package batches
 against one pinned production/test basis, including private tests in each package
-and unchanged module consumers whose overload bindings could drift. Module-level
-CLI loading/application, import-graph changes, arbitrary edits and automatic
+and unchanged module consumers whose overload bindings could drift. Module
+directory preview/apply uses the ordinary multi-root loader and preserves unchanged
+configuration and binary assets through reviewed staged publication. Module Git
+input, batch renames, package/import-graph changes, arbitrary edits and automatic
 identity tracking are not implemented.
 
 The [SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md)

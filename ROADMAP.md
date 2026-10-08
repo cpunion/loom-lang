@@ -146,7 +146,7 @@ Close the three [accepted stories](docs/rfcs/change-and-deployment.md):
    complete migration, predetermined failure policy and executable recovery.
    Preserve downgrade data and include it in later re-upgrade compatibility.
 
-The current SQLite orders executor and single-package semantic merge trial are
+The current SQLite orders executor and fixed-package semantic merge trial are
 evidence for narrow cases, not arbitrary-schema migration or general semantic
 version control. Online coexistence, throttling, unknown outcomes and hotfix
 compatibility require their own complete evidence.

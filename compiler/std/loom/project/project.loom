@@ -500,17 +500,7 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
         return Result.Err("expected a package directory, not an individual source file")
     }
     let standard = canonical(std_root)?
-    let discovered = module_root(directory)?
-    let module = if discovered.name == "" && inside(directory, standard) {
-        ModuleRoot {
-            name = "std"
-            version = ""
-            base = standard
-            dependencies = new[Dependency]()
-        }
-    } else {
-        discovered
-    }
+    let module = selected_module(directory, standard)?
     let files = new[SourceFile]()
     let resolution = Resolution {
         root = module.base

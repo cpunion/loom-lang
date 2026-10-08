@@ -1,7 +1,7 @@
 # Semantic change trial
 
-This small tool previews a three-way merge of one Loom package. It reads three
-snapshot directories and **does not write** any source or identity files:
+This tool previews a three-way merge of one Loom package or a fixed-package
+module. Preview reads snapshots and **does not write** source or identity files:
 
 ```sh
 target/loom run tools/semantic_change_trial -- \
@@ -9,6 +9,44 @@ target/loom run tools/semantic_change_trial -- \
   tools/semantic_change_trial/fixtures/left \
   tools/semantic_change_trial/fixtures/right
 ```
+
+## Module snapshots
+
+For a complete named module, use:
+
+```sh
+target/loom run tools/semantic_change_trial -- --module compiler/std BASE LEFT RIGHT
+target/loom run tools/semantic_change_trial -- --apply TOKEN NEW_MODULE_DIR \
+  --module compiler/std BASE LEFT RIGHT
+```
+
+Each snapshot has regular `loom.toml` and `loom.lock` files and a `.loom-ids`
+sidecar in every directory package, including test-only packages. For example,
+initialize `sample` at the module root and `sample.parser` in its `parser`
+directory with the existing `init` command; carry those sidecars between branches.
+The package set and import graph remain fixed. Configuration and non-source assets
+must match in all three snapshots; binary assets are preserved byte-for-byte and
+their hashes appear in review. Their changes require explicit resolution, not a
+guessed textual merge. `.git`, build `target`, `node_modules` and identity recovery
+directories are excluded. Nested modules require a separate merge; symlink and
+nonregular snapshot entries reject.
+
+The ordinary offline project loader reads all selected package roots in one ID
+space. All candidate trees are combined before checking production and each
+package's independent private test scope. Unchanged consumers are checked for
+binding changes too. The review token covers every source, sidecar, asset and the
+pinned production/test context. Application stages the complete result in a new
+sibling directory, re-reads inputs/context, then publishes by native rename.
+Failed staging is retained for recovery and never replaces the requested output.
+As with single-package apply, publication assumes a trusted local workspace;
+native rename is neither no-clobber against racing writers nor crash-durable.
+
+The output includes its manifest and lock, not external dependencies or ignored
+build caches. Keep relative path dependencies valid at the new location and
+provision locked Git snapshots before an offline build. Module Git-object input,
+package/import-graph changes and batch rename composition are not implemented.
+
+## Single-package snapshots
 
 The same preview can read existing commits directly from Git's object database,
 without checkout, worktree creation, or changes to Git state:
@@ -90,8 +128,8 @@ appears, refresh refuses to guess whether it moved or was replaced. Use
 `refresh DIR --delete ID` to declare a replacement, even when the replacement
 uses the same file, kind, and name. Each sidecar update is
 published by rename from a private stage; refresh leaves the prior sidecar
-there as a recovery copy. Source files are never rewritten. `init` uses the
-same lowercase package-name rule as `loom init`. These commands maintain
+there as a recovery copy. Source files are never rewritten. `init` accepts
+dotted lowercase package names outside `std`. These commands maintain
 identity metadata for parseable source; they do not prove a successful build.
 `--move` can also record a private, nongeneric function rename. Merge composes
 that explicit identity change with an independent move/body edit by normalizing
