@@ -24,7 +24,7 @@ headers/contracts, deletion versus edits, unsupported declarations and reference
 without complete checked evidence require explicit resolution. Batch rename
 composition is not implemented; the single-package entry points retain their
 private nongeneric rename support. This is not behavior-equivalence proof, an
-arbitrary semantic VCS or an execution engine. Checking never runs application
-bodies or replays their effects.
+arbitrary semantic VCS or an execution engine. Checking does not launch the
+application or replay runtime effects; ordinary compile-time checking still runs.
 
 Run `target/loom test tools/semantic_change` from the repository root.

@@ -221,6 +221,12 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
   Manifest-relative path dependencies resolve from each importing module's
   direct entries. Canonical roots are reused; distinct roots with the same name
   keep separate package and nominal type identities.
+- `std.loom.project.load_packages(paths, std_root, tests)` loads several roots
+  from one module into the same snapshot-local ID space. Production dependencies
+  use the ordinary offline traversal. With tests enabled, each selected root's
+  test sources are available for separate re-rooted analyses; binding still admits
+  tests only from `Project.root`, never all roots together. Test-only directories
+  have an empty production view. Empty/duplicate roots or mixed modules reject.
 - `std.loom.project.resolve(path, std_root, tests, git_tool)` uses that same
   selected-package traversal, fetching exact Git sources and publishing the
   root module's lock only after successful loading. Ordinary `load` is offline

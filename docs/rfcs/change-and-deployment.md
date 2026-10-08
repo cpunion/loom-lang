@@ -7,7 +7,7 @@ It complements [Language foundation](language-foundation.md); the
 [roadmap](../../ROADMAP.md) sets implementation order. These acceptance stories
 do not require a new version-control or deployment control plane.
 
-The current prototypes are a [single-package semantic change trial](../../tools/semantic_change_trial/README.md)
+The current prototypes are a [fixed-package semantic change trial](../../tools/semantic_change_trial/README.md)
 and a [bounded offline SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md).
 The change trial can initialize and refresh identity sidecars and apply an exact
 reviewed merge to a new tree; it does not automatically track arbitrary edits or

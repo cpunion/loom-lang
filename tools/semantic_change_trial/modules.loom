@@ -1,0 +1,409 @@
+import semantic_change.PackageRevision
+import semantic_change.merge_packages
+import std.loom.project.load_packages
+import std.file.read_bytes
+import std.file.write_bytes
+import std.fs.rename
+
+record ModulePackage {
+    relative Text
+    loaded Loaded
+}
+
+record Asset {
+    relative Text
+    bytes Bytes
+}
+
+record ModuleSnapshot {
+    directory Text
+    packages List[ModulePackage]
+    assets List[Asset]
+}
+
+record ModuleReview {
+    packages List[Review]
+    relative List[Text]
+    assets List[Asset]
+    token Text
+}
+
+fn module_path(directory Text, relative Text) Text {
+    var output = directory
+    let parts = split(relative, "/")
+    var index = 0
+    while index < length(parts) {
+        let part = get(parts, index)
+        if part != "" {
+            output = join_path(output, part)
+        }
+        index = index + 1
+    }
+    output
+}
+
+fn module_tree(directory Text, relative Text, packages List[ModulePackage], assets List[Asset]) Result[Bool, Text] {
+    let location = module_path(directory, relative)
+    discard checked_source_directory(location)?
+    let names = match entries(location) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(concat("cannot list module directory: ", location))
+        }
+    }
+    let children = new[Text]()
+    var source = false
+    var identities = false
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        if name != ".git" {
+            if name == "." || name == ".." || contains(name, "/") || contains(name, "\\") ||
+            contains(name, ":") || contains(name, "\0") || contains(name, "\n") || contains(name, "\r") {
+                return Result.Err("module snapshot contains an unsafe path component")
+            }
+            let child = if relative == "" {
+                name
+            } else {
+                path(relative, name)
+            }
+            let physical = module_path(directory, child)
+            match entry_kind(physical) {
+                Result.Ok(FileKind.Directory) => {
+                    if name != "target" && name != "node_modules" && !starts_with(name, ".loom-ids-stage-") {
+                        push(children, child)
+                    }
+                }
+                Result.Ok(FileKind.File) => {
+                    if name == "loom.toml" && relative != "" {
+                        return Result.Err("nested modules require a separate semantic merge")
+                    }
+                    if ends_with(name, ".loom") {
+                        source = true
+                    } else if name == ".loom-ids" {
+                        identities = true
+                    } else {
+                        let bytes = match read_bytes(physical) {
+                            Result.Ok(value) => value
+                            Result.Err(_) => {
+                                return Result.Err(concat("cannot read module asset: ", physical))
+                            }
+                        }
+                        push(assets, Asset {
+                                relative = child
+                                bytes = bytes
+                            })
+                    }
+                }
+                _ => {
+                    return Result.Err(concat("module snapshot entries must be regular files or directories: ", physical))
+                }
+            }
+        }
+        index = index + 1
+    }
+    if source {
+        push(packages, ModulePackage {
+                relative = relative
+                loaded = read(location)?
+            })
+    } else if identities {
+        return Result.Err("identity sidecar has no package source files")
+    }
+    index = 0
+    while index < length(children) {
+        discard module_tree(directory, get(children, index), packages, assets)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn read_module(directory Text) Result[ModuleSnapshot, Text] {
+    discard checked_source_directory(directory)?
+    let required = ["loom.toml", "loom.lock"]
+    var index = 0
+    while index < length(required) {
+        match entry_kind(path(directory, get(required, index))) {
+            Result.Ok(FileKind.File) => {
+            }
+            _ => {
+                return Result.Err("module snapshots require regular loom.toml and loom.lock files")
+            }
+        }
+        index = index + 1
+    }
+    let packages = new[ModulePackage]()
+    let assets = new[Asset]()
+    discard module_tree(directory, "", packages, assets)?
+    if length(packages) == 0 {
+        return Result.Err("module snapshot has no Loom packages")
+    }
+    Result.Ok(ModuleSnapshot {
+            directory = directory
+            packages = packages
+            assets = assets
+        })
+}
+
+fn frame_assets(bytes Bytes, assets List[Asset]) {
+    frame(bytes, to_text(length(assets)))
+    var index = 0
+    while index < length(assets) {
+        let asset = get(assets, index)
+        frame(bytes, asset.relative)
+        frame(bytes, hex(asset.bytes))
+        index = index + 1
+    }
+}
+
+fn asset_stamp(assets List[Asset]) Text {
+    let bytes = std.bytes.new()
+    frame_assets(bytes, assets)
+    hex(bytes)
+}
+
+fn module_stamp(snapshot ModuleSnapshot) Text {
+    let bytes = std.bytes.new()
+    frame(bytes, snapshot.directory)
+    frame_assets(bytes, snapshot.assets)
+    frame(bytes, to_text(length(snapshot.packages)))
+    var index = 0
+    while index < length(snapshot.packages) {
+        let package = get(snapshot.packages, index)
+        frame(bytes, package.relative)
+        frame_loaded(bytes, package.loaded)
+        index = index + 1
+    }
+    hex(bytes)
+}
+
+fn module_context(base ModuleSnapshot, standard Text) Result[Context, Text] {
+    let paths = new[Text]()
+    var index = 0
+    while index < length(base.packages) {
+        push(paths, module_path(base.directory, get(base.packages, index).relative))
+        index = index + 1
+    }
+    let production = load_packages(paths, standard, false)?
+    let tests = load_packages(paths, standard, true)?
+    let owner = get(production.packages, production.root).instance
+    let module = get(production.modules, owner)
+    if module.name == "" || module.name == "std" {
+        return Result.Err("module merge requires a named non-standard module")
+    }
+    let test_owner = get(tests.packages, tests.root).instance
+    index = 0
+    while index < length(tests.packages) {
+        let package = get(tests.packages, index)
+        if package.instance == test_owner {
+            discard module_package(base, package.relative)?
+        }
+        index = index + 1
+    }
+    let bytes = std.bytes.new()
+    frame(bytes, "loom-semantic-module-context-v1")
+    discard framed_project(bytes, production)?
+    discard framed_project(bytes, tests)?
+    Result.Ok(Context {
+            production = production
+            tests = tests
+            directory = module.source
+            stamp = hex(bytes)
+        })
+}
+
+fn module_revisions(snapshot ModuleSnapshot, basis Text) List[PackageRevision] {
+    let revisions = new[PackageRevision]()
+    var index = 0
+    while index < length(snapshot.packages) {
+        let package = get(snapshot.packages, index)
+        push(revisions, PackageRevision {
+                directory = module_path(basis, package.relative)
+                revision = package.loaded.revision
+            })
+        index = index + 1
+    }
+    revisions
+}
+
+fn module_package(snapshot ModuleSnapshot, relative Text) Result[Loaded, Text] {
+    var index = 0
+    while index < length(snapshot.packages) {
+        let package = get(snapshot.packages, index)
+        if package.relative == relative {
+            return Result.Ok(package.loaded)
+        }
+        index = index + 1
+    }
+    Result.Err("module snapshots must select the same package directories")
+}
+
+fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot, context Context) Result[ModuleReview, Text] {
+    if asset_stamp(base.assets) != asset_stamp(left.assets) || asset_stamp(base.assets) != asset_stamp(right.assets) {
+        return Result.Err("module manifest, lock or non-source assets changed; explicit resolution required")
+    }
+    let merged = merge_packages(module_revisions(base, context.directory),
+        module_revisions(left, context.directory), module_revisions(right, context.directory),
+        context.production, context.tests)?
+    let packages = new[Review]()
+    let relative = new[Text]()
+    let bytes = std.bytes.new()
+    frame(bytes, "loom-semantic-module-review-v1")
+    frame(bytes, module_stamp(base))
+    frame(bytes, module_stamp(left))
+    frame(bytes, module_stamp(right))
+    frame(bytes, context.stamp)
+    var index = 0
+    while index < length(merged) {
+        let package = get(base.packages, index)
+        let a = module_package(left, package.relative)?
+        let b = module_package(right, package.relative)?
+        let revision = get(merged, index).revision
+        let next = std.int.maximum(package.loaded.next, std.int.maximum(a.next, b.next))
+        push(relative, package.relative)
+        push(packages, Review {
+                merged = revision
+                token = ""
+                next = next
+            })
+        frame(bytes, package.relative)
+        frame(bytes, sidecar(revision, next))
+        frame_files(bytes, revision.files)
+        index = index + 1
+    }
+    Result.Ok(ModuleReview {
+            packages = packages
+            relative = relative
+            assets = base.assets
+            token = hex(bytes)
+        })
+}
+
+fn show_module(value ModuleReview) Text {
+    var output = concat("dry-run module semantic merge; no source or Git state written\nreview token: ", concat(value.token, "\n"))
+    var index = 0
+    while index < length(value.packages) {
+        let relative = get(value.relative, index)
+        output = concat(output, show_revision(get(value.packages, index),
+                if relative == "" {
+                    ""
+                } else {
+                    concat(relative, "/")
+                }))
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.assets) {
+        let asset = get(value.assets, index)
+        output = concat(output, concat("preserved asset ", concat(asset.relative, concat(" sha256 ", concat(hex(asset.bytes), "\n")))))
+        index = index + 1
+    }
+    output
+}
+
+fn preview_module(standard Text, base Text, left Text, right Text) Result[Text, Text] {
+    let original = read_module(base)?
+    let context = module_context(original, standard)?
+    Result.Ok(show_module(review_module(original, read_module(left)?, read_module(right)?, context)?))
+}
+
+fn module_directories(root Text, relative Text, include_last Bool) Result[Bool, Text] {
+    let parts = split(relative, "/")
+    var current = root
+    var index = 0
+    while index < length(parts) {
+        if include_last || index + 1 < length(parts) {
+            let part = get(parts, index)
+            if part != "" {
+                current = join_path(current, part)
+                match entry_kind(current) {
+                    Result.Ok(FileKind.Directory) => {
+                    }
+                    Result.Err(FsError.NotFound) => {
+                        match create_dir(current) {
+                            Result.Ok(_) => {
+                            }
+                            Result.Err(_) => {
+                                return Result.Err("cannot create module stage directory")
+                            }
+                        }
+                    }
+                    _ => {
+                        return Result.Err("module stage has an unexpected path entry")
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn write_module(stage Text, value ModuleReview) Result[Bool, Text] {
+    var index = 0
+    while index < length(value.assets) {
+        let asset = get(value.assets, index)
+        discard module_directories(stage, asset.relative, false)?
+        let target = module_path(stage, asset.relative)
+        discard vacant(target)?
+        match write_bytes(target, asset.bytes) {
+            Result.Ok(_) => {
+            }
+            Result.Err(_) => {
+                return Result.Err(concat("cannot write module asset: ", target))
+            }
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.packages) {
+        let relative = get(value.relative, index)
+        discard module_directories(stage, relative, true)?
+        discard write_revision(module_path(stage, relative), get(value.packages, index))?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn apply_module(expected Text, destination Text, standard Text, base Text, left Text, right Text) Result[Text, Text] {
+    discard checked_directory_path(destination, false)?
+    discard vacant(destination)?
+    let original = read_module(base)?
+    let a = read_module(left)?
+    let b = read_module(right)?
+    let context = module_context(original, standard)?
+    let value = review_module(original, a, b, context)?
+    if value.token != expected {
+        return Result.Err("review token does not match this module closure or merged bytes")
+    }
+    let stage = concat(destination, concat("-loom-stage-", value.token))
+    match create_dir(stage) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            return Result.Err(concat("cannot create exclusive module stage; inspect recovery state: ", stage))
+        }
+    }
+    let outcome = publish_module(stage, destination, value, original, a, b, context, standard)
+    match outcome {
+        Result.Ok(summary) => Result.Ok(summary)
+        Result.Err(message) => Result.Err(concat(message, concat("; module stage retained at ", stage)))
+    }
+}
+
+fn publish_module(stage Text, destination Text, value ModuleReview, base ModuleSnapshot,
+    left ModuleSnapshot, right ModuleSnapshot, context Context, standard Text) Result[Text, Text] {
+    discard write_module(stage, value)?
+    let fresh = read_module(base.directory)?
+    if module_stamp(base) != module_stamp(fresh) ||
+    module_stamp(left) != module_stamp(read_module(left.directory)?) ||
+    module_stamp(right) != module_stamp(read_module(right.directory)?) ||
+    context.stamp != module_context(fresh, standard)?.stamp {
+        return Result.Err("module inputs or pinned project context changed before publication")
+    }
+    discard vacant(destination)?
+    match rename(stage, destination) {
+        Result.Ok(_) => Result.Ok(concat("wrote checked module merge to ", concat(destination, "\n")))
+        Result.Err(_) => Result.Err("cannot publish module stage")
+    }
+}

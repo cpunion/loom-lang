@@ -1,0 +1,103 @@
+// Load several roots with the ordinary offline loader and one ID space. Tests
+// are available for re-rooted analysis, not combined into a larger test scope.
+pub fn load_packages(paths List[Text], std_root Text, tests Bool) Result[Project, Text] {
+    if length(paths) == 0 {
+        return Result.Err("package roots must not be empty")
+    }
+    let initial, root, _ = prepare_loader(get(paths, 0), std_root, "git", "",
+        new[OverlayFile](), new[LoadFailure]())?
+    var loader = initial
+    let owner = get(loader.packages, root).instance
+    let module = get(loader.modules, owner)
+    let roots = new[Int]()
+    let directories = new[Text]()
+    var index = 0
+    while index < length(paths) {
+        let selected = canonical(get(paths, index))?
+        let basis = selected_module(selected, loader.std_root)?
+        if basis.base != module.base || basis.name != module.name {
+            return Result.Err("package roots must belong to the same module")
+        }
+        let id = registered_package(loader, owner, selected)?
+        if package_seen(roots, id, length(roots)) {
+            return Result.Err("duplicate package root")
+        }
+        push(roots, id)
+        push(directories, selected)
+        // A test-only directory still has an identity in the production view,
+        // but cannot become a production import with no source declarations.
+        let names = match entries(selected) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(concat(selected, ": cannot read directory"))
+            }
+        }
+        var ordinary = false
+        var source = false
+        var file = 0
+        while file < length(names) {
+            let name = get(names, file)
+            if ends_with(name, ".loom") && is_file(join_path(selected, name)) {
+                source = true
+                ordinary = ordinary || !ends_with(name, "_test.loom")
+            }
+            file = file + 1
+        }
+        if !source {
+            return Result.Err(concat(selected, ": no selected Loom source files"))
+        }
+        if ordinary {
+            discard visit(loader, id, selected, false, 0, false)?
+        }
+        index = index + 1
+    }
+    if tests {
+        index = 0
+        while index < length(roots) {
+            let id = get(roots, index)
+            // A preceding root may have loaded this one as a production
+            // dependency. Revisit only this root to add its own test sources;
+            // completed dependencies and their ordinary cycle rules survive.
+            let files = new[SourceFile]()
+            var file = 0
+            while file < length(loader.files) {
+                let source = get(loader.files, file)
+                if source.package != id {
+                    push(files, source)
+                }
+                file = file + 1
+            }
+            let complete = new[Int]()
+            var package = 0
+            while package < length(loader.complete) {
+                let current = get(loader.complete, package)
+                if current != id {
+                    push(complete, current)
+                }
+                package = package + 1
+            }
+            loader = Loader {
+                files = files
+                complete = complete
+                ..loader
+            }
+            discard visit(loader, id, get(directories, index), true, 0, false)?
+            index = index + 1
+        }
+    }
+    Result.Ok(loaded_project(loader, root))
+}
+
+fn selected_module(directory Text, standard Text) Result[ModuleRoot, Text] {
+    let discovered = module_root(directory)?
+    Result.Ok(if discovered.name == "" && inside(directory, standard) {
+            ModuleRoot {
+                name = "std"
+                version = ""
+                base = standard
+                dependencies = new[Dependency]()
+            }
+        } else {
+            discovered
+        })
+}

@@ -214,8 +214,13 @@ fn publish_sidecar(directory Text, previous Text, updated Text, files List[File]
 }
 
 fn initialize(package_name Text, directory Text) Result[Text, Text] {
-    if !segment(package_name) || package_name == "std" {
-        return Result.Err("init needs a lowercase package identifier other than std")
+    let parts = split(package_name, ".")
+    var part = 0
+    while part < length(parts) {
+        if !segment(get(parts, part)) || (part == 0 && get(parts, part) == "std") {
+            return Result.Err("init needs a dotted lowercase package name outside std")
+        }
+        part = part + 1
     }
     let target = path(directory, ".loom-ids")
     discard vacant(target)?
@@ -447,7 +452,7 @@ fn scan(directory Text) Result[Text, Text] {
     while index < length(candidates) {
         let candidate = get(candidates, index)
         output = concat(output, concat(kind_name(candidate.kind), concat(" ", concat(candidate.name,
-                    concat(" ", concat(candidate.path, concat(" ", concat(candidate.key, "\n"))))))))
+                        concat(" ", concat(candidate.path, concat(" ", concat(candidate.key, "\n"))))))))
         index = index + 1
     }
     Result.Ok(output)

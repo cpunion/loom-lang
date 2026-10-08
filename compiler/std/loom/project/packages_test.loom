@@ -1,0 +1,40 @@
+test fn batch_roots_upgrade_previously_loaded_packages_without_duplicate_files() {
+    let project = match load_packages(["compiler/std/list", "compiler/std/text"], "compiler/std", true) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard message
+            assert false
+            Project {
+                files = new[SourceFile]()
+                modules = new[ModuleInstance]()
+                packages = new[Package]()
+                root = -1
+            }
+        }
+    }
+    let tested = new[Text]()
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        let label = package_label(project.modules, project.packages, file.package)
+        if file.test_only {
+            assert label == "std.list" || label == "std.text"
+            include(tested, label)
+        }
+        var previous = 0
+        while previous < index {
+            assert get(project.files, previous).path != file.path
+            previous = previous + 1
+        }
+        index = index + 1
+    }
+    assert length(tested) == 2
+    assert match load_packages(["compiler/std/list", "compiler/std/list"], "compiler/std", false) {
+        Result.Err(message) => message == "duplicate package root"
+        Result.Ok(_) => false
+    }
+    assert match load_packages(new[Text](), "compiler/std", false) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
