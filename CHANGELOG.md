@@ -20,6 +20,11 @@ implementation, not a compatibility ledger for previous prototypes.
   symbolic offsets and stronger structural-pack bounds; retain source overflow
   obligations and the existing inference budget.
 
+- Reuse mathematical affine forms for loop relations and suggest weighted
+  counter conservation from constant translations. Prove different-rate and
+  opposite-direction counters through the existing induction checks; update
+  syntax supplies no trusted facts or runtime checks.
+
 - Allow checked scoped-resource borrows through directly awaited async calls;
   reject escaping borrowing Tasks and keep NoSuspend/Task-result restrictions.
   Add source Stream factory pipelines with ordinary nested cleanup, cancellation

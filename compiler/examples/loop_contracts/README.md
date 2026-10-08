@@ -21,6 +21,13 @@ These are mathematical candidates, not assumptions that two updates match;
 conditional writes, early returns and every `continue` remain checked. Source
 contract arithmetic still requires its own definedness proof.
 
+Constant affine assignments also suggest weighted pair relations. The
+[affine example](affine.loom) proves different-rate and opposite-direction
+counters, including lexical cleanup and compile-time calls. These suggestions
+reuse the same mathematical arithmetic and induction checks, not a second
+executor or trusted update-pattern rule. General multi-local affine synthesis
+and nonlinear invariants remain outside this candidate generator.
+
 The current subset includes Int/Bool local assignments, branches, early returns
 and nested loops. `break` preserves the state at its exit; `continue` must
 preserve the invariant at its backedge. Both target the nearest loop, including
@@ -30,8 +37,8 @@ Direct body and guard calls reuse verified summaries or finite pure expansion.
 Guard results are reevaluated at each tested head, not assumed stable by spelling.
 Pure expansion can propose bounds for guards such as `below(value, limit)`;
 those proposals pass the same entry/backedge checks as direct comparisons.
-Unsupported effects, resource cleanup and heap mutation
-reject in a required proof. Unknown proofs remain build errors;
+Unmodeled effects and resource cleanup reject in a required proof;
+List extent/content proofs have their own supported fragment. Unknown proofs remain build errors;
 there are no generated loop-invariant checks, termination promises or proofs
-that arithmetic cannot fault. List sorting/permutation proofs remain separate
-work. Ordinary loops without `ensures` are not restricted by this proof subset.
+that arithmetic cannot fault. Ordinary loops without `ensures` are not restricted
+by this proof subset.
