@@ -33,6 +33,27 @@ fn pack_proof_sources(node Node) List[Text] {
     names
 }
 
+fn pack_forwarded_parameter(declaration Node, argument Node) Int {
+    let source = if argument.kind == NodeKind.Spread {
+        child(argument, 0)
+    } else {
+        argument
+    }
+    if source.kind != NodeKind.Name {
+        return -1
+    }
+    let parameters = group(declaration, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if parameter.value == source.value && has_type_expansion(child(parameter, 0)) {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
 fn pack_proof_loop_width(declaration Node, source Node) Int {
     if source.kind != NodeKind.Name {
         return -1
@@ -228,6 +249,31 @@ fn pack_proof_observation(env Environment, owner Int, pack Int, node Node) Resul
 fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, erased List[Text], elements List[PackProofElement], count List[Int], depth Int) Result[Node, Failure] {
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "variadic contract proof depth exceeded"))
+    }
+    if node.kind == NodeKind.Call {
+        let arguments = child(node, 1)
+        var forwarded = false
+        var index = 0
+        while index < length(arguments.children) {
+            forwarded = forwarded || pack_forwarded_parameter(declaration, child(arguments, index)) >= 0
+            index = index + 1
+        }
+        if forwarded {
+            let values = new[Node]()
+            index = 0
+            while index < length(arguments.children) {
+                let argument = child(arguments, index)
+                push(values, if pack_forwarded_parameter(declaration, argument) >= 0 {
+                        argument
+                    } else {
+                        pack_proof_tree(env, owner, declaration, argument, erased, elements, count, depth + 1)?
+                    })
+                index = index + 1
+            }
+            let types = pack_proof_tree(env, owner, declaration, child(node, 0), erased, elements, count, depth + 1)?
+            return Result.Ok(pack_node(node, NodeKind.Call, concat("$packcall#", node.value),
+                    [types, pack_node(arguments, NodeKind.Arguments, "", values)]))
+        }
     }
     // The parser retains a dotted named call; computed receivers use MethodCall.
     if node.kind == NodeKind.Call && first_dot(node.value) < length(node.value) {

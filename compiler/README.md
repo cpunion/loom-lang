@@ -934,6 +934,28 @@ pack-dependent result shapes and non-tuple structural sources remain unsupported
 in family proofs. Shadowed erased sources and loop control that would change
 its target reject. Executing a few selected arities is never a universal proof.
 
+Family proofs can forward a named sequence into another synchronous family's
+bare `Ts...` or `(Ts...)` parameter and compose its declared postconditions:
+
+```loom
+fn tuple_count[Ts...](values (Ts...)) Int
+ensures result >= 0 {
+    counted(values...)
+}
+```
+
+The callee's universal proof remains mandatory, even with no concrete caller.
+Fixed arguments retain ordinary evaluation, preconditions and effects; symbolic
+widths and abstract element evidence stay in the private proof closure. Repeated
+inputs require the same ordered type schema, not just equal widths. Bounds must
+follow from a bare source pack's declared requirements; mixed structural tuples
+can forward only to unconstrained packs. The
+[forwarding example](examples/variadics/forwarding.loom) covers independent groups,
+CTFE, callbacks, inherited dyn methods and shared List effects. Forwarding to
+structural callee patterns, overloaded/indirect/async callees, explicit type
+arguments and freshly assembled sequences remains unsupported in family proofs.
+Normal selected calls retain their existing checks and static expansion.
+
 A structural parameter can supply arity without a direct value pack. This
 includes a callback's parameter list or returned tuple, nested tuples and
 nominal type arguments. An input with a known shape supplies arity; ordinary

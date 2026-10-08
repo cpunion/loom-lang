@@ -1,11 +1,6 @@
 fn structural_count[Ts...](values (Int, Ts..., Bool)) Int
 ensures result >= 0 {
-    var total = 0
-    comptime for item in values {
-        discard item
-        total = total + 1
-    }
-    total
+    counted(values...)
 }
 
 fn repeated_count[Ts...](values (Ts..., Int, Ts...)) Int
@@ -42,12 +37,7 @@ ensures result >= 0 {
 concept StructuralCount {
     fn count[Ts...](self Self, values (Int, Ts..., Bool)) Int
     ensures result >= 0 {
-        var total = 0
-        comptime for item in values {
-            discard item
-            total = total + 1
-        }
-        total
+        counted(values...)
     }
 }
 

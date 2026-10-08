@@ -378,6 +378,9 @@ fn structural_call_arity(context Context, inputs CallInputs, parameters List[Nod
 }
 
 fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
+    if std.text.starts_with(node.value, "$packcall#") {
+        return pack_proof_call(context, node, expected)
+    }
     let types = child(node, 0).children
     let inputs = call_inputs(context, child(node, 1).children)?
     let first = slice(node.value, 0, first_dot(node.value))
