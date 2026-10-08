@@ -12,7 +12,8 @@ import std.list.length
 import std.result.Result
 
 // Task handles are one-shot, without introducing source ownership syntax.
-// Locals transfer on reads: 0 consumed, 1 live, 2 pending comptime selection.
+// Locals transfer on reads: 0 consumed, 1 live, 2 pending comptime selection,
+// 3 a Task leaf borrowed through a MustScope parameter or match binding.
 // State 2 is check-only uncertainty, never evidence of a valid transfer.
 // Concrete instances contain no pending selections and still require exact joins.
 record TaskFlow {
@@ -111,11 +112,15 @@ fn tasks_consumed(flow TaskFlow, value Expr) Result[Bool, Failure] {
 }
 
 fn task_sequence(flow TaskFlow, values List[Expr], allowed Bool) Result[Bool, Failure] {
+    task_sequence(flow, values, allowed, false)
+}
+
+fn task_sequence(flow TaskFlow, values List[Expr], allowed Bool, borrowing Bool) Result[Bool, Failure] {
     var index = 0
     var task = false
     while index < length(values) {
         let value = get(values, index)
-        task = task_expression(flow, value, allowed && index + 1 == length(values))?
+        task = task_expression(flow, value, allowed && index + 1 == length(values), borrowing && index + 1 == length(values))?
         if !value.falls {
             return Result.Ok(false)
         }
@@ -136,7 +141,11 @@ fn task_arguments(flow TaskFlow, value Expr) Result[Bool, Failure] {
         } else {
             get(value.children, index)
         }
-        let transferred = task_expression(flow, argument, task_value(flow.context.env, argument.ty))?
+        let takes = task_value(flow.context.env, argument.ty)
+        let call = value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall ||
+            value.kind == ExprKind.IndirectCall || value.kind == ExprKind.DynCall
+        let borrowing = takes && call && task_resource_borrow(flow.context, argument.ty)?
+        let transferred = task_expression(flow, argument, takes, borrowing)?
         if !argument.falls {
             return Result.Ok(false)
         }
@@ -173,17 +182,64 @@ fn task_operands(flow TaskFlow, values List[Expr]) Result[Bool, Failure] {
     Result.Ok(true)
 }
 
+fn task_resource_borrow(context Context, ty Int) Result[Bool, Failure] {
+    if get(context.env.types, ty).kind == TypeKind.Task {
+        return Result.Ok(false)
+    }
+    must_scope(context, ty)
+}
+
+fn task_borrowed_input(flow TaskFlow, value Expr) Result[Bool, Failure] {
+    if !task_value(flow.context.env, value.ty) || !task_resource_borrow(flow.context, value.ty)? {
+        return Result.Ok(false)
+    }
+    if flow.cleanup {
+        return Result.Ok(true)
+    }
+    var root = value
+    while root.kind == ExprKind.Field {
+        root = get(root.children, 0)
+    }
+    if root.kind != ExprKind.Local {
+        return Result.Ok(false)
+    }
+    var field = get(flow.offsets, root.index)
+    while field < get(flow.offsets, root.index + 1) {
+        if get(flow.locals, field) == 3 {
+            return Result.Ok(true)
+        }
+        field = field + 1
+    }
+    Result.Ok(false)
+}
+
 fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure] {
+    task_expression(flow, value, allowed, false)
+}
+
+fn task_expression(flow TaskFlow, value Expr, allowed Bool, borrowing Bool) Result[Bool, Failure] {
     let shape = get(flow.context.env.types, value.ty)
     let task = task_value(flow.context.env, value.ty)
     if value.kind == ExprKind.Suspend && shape.kind == TypeKind.Task {
         return Result.Err(task_error(flow, value, "private async intrinsics must be awaited directly"))
     }
-    if flow.cleanup &&(task || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend) {
+    if flow.cleanup &&((task && !borrowing) || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend) {
         return Result.Err(task_error(flow, value, "task creation, reading or transfer in cleanup is not yet implemented"))
     }
     if task && !allowed {
         return Result.Err(task_error(flow, value, "a task must be awaited or transferred; it cannot be copied or discarded"))
+    }
+    if borrowing && task {
+        if value.kind == ExprKind.Local {
+            return Result.Ok(false)
+        }
+        if value.kind == ExprKind.Field {
+            discard task_expression(flow, get(value.children, 0), true, true)?
+            return Result.Ok(false)
+        }
+        if value.kind != ExprKind.Block && value.kind != ExprKind.If && value.kind != ExprKind.Match {
+            return Result.Err(task_error(flow, value, "bind a Task-bearing resource before borrowing it"))
+        }
     }
     if value.kind == ExprKind.Deferred && value.text == "comptime selection" {
         // Captures describe possible access, not eagerly evaluated operands.
@@ -252,6 +308,9 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         return Result.Ok(false)
     }
     if value.kind == ExprKind.Block {
+        return task_sequence(flow, value.children, allowed, borrowing)
+    }
+    if value.kind == ExprKind.Coerce && (value.text == "resource-pending-transfer" || value.text == "resource-pending-field-transfer") {
         return task_sequence(flow, value.children, allowed)
     }
     if value.kind == ExprKind.If {
@@ -263,11 +322,11 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         let yes = task_branch(flow)
         let no = task_branch(flow)
         let then = get(value.children, 1)
-        discard task_expression(yes, then, allowed)?
+        discard task_expression(yes, then, allowed, borrowing)?
         var no_falls = true
         if length(value.children) == 3 {
             let otherwise = get(value.children, 2)
-            discard task_expression(no, otherwise, allowed)?
+            discard task_expression(no, otherwise, allowed, borrowing)?
             no_falls = otherwise.falls
         }
         if then.falls && no_falls && !compatible_task_state(yes, no) {
@@ -281,11 +340,12 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
                 task_join(flow, no)
             }
         }
-        return Result.Ok(task)
+        return Result.Ok(task && !borrowing)
     }
     if value.kind == ExprKind.Match {
         let input = get(value.children, 0)
-        discard task_sequence(flow, value.children, task_value(flow.context.env, input.ty))?
+        let borrowed = borrowing || task_borrowed_input(flow, input)?
+        discard task_sequence(flow, value.children, task_value(flow.context.env, input.ty), borrowed)?
         if !input.falls { return Result.Ok(false) }
         let covered = new[Int]()
         let merged = task_branch(flow)
@@ -295,8 +355,8 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
             let branch = task_branch(flow)
             let arm = get(value.arms, index)
             let body = arm.body
-            discard task_match_bindings(branch, value, input.ty, arm, covered)?
-            discard task_sequence(branch, body, allowed)?
+            discard task_match_bindings(branch, value, input.ty, arm, covered, borrowed)?
+            discard task_sequence(branch, body, allowed, borrowing)?
             if all_fall(body) {
                 discard task_match_consumed(branch, value, arm)?
                 if found && !compatible_task_state(merged, branch) {
@@ -311,7 +371,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         if found {
             task_join(flow, merged)
         }
-        return Result.Ok(task)
+        return Result.Ok(task && !borrowing)
     }
     if value.kind == ExprKind.Binary &&(value.text == "&&" || value.text == "||") {
         discard task_expression(flow, get(value.children, 0), false)?
@@ -449,11 +509,13 @@ fn task_flow(context Context, function Function) Result[Bool, Failure] {
     let offsets = ints(0)
     index = 0
     while index < length(function.locals) {
-        let width = task_width(context.env, get(function.locals, index).ty)
+        let ty = get(function.locals, index).ty
+        let width = task_width(context.env, ty)
+        let borrowed = index < length(function.params) && width > 0 && task_resource_borrow(context, ty)?
         var field = 0
         while field < width {
             push(locals, if index < length(function.params) {
-                    1
+                    if borrowed { 3 } else { 1 }
                 } else {
                     0
                 })

@@ -1,0 +1,147 @@
+record ResourceJob {
+    owner Leaf
+    pending Task[Int]
+}
+
+impl Dispose for ResourceJob {
+    fn dispose(self ResourceJob) {
+        trace_job_cleanup(self)
+    }
+}
+
+fn trace_job_cleanup(value ResourceJob) {
+    assert job_id(value) == 1
+    push(value.owner.trace, 90)
+}
+
+enum OptionalJob {
+    Some(ResourceJob)
+    None
+}
+
+impl Dispose for OptionalJob {
+    fn dispose(self OptionalJob) {
+    }
+}
+
+async fn job_work(trace List[Int], delay Int) Int {
+    defer {
+        push(trace, 80)
+    }
+    sleep_ms(delay).await
+    7
+}
+
+fn resource_job(trace List[Int], delay Int) ResourceJob {
+    ResourceJob {
+        owner = acquire(1, trace)
+        pending = job_work(trace, delay)
+    }
+}
+
+fn job_id(value ResourceJob) Int {
+    value.owner.id
+}
+
+fn optional_job_id(value OptionalJob) Int {
+    match value {
+        OptionalJob.Some(job) => job_id(job)
+        OptionalJob.None => 0
+    }
+}
+
+test async fn inline_scoped_aggregates_consume_tasks_without_transferring_their_resources() {
+    let trace List[Int] = []
+    {
+        scoped job = resource_job(trace, 0)
+        let read = job_id
+        assert read(job) == 1
+        assert job.pending.await == 7
+        assert job_id(job) == 1 && length(trace) == 2
+    }
+    assert length(trace) == 4 && trace[2] == 90 && trace[3] == 1
+    {
+        scoped tuple = (acquire(2, trace), job_work(trace, 0))
+        assert tuple.1.await == 7 && tuple.0.id == 2
+    }
+    assert length(trace) == 7 && trace[6] == 2
+    {
+        scoped value = OptionalJob.Some(resource_job(trace, 0))
+        assert optional_job_id(value) == 1
+        match value {
+            OptionalJob.Some(job) => {
+                assert job.pending.await == 7 && job_id(job) == 1
+            }
+            OptionalJob.None => {
+                assert false
+            }
+        }
+        assert optional_job_id(value) == 1
+    }
+    assert length(trace) == 11 && trace[9] == 90 && trace[10] == 1
+}
+
+async fn fallible_job(trace List[Int], success Bool) Result[ResourceJob, Text] {
+    if success {
+        Result.Ok(resource_job(trace, 0))
+    } else {
+        Result.Err("unavailable")
+    }
+}
+
+test async fn resource_results_can_retain_task_fields_through_first_ok() {
+    let trace List[Int] = []
+    {
+        scoped value = first_ok([fallible_job(trace, false), fallible_job(trace, true)]).await
+        match value {
+            Result.Ok(job) => {
+                assert job_id(job) == 1
+                assert job.pending.await == 7
+            }
+            Result.Err(_) => {
+                assert false
+            }
+        }
+        assert length(trace) == 2
+    }
+    assert length(trace) == 4 && trace[2] == 90 && trace[3] == 1
+}
+
+async fn pending_job(trace List[Int]) {
+    scoped job = resource_job(trace, 10000)
+    sleep_ms(10000).await
+    discard job.pending.await
+}
+
+async fn faulting_job(trace List[Int]) {
+    scoped job = resource_job(trace, 10000)
+    sleep_ms(0).await
+    assert false
+    discard job.pending.await
+}
+
+test async fn mixed_scope_faults_and_cancellation_drain_children_before_resource_cleanup() {
+    let trace List[Int] = []
+    let pending = pending_job(trace)
+    while length(trace) == 0 {
+        sleep_ms(0).await
+    }
+    sleep_ms(0).await
+    match cancel(pending) {
+        Outcome.Cancelled => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 4 && trace[1] == 80 && trace[2] == 90 && trace[3] == 1
+    match outcome(faulting_job(trace)).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "resource_task_scope_test.loom:")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 8 && trace[5] == 80 && trace[6] == 90 && trace[7] == 1
+}

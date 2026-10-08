@@ -796,6 +796,11 @@ language faults, suspension and cancellation. MustScope freshness/escape checks
 and typed cleanup cover nested records/enums/Lists and recursive resource trees.
 Fresh MustScope results crossing a cleanup boundary remain protected until transfer;
 an exit fault drains their resource members rather than leaking the pending result.
+Inline MustScope records/tuples/enums may retain Task fields: their owning scope
+consumes those fields explicitly, while resource parameters and cleanup borrow
+without consuming Tasks or granting Task creation authority. Fault/cancellation
+drain existing children before disposal. Resource Lists with live Task elements
+and Dispose-only mixed aggregates remain conservative.
 Fresh match payloads also reconstruct records, tuples, enums and Lists through
 the same guarded transfer. Existing resource locals enter protection before other
 constructor arguments execute; borrowing, duplicate/omitted transfers and delayed
