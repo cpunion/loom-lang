@@ -1,0 +1,133 @@
+import std.time.sleep_ms
+
+// Raw builder aliases stop at publication. The checked boundary retains the
+// exact built header; only constrained handles can be used afterwards.
+fn fill_draft(values List[Int], count Int) List[Int] {
+    var index = 0
+    while index < count {
+        push(values, index + 1)
+        index = index + 1
+    }
+    values
+}
+
+fn build_positive(count Int, events List[Int]) Result[PositiveValues, ConstraintError] {
+    let draft List[Int] = []
+    let alias = fill_draft(draft, count)
+    let inspect = fn() Int {
+        length(alias)
+    }
+    push(events, inspect())
+    let published = PositiveValues(draft)
+    published
+}
+
+fn draft_constraint_scope() Bool {
+    let events List[Int] = []
+    assert match build_positive(3, events) {
+        Result.Ok(values) => {
+            assert length(values) == 3 && values_sum(values) == 6
+            let alias = values
+            replace_positive(values, 0, PositiveElement(4))
+            alias[0] == 4 && values_sum(alias) == 9
+        }
+        Result.Err(_) => false
+    }
+    assert match build_positive(0, events) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    length(events) == 2 && events[0] == 3 && events[1] == 0
+}
+
+async fn publish_then_suspend() PositiveValues {
+    let events List[Int] = []
+    let published = match build_positive(2, events) {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            assert false
+            return PositiveValues([1])
+        }
+    }
+    let child = retain_positive_values(published)
+    let alias = published
+    replace_positive(alias, 0, PositiveElement(5))
+    child.await
+}
+
+test async fn published_drafts_keep_their_constraints_across_suspension() {
+    let values = publish_then_suspend().await
+    assert values[0] == 5 && values_sum(values) == 7
+}
+
+fn choose_draft(flag Bool, events List[Int]) Result[PositiveValues, ConstraintError] {
+    defer {
+        push(events, 8)
+    }
+    let draft = [1, 2]
+    let alias = draft
+    if flag {
+        return PositiveValues(alias)
+    }
+    draft[0] = -1
+    Result.Err(ConstraintError.Rejected)
+}
+
+fn match_draft(flag Bool) PositiveValues {
+    let draft = [2, 3]
+    let checked = match flag {
+        true => PositiveValues(draft)
+        false => PositiveValues(draft)
+    }
+    match checked {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            assert false
+            PositiveValues([1])
+        }
+    }
+}
+
+fn branch_draft_scope() Bool {
+    let events List[Int] = []
+    assert match choose_draft(true, events) {
+        Result.Ok(values) => values_sum(values) == 3
+        Result.Err(_) => false
+    }
+    assert match choose_draft(false, events) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert values_sum(match_draft(true)) == 5 && values_sum(match_draft(false)) == 5
+    let pending = nested_draft(events)
+    assert pending.0 == 2 && length(events) == 3 && events[2] == 6
+    assert match pending.1 {
+        Result.Ok(values) => values_sum(values) == 7
+        Result.Err(_) => false
+    }
+    events[0] == 8 && events[1] == 8
+}
+
+fn draft_count(values List[Int], events List[Int]) Int {
+    push(events, 6)
+    length(values)
+}
+
+fn nested_draft(events List[Int]) (Int, Result[PositiveValues, ConstraintError]) {
+    let draft = [3, 4]
+    (draft_count(draft, events), PositiveValues(draft))
+}
+
+test async fn a_private_draft_survives_a_real_wait_before_publication() {
+    let draft = [1, 2]
+    sleep_ms(1).await
+    push(draft, 3)
+    let published = match PositiveValues(draft) {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            assert false
+            PositiveValues([1])
+        }
+    }
+    assert values_sum(published) == 6
+}

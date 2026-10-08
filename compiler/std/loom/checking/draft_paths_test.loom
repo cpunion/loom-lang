@@ -1,0 +1,155 @@
+test fn draft_publication_follows_branches_match_and_eager_expression_structure() {
+    list_constraint_accept(concat(list_constraint_source(), """
+        fn identity[T](value T) T {
+            value
+        }
+        record Tagged {
+            count Int
+            value Result[Positive, ConstraintError]
+        }
+        pub fn fields() Tagged {
+            let draft = [1, 2]
+            Tagged {
+                count = length(draft)
+                value = identity(Positive(draft))
+            }
+        }
+        pub fn conditional(flag Bool) Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let alias = draft
+            if flag {
+                identity(Positive(alias))
+            } else {
+                Positive(draft)
+            }
+        }
+        pub fn matched(flag Bool, events List[Int]) Positive {
+            defer {
+                push(events, 9)
+            }
+            let draft = [1, 2]
+            let checked = match flag {
+                true => Positive(draft)
+                false => Positive(draft)
+            }
+            match checked {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    assert false
+                    Positive([1])
+                }
+            }
+        }
+        pub fn early(flag Bool) Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            if flag {
+                return Positive(draft)
+            }
+            draft[0] = -1
+            Result.Err(ConstraintError.Rejected)
+        }
+        """))
+}
+
+test fn pending_raw_arguments_and_field_initializers_cannot_escape_publication() {
+    let header = list_constraint_source()
+    list_constraint_reject(concat(header, """
+        record Envelope {
+            raw List[Int]
+            checked Result[Positive, ConstraintError]
+        }
+        pub fn invalid() Envelope {
+            let draft = [1, 2]
+            Envelope {
+                raw = draft
+                checked = Positive(draft)
+            }
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn consume(raw List[Int], checked Result[Positive, ConstraintError]) Result[Positive, ConstraintError] {
+            raw[0] = -1
+            checked
+        }
+        pub fn invalid() Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            consume(draft, Positive(draft))
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(flag Bool) Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let published = if flag {
+                Positive(draft)
+            } else {
+                Positive([3])
+            }
+            draft[0] = -1
+            published
+        }
+        """))
+}
+
+test fn draft_publication_observes_active_scoped_cleanup_on_fault_only_exits() {
+    let source = concat(list_constraint_source(), """
+        import std.resource.Dispose
+        import std.resource.MustScope
+        record Guard {
+            values List[Int]
+        }
+        impl Dispose for Guard {
+            fn dispose(self Guard) {
+                self.values[0] = -1
+            }
+        }
+        impl MustScope for Guard {}
+        pub fn invalid(output List[Positive]) {
+            let draft = [1, 2]
+            scoped guard = Guard { values = draft }
+            let checked = Positive(draft)
+            match checked {
+                Result.Ok(value) => push(output, value)
+                Result.Err(_) => {}
+            }
+            while true {
+                assert false
+            }
+        }
+        """)
+    let files = list_constraint_files(source)
+    push(files, source_file("std.resource", """
+        pub concept Dispose {
+            fn dispose(self Self)
+        }
+        pub concept MustScope {}
+        """, true))
+    assert match checked(files) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "fresh unpublished storage")
+        Result.Ok(_) => false
+    }
+}
+
+test fn unpublished_drafts_survive_unrelated_awaits_but_cannot_be_sent_to_pending_tasks() {
+    list_constraint_accept(concat(list_constraint_source(), """
+        async fn pause() {}
+        pub async fn build() Result[Positive, ConstraintError] {
+            pause().await
+            let draft = [1, 2]
+            pause().await
+            push(draft, 3)
+            Positive(draft)
+        }
+        """))
+    list_constraint_reject(concat(list_constraint_source(), """
+        async fn modify(values List[Int]) {
+            values[0] = -1
+        }
+        pub async fn invalid() Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let pending = modify(draft)
+            let published = Positive(draft)
+            pending.await
+            published
+        }
+        """))
+}

@@ -2140,8 +2140,8 @@ type, including generic or shared elements. Content predicates may observe
 immutable element fields even beside unobserved shared fields. Reads through
 those fields into nested mutable Lists or Bytes reject, including a recursive
 List with the same stored type as the outer header.
-Construction must use a fresh List literal or a pure factory proved to return a
-fresh, unpublished outer header. Elements may retain their specified sharing;
+Construction must use a fresh List literal, a pure factory proved to return a
+fresh unpublished outer header, or a proved unpublished local draft. Elements may retain their specified sharing;
 the existing header cannot be returned through a nested input either.
 Explicit source `std.list.clone` is one such factory, not a
 compiler-recognized public name:
@@ -2152,6 +2152,16 @@ type PositiveValues = List[Int] where length(self) > 0 && all_positive(self)
 fn checked_copy(values List[Int]) Result[PositiveValues, ConstraintError] {
     PositiveValues(clone(values))
 }
+
+fn build(count Int) Result[PositiveValues, ConstraintError] {
+    let draft List[Int] = []
+    var index = 0
+    while index < count {
+        push(draft, index + 1)
+        index = index + 1
+    }
+    PositiveValues(draft)
+}
 ```
 
 Here `all_positive` is an ordinary pure function; see the complete
@@ -2161,9 +2171,20 @@ boundary. Immutable aggregate elements use the same rule, including Text and
 enum payloads; see the [literal example](examples/record_refinement/literals.loom).
 The [shared-field example](examples/list_contracts/refinements.loom) constrains
 account amounts while allowing their unobserved notes to remain shared and mutable.
-`PositiveValues(existing_list)` rejects: construction cannot silently
-change that List's existing writable aliases. No automatic copy or runtime
-monitor is installed. Copies of a constrained value keep sharing its storage.
+The local draft keeps its actual header without copying. Existing origin and
+checked call-footprint rules must establish that it was not published, and no
+raw draft alias or capture may be used after construction, including cleanup.
+The analysis follows immutable local copies back to fresh storage and the
+construction's checked execution path through blocks, branches, matches and
+eager expressions. Alternatives are not treated as later executions, and a
+return ends its path. Unrelated awaits do not expose a private builder. Pending
+arguments/initializers and active lexical cleanup still cannot retain raw
+aliases across publication, including fault-only exits. Loop-local publication,
+mutable binding origins and unsupported draft operations remain conservative.
+Unknown predicates keep the ordinary `Result` boundary.
+`PositiveValues(existing_list)` still rejects when the input can have external
+writable aliases or surviving raw uses. No automatic copy, ownership syntax or
+runtime monitor is installed. Copies of a constrained value keep sharing its storage.
 
 Indexing, ordinary non-escaping read helpers and explicit copies are allowed.
 Shared element results may escape when their stored type graph proves they cannot
