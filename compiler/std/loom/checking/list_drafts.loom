@@ -136,12 +136,18 @@ fn unpublished_drafts(env Environment, functions List[Function], current Functio
     let drafts = new[Expr]()
     let candidates = new[Expr]()
     draft_candidates(env, current.body, candidates, 0)
+    if length(candidates) == 0 {
+        return drafts
+    }
+    let versions = new[DraftCandidate]()
+    let normalized = versioned_drafts(env, current, candidates, versions)
     var index = 0
-    while index < length(candidates) {
-        let candidate = get(candidates, index)
-        if draft_occurrences(env, current.body, candidate, 0) == 1 &&
-        unpublished_draft(env, functions, current, candidate, operations) {
-            push(drafts, candidate)
+    while index < length(versions) {
+        let candidate = get(versions, index)
+        if draft_occurrences(env, current.body, candidate.source, 0) == 1 &&
+        draft_occurrences(env, normalized.body, candidate.value, 0) == 1 &&
+        unpublished_draft(env, functions, normalized, candidate.value, operations) {
+            push(drafts, candidate.source)
         }
         index = index + 1
     }

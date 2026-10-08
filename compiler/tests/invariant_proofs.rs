@@ -416,15 +416,20 @@ async fn main() {
 import std.task.worker.run
 import std.result.Result
 async fn main() {
-    let draft = [1, 2]
+    var draft = [1, 2]
     let published = PositiveValues(draft)
     fill_positive(draft, 3)
     append_positive(draft, 4)
+    set(draft, 0, {
+        draft = [-1]
+        PositiveElement(5)
+    })
+    assert draft[0] == -1
     discard run(fn() Int {
         0
     }).await
     assert match published {
-        Result.Ok(values) => length(values) == 4 && values[0] == 3 && values[3] == 4
+        Result.Ok(values) => length(values) == 4 && values[0] == 5 && values[3] == 4
         Result.Err(_) => false
     }
 }
@@ -480,7 +485,7 @@ fn main() {
     // revalidation as source-typed borrows, without changing executable IR.
     let raw_copy = sequential.replace(
         "    let values = Ordered([1, 2])\n    copy_right_to_left(values)\n    assert values[0] == 2",
-        "    let draft = [1, 2]\n    let published = Ordered(draft)\n    copy_right_to_left(draft)\n    discard published",
+        "    var draft = [1, 2]\n    let published = Ordered(draft)\n    copy_right_to_left(draft)\n    discard published",
     );
     fs::write(&main, &raw_copy).unwrap();
     success(&check());
@@ -507,7 +512,7 @@ ensures result == old(values[0])
     values[0]
 }
 async fn main() {
-    let draft = [1, 2]
+    var draft = [1, 2]
     let published = PositiveValues(draft)
     draft[0] = 3
     match published {

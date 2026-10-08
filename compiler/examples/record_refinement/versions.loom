@@ -1,0 +1,52 @@
+fn build_versioned(input List[Int], events List[Int]) Result[PositiveValues, ConstraintError] {
+    var draft = input
+    draft = [1, 2]
+    let alias = draft
+    defer {
+        alias[0] = 6
+        push(events, values_sum(alias))
+    }
+    let published = PositiveValues(draft)
+    set(draft, 0, {
+            draft = [-1, 2]
+            push(events, 1)
+            PositiveElement(4)
+        })
+    assert alias[0] == 4 && draft[0] == -1
+    draft[0] = -2
+    fill_positive(alias, 5)
+    assert values_sum(alias) == 10 && draft[0] == -2
+    published
+}
+
+fn versioned_draft_scope() Bool {
+    let input = [-7, 8]
+    let events List[Int] = []
+    let published = build_versioned(input, events)
+    assert input[0] == -7 && length(events) == 2 && events[0] == 1 && events[1] == 11
+    match published {
+        Result.Ok(value) => values_sum(value) == 11
+        Result.Err(_) => false
+    }
+}
+
+test fn mutable_binding_snapshots_preserve_compile_time_sharing() {
+    assert comptime {
+        versioned_draft_scope()
+    }
+}
+
+test async fn rebound_variables_do_not_rebind_published_headers_after_waits() {
+    var draft = [1, 2]
+    let alias = draft
+    let published = PositiveValues(draft)
+    sleep_ms(1).await
+    draft = [-1, 2]
+    alias[0] = 3
+    draft[0] = -2
+    assert match published {
+        Result.Ok(value) => value[0] == 3 && values_sum(value) == 5
+        Result.Err(_) => false
+    }
+    assert draft[0] == -2
+}

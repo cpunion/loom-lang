@@ -3,11 +3,26 @@ import std.loom.proof.verify_preservation
 // Preserve the nominal information erased by an ordinary representation borrow.
 // Other expressions are abstract inputs: never replay caller effects in a proof.
 fn update_input(env Environment, value Expr) Expr {
-    if value.kind == ExprKind.Coerce && length(value.children) == 1 {
-        let input = get(value.children, 0)
-        if get(env.types, input.ty).kind == TypeKind.Refined && base_type(env, input.ty) == value.ty {
-            return input
+    var selected = value
+    var depth = 0
+    while depth < 64 {
+        if selected.kind == ExprKind.Coerce && length(selected.children) == 1 {
+            let input = get(selected.children, 0)
+            if get(env.types, input.ty).kind == TypeKind.Refined && base_type(env, input.ty) == selected.ty {
+                return input
+            }
         }
+        if selected.kind != ExprKind.Block || length(selected.children) == 0 {
+            return selected
+        }
+        let tail = get(selected.children, length(selected.children) - 1)
+        if tail.ty != selected.ty || !tail.falls {
+            return selected
+        }
+        // Earlier effects are checked in evaluation order by the caller. Only
+        // the normal-result value supplies a type/literal to the private probe.
+        selected = tail
+        depth = depth + 1
     }
     value
 }

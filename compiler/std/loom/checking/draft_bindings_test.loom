@@ -1,0 +1,168 @@
+test fn mutable_draft_versions_keep_old_aliases_and_new_headers_distinct() {
+    list_constraint_accept(concat(draft_update_source(), """
+        import std.list.set
+        pub fn build(input List[Int]) Result[PositiveHead, ConstraintError] {
+            var draft = input
+            draft = [1, 2]
+            let alias = draft
+            let published = PositiveHead(draft)
+            draft = [-1, 2]
+            draft[0] = -2
+            alias[0] = 3
+            published
+        }
+        pub fn accumulated(count Int) Result[PositiveHead, ConstraintError] {
+            var draft = [1]
+            var index = 0
+            while index < count {
+                push(draft, index)
+                index = index + 1
+            }
+            PositiveHead(draft)
+        }
+        type PositiveElement = Int where self > 0
+        pub fn arguments(events List[Int]) Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            let alias = draft
+            let published = PositiveHead(draft)
+            set(draft, 0, {
+                draft = [-1, 2]
+                push(events, 1)
+                PositiveElement(4)
+            })
+            alias[0] = 3
+            draft[0] = -2
+            published
+        }
+        record Builder {
+            values List[Int]
+            flag Bool
+        }
+        pub fn fields() Result[PositiveHead, ConstraintError] {
+            var builder = Builder {
+                values = [1, 2]
+                flag = true
+            }
+            let alias = builder.values
+            let published = PositiveHead(builder.values)
+            builder = Builder {
+                values = [-1, 2]
+                flag = false
+            }
+            builder.values[0] = -2
+            alias[0] = 3
+            published
+        }
+        """))
+}
+
+test fn versioning_cannot_hide_old_writes_conditional_values_or_delayed_reads() {
+    let header = draft_update_source()
+    list_constraint_reject(concat(header, """
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            let published = PositiveHead(draft)
+            defer {
+                draft = [3, 4]
+            }
+            draft[0] = -1
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        import std.list.set
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            let published = PositiveHead(draft)
+            set(draft, 0, {
+                draft = [3, 4]
+                -1
+            })
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            let alias = draft
+            let published = PositiveHead(draft)
+            draft = [3, 4]
+            alias[0] = -1
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(flag Bool, input List[Int]) Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            if flag {
+                draft = input
+            }
+            PositiveHead(draft)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            defer {
+                draft[0] = -1
+            }
+            let published = PositiveHead(draft)
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(count Int) List[PositiveHead] {
+            var saved List[Int] = []
+            let output List[PositiveHead] = []
+            var index = 0
+            while index < count {
+                var draft = [1, 2]
+                let published = PositiveHead(draft)
+                saved = draft
+                match published {
+                    Result.Ok(value) => push(output, value)
+                    Result.Err(_) => {}
+                }
+                index = index + 1
+            }
+            saved[0] = -1
+            output
+        }
+        """))
+}
+
+test fn cached_mutable_versions_revalidate_original_source_occurrences() {
+    let source = concat(draft_update_source(), """
+        pub fn build(input List[Int]) Result[PositiveHead, ConstraintError] {
+            var draft = input
+            draft = [1, 2]
+            let alias = draft
+            let published = PositiveHead(draft)
+            draft = [-1, 2]
+            alias[0] = 3
+            published
+        }
+        """)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(list_constraint_files(concat(source, "\nfn unrelated() {}\n"))),
+        false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(source, "alias[0] = 3"), "alias[0] = -1")
+    assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
