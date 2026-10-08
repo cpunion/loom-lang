@@ -40,7 +40,7 @@ fn watch[T](tasks List[Task[T]]) Batch[T] {
 fn take_slot[T](slots List[Option[T]], index Int) (T, List[Option[T]]) {
     let previous, rest = replace(slots, index, Option.None)
     match previous {
-        Option.Some(value) =>(value, rest)
+        Option.Some(value) => (value, rest)
         Option.None => {
             fault_text("task completion selected an empty slot")
         }

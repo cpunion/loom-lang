@@ -763,7 +763,7 @@ The [file pipeline](../../compiler/examples/stream_lines/README.md) uses a lazy
 and both I/O modes share line framing and UTF-8 checks. Infallible resource
 factories compose owned adapters without an artificial Result. Lifting a
 synchronous Iterator still does not make its I/O nonblocking. Document sequences,
-general borrow-retaining adapters, resource-bearing `first_ok`/`cancel_when` and application-grade
+general borrow-retaining adapters, resource-bearing `first_ok` and application-grade
 networking remain open. Fresh async resource acquisition uses the Task result
 ownership described below.
 
@@ -820,6 +820,9 @@ selected index with status without extracting managed payloads or rescanning Lis
 Existing scoped resources cannot transfer into Tasks, but directly awaited calls
 may borrow them until all child cleanup finishes. NoSuspend guards retain their
 stronger suspension restriction.
+`cancel_when` and deadlines also preserve fresh resource results. The trigger
+drains before terminal work transfers; a trigger cleanup fault drains untransferred
+work, while an earlier work fault remains primary.
 See [cleanup](../../compiler/README.md#lexical-cleanup).
 
 Source `std.sync.mutex` provides shared mutex identities and lexical

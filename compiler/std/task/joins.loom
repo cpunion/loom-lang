@@ -54,11 +54,15 @@ pub async fn all[T](tasks List[Task[T]]) List[T] {
 // Selection never erases a typed result. Once every child has completed, a
 // single helper transfers their handles and extracts values in input order.
 async fn tuple_values[Ts...](tasks (Task[Ts]...)) (Ts...) {
-    comptime map task in tasks { task.await }
+    comptime map task in tasks {
+        task.await
+    }
 }
 
 fn drain_tuple[Ts...](suppress Bool, tasks (Task[Ts]...)) {
-    comptime for task in tasks { task_drain(task, suppress) }
+    comptime for task in tasks {
+        task_drain(task, suppress)
+    }
 }
 
 pub async fn all[Ts...](tasks (Task[Ts]...)) (Ts...) {
@@ -90,7 +94,9 @@ pub async fn all[Ts...](tasks (Task[Ts]...)) (Ts...) {
 // The input Tasks are already hot. Awaiting their outcomes in input order
 // retains concurrent execution and never cancels a sibling on a fault.
 pub async fn settled[Ts...](tasks (Task[Ts]...)) (Outcome[Ts]...) {
-    comptime map task in tasks { task_outcome(task).await }
+    comptime map task in tasks {
+        task_outcome(task).await
+    }
 }
 
 async fn first[T](tasks List[Task[T]], success_only Bool) Task[T] {

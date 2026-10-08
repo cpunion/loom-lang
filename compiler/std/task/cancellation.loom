@@ -6,18 +6,13 @@
 pub async fn cancel_when[T, S](task Task[T], trigger Task[S]) Outcome[T] {
     let observed = task_observe(task, 0)
     let signal = task_observe(trigger, 1)
-    let selected = task_next().await
+    let selected, terminal = task_next_event().await
     if selected == 0 {
-        match task_outcome(observed).await {
-            Outcome.Faulted(error) => {
-                task_drain(signal, true)
-                Outcome.Faulted(error)
-            }
-            value => {
-                task_drain(signal, false)
-                value
-            }
-        }
+        task_drain(signal, match terminal {
+                TaskTerminal.Faulted(_) => true
+                _ => false
+            })
+        task_ready_outcome(observed)
     } else {
         task_drain(signal, false)
         task_cancel(observed)
