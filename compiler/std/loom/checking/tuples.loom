@@ -41,6 +41,10 @@ fn tuple_literal(context Context, node Node, expected Int) Result[Expr, Failure]
         index = index + 1
     }
     let ty = tuple_type(context.env, context.signature.symbol, node, elements)?
+    if must_scope(context, ty)? {
+        return Result.Ok(empty_inputs(context, inputs, node,
+                pending_aggregate(context, node, ty, ExprKind.Record, -1, fields)?))
+    }
     Result.Ok(empty_inputs(context, inputs, node, expression(ExprKind.Record, ty, node, "", -1, fields, all_fall(fields))))
 }
 

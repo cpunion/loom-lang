@@ -763,7 +763,7 @@ The [file pipeline](../../compiler/examples/stream_lines/README.md) uses a lazy
 and both I/O modes share line framing and UTF-8 checks. Infallible resource
 factories compose owned adapters without an artificial Result. Lifting a
 synchronous Iterator still does not make its I/O nonblocking. Document sequences,
-general borrow-retaining adapters, resource-bearing joins and application-grade
+general borrow-retaining adapters, resource-bearing List joins and application-grade
 networking remain open. Fresh async resource acquisition uses the Task result
 ownership described below.
 
@@ -801,9 +801,14 @@ OOM/external termination offer no guarantee. Fresh MustScope Task results remain
 owned by the completed producer until one-shot extraction; cancellation/fault
 drain disposes unextracted results through typed frame callbacks. Native tests
 cover recursive resources, Outcome/Result containers, `.await?`, dynamic/captured
-factories and failed outgoing cleanup at O0/O2 with moving GC. Existing scoped
-resources cannot transfer into Tasks, but directly awaited calls may borrow them until all child cleanup
-finishes. NoSuspend guards retain their stronger suspension restriction.
+factories and failed outgoing cleanup at O0/O2 with moving GC.
+Tuple `all`, `settled` and tuple `.await` also use guarded aggregate construction;
+completed fields remain protected while later fields await. Fault/cancellation
+drains the partial tuple, and successful extraction scopes the whole result.
+Container hooks live in `std.resource`, leaving ordinary Option/Result independent.
+Existing scoped resources cannot transfer into Tasks, but directly awaited calls
+may borrow them until all child cleanup finishes. NoSuspend guards retain their
+stronger suspension restriction.
 See [cleanup](../../compiler/README.md#lexical-cleanup).
 
 Source `std.sync.mutex` provides shared mutex identities and lexical

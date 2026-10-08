@@ -3547,7 +3547,7 @@ This guarantee follows MustScope, not Dispose alone. A function returning an
 ordinary Dispose-only value may return a shared alias, so its function type alone
 cannot justify a scoped initializer. Direct calls still use checked body evidence.
 
-Nested record resources now receive pending cleanup during construction.
+Nested record and tuple resources receive pending cleanup during construction.
 Generic parameters and associated fields can use `Dispose + MustScope` bounds
 for the same transfer. Concrete specialization registers every nested resource,
 not just the abstract field's outer Dispose method; completed fields still drain
@@ -3556,8 +3556,12 @@ if a later initializer or a cleanup faults. See the
 Later fields may create closures or use field-local loops: a closure's return
 and a local loop's break/continue do not escape aggregate construction. Discarded
 `comptime if` branches do not participate in this check. Actual
-enclosing returns, propagation, loop exits and awaits still reject while a
-resource field is pending.
+enclosing returns, propagation and loop exits still reject while a resource
+field is pending. Pending fields remain protected across awaits and are drained
+on cancellation; NoSuspend fields still forbid suspension. Tuple literals and
+`comptime map` use the same checked construction path. Source `std.resource`
+provides structural tuple and Option/Result container hooks, without making
+ordinary Option/Result data depend on resources.
 Enum payloads use the same pending transfer and LIFO cleanup, selecting only the
 active variant. An enum used with `scoped` must implement Dispose; its MustScope
 payloads are cleaned automatically after the enum's own Dispose method. Matching
@@ -3804,9 +3808,12 @@ Task until one-shot extraction; abandoned results drain typed cleanup callbacks.
 The receiver uses `scoped`, including after `.await?` for a fallible factory.
 `Outcome`, `Result` and `Option` supply container hooks; only active MustScope
 payloads receive recursive cleanup. Scoped or borrowed resources still cannot
-be returned or transferred into another Task. Resource-bearing tuple/List joins
-remain unfinished; the existing join APIs currently cover discardable results.
-See the [native resource-result tests](examples/cleanup/task_resource_result_test.loom).
+be returned or transferred into another Task. Tuple `all`, `settled` and tuple
+`.await` also retain resource results through partial construction, fault and
+cancellation. Their complete results enter one `scoped` tuple; field reads borrow
+its resources rather than extracting new owners. Resource-bearing List joins
+remain unfinished. See the [native resource-result tests](examples/cleanup/task_resource_result_test.loom)
+and [tuple join tests](examples/cleanup/task_resource_join_test.loom).
 Resource factory overloads
 of [`std.stream`](std/stream/README.md) compose scoped async pipelines from
 fallible or infallible factories. [`std.file.lines.stream`](std/file/lines/README.md)

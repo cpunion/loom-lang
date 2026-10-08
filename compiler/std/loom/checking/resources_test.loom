@@ -8,6 +8,10 @@ fn resource_source_files(source Text) List[TestFile] {
         }
         pub concept NoSuspend {
         }
+        impl[Ts...] Dispose for (Ts...) {
+            fn dispose(self (Ts...)) {
+            }
+        }
         impl[T Dispose] Dispose for List[T] {
             fn dispose(self List[T]) {
             }
@@ -63,7 +67,7 @@ test fn record_resource_fields_transfer_into_a_scoped_wrapper() {
             "record Double { first Handle; second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn pair(log List[Int]) Double { Double { first = make(log) second = make(log) } }\nfn main() { scoped value = pair([0]) }"))
     resource_reject_reason(concat(resource_header(),
             "record Double { first Handle; second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn pair(log List[Int]) Double { Double { first = make(log) second = { return pair(log)\nmake(log) } } }\nfn main() { scoped value = pair([0]) }"),
-        "a resource field cannot precede return, ?, loop exit or await during aggregate construction")
+        "a resource field cannot precede return, ? or loop exit during aggregate construction")
     resource_accept(concat(resource_header(),
             "record Wrapped { inner Handle }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) {} }\nrecord Double { first Wrapped; second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn pair(log List[Int]) Double { Double { first = Wrapped { inner = make(log) } second = make(log) } }\nfn main() { scoped value = pair([0]) }"))
     resource_reject(concat(resource_header(),

@@ -12,6 +12,9 @@ import std.int.parse
 import std.option.Option
 import std.result.Result
 import std.io.write_text
+import std.resource.Dispose
+import std.resource.MustScope
+import std.list.push
 
 async fn item(value Int) Int {
     sleep_ms(value % 3).await
@@ -20,6 +23,28 @@ async fn item(value Int) Int {
 
 async fn label() Text {
     "ready"
+}
+
+record Lease {
+    id Int
+    closed List[Int]
+}
+
+impl MustScope for Lease {
+}
+
+impl Dispose for Lease {
+    fn dispose(self Lease) {
+        push(self.closed, self.id)
+    }
+}
+
+async fn lease(id Int, closed List[Int]) Lease {
+    sleep_ms(0).await
+    Lease {
+        id = id
+        closed = closed
+    }
 }
 
 fn start(count Int) List[Task[Int]] {
@@ -56,6 +81,13 @@ fn count() Int {
 }
 
 async fn main() {
+    let closed List[Int] = []
+    {
+        scoped values = all((lease(1, closed), label(), lease(2, closed))).await
+        assert values.0.id == 1 && values.1 == "ready" && values.2.id == 2
+        assert length(closed) == 0
+    }
+    assert length(closed) == 2 && closed[0] == 2 && closed[1] == 1
     let number, text, _ = all((item(7), label(), sleep_ms(0))).await
     assert number == 7 && text == "ready"
     let first, second = settled((item(8), label())).await

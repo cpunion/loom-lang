@@ -20,12 +20,15 @@ test fn pending_resource_exit_checks_preserve_enclosing_control_boundaries() {
     let again = resource_exit_expression(ExprKind.Continue, new[Expr]())
     let body = resource_exit_expression(ExprKind.Block, pair(exit, again))
     let iteration = resource_exit_expression(ExprKind.While, pair(leaf, body))
-    assert !pending_resource_exit(iteration, 0)
-    assert pending_resource_exit(resource_exit_expression(ExprKind.Block, pair(iteration, exit)), 0)
-    assert pending_resource_exit(resource_exit_expression(ExprKind.While, pair(body, leaf)), 0)
-    assert pending_resource_exit(resource_exit_expression(ExprKind.Return, expressions(leaf)), 1)
-    assert pending_resource_exit(resource_exit_expression(ExprKind.Await, expressions(leaf)), 1)
-    assert pending_resource_exit(resource_exit_expression(ExprKind.Suspend, expressions(leaf)), 1)
+    assert !pending_resource_exit(iteration, 0, false)
+    assert pending_resource_exit(resource_exit_expression(ExprKind.Block, pair(iteration, exit)), 0, false)
+    assert pending_resource_exit(resource_exit_expression(ExprKind.While, pair(body, leaf)), 0, false)
+    assert pending_resource_exit(resource_exit_expression(ExprKind.Return, expressions(leaf)), 1, false)
+    let awaited = resource_exit_expression(ExprKind.Await, expressions(leaf))
+    assert !pending_resource_exit(awaited, 1, false)
+    assert pending_resource_exit(awaited, 1, true)
+    assert pending_resource_exit(resource_exit_expression(ExprKind.Suspend, expressions(leaf)), 1, true)
+    assert !pending_resource_exit(body, 0, true)
     let selected = resource_exit_expression(ExprKind.Match, expressions(leaf))
     push(selected.arms, Arm {
             variant = 0
@@ -33,8 +36,8 @@ test fn pending_resource_exit_checks_preserve_enclosing_control_boundaries() {
             whole = -1
             body = expressions(exit)
         })
-    assert pending_resource_exit(selected, 0)
-    assert !pending_resource_exit(selected, 1)
+    assert pending_resource_exit(selected, 0, false)
+    assert !pending_resource_exit(selected, 1, false)
 }
 
 test fn pending_resources_allow_control_flow_inside_local_execution_scopes() {
@@ -99,5 +102,5 @@ fn wrap(log List[Int]) Result[Wrapped, Text] {
         tag = attempt()?
     })
 }
-"""), "a resource field cannot precede return, ?, loop exit or await during aggregate construction")
+"""), "a resource field cannot precede return, ? or loop exit during aggregate construction")
 }

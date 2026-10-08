@@ -1,0 +1,88 @@
+test fn resource_tuples_transfer_fresh_fields_but_borrow_scoped_fields() {
+    let header = concat(resource_header(), """
+        fn pair(log List[Int]) (Handle, Int, Handle) {
+            (make(log), 1, make(log))
+        }
+        """)
+    resource_accept(concat(header, """
+        fn run(log List[Int]) {
+            scoped values = pair(log)
+            assert values.0.use() + values.2.use() == 14
+        }
+        """))
+    resource_reject(concat(header, """
+        fn run(log List[Int]) {
+            let values = pair(log)
+            discard values
+        }
+        """))
+    resource_reject(concat(header, """
+        fn run(log List[Int]) {
+            scoped values = pair(log)
+            scoped copied = values.0
+        }
+        """))
+    resource_reject(concat(header, """
+        fn copied(value Handle) (Handle, Handle) {
+            (value, value)
+        }
+        """))
+}
+
+test fn pending_resource_fields_survive_await_in_tuples_records_and_lists() {
+    resource_accept(concat(resource_header(), """
+        async fn acquire(log List[Int]) Handle {
+            make(log)
+        }
+        async fn tuple(log List[Int]) (Handle, Handle) {
+            (acquire(log).await, acquire(log).await)
+        }
+        record Pair {
+            first Handle
+            second Handle
+        }
+        impl Dispose for Pair {
+            fn dispose(self Pair) {
+            }
+        }
+        async fn record_pair(log List[Int]) Pair {
+            Pair {
+                first = acquire(log).await
+                second = acquire(log).await
+            }
+        }
+        async fn list(log List[Int]) List[Handle] {
+            [acquire(log).await, acquire(log).await]
+        }
+        async fn run(log List[Int]) {
+            scoped first = tuple(log).await
+            scoped second = record_pair(log).await
+            scoped third = list(log).await
+        }
+        """))
+    resource_reject_reason(concat(resource_header(), """
+        import std.resource.NoSuspend
+        impl NoSuspend for Handle {
+        }
+        async fn number() Int {
+            1
+        }
+        async fn run(log List[Int]) {
+            scoped values = (make(log), number().await)
+        }
+        """), "a NoSuspend operand is still pending; finish its operation before awaiting")
+    resource_reject_reason(concat(resource_header(), """
+        import std.resource.NoSuspend
+        record Guard {
+            id Int
+        }
+        impl NoSuspend for Guard {
+        }
+        async fn number() Int {
+            1
+        }
+        async fn run(log List[Int]) {
+            scoped values = (Guard { id = 1 }, make(log), number().await)
+        }
+        """), "a NoSuspend operand is still pending; finish its operation before awaiting")
+}

@@ -1,0 +1,122 @@
+import std.task.all
+import std.task.settled
+
+test async fn tuple_all_transfers_resources_with_ordinary_fields_in_input_order() {
+    let trace List[Int] = []
+    {
+        scoped values = all((acquire_async(1, trace), sleep_ms(0), acquire_async(2, trace))).await
+        assert values.0.id == 1 && values.2.id == 2
+        sleep_ms(0).await
+        assert length(trace) == 2
+    }
+    assert length(trace) == 4 && trace[2] == 2 && trace[3] == 1
+}
+
+async fn failed_join_acquisition(trace List[Int]) Leaf {
+    sleep_ms(1).await
+    assert false
+    acquire(9, trace)
+}
+
+test async fn tuple_settled_drains_only_completed_resource_payloads() {
+    let trace List[Int] = []
+    {
+        scoped values = settled((acquire_async(1, trace), failed_join_acquisition(trace), acquire_async(2, trace))).await
+        match values.0 {
+            Outcome.Completed(value) => {
+                assert value.id == 1
+            }
+            _ => {
+                assert false
+            }
+        }
+        match values.1 {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "task_resource_join_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+        assert length(trace) == 2
+    }
+    assert length(trace) == 4 && trace[2] == 2 && trace[3] == 1
+}
+
+async fn partially_constructed_tuple(trace List[Int], fail Bool) (Leaf, Leaf) {
+    (acquire_async(1, trace).await, {
+            push(trace, 100)
+            sleep_ms(if fail {
+                    0
+                } else {
+                    10000
+                }).await
+            assert !fail
+            acquire(2, trace)
+        })
+}
+
+test async fn pending_tuple_fields_drain_on_fault_and_cancellation() {
+    let trace List[Int] = []
+    {
+        scoped failed = outcome(partially_constructed_tuple(trace, true)).await
+        match failed {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "task_resource_join_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 3 && trace[0] == 10 && trace[1] == 100 && trace[2] == 1
+    let pending = partially_constructed_tuple(trace, false)
+    while length(trace) < 5 {
+        sleep_ms(0).await
+    }
+    {
+        scoped cancelled = cancel(pending)
+        match cancelled {
+            Outcome.Cancelled => {
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 6 && trace[3] == 10 && trace[4] == 100 && trace[5] == 1
+}
+
+async fn failure_after_pair_acquisition(trace List[Int]) Leaf {
+    while length(trace) < 2 {
+        sleep_ms(0).await
+    }
+    assert false
+    acquire(9, trace)
+}
+
+test async fn failed_tuple_join_drains_completed_resources_after_cleanup_faults() {
+    let trace List[Int] = []
+    {
+        scoped failed = outcome(all((acquire_pair_async(trace, true), failure_after_pair_acquisition(trace)))).await
+        match failed {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "task_resource_join_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 5
+    assert trace[2] == 3 && trace[3] == 2 && trace[4] == 1
+}
+
+test async fn postfix_tuple_await_uses_the_same_resource_transfer_path() {
+    let trace List[Int] = []
+    {
+        scoped values = (acquire_async(1, trace), acquire_async(2, trace)).await
+        assert values.0.id + values.1.id == 3
+    }
+    assert length(trace) == 4 && trace[2] == 2 && trace[3] == 1
+}
