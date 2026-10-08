@@ -20,6 +20,11 @@ async intrinsic fn task_outcome[T](task Task[T]) Outcome[T]
 
 intrinsic fn task_cancel[T](task Task[T]) Outcome[T]
 
+// Only called after terminal notification; these do not create another Task.
+intrinsic fn task_ready_result[T](task Task[T]) T
+
+intrinsic fn task_ready_outcome[T](task Task[T]) Outcome[T]
+
 // Result.Err is a completed value. Only child execution/cleanup faults become
 // fault data; OOM and unexpected runtime failures still terminate the process.
 pub async fn outcome[T](task Task[T]) Outcome[T] {

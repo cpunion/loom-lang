@@ -1,0 +1,42 @@
+test fn terminal_extraction_lowers_without_a_coroutine_or_additional_task() {
+    let types = test_types()
+    let task = shape(types, TypeKind.Task, ints(1))
+    let locals = new[Local]()
+    push(locals, test_local(task))
+    let source = Function {
+        is_async = false
+        symbol = -1
+        arguments = new[Int]()
+        params = ints(task)
+        result = 1
+        locals = locals
+        preconditions = new[Expr]()
+        postconditions = new[Expr]()
+        result_cleanup = new[Expr]()
+        result_local = -1
+        body = operation("task_ready_result", 1, test_span(),
+            one(node(ExprKind.Local, task, test_span(), 0, new[Expr]())))
+        runtime_name = "task_ready_result"
+        span = test_span()
+    }
+    let functions = new[Function]()
+    push(functions, source)
+    let lowered = lower(Program {
+            types = types
+            functions = functions
+            entry = -1
+            tests = new[Int]()
+            test_names = new[Text]()
+            exports = new[Int]()
+            interfaces = new[Interface]()
+            witnesses = new[Witness]()
+        })
+    assert length(lowered.functions) == 1
+    let extraction = get(lowered.functions, 0)
+    assert !extraction.is_async && extraction.runtime_name == ""
+    assert !has_high(extraction.body)
+    assert operations(extraction.body, "task_await") == 1
+    assert operations(extraction.body, "task_result") == 1
+    assert operations(extraction.body, "task_release") == 1
+    assert operations(extraction.body, "task_create") == 0
+}

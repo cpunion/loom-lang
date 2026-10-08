@@ -1,0 +1,73 @@
+fn resource_state_checked(body Text) Result[std.loom.typed.Program, Failure] {
+    let files = resource_source_files(concat(resource_header(), concat("import std.resource.generate\n", body)))
+    set(files, 1, source_file("std.resource", input_file("../../resource/resource.loom"), true))
+    push(files, source_file("std.task", """
+        intrinsic fn task_drain[T](task Task[T], suppress Bool)
+        pub fn finish(task Task[Int]) {
+            task_drain(task, false)
+        }
+        """, true))
+    checked(files)
+}
+
+test fn stateful_construction_transfers_task_cursors_without_capturing_them() {
+    let source = """
+        import std.task.finish
+        async fn work() Int {
+            7
+        }
+        async fn run(log List[Int]) {
+            scoped values = generate(3, work(),
+                fn(index Int, pending Task[Int]) (Handle, Task[Int]) {
+                    (make(log), pending)
+                }, finish)
+            assert values[0].use() == 7
+            let ordinary = generate(2, 0,
+                fn(index Int, state Int) (Int, Int) {
+                    (index + state, state + 1)
+                }, fn(state Int) {
+                    assert state == 2
+                })
+            assert ordinary[1] == 2
+        }
+        """
+    match resource_state_checked(source) {
+        Result.Ok(_) => {
+        }
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+        }
+    }
+}
+
+test fn stateful_construction_cannot_copy_resource_state_or_borrowed_results() {
+    let sources = ["""
+        fn run(log List[Int]) {
+            scoped held = make(log)
+            scoped values = generate(1, held,
+                fn(index Int, state Handle) (Handle, Handle) {
+                    (make(log), make(log))
+                }, fn(state Handle) {
+                    discard state.use()
+                })
+        }
+        """, """
+        fn run(log List[Int]) {
+            scoped held = make(log)
+            scoped values = generate(1, 0,
+                fn(index Int, state Int) (Handle, Int) {
+                    (held, state)
+                }, fn(state Int) {
+                })
+        }
+        """]
+    var index = 0
+    while index < length(sources) {
+        assert match resource_state_checked(get(sources, index)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}

@@ -57,6 +57,16 @@ fn start(count Int) List[Task[Int]] {
     tasks
 }
 
+fn start_leases(count Int, closed List[Int]) List[Task[Lease]] {
+    var tasks List[Task[Lease]] = []
+    var index = 0
+    while index < count {
+        tasks = append(tasks, lease(index, closed))
+        index = index + 1
+    }
+    tasks
+}
+
 fn count() Int {
     match get("LOOM_TASK_COUNT") {
         Result.Ok(found) => {
@@ -121,6 +131,12 @@ async fn main() {
         }
     }
     let count = count()
+    let resource_closed List[Int] = []
+    {
+        scoped resources = all(start_leases(count, resource_closed)).await
+        assert length(resources) == count && length(resource_closed) == 0
+    }
+    assert length(resource_closed) == count
     let values = all(start(count)).await
     let outcomes = settled(start(count)).await
     assert length(values) == count && length(outcomes) == count

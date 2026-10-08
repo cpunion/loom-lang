@@ -1,6 +1,28 @@
 fn outcome_checked(body Text, valid Bool) {
     let files = source_files("import std.task.run\nasync fn main() { run().await }")
-    let header = "record Fault { message Text }\nenum Outcome[T] { Completed(T) Faulted(Fault) Cancelled }\nasync intrinsic fn task_outcome[T](task Task[T]) Outcome[T]\nintrinsic fn task_cancel[T](task Task[T]) Outcome[T]\nasync fn item() Int { 7 }\nasync fn empty() {}\nasync fn nested() Task[Int] { item() }\npub async fn run() {\n"
+    let header = """
+        record Fault {
+            message Text
+        }
+        enum Outcome[T] {
+            Completed(T)
+            Faulted(Fault)
+            Cancelled
+        }
+        async intrinsic fn task_outcome[T](task Task[T]) Outcome[T]
+        intrinsic fn task_cancel[T](task Task[T]) Outcome[T]
+        intrinsic fn task_ready_result[T](task Task[T]) T
+        intrinsic fn task_ready_outcome[T](task Task[T]) Outcome[T]
+        async fn item() Int {
+            7
+        }
+        async fn empty() {
+        }
+        async fn nested() Task[Int] {
+            item()
+        }
+        pub async fn run() {
+        """
     push(files, source_file("std.task", concat(concat(header, body), "\n}"), true))
     match checked(files) {
         Result.Ok(_) => {
@@ -24,6 +46,12 @@ test fn task_outcomes_consume_handles_without_erasing_nested_obligations() {
     outcome_checked("discard task_cancel(nested())", false)
     outcome_checked("defer { discard task_cancel(item()) }", false)
     outcome_checked("discard task_outcome[Int]", false)
+    outcome_checked("discard task_ready_result(item())\ndiscard task_ready_outcome(empty())", true)
+    outcome_checked("let child = task_ready_result(nested())\ndiscard child.await", true)
+    outcome_checked("let task = item()\ndiscard task_ready_result(task)\ndiscard task.await", false)
+    outcome_checked("discard task_ready_result(nested())", false)
+    outcome_checked("discard task_ready_outcome(nested())", false)
+    outcome_checked("let take = task_ready_result[Int]\ndiscard take(item())", true)
 }
 
 test fn task_outcome_intrinsics_validate_their_complete_typed_schema() {

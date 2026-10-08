@@ -23,8 +23,10 @@ the tuple's block ends, then disposed in reverse order. Tuple `settled` keeps
 only each active completed resource payload. Partial construction remains
 protected during waits, faults and cancellation. `any` and `race` retain a typed
 winning Task until every loser has drained, then transfer its fresh resource or
-Outcome into the caller's scope. Dynamic List `all`/`settled` with resource results
-remain unfinished.
+Outcome into the caller's scope. Dynamic List `all`/`settled` likewise retain
+resource payloads in completed producers until selection finishes, then construct
+their guarded result List in input order. The example also scopes a dynamic List
+of leases, including an empty List when `LOOM_TASK_COUNT=0`.
 
 | `std.task` function | Awaited result | Rule |
 | --- | --- | --- |

@@ -331,6 +331,23 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         set(flow.locals, input.index, resource_value(false, false, -2))
         return Result.Ok(resource_value(false, true, -1))
     }
+    if kind == ExprKind.Coerce && expr.text == "resource-pending-field-transfer" {
+        let field = get(expr.children, 0)
+        if field.kind != ExprKind.Field || field.index != 0 || length(field.children) != 1 {
+            return Result.Err(resource_error(flow, expr, "resource construction requires its fresh private step"))
+        }
+        let input = get(field.children, 0)
+        let shape = get(flow.analysis.env.types, input.ty)
+        let value = resource_expression(flow, input, false)?
+        if input.kind != ExprKind.Local || !value.fresh || value.protected ||
+        get(current.locals, input.index).name != "" || shape.kind != TypeKind.Tuple ||
+        length(shape.arguments) != 2 || get(shape.arguments, 0) != expr.ty ||
+        flow_resource(flow, get(shape.arguments, 1))? {
+            return Result.Err(resource_error(flow, expr, "resource construction requires its fresh private step"))
+        }
+        set(flow.locals, input.index, resource_value(false, false, -2))
+        return Result.Ok(resource_value(false, true, -1))
+    }
     if kind == ExprKind.Intrinsic && (expr.text == "list_len" || expr.text == "list_get") {
         let value = resource_expression(flow, get(expr.children, 0), false)?
         if length(expr.children) > 1 {
@@ -385,7 +402,7 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         return Result.Ok(resource_value(false, flow_resource(flow, expr.ty)?, -1))
     }
     if (kind == ExprKind.Suspend && expr.text == "task_outcome") ||
-    (kind == ExprKind.Intrinsic && expr.text == "task_cancel") {
+    (kind == ExprKind.Intrinsic && (expr.text == "task_cancel" || expr.text == "task_ready_result" || expr.text == "task_ready_outcome")) {
         var index = 0
         while index < length(expr.children) {
             discard resource_expression(flow, get(expr.children, index), false)?

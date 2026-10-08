@@ -763,7 +763,7 @@ The [file pipeline](../../compiler/examples/stream_lines/README.md) uses a lazy
 and both I/O modes share line framing and UTF-8 checks. Infallible resource
 factories compose owned adapters without an artificial Result. Lifting a
 synchronous Iterator still does not make its I/O nonblocking. Document sequences,
-general borrow-retaining adapters, resource-bearing List `all`/`settled` and application-grade
+general borrow-retaining adapters, resource-bearing `first_ok`/`cancel_when` and application-grade
 networking remain open. Fresh async resource acquisition uses the Task result
 ownership described below.
 
@@ -806,6 +806,14 @@ Tuple `all`, `settled` and tuple `.await` also use guarded aggregate constructio
 completed fields remain protected while later fields await. Fault/cancellation
 drains the partial tuple, and successful extraction scopes the whole result.
 Container hooks live in `std.resource`, leaving ordinary Option/Result independent.
+Dynamic List `all`/`settled` retain typed producer handles until all terminal
+notifications arrive, then construct a guarded List in input order. A synchronous
+stateful `std.resource.generate` overload transfers its explicit Task cursor
+without captured handles or per-element wrapper Tasks. Partial values remain
+protected through factory/final-state faults, and unextracted values remain in
+their original producer frames. List container hooks, like tuple/Option/Result
+hooks, do not require ordinary elements to implement Dispose; actual MustScope
+elements still require checked recursive disposal.
 List/two-argument `any` and `race` retain their typed winning Task while draining
 losers, then transfer its fresh resource or Outcome. Terminal events pair the
 selected index with status without extracting managed payloads or rescanning Lists.

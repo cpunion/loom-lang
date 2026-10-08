@@ -401,6 +401,18 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
         let callback = intern(env, TypeKind.Function, -1, two_types(1, parameter))
         return runtime(1, two_types(1, callback), intern(env, TypeKind.List, -1, ints(parameter)))
     }
+    if name == "resource_generate_state" {
+        let arguments = abstract_arguments(env, 2)
+        let state = get(arguments, 1)
+        let step = intern(env, TypeKind.Tuple, -1, two_types(parameter, state))
+        let callback = intern(env, TypeKind.Function, -1, three_types(1, state, step))
+        let params = three_types(1, state, callback)
+        push(params, intern(env, TypeKind.Function, -1, two_types(state, 0)))
+        return runtime(2, params, intern(env, TypeKind.List, -1, ints(parameter)))
+    }
+    if name == "task_ready_result" {
+        return runtime(1, ints(intern(env, TypeKind.Task, -1, ints(parameter))), parameter)
+    }
     if name == "task_drain" {
         return runtime(1, two_types(intern(env, TypeKind.Task, -1, ints(parameter)), 2), 0)
     }
@@ -492,7 +504,7 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
             return Result.Err(failure(env, current.symbol, item.node, "task terminal requires completed, faulted(Text record), and cancelled variants"))
         }
         runtime(0, new[Int](), current.result)
-    } else if item.name == "task_outcome" || item.name == "task_cancel" {
+    } else if item.name == "task_outcome" || item.name == "task_cancel" || item.name == "task_ready_outcome" {
         let parameter = get(abstract_arguments(env, 1), 0)
         if get(env.type_states, current.result).phase == 0 {
             discard expand_type(env, current.result, 0)?
@@ -852,8 +864,8 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     var context = scope.context
     let body = if runtime_name == "" {
         block(context, child(item.node, part(item.node, NodeKind.Block)), current.result, true)?
-    } else if runtime_name == "resource_generate" {
-        generated_resources(context, item.node, current.result)?
+    } else if runtime_name == "resource_generate" || runtime_name == "resource_generate_state" {
+        generated_resources(context, item.node, current.result, runtime_name == "resource_generate_state")?
     } else if build_intrinsic(env, current.symbol) || reflection_intrinsic(env, current.symbol) {
         expression(ExprKind.Deferred, current.result, item.node, "", -1, new[Expr](), true)
     } else {
@@ -906,7 +918,7 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
         result_cleanup = result_cleanup
         result_local = result_local
         body = body
-        runtime_name = if runtime_name == "resource_generate" {
+        runtime_name = if runtime_name == "resource_generate" || runtime_name == "resource_generate_state" {
             ""
         } else {
             runtime_name

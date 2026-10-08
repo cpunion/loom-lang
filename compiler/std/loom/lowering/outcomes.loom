@@ -57,7 +57,8 @@ fn outcome_waiting(graph Graph, source Expr, start Int, loop Loop) Value {
 }
 
 fn outcome_function(types List[Type], source Function) Function {
-    if source.runtime_name != "task_cancel" {
+    let name = source.runtime_name
+    if name != "task_cancel" && name != "task_ready_result" && name != "task_ready_outcome" {
         return source
     }
     let task = node(ExprKind.Local, get(source.params, 0), source.span, 0, new[Expr]())
@@ -69,8 +70,18 @@ fn outcome_function(types List[Type], source Function) Function {
             mutable = false
             is_scoped = false
         })
-    let body = one(operation("task_cancel_begin", 0, source.span, one(task)))
-    push(body, node(ExprKind.Let, 0, source.span, saved, one(outcome_value(types, source.result, source.span, task))))
+    let body = one(if name == "task_cancel" {
+            operation("task_cancel_begin", 0, source.span, one(task))
+        } else {
+            labeled(node(ExprKind.Assert, 0, source.span, -1,
+                    one(operation("task_await", 2, source.span, one(task)))), "task result is not terminal")
+        })
+    let value = if name == "task_ready_result" {
+        operation("task_result", source.result, source.span, one(task))
+    } else {
+        outcome_value(types, source.result, source.span, task)
+    }
+    push(body, node(ExprKind.Let, 0, source.span, saved, one(value)))
     push(body, operation("task_release", 0, source.span, one(task)))
     push(body, node(ExprKind.Local, source.result, source.span, saved, new[Expr]()))
     generated(source, source.params, source.result, locals, block(body, source.result, source.span, true))

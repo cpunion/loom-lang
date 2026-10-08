@@ -49,44 +49,118 @@ fn pending_disarm(context Context, node Node, body List[Expr], flags List[Int], 
     }
 }
 
-fn generated_resources(context Context, node Node, ty Int) Result[Expr, Failure] {
+fn generated_local(context Context, node Node, ty Int, mutable Bool, scoped_value Bool, value Expr, body List[Expr]) Int {
+    let local = length(context.locals)
+    push(context.locals, Local { name = "" ty = ty mutable = mutable is_scoped = scoped_value })
+    push(body, expression(ExprKind.Let, 0, node, "", local, expressions(value), true))
+    local
+}
+
+fn generated_append(context Context, node Node, receiver Expr, value Expr) Result[Expr, Failure] {
+    let owner = symbol(context.env, context.signature.symbol).file
+    let package = get(context.env.source.files, owner).package
+    var index = 0
+    while index < length(context.env.signatures) {
+        let current = get(context.env.signatures, index)
+        let item = symbol(context.env, current.symbol)
+        if item.name == "list_append" && has(item.node, NodeKind.Intrinsic) &&
+        get(context.env.source.files, item.file).package == package {
+            discard validate_intrinsic(context.env, index)?
+            let values = pair(receiver, value)
+            let arguments = ints(value.ty)
+            let target = if context.emit {
+                schedule(context.env, index, arguments, new[StaticValue](), node)?
+            } else {
+                fact_call_target(context, index, arguments, new[StaticValue](), receiver.ty, values)
+            }
+            return Result.Ok(expression(ExprKind.Call, receiver.ty, node, "", target, values, true))
+        }
+        index = index + 1
+    }
+    Result.Err(error(context, node, "stateful construction requires its private List append declaration"))
+}
+
+fn generated_resources(context Context, node Node, ty Int, stateful Bool) Result[Expr, Failure] {
     let body = new[Expr]()
     let flags = new[Int]()
     let cleanups = new[Int]()
-    let list = length(context.locals)
-    push(context.locals, Local {
-            name = ""
-            ty = ty
-            mutable = false
-            is_scoped = true
-        })
+    let element = get(get(context.env.types, ty).arguments, 0)
+    let resource = must_scope(context, element)?
     let count = atom(ExprKind.Local, 1, node, 0)
     let allocate = expression(ExprKind.Intrinsic, ty, node, "list_new_capacity", -1, expressions(count), true)
-    push(body, expression(ExprKind.Let, 0, node, "", list, expressions(allocate), true))
+    let list = generated_local(context, node, ty, !resource, resource, allocate, body)
     let receiver = atom(ExprKind.Local, ty, node, list)
-    discard pending_scope(context, node, receiver, body, flags, cleanups)?
-    let index = length(context.locals)
-    push(context.locals, Local {
-            name = ""
-            ty = 1
-            mutable = true
-            is_scoped = false
-        })
-    push(body, expression(ExprKind.Let, 0, node, "", index,
-            expressions(expression(ExprKind.Integer, 1, node, "0", -1, new[Expr](), true)), true))
+    if resource {
+        discard pending_scope(context, node, receiver, body, flags, cleanups)?
+    }
+    var state = -1
+    if stateful {
+        let state_type = get(context.signature.params, 1)
+        if must_scope(context, state_type)? {
+            return Result.Err(error(context, node, "construction state cannot copy a scoped resource"))
+        }
+        state = generated_local(context, node, state_type, true, false,
+            atom(ExprKind.Local, state_type, node, 1), body)
+    }
+    let index = generated_local(context, node, 1, true, false,
+        expression(ExprKind.Integer, 1, node, "0", -1, new[Expr](), true), body)
     let position = atom(ExprKind.Local, 1, node, index)
-    let factory = atom(ExprKind.Local, get(context.signature.params, 1), node, 1)
-    let element = get(get(context.env.types, ty).arguments, 0)
-    let created = expression(ExprKind.IndirectCall, element, node, "", -1, pair(factory, position), true)
+    let factory_index = if stateful { 2 } else { 1 }
+    let factory = atom(ExprKind.Local, get(context.signature.params, factory_index), node, factory_index)
+    let values = pair(factory, position)
+    let iteration = new[Expr]()
+    let step_flags = new[Int]()
+    let step_cleanups = new[Int]()
+    let created = if stateful {
+        let state_type = get(context.signature.params, 1)
+        let cursor = atom(ExprKind.Local, state_type, node, state)
+        push(values, cursor)
+        let step_type = intern(context.env, TypeKind.Tuple, -1, two_types(element, state_type))
+        let step = generated_local(context, node, step_type, false, false,
+            expression(ExprKind.IndirectCall, step_type, node, "", -1, values, true), iteration)
+        let temporary = atom(ExprKind.Local, step_type, node, step)
+        // These projections and the following guard registration cannot fault
+        // or suspend. Consume the ordinary cursor before transferring the sole
+        // resource field from this fresh, compiler-private factory result.
+        push(iteration, expression(ExprKind.Assign, 0, node, "", state,
+                expressions(expression(ExprKind.Field, state_type, node, "", 1, expressions(temporary), true)), true))
+        let field = expression(ExprKind.Field, element, node, "", 0, expressions(temporary), true)
+        if resource {
+            let transferred = expression(ExprKind.Coerce, element, node, "resource-pending-field-transfer", -1, expressions(field), true)
+            let saved = generated_local(context, node, element, false, true, transferred, iteration)
+            let held = atom(ExprKind.Local, element, node, saved)
+            discard pending_scope(context, node, held, iteration, step_flags, step_cleanups)?
+            expression(ExprKind.Coerce, element, node, "resource-pending-transfer", -1, expressions(held), true)
+        } else {
+            field
+        }
+    } else {
+        expression(ExprKind.IndirectCall, element, node, "", -1, values, true)
+    }
     // Only this unexposed constructor temporary may accept transferred elements.
-    let append = expression(ExprKind.Intrinsic, 0, node, "list_push", list, pair(receiver, created), true)
+    push(iteration, if resource {
+            expression(ExprKind.Intrinsic, 0, node, "list_push", list, pair(receiver, created), true)
+        } else {
+            expression(ExprKind.Assign, 0, node, "", list,
+                expressions(generated_append(context, node, receiver, created)?), true)
+        })
+    pending_disarm(context, node, iteration, step_flags, step_cleanups)
     let next = expression(ExprKind.Binary, 1, node, "+", -1,
         pair(position, expression(ExprKind.Integer, 1, node, "1", -1, new[Expr](), true)), true)
-    let iteration = expression(ExprKind.Block, 0, node, "", -1,
-        pair(append, expression(ExprKind.Assign, 0, node, "", index, expressions(next), true)), true)
+    push(iteration, expression(ExprKind.Assign, 0, node, "", index, expressions(next), true))
     let condition = expression(ExprKind.Binary, 2, node, "<", -1, pair(position, count), true)
-    push(body, expression(ExprKind.While, 0, node, "", -1, pair(condition, iteration), true))
+    push(body, expression(ExprKind.While, 0, node, "", -1,
+            pair(condition, expression(ExprKind.Block, 0, node, "", -1, iteration, true)), true))
+    if stateful {
+        let finish = atom(ExprKind.Local, get(context.signature.params, 3), node, 3)
+        let cursor = atom(ExprKind.Local, get(context.signature.params, 1), node, state)
+        push(body, expression(ExprKind.IndirectCall, 0, node, "", -1, pair(finish, cursor), true))
+    }
     pending_disarm(context, node, body, flags, cleanups)
-    push(body, expression(ExprKind.Coerce, ty, node, "resource-pending-transfer", -1, expressions(receiver), true))
+    push(body, if resource {
+            expression(ExprKind.Coerce, ty, node, "resource-pending-transfer", -1, expressions(receiver), true)
+        } else {
+            receiver
+        })
     Result.Ok(expression(ExprKind.Block, ty, node, "", -1, body, true))
 }

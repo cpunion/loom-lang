@@ -1,0 +1,52 @@
+test fn stateful_list_construction_preserves_cursor_order_and_compile_time_execution() {
+    let values = std.resource.generate(3, 10,
+        fn(index Int, state Int) (Int, Int) {
+            (state + index, state + 1)
+        }, fn(state Int) {
+            assert state == 13
+        })
+    assert values[0] == 10 && values[1] == 12 && values[2] == 14
+    assert comptime {
+        let values = std.resource.generate(3, 10,
+            fn(index Int, state Int) (Int, Int) {
+                (state + index, state + 1)
+            }, fn(state Int) {
+                assert state == 13
+            })
+        values[2]
+    } == 14
+}
+
+async fn stateful_list_failure(trace List[Int], finish_fault Bool) {
+    scoped values = std.resource.generate(3, 0,
+        fn(index Int, state Int) (Leaf, Int) {
+            assert finish_fault || index < 2
+            (acquire(index + 1, trace), state + 1)
+        }, fn(state Int) {
+            assert !finish_fault
+        })
+}
+
+test async fn stateful_list_construction_guards_partial_values_and_final_state_cleanup() {
+    let failed List[Int] = []
+    match outcome(stateful_list_failure(failed, false)).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "resource_state_test.loom:")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(failed) == 4 && failed[2] == 2 && failed[3] == 1
+    let finished List[Int] = []
+    match outcome(stateful_list_failure(finished, true)).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "resource_state_test.loom:")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(finished) == 6
+    assert finished[3] == 3 && finished[4] == 2 && finished[5] == 1
+}
