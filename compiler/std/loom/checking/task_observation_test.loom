@@ -1,6 +1,23 @@
 fn observation_checked(body Text, valid Bool) {
     let files = source_files("import std.task.run\nasync fn main() { run().await }")
-    let header = "intrinsic fn task_observe[T](task Task[T], index Int) Task[T]\nasync intrinsic fn task_next() Int\nrecord TerminalFault { message Text }\nenum Terminal { Completed Faulted(TerminalFault) Cancelled }\nasync intrinsic fn task_next_terminal() Terminal\nasync fn item() Int { 7 }\npub async fn run() {\n"
+    let header = """
+        intrinsic fn task_observe[T](task Task[T], index Int) Task[T]
+        async intrinsic fn task_next() Int
+        record TerminalFault {
+            message Text
+        }
+        enum Terminal {
+            Completed
+            Faulted(TerminalFault)
+            Cancelled
+        }
+        async intrinsic fn task_next_terminal() Terminal
+        async intrinsic fn task_next_event() (Int, Terminal)
+        async fn item() Int {
+            7
+        }
+        pub async fn run() {
+        """
     push(files, source_file("std.task", concat(concat(header, body), "\n}"), true))
     match checked(files) {
         Result.Ok(_) => {
@@ -25,4 +42,53 @@ test fn observation_primitives_preserve_task_transfer_and_private_wait_rules() {
     observation_checked("discard comptime { task_observe(item(), 0) }", false)
     observation_checked("let task = task_observe(item(), 0)\nmatch task_next_terminal().await { Terminal.Completed => {} _ => { assert false } }\nassert task.await == 7", true)
     observation_checked("discard task_next_terminal", false)
+    observation_checked("""
+        let task = task_observe(item(), 9)
+        let index, terminal = task_next_event().await
+        assert index == 9
+        match terminal {
+            Terminal.Completed => {
+            }
+            _ => {
+                assert false
+            }
+        }
+        assert task.await == 7
+        """, true)
+    observation_checked("discard task_next_event", false)
+}
+
+test fn task_event_intrinsics_require_the_complete_index_and_terminal_schema() {
+    let declarations = ["""
+        async intrinsic fn task_next_event() (Bool, Terminal)
+        """, """
+        async intrinsic fn task_next_event() (Int, Int)
+        """, """
+        intrinsic fn task_next_event() (Int, Terminal)
+        """]
+    let messages = [
+        "task event requires an (Int, terminal) result",
+        "task terminal requires completed, faulted(Text record), and cancelled variants",
+        "intrinsic declaration has an incorrect async modifier",
+    ]
+    var index = 0
+    while index < length(declarations) {
+        let files = source_files("fn main() {}")
+        push(files, source_file("std.task", concat("""
+            record Fault {
+                message Text
+            }
+            enum Terminal {
+                Completed
+                Faulted(Fault)
+                Cancelled
+            }
+
+            """, get(declarations, index)), true))
+        assert match checked(files) {
+            Result.Err(failed) => failed.diagnostic.message == get(messages, index)
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
 }

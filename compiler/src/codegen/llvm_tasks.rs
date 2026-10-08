@@ -239,11 +239,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.restore_locals()?;
                 Ok(output)
             }
-            Primitive::TaskNextTerminalResult => self.runtime_call(
-                "task_next_terminal_result",
-                Some(self.context.i64_type().into()),
-                values,
-            ),
+            Primitive::TaskNextTerminalResult | Primitive::TaskNextTerminalIndex => self
+                .runtime_call(
+                    if operation == Primitive::TaskNextTerminalResult {
+                        "task_next_terminal_result"
+                    } else {
+                        "task_next_terminal_index"
+                    },
+                    Some(self.context.i64_type().into()),
+                    values,
+                ),
             Primitive::TaskObserve | Primitive::TaskNextResult => self.runtime_call(
                 if operation == Primitive::TaskObserve {
                     "task_observe"

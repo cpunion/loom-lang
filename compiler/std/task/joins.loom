@@ -97,7 +97,7 @@ pub async fn settled[Ts...](tasks (Task[Ts]...)) (Outcome[Ts]...) {
     comptime map task in tasks { task_outcome(task).await }
 }
 
-async fn first[T](tasks List[Task[T]], success_only Bool) Outcome[T] {
+async fn first[T](tasks List[Task[T]], success_only Bool) Task[T] {
     let batch = watch(tasks)
     var pending = batch.slots
     var remaining = batch.count
@@ -107,29 +107,31 @@ async fn first[T](tasks List[Task[T]], success_only Bool) Outcome[T] {
     var failure = "no task completed successfully"
     var failed = false
     while remaining > 0 {
-        let index = task_next().await
+        let index, terminal = task_next_event().await
         let task, rest = take_slot(pending, index)
         pending = rest
-        match task_outcome(task).await {
-            Outcome.Completed(value) => {
+        match terminal {
+            TaskTerminal.Completed => {
                 drain(pending, false)
-                return Outcome.Completed(value)
+                return task
             }
-            Outcome.Faulted(error) => {
+            TaskTerminal.Faulted(error) => {
                 if !success_only {
                     drain(pending, true)
-                    return Outcome.Faulted(error)
+                    return task
                 }
+                task_drain(task, true)
                 if !failed {
                     failure = error.message
                     failed = true
                 }
             }
-            Outcome.Cancelled => {
+            TaskTerminal.Cancelled => {
                 if !success_only {
                     drain(pending, false)
-                    return Outcome.Cancelled
+                    return task
                 }
+                task_drain(task, false)
             }
         }
         remaining = remaining - 1
@@ -139,11 +141,11 @@ async fn first[T](tasks List[Task[T]], success_only Bool) Outcome[T] {
 }
 
 pub async fn any[T](tasks List[Task[T]]) T {
-    completed(first(tasks, true).await)
+    first(tasks, true).await.await
 }
 
 pub async fn race[T](tasks List[Task[T]]) Outcome[T] {
-    first(tasks, false).await
+    task_outcome(first(tasks, false).await).await
 }
 
 // Fixed-size homogeneous pairs use the same source policies as dynamic Lists.

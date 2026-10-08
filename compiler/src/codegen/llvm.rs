@@ -873,6 +873,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskWaitNext
             | Primitive::TaskNextResult
             | Primitive::TaskNextTerminalResult
+            | Primitive::TaskNextTerminalIndex
             | Primitive::TaskNextTerminalFailure
             | Primitive::TaskStatus
             | Primitive::TaskFailure

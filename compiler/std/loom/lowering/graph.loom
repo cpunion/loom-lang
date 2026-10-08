@@ -153,7 +153,7 @@ fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
     if source.text == "task_outcome" {
         return outcome_waiting(graph, source, start, loop)
     }
-    if source.text == "task_next" || source.text == "task_next_terminal" {
+    if source.text == "task_next" || source.text == "task_next_terminal" || source.text == "task_next_event" {
         let park = state(graph)
         let after = state(graph)
         jump(graph, start, park)
@@ -163,7 +163,23 @@ fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
         }
         let selected = temporary(graph, 1)
         save(graph, after, selected, operation("task_next_terminal_result", 1, source.span, new[Expr]()))
-        Value { state = after expression = terminal_value(graph.types, source.ty, source.span, local(graph, selected)) }
+        let terminal = if source.text == "task_next_event" {
+            get(get(graph.types, source.ty).arguments, 1)
+        } else {
+            source.ty
+        }
+        let value = terminal_value(graph.types, terminal, source.span, local(graph, selected))
+        Value {
+            state = after
+            expression = if source.text == "task_next_event" {
+                node(ExprKind.Record, source.ty, source.span, -1,
+                    pair(node(ExprKind.Field, 1, source.span, 0,
+                            one(operation("task_next_terminal_index", 1, source.span, new[Expr]()))),
+                        node(ExprKind.Field, terminal, source.span, 1, one(value))))
+            } else {
+                value
+            }
+        }
     } else {
         external_parking(graph, source, start, loop)
     }

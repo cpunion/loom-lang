@@ -208,6 +208,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TaskWaitNext
         | Primitive::TaskNextResult
         | Primitive::TaskNextTerminalResult
+        | Primitive::TaskNextTerminalIndex
         | Primitive::TaskStatus
         | Primitive::TaskResult
         | Primitive::TaskRelease
