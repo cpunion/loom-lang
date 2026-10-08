@@ -1,0 +1,112 @@
+import std.time.sleep_ms
+import std.text.contains
+
+fn resource_after_cleanup(trace List[Int], early Bool, fail Bool) Leaf {
+    defer {
+        push(trace, 2)
+        assert !fail
+    }
+    if early {
+        return acquire(1, trace)
+    }
+    acquire(1, trace)
+}
+
+fn check_return_resource(early Bool) {
+    let trace List[Int] = []
+    {
+        scoped value = resource_after_cleanup(trace, early, false)
+        assert value.id == 1 && length(trace) == 2
+    }
+    assert length(trace) == 3
+    assert trace[0] == 10 && trace[1] == 2 && trace[2] == 1
+}
+
+test fn fresh_results_transfer_after_implicit_and_explicit_return_cleanup() {
+    check_return_resource(false)
+    check_return_resource(true)
+}
+
+async fn return_resource_fault(trace List[Int], early Bool) {
+    scoped value = resource_after_cleanup(trace, early, true)
+}
+
+async fn check_return_resource_fault(early Bool) {
+    let trace List[Int] = []
+    match outcome(return_resource_fault(trace, early)).await {
+        Outcome.Faulted(message) => {
+            assert contains(message, "assert !fail")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 3
+    assert trace[0] == 10 && trace[1] == 2 && trace[2] == 1
+}
+
+test async fn failed_exit_cleans_the_untransferred_resource_result() {
+    check_return_resource_fault(false).await
+    check_return_resource_fault(true).await
+}
+
+fn pair_after_cleanup(trace List[Int], fail Bool) Pair {
+    defer {
+        push(trace, 4)
+        assert !fail
+    }
+    pair_resources(trace, false, true)
+}
+
+async fn return_pair_fault(trace List[Int]) {
+    scoped value = pair_after_cleanup(trace, true)
+}
+
+test async fn failed_return_drains_all_members_and_keeps_the_first_fault() {
+    let trace List[Int] = []
+    match outcome(return_pair_fault(trace)).await {
+        Outcome.Faulted(message) => {
+            assert contains(message, "assert !fail")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 6
+    assert trace[0] == 10 && trace[1] == 20 && trace[2] == 4
+    assert trace[3] == 3 && trace[4] == 2 && trace[5] == 1
+}
+
+async fn block_resource_cleanup(trace List[Int], fail Bool) {
+    scoped value = {
+        defer {
+            push(trace, 4)
+            assert !fail
+        }
+        sleep_ms(0).await
+        acquire(1, trace)
+    }
+    assert value.id == 1 && length(trace) == 2
+}
+
+async fn check_block_resource_cleanup(fail Bool) {
+    let trace List[Int] = []
+    match outcome(block_resource_cleanup(trace, fail)).await {
+        Outcome.Completed(_) => {
+            assert !fail
+        }
+        Outcome.Faulted(message) => {
+            assert fail && contains(message, "assert !fail")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 3
+    assert trace[0] == 10 && trace[1] == 4 && trace[2] == 1
+}
+
+test async fn suspended_blocks_protect_their_outgoing_resource() {
+    check_block_resource_cleanup(false).await
+    check_block_resource_cleanup(true).await
+}

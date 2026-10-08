@@ -140,6 +140,32 @@ fn suspended_captures_survive_gc_and_normal_cleanup_is_lifo() {
     run(construct_suspended, None, &["inner", "outer", "last"]);
 }
 
+unsafe extern "C-unwind" fn pending_result(frame: *mut u8) -> i64 {
+    rooted([frame], |slots| unsafe {
+        let text = loom_rt_text_new(b"last".as_ptr(), 4);
+        (*(*slots).cast::<Frame>()).text = text;
+        loom_rt_task_cleanup_push(0, outer_cleanup);
+        loom_rt_task_cleanup_push(1, inner_cleanup);
+        loom_rt_task_cleanup_pop(0);
+        outer_cleanup(*slots);
+        fault("return cleanup failure");
+    })
+}
+
+unsafe extern "C-unwind" fn construct_pending_result() -> u64 {
+    unsafe { task(pending_result) }
+}
+
+#[test]
+fn pending_result_drains_after_an_older_cleanup_fails() {
+    CASE.set(Case::Normal);
+    run(
+        construct_pending_result,
+        Some(b"return cleanup failure"),
+        &["outer", "inner"],
+    );
+}
+
 #[test]
 fn duplicate_pop_and_cleanup_faults_drain_once_and_preserve_first_diagnostic() {
     CASE.set(Case::DuplicatePop);

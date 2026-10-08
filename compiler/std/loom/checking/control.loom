@@ -41,7 +41,7 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
             return Result.Err(error(context, node, "loop control requires an enclosing while body"))
         }
         let empty = expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)
-        let cleanup = cleaned(context, node, context.loop_boundary, empty)
+        let cleanup = cleaned(context, node, context.loop_boundary, empty)?
         let exit = expression(if kind == NodeKind.Break {
                 ExprKind.Break
             } else {
@@ -125,7 +125,7 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
             } else {
                 push(values, expr(context, child(node, 0), context.signature.result)?)
             }
-            returning(context, node, values)
+            returning(context, node, values)?
         } else {
             if kind == NodeKind.Assert {
                 let value = expr(context, child(node, 0), 2)?
@@ -193,7 +193,7 @@ fn block(context Context, node Node, expected Int, enforce Bool) Result[Expr, Fa
     } else {
         value
     }
-    Result.Ok(cleaned(current, node, context.cleanup_head, checked))
+    cleaned(current, node, context.cleanup_head, checked)
 }
 
 fn conditional(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
@@ -483,7 +483,7 @@ fn propagated(context Context, node Node, expected Int) Result[Expr, Failure] {
         })
     let error_value = atom(ExprKind.Local, error_type, node, success + 1)
     let rejected = expression(ExprKind.Variant, context.signature.result, node, "", shape.err, expressions(error_value), true)
-    let exit = returning(context, node, expressions(rejected))
+    let exit = returning(context, node, expressions(rejected))?
     let body = expression(ExprKind.Block, 0, node, "", -1, expressions(exit), false)
     push(arms, Arm {
             variant = shape.err
