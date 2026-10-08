@@ -210,6 +210,31 @@ fn resource_binding(context Context, node Node, value Expr) Result[Bool, Failure
     Result.Ok(true)
 }
 
+fn resource_payload_binding(context Context) {
+    let binding = get(context.bindings, context.head)
+    set(context.bindings, context.head, Binding {
+            name = binding.name
+            local = binding.local
+            constant = binding.constant
+            previous = binding.previous
+            resource_payload = true
+        })
+}
+
+// This lexical origin avoids recursively querying ordinary constructor values.
+// It is not ownership evidence and never survives into emitted program data.
+fn resource_payload_local(context Context, local Int) Bool {
+    var head = context.head
+    while head >= 0 {
+        let binding = get(context.bindings, head)
+        if binding.local == local {
+            return binding.resource_payload
+        }
+        head = binding.previous
+    }
+    false
+}
+
 fn scoped_receiver_root(context Context, value Expr) Bool {
     if value.kind == ExprKind.Local {
         return get(context.locals, value.index).is_scoped ||

@@ -146,7 +146,7 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
             field
         }
         var local = -1
-        if value.kind == ExprKind.Local && must_scope(context, field.ty)? {
+        if value.kind == ExprKind.Local && resource_payload_local(context, value.index) {
             local = length(context.locals)
             push(context.locals, Local {
                     name = ""
@@ -321,7 +321,11 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
         }
         index = index + 1
     }
-    let retained = resources == 1 && get(get(fields, last).children, 0).kind == ExprKind.Local
+    var retained = false
+    if resources == 1 {
+        let value = get(get(fields, last).children, 0)
+        retained = value.kind == ExprKind.Local && resource_payload_local(context, value.index)
+    }
     if resources > 1 || retained || (resources == 1 && last + 1 != length(fields)) {
         return pending_aggregate(context, node, ty, ExprKind.Record, -1, fields)
     }
@@ -391,7 +395,8 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     index = 0
     while index < length(values) {
         let value = get(values, index)
-        if (index + 1 < length(values) || value.kind == ExprKind.Local) && must_scope(context, value.ty)? {
+        if (index + 1 < length(values) && must_scope(context, value.ty)?) ||
+        (value.kind == ExprKind.Local && resource_payload_local(context, value.index)) {
             return Result.Ok(empty_inputs(context, inputs, node,
                     pending_aggregate(context, node, ty, ExprKind.Variant, selected, values)?))
         }

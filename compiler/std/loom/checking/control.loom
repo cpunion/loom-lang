@@ -264,6 +264,9 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
                 } else {
                     push(locals, length(current.locals))
                     current = bind_local(current, binding, binding.value, get(fields, field), false, context.head)?
+                    if !borrowed && must_scope(context, get(fields, field))? {
+                        resource_payload_binding(current)
+                    }
                     if borrowed && must_scope(context, get(fields, field))? {
                         resource_borrow_local(current, length(current.locals) - 1)
                     }
@@ -273,6 +276,9 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
         } else {
             whole = length(current.locals)
             current = bind_local(current, pattern, pattern.value, value.ty, false, context.head)?
+            if !borrowed && must_scope(context, value.ty)? {
+                resource_payload_binding(current)
+            }
             if borrowed && must_scope(context, value.ty)? {
                 resource_borrow_local(current, whole)
             }

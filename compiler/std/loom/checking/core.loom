@@ -127,6 +127,8 @@ record Binding {
     local Int
     constant Int
     previous Int
+    // Selected fresh match origin; resource flow still proves actual transfer.
+    resource_payload Bool
 }
 
 record Cleanup {
@@ -393,6 +395,7 @@ fn bind_name(context Context, node Node, value Text, local Int, constant Int, bo
             local = local
             constant = constant
             previous = context.head
+            resource_payload = false
         })
     Result.Ok(context_at(context, next))
 }

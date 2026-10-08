@@ -283,6 +283,7 @@ fn macro_call(context Context, node Node, expected Int) Result[Expr, Failure] {
                 local = local
                 constant = -1
                 previous = expansion.head
+                resource_payload = false
             })
         expansion = context_at(expansion, binding)
         index = index + 1

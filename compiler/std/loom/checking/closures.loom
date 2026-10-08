@@ -170,7 +170,13 @@ fn capture_binding(context Context, name Text) Int {
     }
     let local = if field < 0 { -1 } else { length(context.locals) }
     let binding = length(context.bindings)
-    push(context.bindings, Binding { name = name local = local constant = constant previous = -1 })
+    push(context.bindings, Binding {
+            name = name
+            local = local
+            constant = constant
+            previous = -1
+            resource_payload = false
+        })
     if local >= 0 {
         push(context.locals, Local { name = name ty = if constant >= 0 { storage } else { ty } mutable = mutable is_scoped = is_scoped })
         if cell >= 0 { push(scope.cells, Cell { local = local ty = cell }) }
@@ -287,7 +293,13 @@ fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Resul
         result_local = length(context.locals)
         push(context.locals, Local { name = "result" ty = saved.signature.result mutable = false is_scoped = owned_result })
         let binding = length(context.bindings)
-        push(context.bindings, Binding { name = "result" local = result_local constant = -1 previous = context.head })
+        push(context.bindings, Binding {
+                name = "result"
+                local = result_local
+                constant = -1
+                previous = context.head
+                resource_payload = false
+            })
         context = context_at(context, binding)
         // Captures used only by a contract still belong to the environment.
         discard contracts(context, node, NodeKind.Ensures)?
