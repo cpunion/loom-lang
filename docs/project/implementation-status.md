@@ -362,8 +362,14 @@ before recursive expansion exhausts the compiler stack.
 Fresh local List drafts can now be populated through finite non-publishing
 helpers, aliases and loops before a checked publication boundary.
 Existing origin analysis validates publication effects; later raw aliases and
-known captures may read but cannot mutate or export protected storage, including
-from cleanup. Local copies retain their origins, and implicit aggregate returns
+known captures may read without exporting protected storage, including
+from cleanup. Immutable local/field aliases with proved allocation identity also
+reuse constrained-borrow preservation proofs for atomic writes and finite
+helpers. Every actual store must preserve the complete predicate. Proof-only
+borrows never enter executable IR or persistent evidence; worker builds
+independently revalidate mutation and its observation permissions. A possible
+alias is not a proved identity and supplies no constraint assumption. Local
+copies retain their origins, and implicit aggregate returns
 cannot leak raw handles. The built header is retained without
 copying or a runtime monitor, and unknown predicates still return checked Results.
 The [draft example](../../compiler/examples/record_refinement/drafts.loom) covers
@@ -375,11 +381,14 @@ leave unrelated shared siblings writable. See the
 [structural builder](../../compiler/examples/record_refinement/structural_drafts.loom).
 Pending operands cannot transport raw aliases across
 that boundary. Active defer/scoped cleanup needs a checked non-publishing,
-read-only footprint, including fault-only exits. The
+invariant-preserving footprint, including fault-only exits. The
 [reader example](../../compiler/examples/record_refinement/readers.loom) retains
 readers across preserving updates, suspension and cleanup without copying.
+The [raw update example](../../compiler/examples/record_refinement/raw_updates.loom)
+uses those same proofs through raw header aliases and checked failure.
 Loop-local publication, mutable binding origins and general nested graph
-publication remain open.
+publication remain open. Conditional aliases, aggregate arguments and captured
+mutating callbacks without a proved header identity remain conservative.
 
 Every declared `ensures` requires a static proof. The CLI submits remaining
 supported obligations to a compile-time Z3 process after the fast rules fail.

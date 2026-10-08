@@ -122,6 +122,15 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     while index < length(program.functions) {
         let function = get(program.functions, index)
         discard constraint_content_updates(env, program, function.symbol, function.body, modified)?
+        let updates = new[Expr]()
+        if list_constraint_required(env, function.body) {
+            discard unpublished_drafts(env, program.functions, function, updates)
+        }
+        var update = 0
+        while update < length(updates) {
+            discard constraint_content_updates(env, program, function.symbol, get(updates, update), modified)?
+            update = update + 1
+        }
         var clause = 0
         while clause < length(function.preconditions) {
             discard constraint_content_updates(env, program, function.symbol, get(function.preconditions, clause), modified)?

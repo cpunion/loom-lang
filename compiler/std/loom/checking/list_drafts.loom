@@ -1,7 +1,7 @@
 // Publishing a local draft transfers no runtime value and installs no monitor.
 // Its outer header must be fresh and unpublished. Later raw aliases may observe
-// it, but cannot mutate or publish it. Existing origin and call-footprint
-// analysis accounts for aliases, captures, branches and loops.
+// it; writes require the same preservation proof as a constrained borrow.
+// Existing origin and call-footprint analysis excludes raw publication.
 fn draft_construction(env Environment, value Expr) Bool {
     (value.kind == ExprKind.Block && value.text == "checked list") ||
     (value.kind == ExprKind.Coerce && constrained_list(env, value.ty) &&
@@ -129,6 +129,10 @@ fn draft_candidates(env Environment, value Expr, candidates List[Expr], depth In
 }
 
 fn unpublished_drafts(env Environment, functions List[Function], current Function) List[Expr] {
+    unpublished_drafts(env, functions, current, new[Expr]())
+}
+
+fn unpublished_drafts(env Environment, functions List[Function], current Function, operations List[Expr]) List[Expr] {
     let drafts = new[Expr]()
     let candidates = new[Expr]()
     draft_candidates(env, current.body, candidates, 0)
@@ -136,7 +140,7 @@ fn unpublished_drafts(env Environment, functions List[Function], current Functio
     while index < length(candidates) {
         let candidate = get(candidates, index)
         if draft_occurrences(env, current.body, candidate, 0) == 1 &&
-        unpublished_draft(env, functions, current, candidate) {
+        unpublished_draft(env, functions, current, candidate, operations) {
             push(drafts, candidate)
         }
         index = index + 1

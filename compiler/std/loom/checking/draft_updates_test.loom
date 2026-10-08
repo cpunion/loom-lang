@@ -1,0 +1,123 @@
+fn draft_update_source() Text {
+    concat(list_constraint_source(), concat("""
+        type PositiveHead = List[Int] where length(self) > 0 && self[0] > 0
+        """, "\n"))
+}
+
+test fn published_raw_aliases_reuse_complete_invariant_preservation_proofs() {
+    // Public checker fixtures have no solver. Native tests additionally prove
+    // quantified whole-List predicates through the CLI's optional SMT backend.
+    list_constraint_accept(concat(draft_update_source(), """
+        type PositiveElement = Int where self > 0
+        fn fill(values List[Int], value Int) {
+            if value <= 0 {
+                return
+            }
+            values[0] = value
+            values[0] = value
+        }
+        pub fn build(value PositiveElement) Result[PositiveHead, ConstraintError] {
+            let builder = ([1, 2], true)
+            let alias = builder.0
+            defer {
+                alias[0] = value
+            }
+            let published = PositiveHead(builder.0)
+            alias[1] = value
+            push(builder.0, 3)
+            fill(alias, value)
+            published
+        }
+        """))
+}
+
+test fn published_raw_writes_cannot_assume_may_alias_identity_or_return_only_preservation() {
+    let header = draft_update_source()
+    list_constraint_reject(concat(header, """
+        fn copy_first(input List[Int], output List[Int]) {
+            output[0] = input[0]
+        }
+        pub fn invalid(flag Bool) Result[PositiveHead, ConstraintError] {
+            let draft = [1, 2]
+            let maybe = if flag { draft } else { [-1, 2] }
+            let published = PositiveHead(draft)
+            copy_first(maybe, draft)
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn restore(values List[Int]) {
+            values[0] = -1
+            values[0] = 1
+        }
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            let draft = [1, 2]
+            let published = PositiveHead(draft)
+            restore(draft)
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(value Int) Result[PositiveHead, ConstraintError] {
+            let draft = [1, 2]
+            let published = PositiveHead(draft)
+            draft[0] = value
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        type Ordered = List[Int] where length(self) == 2 && self[0] <= self[1]
+        pub fn invalid() Result[Ordered, ConstraintError] {
+            let draft = [1, 2]
+            let published = Ordered(draft)
+            draft[0] = 3
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(value Int) Int
+        ensures result > 0
+        {
+            let draft = [value, 2]
+            discard PositiveHead(draft)
+            draft[1] = 3
+            draft[0]
+        }
+        """))
+}
+
+test fn raw_preserving_helpers_revalidate_after_cached_body_edits() {
+    let source = concat(draft_update_source(), """
+        fn replace(values List[Int]) {
+            values[0] = 3
+        }
+        pub fn build() Result[PositiveHead, ConstraintError] {
+            let draft = [1, 2]
+            let published = PositiveHead(draft)
+            replace(draft)
+            published
+        }
+        """)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(list_constraint_files(concat(source, "\nfn unrelated() {}\n"))),
+        false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(source, "values[0] = 3"), "values[0] = -1")
+    assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

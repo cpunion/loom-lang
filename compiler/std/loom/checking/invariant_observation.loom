@@ -22,6 +22,13 @@ record InvariantFrame {
     returned List[InputOrigin]
 }
 
+// Permissions belong to the current expression's local namespace. Callee
+// bodies use ordinary origin analysis, never the caller's proof callback.
+record InvariantPermission {
+    allow fn(Expr, List[InputOrigin]) Bool
+    effects InvariantReads
+}
+
 fn invariant_flag(value Bool) List[Bool] {
     let flags = new[Bool]()
     push(flags, value)
@@ -119,6 +126,10 @@ fn invariant_call(reads InvariantReads, target Int, inputs List[InputOrigin], de
 // Mutation that stores an input alias is conservatively rejected, so a
 // fresh handle can never acquire hidden input reachability through another alias.
 fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, depth Int) InputOrigin {
+    invariant_origin(reads, frame, value, depth, new[InvariantPermission]())
+}
+
+fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, depth Int, permissions List[InvariantPermission]) InputOrigin {
     if depth >= 256 || !get(reads.valid, 0) {
         set(reads.valid, 0, false)
         return origin_input()
@@ -137,7 +148,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
         var field = 0
         while field < length(value.children) {
             let initializer = get(value.children, field)
-            let origin = invariant_origin(reads, frame, get(initializer.children, 0), depth + 1)
+            let origin = invariant_origin(reads, frame, get(initializer.children, 0), depth + 1, permissions)
             aggregate = origin_union(aggregate, origin_field(origin, initializer.index))
             field = field + 1
         }
@@ -149,7 +160,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     var borrowed = origin_empty()
     var index = 0
     while index < length(value.children) {
-        let origin = invariant_origin(reads, frame, get(value.children, index), depth + 1)
+        let origin = invariant_origin(reads, frame, get(value.children, index), depth + 1, permissions)
         push(inputs, origin)
         borrowed = origin_union(borrowed, if kind == ExprKind.Variant {
                 origin_field(origin, index)
@@ -164,8 +175,22 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     if kind == ExprKind.Return {
         set(frame.returned, 0, origin_union(get(frame.returned, 0), borrowed))
     }
+    var permitted = -1
+    if (kind == ExprKind.Call || kind == ExprKind.Intrinsic) && origin_shared(borrowed) {
+        index = 0
+        while index < length(permissions) && permitted < 0 {
+            if get(permissions, index).allow(value, inputs) {
+                permitted = index
+            }
+            index = index + 1
+        }
+    }
     if kind == ExprKind.Call && origin_shared(borrowed) {
-        borrowed = invariant_call(reads, value.index, inputs, depth + 1)
+        borrowed = invariant_call(if permitted >= 0 {
+                get(permissions, permitted).effects
+            } else {
+                reads
+            }, value.index, inputs, depth + 1)
     }
     if kind == ExprKind.IndirectCall && origin_shared(borrowed) {
         borrowed = invariant_indirect(reads, value, inputs, depth + 1)
@@ -186,7 +211,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
             borrowed = origin_indirect(borrowed)
         }
     }
-    if ((kind == ExprKind.Intrinsic && !invariant_intrinsic_allowed(reads.contents, reads.writes, value.text, inputs)) || kind == ExprKind.DynCall ||
+    if ((kind == ExprKind.Intrinsic && permitted < 0 && !invariant_intrinsic_allowed(reads.contents, reads.writes, value.text, inputs)) || kind == ExprKind.DynCall ||
         kind == ExprKind.FrameStore) && origin_shared(borrowed) {
         set(reads.valid, 0, false)
     }
@@ -215,7 +240,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
         }
         member = 0
         while member < length(arm.body) {
-            let origin = invariant_origin(reads, frame, get(arm.body, member), depth + 1)
+            let origin = invariant_origin(reads, frame, get(arm.body, member), depth + 1, permissions)
             if member == length(arm.body) - 1 {
                 borrowed = origin_union(borrowed, origin)
             }
