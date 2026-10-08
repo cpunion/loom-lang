@@ -13,14 +13,14 @@ record DraftBindings {
     valid List[Bool]
 }
 
-// Delayed reads and control-flow joins need their original mutable slots until
-// their value/epoch is proved. Never replace a cleanup read with an earlier
-// registration-time snapshot or a loop-carried value with one iteration's RHS.
-fn draft_binding_limits(value Expr, eligible List[Bool], conditional Bool, delayed Bool, depth Int) Bool {
+// Delayed access and loop-carried writes retain their original mutable slots.
+// A cleanup read is not a registration-time snapshot; an iteration's RHS is
+// not the value carried by every subsequent iteration.
+fn draft_binding_limits(value Expr, eligible List[Bool], repeating Bool, delayed Bool, depth Int) Bool {
     if depth >= 256 {
         return false
     }
-    if (value.kind == ExprKind.Assign && (conditional || delayed)) ||
+    if (value.kind == ExprKind.Assign && (repeating || delayed)) ||
     (value.kind == ExprKind.Local && delayed) || value.kind == ExprKind.ResourceDrain {
         if value.index >= 0 && value.index < length(eligible) {
             set(eligible, value.index, false)
@@ -30,10 +30,8 @@ fn draft_binding_limits(value Expr, eligible List[Bool], conditional Bool, delay
     value.kind == ExprKind.ResourceDrain || value.kind == ExprKind.Deferred
     var index = 0
     while index < length(value.children) {
-        let branch = conditional || value.kind == ExprKind.While ||
-        ((value.kind == ExprKind.If || (value.kind == ExprKind.Binary &&
-                    (value.text == "&&" || value.text == "||"))) && index != 0)
-        if !draft_binding_limits(get(value.children, index), eligible, branch, later, depth + 1) {
+        let loop = repeating || value.kind == ExprKind.While
+        if !draft_binding_limits(get(value.children, index), eligible, loop, later, depth + 1) {
             return false
         }
         index = index + 1
@@ -43,7 +41,7 @@ fn draft_binding_limits(value Expr, eligible List[Bool], conditional Bool, delay
         let body = get(value.arms, index).body
         var item = 0
         while item < length(body) {
-            if !draft_binding_limits(get(body, item), eligible, true, later, depth + 1) {
+            if !draft_binding_limits(get(body, item), eligible, repeating, later, depth + 1) {
                 return false
             }
             item = item + 1
@@ -58,10 +56,25 @@ fn draft_version(scope DraftBindings, value Expr, depth Int) Expr {
         set(scope.valid, 0, false)
         return value
     }
+    if value.kind == ExprKind.If && length(value.children) >= 2 {
+        return draft_if(scope, value, depth + 1)
+    }
+    if value.kind == ExprKind.Match && length(value.children) == 1 {
+        return draft_match(scope, value, depth + 1)
+    }
+    if value.kind == ExprKind.Binary && (value.text == "&&" || value.text == "||") {
+        return draft_short_circuit(scope, value, depth + 1)
+    }
     let children = new[Expr](length(value.children))
     var index = 0
     while index < length(value.children) {
-        push(children, draft_version(scope, get(value.children, index), depth + 1))
+        // A checked constructor contains generated predicate/Result plumbing.
+        // Only its saved source input can change the caller's binding versions.
+        push(children, if value.kind == ExprKind.Block && value.text == "checked list" && index != 0 {
+                get(value.children, index)
+            } else {
+                draft_version(scope, get(value.children, index), depth + 1)
+            })
         index = index + 1
     }
     let arms = new[Arm](length(value.arms))
@@ -88,14 +101,7 @@ fn draft_version(scope DraftBindings, value Expr, depth Int) Expr {
         local = get(scope.versions, local)
     }
     if (kind == ExprKind.Let || kind == ExprKind.Assign) && get(scope.eligible, value.index) {
-        let original = get(scope.locals, value.index)
-        local = length(scope.locals)
-        push(scope.locals, Local {
-                name = original.name
-                ty = original.ty
-                mutable = false
-                is_scoped = false
-            })
+        local = draft_snapshot(scope, value.index)
         set(scope.versions, value.index, local)
         kind = ExprKind.Let
     }
@@ -126,8 +132,8 @@ fn draft_version(scope DraftBindings, value Expr, depth Int) Expr {
 
 // This private SSA view changes neither executable IR nor source bindings.
 // A reassignment creates a new value snapshot while earlier aliases still refer
-// to the old header. Only admitted straight-line mutable data slots are renamed;
-// opaque cells, resources, conditional writes and delayed reads stay mutable.
+// to the old header. Branch joins contain only possible immutable values, not
+// replayed effects. Opaque cells, resources and delayed/loop-carried slots stay mutable.
 fn versioned_drafts(env Environment, current Function, originals List[Expr], candidates List[DraftCandidate]) Function {
     let eligible = new[Bool](length(current.locals))
     let versions = new[Int](length(current.locals))

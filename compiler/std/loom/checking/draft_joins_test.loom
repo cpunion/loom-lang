@@ -1,0 +1,209 @@
+test fn joined_drafts_preserve_values_without_replaying_branch_effects() {
+    list_constraint_accept(concat(draft_update_source(), """
+        pub fn choose(flag Bool, input List[Int], events List[Int]) Result[PositiveHead, ConstraintError] {
+            var draft = input
+            if flag {
+                draft = [1, 2]
+                push(events, 1)
+            } else {
+                draft = [2, 3]
+                push(events, 2)
+            }
+            let alias = draft
+            let published = PositiveHead(draft)
+            alias[0] = 3
+            draft = [-1, 2]
+            draft[0] = -2
+            published
+        }
+        pub fn matched(flag Bool) Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            match flag {
+                true => {
+                    draft = [2, 3]
+                }
+                false => {
+                    draft = [3, 4]
+                }
+            }
+            let published = PositiveHead(draft)
+            draft[0] = 4
+            published
+        }
+        pub fn short(flag Bool) Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            discard flag && {
+                draft = [2, 3]
+                true
+            }
+            let published = PositiveHead(draft)
+            draft[0] = 3
+            published
+        }
+        pub fn iterations(flag Bool, count Int) List[PositiveHead] {
+            let output List[PositiveHead] = []
+            var index = 0
+            while index < count {
+                let draft = if flag { [1, 2] } else { [2, 3] }
+                let published = PositiveHead(draft)
+                draft[0] = 3
+                match published {
+                    Result.Ok(value) => push(output, value)
+                    Result.Err(_) => {}
+                }
+                index = index + 1
+            }
+            output
+        }
+        record Builder {
+            values List[Int]
+            notes List[Int]
+        }
+        pub fn fields(flag Bool) Result[PositiveHead, ConstraintError] {
+            var builder = Builder {
+                values = [1, 2]
+                notes = [0]
+            }
+            if flag {
+                builder = Builder {
+                    values = [2, 3]
+                    notes = [0]
+                }
+            }
+            let alias = builder.values
+            let published = PositiveHead(builder.values)
+            builder.notes[0] = -1
+            alias[0] = 4
+            published
+        }
+        """))
+}
+
+test fn branch_origins_are_not_predicates_or_must_alias_evidence() {
+    let header = draft_update_source()
+    list_constraint_reject(concat(header, """
+        pub fn invalid(flag Bool, input List[Int]) Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            if flag {
+                draft = input
+            }
+            PositiveHead(draft)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(flag Bool, exports List[List[Int]]) Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            if flag {
+                draft = [2, 3]
+                push(exports, draft)
+            }
+            PositiveHead(draft)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(flag Bool, exports List[List[Int]]) Result[PositiveHead, ConstraintError] {
+            let draft = if flag {
+                let fresh = [1, 2]
+                push(exports, fresh)
+                fresh
+            } else {
+                [2, 3]
+            }
+            PositiveHead(draft)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn copy(input List[Int], output List[Int]) {
+            output[0] = input[0]
+        }
+        pub fn invalid(flag Bool) Result[PositiveHead, ConstraintError] {
+            let a = [-1, 2]
+            let b = [1, 2]
+            let chosen = if flag { a } else { b }
+            let other = if flag { b } else { a }
+            let published = PositiveHead(chosen)
+            copy(other, chosen)
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn copy(input List[Int], output List[Int]) {
+            output[0] = input[0]
+        }
+        pub fn invalid(flag Bool) Result[PositiveHead, ConstraintError] {
+            let a = [-1, 2]
+            let b = [1, 2]
+            let chosen = if flag { a } else { b }
+            let published = PositiveHead(chosen)
+            copy(a, b)
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(flag Bool) Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            if flag {
+                draft = [2, 3]
+            }
+            let published = PositiveHead(draft)
+            draft[0] = -1
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(count Int, flag Bool) List[PositiveHead] {
+            let outside = [1, 2]
+            let output List[PositiveHead] = []
+            var index = 0
+            while index < count {
+                let draft = if flag { outside } else { [2, 3] }
+                let published = PositiveHead(draft)
+                match published {
+                    Result.Ok(value) => push(output, value)
+                    Result.Err(_) => {}
+                }
+                index = index + 1
+            }
+            outside[0] = -1
+            output
+        }
+        """))
+}
+
+test fn cached_branch_joins_reject_new_external_allocation_alternatives() {
+    let source = concat(draft_update_source(), """
+        pub fn choose(flag Bool, input List[Int]) Result[PositiveHead, ConstraintError] {
+            var draft = input
+            if flag {
+                draft = [1, 2]
+            } else {
+                draft = [2, 3]
+            }
+            let published = PositiveHead(draft)
+            draft[0] = 3
+            published
+        }
+        """)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(list_constraint_files(concat(source, "\nfn unrelated() {}\n"))),
+        false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(source, "draft = [2, 3]"), "draft = input")
+    assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

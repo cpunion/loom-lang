@@ -1,0 +1,73 @@
+fn branch_condition(events List[Int], flag Bool) Bool {
+    push(events, 10)
+    flag
+}
+
+fn publish_branch(flag Bool, input List[Int], events List[Int]) Result[PositiveValues, ConstraintError] {
+    var draft = input
+    if branch_condition(events, flag) {
+        draft = [1, 2]
+        push(events, 1)
+    } else {
+        draft = [3, 4]
+        push(events, 2)
+    }
+    let alias = draft
+    defer {
+        alias[0] = 7
+        push(events, values_sum(alias))
+    }
+    let published = PositiveValues(draft)
+    alias[0] = 5
+    fill_positive(draft, 6)
+    draft = [-1, 2]
+    draft[0] = -2
+    assert values_sum(alias) == 12 && draft[0] == -2
+    published
+}
+
+fn joined_draft_scope() Bool {
+    let input = [-7, 8]
+    let first_events List[Int] = []
+    let first = publish_branch(true, input, first_events)
+    assert length(first_events) == 3 && first_events[0] == 10 && first_events[1] == 1 && first_events[2] == 13
+    let second_events List[Int] = []
+    let second = publish_branch(false, input, second_events)
+    assert length(second_events) == 3 && second_events[0] == 10 && second_events[1] == 2 && second_events[2] == 13
+    assert input[0] == -7 && input[1] == 8
+    match first {
+        Result.Ok(values) => {
+            assert values_sum(values) == 13
+        }
+        Result.Err(_) => {
+            return false
+        }
+    }
+    match second {
+        Result.Ok(values) => values_sum(values) == 13
+        Result.Err(_) => false
+    }
+}
+
+test fn branch_join_effects_and_cleanup_run_once_at_compile_time() {
+    assert comptime {
+        joined_draft_scope()
+    }
+}
+
+test async fn joined_header_aliases_survive_wait_and_rebinding() {
+    var draft = [1, 2]
+    discard length(draft) == 2 && {
+        draft = [3, 4]
+        true
+    }
+    let alias = draft
+    let published = PositiveValues(draft)
+    sleep_ms(1).await
+    draft = [-1, 2]
+    alias[0] = 5
+    assert draft[0] == -1 && match published {
+        Result.Ok(values) => values_sum(values) == 9
+        Result.Err(_) => false
+    }
+}

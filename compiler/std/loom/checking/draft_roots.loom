@@ -1,0 +1,181 @@
+fn missing_draft_root() DraftRoot {
+    DraftRoot {
+        local = -1
+        origin = origin_empty()
+        allocations = new[DraftAllocation]()
+    }
+}
+
+fn same_draft_root(left DraftRoot, right DraftRoot) Bool {
+    left.local >= 0 && left.local == right.local &&
+    origin_covers(left.origin, right.origin) && origin_covers(right.origin, left.origin)
+}
+
+fn draft_root_origin(fields List[Int]) InputOrigin {
+    var origin = origin_input()
+    var index = length(fields)
+    while index > 0 {
+        index = index - 1
+        origin = origin_field(origin, get(fields, index))
+    }
+    origin
+}
+
+fn draft_allocation_add(allocations List[DraftAllocation], allocation DraftAllocation) {
+    var index = 0
+    while index < length(allocations) {
+        let existing = get(allocations, index)
+        if existing.local == allocation.local && origin_covers(existing.origin, allocation.origin) &&
+        origin_covers(allocation.origin, existing.origin) {
+            return
+        }
+        index = index + 1
+    }
+    push(allocations, allocation)
+}
+
+// All alternatives must be fresh and unpublished. Their allocation set is
+// may-reachability only; the join binding retains a separate must-identity.
+fn draft_choice_root(env Environment, functions List[Function], current Function,
+    alternatives List[Expr], path List[Int], local Int, fields List[Int], budget List[Int], depth Int) DraftRoot {
+    var first = missing_draft_root()
+    var same = true
+    let allocations = new[DraftAllocation]()
+    var index = 0
+    while index < length(alternatives) {
+        let value = get(alternatives, index)
+        if value.falls {
+            let root = draft_value_root(env, functions, current, value, path, local, fields, budget, depth + 1)
+            if root.local < 0 {
+                return missing_draft_root()
+            }
+            if first.local < 0 {
+                first = root
+            } else {
+                same = same && same_draft_root(first, root)
+            }
+            var item = 0
+            while item < length(root.allocations) {
+                draft_allocation_add(allocations, get(root.allocations, item))
+                item = item + 1
+            }
+        }
+        index = index + 1
+    }
+    if first.local < 0 || same {
+        return first
+    }
+    DraftRoot {
+        local = local
+        origin = draft_root_origin(fields)
+        allocations = allocations
+    }
+}
+
+fn draft_value_root(env Environment, functions List[Function], current Function, input Expr,
+    selected List[Int], anchor Int, anchor_fields List[Int], budget List[Int], level Int) DraftRoot {
+    var value = input
+    var path = selected
+    var local = anchor
+    var fields = anchor_fields
+    var depth = level
+    while depth < 64 && get(budget, 0) > 0 {
+        set(budget, 0, get(budget, 0) - 1)
+        if length(path) == 0 && constraint_fresh(env, functions, value) {
+            let origin = draft_root_origin(fields)
+            return DraftRoot {
+                local = local
+                origin = origin
+                allocations = [DraftAllocation {
+                        local = local
+                        origin = origin
+                    }]
+            }
+        }
+        if value.kind == ExprKind.Local {
+            if value.index < length(current.params) || value.index >= length(current.locals) ||
+            get(current.locals, value.index).mutable {
+                return missing_draft_root()
+            }
+            let definitions = new[Expr]()
+            draft_definitions(current.body, value.index, definitions, 0)
+            if length(definitions) != 1 || length(get(definitions, 0).children) != 1 {
+                return missing_draft_root()
+            }
+            local = value.index
+            fields = path
+            value = get(get(definitions, 0).children, 0)
+        } else if value.kind == ExprKind.Field && length(value.children) == 1 {
+            let projected = ints(value.index)
+            var index = 0
+            while index < length(path) {
+                push(projected, get(path, index))
+                index = index + 1
+            }
+            path = projected
+            value = get(value.children, 0)
+        } else if value.kind == ExprKind.Record && length(path) > 0 {
+            let wanted = get(path, 0)
+            let rest = new[Int]()
+            var index = 1
+            while index < length(path) {
+                push(rest, get(path, index))
+                index = index + 1
+            }
+            index = 0
+            var found = false
+            while index < length(value.children) && !found {
+                let initializer = get(value.children, index)
+                if initializer.index == wanted && length(initializer.children) == 1 {
+                    value = get(initializer.children, 0)
+                    found = true
+                }
+                index = index + 1
+            }
+            if !found {
+                return missing_draft_root()
+            }
+            path = rest
+        } else if value.kind == ExprKind.Block && value.falls && length(value.children) > 0 {
+            value = get(value.children, length(value.children) - 1)
+        } else if value.kind == ExprKind.If && length(value.children) == 3 {
+            return draft_choice_root(env, functions, current,
+                [get(value.children, 1), get(value.children, 2)], path, local, fields, budget, depth + 1)
+        } else if value.kind == ExprKind.Match {
+            let alternatives = new[Expr]()
+            var index = 0
+            while index < length(value.arms) {
+                let body = get(value.arms, index).body
+                if length(body) > 0 && all_fall(body) {
+                    push(alternatives, get(body, length(body) - 1))
+                }
+                index = index + 1
+            }
+            return draft_choice_root(env, functions, current, alternatives, path, local, fields, budget, depth + 1)
+        } else {
+            return missing_draft_root()
+        }
+        depth = depth + 1
+    }
+    missing_draft_root()
+}
+
+fn draft_root(env Environment, functions List[Function], current Function, input Expr) DraftRoot {
+    draft_value_root(env, functions, current, input, new[Int](), -1, new[Int](), ints(256), 0)
+}
+
+fn draft_protected_root(root DraftRoot, protected DraftRoot) Bool {
+    if same_draft_root(root, protected) {
+        return true
+    }
+    var index = 0
+    while index < length(protected.allocations) {
+        let allocation = get(protected.allocations, index)
+        if root.local == allocation.local && origin_covers(root.origin, allocation.origin) &&
+        origin_covers(allocation.origin, root.origin) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}

@@ -80,6 +80,19 @@ fn draft_epoch_locals(value Expr, locals List[Bool], depth Int) Bool {
 
 // Raw aliases cannot survive this iteration in an outer binding or capture.
 // Typed publications may escape; their ordinary invariant rules still apply.
+fn draft_epoch_allocations(body Expr, root DraftRoot) Bool {
+    var index = 0
+    while index < length(root.allocations) {
+        let definitions = new[Expr]()
+        draft_definitions(body, get(root.allocations, index).local, definitions, 0)
+        if length(definitions) != 1 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
 fn confined_draft_epoch(body Expr, frame InvariantFrame) Bool {
     let locals = new[Bool]()
     var index = 0

@@ -417,6 +417,11 @@ import std.task.worker.run
 import std.result.Result
 async fn main() {
     var draft = [1, 2]
+    if length(draft) == 2 {
+        draft = [1, 2]
+    } else {
+        draft = [2, 3]
+    }
     let published = PositiveValues(draft)
     fill_positive(draft, 3)
     append_positive(draft, 4)
@@ -485,7 +490,15 @@ fn main() {
     // revalidation as source-typed borrows, without changing executable IR.
     let raw_copy = sequential.replace(
         "    let values = Ordered([1, 2])\n    copy_right_to_left(values)\n    assert values[0] == 2",
-        "    var draft = [1, 2]\n    let published = Ordered(draft)\n    copy_right_to_left(draft)\n    discard published",
+        r#"    var draft = [1, 2]
+    if length(draft) == 2 {
+        draft = [1, 2]
+    } else {
+        draft = [2, 2]
+    }
+    let published = Ordered(draft)
+    copy_right_to_left(draft)
+    discard published"#,
     );
     fs::write(&main, &raw_copy).unwrap();
     success(&check());

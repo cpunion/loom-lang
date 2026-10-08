@@ -2205,15 +2205,22 @@ The [iteration example](examples/record_refinement/epochs.loom) builds distinct
 published headers across iterations, CTFE, cleanup and suspension.
 The [raw update example](examples/record_refinement/raw_updates.loom) retains
 sharing through preserving helpers, cleanup, checked rejection and a real wait.
-Straight-line mutable bindings use private value snapshots: rebinding a variable
-does not rebind earlier aliases or the published header. Fresh reassignment,
-inline aggregate copies and eager argument snapshots reuse the same allocation
-and preservation rules; no rewritten locals enter executable IR or caches.
+Mutable bindings use private value snapshots: rebinding a variable does not
+rebind earlier aliases or the published header. Structured `if`, `match` and
+short-circuit joins retain the possible evaluated values without replaying
+branch effects. All possible allocation origins must be fresh and unpublished;
+branch-local exports reject even before the joined binding is initialized.
+Fresh reassignment, inline aggregate copies and eager argument snapshots reuse
+the same allocation and preservation rules; no rewritten locals enter executable
+IR or caches. Equal may-origin sets do not equate independent choices or grant
+predicates to their unselected alternatives. A preservation probe cannot combine
+assumed predicates from distinct headers.
 The [binding example](examples/record_refinement/versions.loom) checks once-only
-effects, old aliases, cleanup, CTFE and real waits. Conditional/loop-carried
-rebindings and delayed mutable reads/writes retain their original slots and remain
-conservative, as do aggregate arguments and captured mutating callbacks without
-a proved header identity.
+effects, old aliases, cleanup, CTFE and real waits. The
+[join example](examples/record_refinement/joins.loom) also exercises branching,
+once-only conditions, cleanup and suspension. Loop-carried rebindings and delayed
+mutable reads/writes retain their original slots and remain conservative, as do
+aggregate arguments and captured mutating callbacks without a proved header identity.
 `PositiveValues(existing_list)` still rejects when the input can have external
 writable aliases or unsafe later raw uses. No automatic copy, ownership syntax or
 runtime monitor is installed. Copies of a constrained value keep sharing its storage.
