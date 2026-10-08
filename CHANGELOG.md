@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Extend universal variadic contract induction to structural tuple inputs with
+  fixed fields, repeated/independent packs and elementwise expansions. Reuse
+  affine extents and scalar/List loop proofs; keep mixed element observations
+  opaque and native iteration statically expanded.
+
 - Allow checked scoped-resource borrows through directly awaited async calls;
   reject escaping borrowing Tasks and keep NoSuspend/Task-result restrictions.
   Add source Stream factory pipelines with ordinary nested cleanup, cancellation

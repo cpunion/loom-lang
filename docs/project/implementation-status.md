@@ -238,8 +238,16 @@ method checking and width inference, including independent tuple groups;
 unknown static values cannot supply proof facts. Observations cannot depend on
 receiver identity/types;
 repeated calls remain independent and opaque effects invalidate heap facts.
+Element-independent induction also accepts pack-bearing structural tuples: their
+extent composes fixed fields, repeated widths and independent expansion groups
+through ordinary affine arithmetic. A nested fixed field contributes one element;
+elementwise expansions retain the shared width selected by shape checking. The
+[structural example](../../compiler/examples/variadics/structural_induction.loom)
+covers global indices, List effects, CTFE, function references and inherited
+native/dyn methods. Mixed elements do not inherit a single pack's concept bounds,
+and the existing scalar invariant fragment is unchanged.
 Type-dependent induction, opaque element escape, pack-dependent results and
-broader structural sources still reject. A
+non-tuple structural sources still reject. A
 single type pack can
 have fixed parameters before and after it, including concept methods and impl
 families; the same ordered expansion and width rule applies to each.

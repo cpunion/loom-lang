@@ -903,9 +903,11 @@ ensures result == value && result >= 0 {
 
 The [contract example](examples/variadics/contracts.loom) composes this guarantee
 with constrained construction, CTFE and dyn methods. Element-independent
-`comptime for` over a type pack, direct value pack or `(Ts...)` input also
-supports induction: a private counted loop uses symbolic nonnegative widths
-and the existing scalar/List invariant rules. Zero and arbitrary-many
+`comptime for` over a type pack, direct value pack or pack-bearing tuple input
+also supports induction: a private counted loop uses symbolic nonnegative widths
+and the existing scalar/List invariant rules. A structural tuple's extent is the
+sum of its fixed fields and expansion widths, including repeated and independent
+packs; nested fixed fields count once. Zero and arbitrary-many
 iterations are proved, including index use, nested independent packs, early
 returns and inherited method contracts. Native code remains statically expanded.
 
@@ -922,9 +924,13 @@ ensures result >= 0 {
 ```
 
 The [induction example](examples/variadics/induction.loom) also exercises shared
-List updates, CTFE and dyn defaults/overrides. Element observations through
-declared method contracts are described below; type reflection,
-pack-dependent result shapes and broader structural sources remain unsupported
+List updates, CTFE and dyn defaults/overrides. The
+[structural example](examples/variadics/structural_induction.loom) adds fixed
+fields, repeated/independent groups, elementwise expansions and global tuple
+indices. This broadens input shapes, not the scalar invariant fragment. Element
+observations through declared method contracts are described below; mixed
+structural elements cannot borrow one pack's concept bounds. Type reflection,
+pack-dependent result shapes and non-tuple structural sources remain unsupported
 in family proofs. Shadowed erased sources and loop control that would change
 its target reject. Executing a few selected arities is never a universal proof.
 

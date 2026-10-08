@@ -69,6 +69,45 @@ fn pack_proof_loop_width(declaration Node, source Node) Int {
     -1
 }
 
+// A structural tuple is one ordered sequence, not one loop per expansion.
+// Its affine extent retains fixed fields, repeated packs and independent groups.
+// Elementwise expansions use a shared width; ordinary shape checking establishes
+// that their participating packs have equal widths in every specialization.
+fn pack_proof_loop_extent(declaration Node, source Node) Option[Node] {
+    let width = pack_proof_loop_width(declaration, source)
+    if width >= 0 {
+        return Option.Some(pack_node(source, NodeKind.Name, pack_proof_width(width), new[Node]()))
+    }
+    let parameters = group(declaration, NodeKind.Parameters)
+    let names = pack_names(declared_packs(declaration))
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        let ty = child(parameter, 0)
+        if source.kind == NodeKind.Name && parameter.value == source.value &&
+        ty.kind == NodeKind.TupleType && has_type_expansion(ty) {
+            var extent = pack_node(source, NodeKind.Integer, "0", new[Node]())
+            var field = 0
+            while field < length(ty.children) {
+                let pattern = child(ty, field)
+                var count = pack_node(pattern, NodeKind.Integer, "1", new[Node]())
+                if pattern.kind == NodeKind.Spread {
+                    let selected = expansion_packs(child(pattern, 0), names)
+                    if length(selected) == 0 {
+                        return Option.None
+                    }
+                    count = pack_node(pattern, NodeKind.Name, pack_proof_width(get(selected, 0)), new[Node]())
+                }
+                extent = pack_node(pattern, NodeKind.Binary, "+", [extent, count])
+                field = field + 1
+            }
+            return Option.Some(extent)
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
 fn pack_proof_control(node Node) Bool {
     if node.kind == NodeKind.Break || node.kind == NodeKind.Continue {
         return true
@@ -243,44 +282,53 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
         index = index + 1
     }
     if node.kind == NodeKind.ComptimeFor {
-        let width = pack_proof_loop_width(declaration, child(node, 0))
-        if width >= 0 {
-            if pack_proof_control(child(node, 1)) {
-                return Result.Err(failure(env, owner, node, "variadic contract induction cannot change the target of break or continue"))
+        let source = child(node, 0)
+        match pack_proof_loop_extent(declaration, source) {
+            Option.Some(extent) => {
+                if pack_proof_control(child(node, 1)) {
+                    return Result.Err(failure(env, owner, node, "variadic contract induction cannot change the target of break or continue"))
+                }
+                let nested = new[Text]()
+                index = 0
+                while index < length(erased) {
+                    push(nested, get(erased, index))
+                    index = index + 1
+                }
+                push(nested, node.value)
+                let ignored = new[PackProofElement]()
+                index = 0
+                while index < length(elements) {
+                    push(ignored, get(elements, index))
+                    index = index + 1
+                }
+                let width = pack_proof_loop_width(declaration, source)
+                push(ignored, PackProofElement {
+                        name = node.value
+                        pack = if width >= 0 {
+                            pack_proof_value_pack(declaration, source, width)
+                        } else {
+                            -1
+                        }
+                    })
+                let identity = get(count, 0)
+                set(count, 0, identity + 1)
+                let cursor = concat("$packindex#", std.int.to_text(identity))
+                let position = pack_node(node, NodeKind.Name, cursor, new[Node]())
+                let statements = new[Node]()
+                let key = part(node, NodeKind.IterationKey)
+                if key >= 0 {
+                    push(statements, pack_binding(child(node, key), child(node, key).value, position, false))
+                }
+                push(statements, pack_proof_tree(env, owner, declaration, child(node, 1), nested, ignored, count, depth + 1)?)
+                let increment = pack_node(node, NodeKind.Binary, "+", [position, pack_node(node, NodeKind.Integer, "1", new[Node]())])
+                push(statements, pack_node(node, NodeKind.Assign, cursor, source_nodes(increment)))
+                let guard = pack_node(node, NodeKind.Binary, "<", [position, extent])
+                let loop = pack_node(node, NodeKind.While, "", [guard, pack_node(node, NodeKind.Block, "", statements)])
+                let start = pack_node(node, NodeKind.Var, cursor, source_nodes(pack_node(node, NodeKind.Integer, "0", new[Node]())))
+                return Result.Ok(pack_node(node, NodeKind.Block, "", [start, loop, pack_node(node, NodeKind.Block, "", new[Node]())]))
             }
-            let nested = new[Text]()
-            index = 0
-            while index < length(erased) {
-                push(nested, get(erased, index))
-                index = index + 1
+            Option.None => {
             }
-            push(nested, node.value)
-            let ignored = new[PackProofElement]()
-            index = 0
-            while index < length(elements) {
-                push(ignored, get(elements, index))
-                index = index + 1
-            }
-            push(ignored, PackProofElement {
-                    name = node.value
-                    pack = pack_proof_value_pack(declaration, child(node, 0), width)
-                })
-            let identity = get(count, 0)
-            set(count, 0, identity + 1)
-            let cursor = concat("$packindex#", std.int.to_text(identity))
-            let position = pack_node(node, NodeKind.Name, cursor, new[Node]())
-            let statements = new[Node]()
-            let key = part(node, NodeKind.IterationKey)
-            if key >= 0 {
-                push(statements, pack_binding(child(node, key), child(node, key).value, position, false))
-            }
-            push(statements, pack_proof_tree(env, owner, declaration, child(node, 1), nested, ignored, count, depth + 1)?)
-            let increment = pack_node(node, NodeKind.Binary, "+", [position, pack_node(node, NodeKind.Integer, "1", new[Node]())])
-            push(statements, pack_node(node, NodeKind.Assign, cursor, source_nodes(increment)))
-            let guard = pack_node(node, NodeKind.Binary, "<", [position, pack_node(node, NodeKind.Name, pack_proof_width(width), new[Node]())])
-            let loop = pack_node(node, NodeKind.While, "", [guard, pack_node(node, NodeKind.Block, "", statements)])
-            let start = pack_node(node, NodeKind.Var, cursor, source_nodes(pack_node(node, NodeKind.Integer, "0", new[Node]())))
-            return Result.Ok(pack_node(node, NodeKind.Block, "", [start, loop, pack_node(node, NodeKind.Block, "", new[Node]())]))
         }
     }
     let children = new[Node]()
