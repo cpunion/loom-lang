@@ -6,6 +6,10 @@ record Entry {
     enabled Bool
 }
 
+async fn test_length(values List[Int]) Int {
+    length(values)
+}
+
 test fn aliases_observe_growth_and_element_changes() {
     let values = new[Int]()
     let alias = values

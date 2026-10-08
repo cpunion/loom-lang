@@ -48,3 +48,8 @@ pub fn reverse[T](values List[T]) {
         right = right - 1
     }
 }
+
+test async fn embedded_tests_join_private_test_helpers() {
+    let first, second = (test_length([1, 2]), test_length([3])).await
+    assert first == 2 && second == 1
+}

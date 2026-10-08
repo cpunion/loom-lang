@@ -71,7 +71,7 @@ test fn imports_are_unique_and_deterministic() {
 }
 
 test fn test_dependencies_can_import_the_completed_production_package() {
-    // std.list tests import std.text, whose production code imports std.list.
+    // Both explicit and implicit test dependencies import production std.list.
     let project = match load("compiler/std/list", "compiler/std", true) {
         Result.Ok(value) => value
         Result.Err(_) => {
@@ -87,12 +87,22 @@ test fn test_dependencies_can_import_the_completed_production_package() {
     assert package_label(project.modules, project.packages, project.root) == "std.list"
     var root_tests = false
     var text_loaded = false
+    var task_loaded = false
+    var embedded_async = false
     var index = 0
     while index < length(project.files) {
         let file = get(project.files, index)
         if file.package == project.root {
             if file.test_only {
                 root_tests = true
+            }
+            var item = 0
+            while item < length(file.tree.children) {
+                let node = get(file.tree.children, item)
+                if !file.test_only && has(node, NodeKind.Test) && contains_await(node) {
+                    embedded_async = true
+                }
+                item = item + 1
             }
         } else {
             assert !file.test_only
@@ -105,9 +115,47 @@ test fn test_dependencies_can_import_the_completed_production_package() {
         if package_label(project.modules, project.packages, file.package) == "std.text" {
             text_loaded = true
         }
+        if package_label(project.modules, project.packages, file.package) == "std.task" {
+            task_loaded = true
+        }
         index = index + 1
     }
-    assert root_tests && text_loaded
+    assert root_tests && text_loaded && task_loaded && embedded_async
+    let production = match load("compiler/std/list", "compiler/std", false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            project
+        }
+    }
+    index = 0
+    while index < length(production.packages) {
+        assert package_label(production.modules, production.packages, index) != "std.task"
+        index = index + 1
+    }
+}
+
+test fn implicit_production_await_still_participates_in_cycle_checks() {
+    let directory = match canonical("compiler/std/list") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+    let overlay = SourceOverlay {
+        path = join_path(directory, "production_wait_probe.loom")
+        text = """
+            async fn production_wait() {
+                discard work().await
+            }
+            """
+    }
+    // Loading checks the import graph, not the unbound probe call's body.
+    assert match load_overlaid(directory, "compiler/std", true, [overlay]) {
+        Result.Err(failed) => failed.diagnostic.message == "package import cycle through std.list"
+        Result.Ok(_) => false
+    }
 }
 
 test fn overlays_follow_imports_and_test_selection_without_writing_source() {

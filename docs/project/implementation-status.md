@@ -41,6 +41,8 @@ package failure. It skips nested modules, hidden/build directories and directory
 symlinks. Dependencies are still loaded without tests. `--no-run` emits separate
 package executables. The compiler's integration gate discovers `std` packages
 through this command instead of a hand-maintained list.
+Test-only dependencies, including implicit Task helpers used by embedded tests,
+extend the completed production package rather than introducing production cycles.
 
 `loom init`, argument-forwarding `run --`, and shared `loom fmt` support the
 [multi-package file-tool trial](../../compiler/examples/wordcount/README.md).
