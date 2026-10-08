@@ -1,0 +1,91 @@
+import std.stream.Stream
+
+async intrinsic fn async_open(path Text, create Bool) Int
+
+async intrinsic fn async_read(handle Int, buffer Bytes, limit Int) Int
+
+async intrinsic fn async_close(handle Int) Int
+
+intrinsic fn file_abort(handle Int) Int
+
+pub record AsyncLines {
+    file LineFile
+    path Text
+}
+
+// Construction does no I/O. The first pull opens the file on a native worker.
+pub fn stream(path Text) AsyncLines {
+    AsyncLines {
+        file = LineFile {
+            state = line_state(-1, true)
+        }
+        path = path
+    }
+}
+
+pub async fn close(value AsyncLines) Result[Int, FileError] {
+    let handle = release_lines(value.file.state)
+    if handle < 0 {
+        return Result.Ok(0)
+    }
+    let status = async_close(handle).await
+    if status < 0 {
+        Result.Err(FileError.Close)
+    } else {
+        Result.Ok(status)
+    }
+}
+
+pub async fn next(value AsyncLines) Option[Result[Text, FileError]] {
+    let state = value.file.state
+    if get(state.ended, 0) {
+        return pending_line(state)
+    }
+    if get(state.handle, 0) < 0 {
+        let handle = async_open(value.path, false).await
+        if handle < 0 {
+            return line_failure(state, FileError.Open)
+        }
+        set(state.handle, 0, handle)
+    }
+    let output = std.bytes.new()
+    var carriage = false
+    while true {
+        let ready, carried = buffered_line(state, output, carriage)
+        carriage = carried
+        if ready {
+            return decoded_line(state, output)
+        }
+        let buffer = std.bytes.new()
+        let count = async_read(get(state.handle, 0), buffer, 8192).await
+        if count < 0 {
+            return line_failure(state, FileError.Read)
+        }
+        if count == 0 {
+            let status = match close(value).await {
+                Result.Ok(value) => value
+                Result.Err(_) => -1
+            }
+            return finished_line(state, output, carriage, status)
+        }
+        set(state.chunk, 0, buffer)
+        set(state.cursor, 0, 0)
+    }
+    Option.None
+}
+
+impl MustScope for AsyncLines {
+}
+
+impl Dispose for AsyncLines {
+    fn dispose(self AsyncLines) {
+    }
+}
+
+impl Stream for AsyncLines {
+    type Item = Result[Text, FileError]
+
+    async fn next(self AsyncLines) Option[Result[Text, FileError]] {
+        next(self).await
+    }
+}

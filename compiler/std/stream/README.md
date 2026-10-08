@@ -49,11 +49,21 @@ scoped source = take(create, input, 2)?
 let values = collect(source).await
 ```
 
+Factories may also return the fresh producer directly. These overloads return
+the owned adapter directly, without `Result` or `?`:
+
+```loom
+// std.file.lines.stream is lazy; file errors are yielded by the first pull.
+scoped source = take(stream, path, 2)
+let lines = collect(source).await
+```
+
 `from_iter(create, input)` instead accepts an Iterator factory with the same
 resource bounds. Lifting it does not make synchronous I/O nonblocking.
 Wrappers retain MustScope and ordinary nested disposal, allowing further factory
-composition. A factory error creates no owner; `take(..., 0)` still opens and
-closes the source without pulling. The limit is checked before acquisition.
+composition. A factory error creates no owner; `take(..., 0)` still constructs
+and disposes the source without pulling. An eager file factory opens/closes it;
+a lazy one never opens it. The limit is checked before construction.
 
 Async resource parameters are checked borrows, not ownership transfers. Their
 calls must be directly awaited: `source.next().await` and `collect(source).await`

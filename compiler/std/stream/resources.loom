@@ -3,10 +3,23 @@ import std.resource.MustScope
 
 // Factories transfer a fresh owner. Passing an existing scoped source to an
 // adapter would copy its borrow into a returned value and is rejected.
+pub fn from_iter[A, I Iterator + Dispose + MustScope](create fn(A) I, input A) FromIterator[I] {
+    FromIterator {
+        source = create(input)
+    }
+}
+
 pub fn from_iter[A, I Iterator + Dispose + MustScope, E](create fn(A) Result[I, E], input A) Result[FromIterator[I], E] {
     Result.Ok(FromIterator {
             source = create(input)?
         })
+}
+
+pub fn map[A, S Stream + Dispose + MustScope, T](create fn(A) S, input A, transform fn(S.Item) Task[T]) Mapped[S, T] {
+    Mapped {
+        source = create(input)
+        transform = transform
+    }
 }
 
 pub fn map[A, S Stream + Dispose + MustScope, T, E](create fn(A) Result[S, E], input A, transform fn(S.Item) Task[T]) Result[Mapped[S, T], E] {
@@ -16,11 +29,29 @@ pub fn map[A, S Stream + Dispose + MustScope, T, E](create fn(A) Result[S, E], i
         })
 }
 
+pub fn filter[A, S Stream + Dispose + MustScope](create fn(A) S, input A, predicate fn(S.Item) Task[Bool]) Filtered[S] {
+    Filtered {
+        source = create(input)
+        predicate = predicate
+    }
+}
+
 pub fn filter[A, S Stream + Dispose + MustScope, E](create fn(A) Result[S, E], input A, predicate fn(S.Item) Task[Bool]) Result[Filtered[S], E] {
     Result.Ok(Filtered {
             source = create(input)?
             predicate = predicate
         })
+}
+
+pub fn take[A, S Stream + Dispose + MustScope](create fn(A) S, input A, count Int) Limited[S]
+requires count >= 0
+{
+    Limited {
+        state = LimitState[S] {
+            source = create(input)
+            remaining = [count]
+        }
+    }
 }
 
 pub fn take[A, S Stream + Dispose + MustScope, E](create fn(A) Result[S, E], input A, count Int) Result[Limited[S], E]

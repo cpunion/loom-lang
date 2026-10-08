@@ -6,9 +6,11 @@ target/loom test compiler/examples/stream_lines
 target/loom run compiler/examples/stream_lines -- README.md
 ```
 
-Factories transfer a file-line cursor through `from_iter`, `filter` and `take`.
+Infallible factories transfer a lazy file-line stream through `filter` and `take`.
 The final owner enters `scoped`; async predicates and `try_fold` borrow it only
 through directly awaited calls. The first two nonempty lines are returned,
 without decoding a later suffix. UTF-8/open errors propagate normally.
-File reads themselves are synchronous: lifting an Iterator does not turn its I/O
-into reactor I/O. Cancellation drains suspended callbacks before closing the file.
+The first pull opens the file; bounded native workers perform open/read/normal
+close without blocking the scheduler thread. Cancellation drains running I/O and
+suspended callbacks before fallback file cleanup. Construction and zero-item
+limits do not open a file. No whole-file buffer is retained.

@@ -49,8 +49,33 @@ the [application](../../../examples/file_lines/README.md) uses it to count lines
 without retaining their contents.
 Returning a map/filter/take adapter around that existing borrow is not supported.
 The factory overloads instead create a new owner, such as `take(read, path, 2)`;
-enter its Result payload through `scoped`. This is synchronous file iteration,
-not an async stream protocol. See the
+enter its Result payload through `scoped`. See the
 [owned pipeline example](../../../examples/file_pipeline/README.md).
+
+## Async lines
+
+`stream(path)` creates an `AsyncLines` owner without I/O. Its first pull opens
+the file asynchronously; `next(reader).await` and `close(reader).await` use the
+existing bounded native file workers, not blocking reads on the scheduler thread.
+Enter the owner through `scoped`. Open failures are error items on the first pull;
+the line framing, UTF-8 checks, EOF and later error behavior match `Lines`.
+
+`AsyncLines` implements [`Stream`](../../stream/README.md), so directly awaited
+consumers borrow it until child operations drain. Infallible factory overloads
+compose lazy producers without an artificial Result:
+
+```loom
+scoped source = take(stream, path, 2)
+let lines = collect(source).await
+```
+
+The snippet uses `std.stream.take` and `std.stream.collect` in an async function.
+An unpulled producer never opens the file, including a zero-item limit. Normal
+EOF and explicit close await worker completion. Early exit, errors, cancellation
+and faults use synchronous fallback close after pending child operations drain;
+cleanup itself cannot suspend. Cancellation of a running OS call still waits
+for completion. This does not add general async acquisition returning MustScope
+values or borrowing Tasks that outlive their call expression.
+See the [async pipeline](../../../examples/stream_lines/README.md).
 
 See the [line-counting application](../../../examples/file_lines/README.md).
