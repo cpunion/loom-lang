@@ -1,0 +1,116 @@
+import std.stream.collect
+import std.stream.take
+import std.time.sleep_ms
+import std.task.cancel
+
+test async fn async_lines_open_on_first_pull_and_share_the_line_decoder() {
+    let path = "loom-async-lines-chunks-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    scoped reader = stream(path)
+    assert get(reader.file.state.handle, 0) == -1
+    let bytes = to_bytes("")
+    var index = 0
+    while index < 8191 {
+        std.bytes.push(bytes, 97)
+        index = index + 1
+    }
+    let suffix = to_bytes("中\r\n\nlast\r")
+    index = 0
+    while index < std.bytes.length(suffix) {
+        std.bytes.push(bytes, std.bytes.get(suffix, index))
+        index = index + 1
+    }
+    assert match write_bytes(path, bytes) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let first = text_line(reader.next().await)
+    assert std.text.length(first) == 8194 && contains(first, "中")
+    let token = get(reader.file.state.handle, 0)
+    assert token >= 0
+    assert text_line(reader.next().await) == ""
+    assert text_line(reader.next().await) == "last\r"
+    assert exhausted(reader.next().await) && exhausted(reader.next().await)
+    assert get(reader.file.state.handle, 0) == -1
+    assert async_read(token, std.bytes.new(), 1).await == -1
+    assert std.text.length(first) == 8194 && contains(first, "中")
+}
+
+test async fn async_line_errors_are_items_and_explicit_close_prevents_open() {
+    {
+        scoped reader = stream("\0invalid")
+        assert match reader.next().await {
+            Option.Some(Result.Err(error)) => error == FileError.Open
+            _ => false
+        }
+        assert exhausted(reader.next().await)
+    }
+    {
+        scoped reader = stream("\0invalid")
+        assert match close(reader).await {
+            Result.Ok(value) => value == 0
+            Result.Err(_) => false
+        }
+        assert exhausted(reader.next().await)
+    }
+    let path = "loom-async-lines-invalid-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    let bytes = to_bytes("good\n")
+    std.bytes.push(bytes, 255)
+    std.bytes.push(bytes, 10)
+    assert match write_bytes(path, bytes) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    scoped reader = stream(path)
+    assert text_line(reader.next().await) == "good"
+    let token = get(reader.file.state.handle, 0)
+    assert match reader.next().await {
+        Option.Some(Result.Err(error)) => error == FileError.Utf8
+        _ => false
+    }
+    assert exhausted(reader.next().await)
+    assert async_read(token, std.bytes.new(), 1).await == -1
+}
+
+async fn paused_lines(path Text, observed List[LineState], tokens List[Int]) {
+    scoped reader = stream(path)
+    std.list.push(observed, reader.file.state)
+    assert text_line(reader.next().await) == "first"
+    std.list.push(tokens, get(reader.file.state.handle, 0))
+    sleep_ms(10000).await
+}
+
+test async fn cancelling_a_consumer_closes_its_lazy_file_after_child_drain() {
+    let path = "loom-async-lines-cancel-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    assert match write_text(path, "first\nsecond\n") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let observed = new[LineState]()
+    let tokens = new[Int]()
+    let pending = paused_lines(path, observed, tokens)
+    // The child starts before the timer, whether open/read has completed or not.
+    sleep_ms(5).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert std.list.length(observed) == 1
+    assert get(get(observed, 0).handle, 0) == -1 && get(get(observed, 0).ended, 0)
+    if std.list.length(tokens) != 0 {
+        assert async_read(tokens[0], std.bytes.new(), 1).await == -1
+    }
+}
+
+test async fn lazy_file_factories_compose_without_opening_an_unpulled_source() {
+    scoped empty = std.stream.take(stream, "\0invalid", 0)
+    assert std.list.length(collect(empty).await) == 0
+}

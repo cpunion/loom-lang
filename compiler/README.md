@@ -3794,7 +3794,9 @@ methods can forward Task parameters/results without installing an owner. See the
 [method example](examples/async_methods). MustScope receivers/parameters may be
 borrowed by directly awaited calls, without transferring ownership. NoSuspend
 parameters and MustScope Task results still reject. Resource factory overloads
-of [`std.stream`](std/stream/README.md) compose scoped async pipelines; their
+of [`std.stream`](std/stream/README.md) compose scoped async pipelines from
+fallible or infallible factories. [`std.file.lines.stream`](std/file/lines/README.md)
+opens lazily and uses bounded file workers for asynchronous line reads; its
 pending pulls drain before lexical disposal. General borrowing Tasks that outlive
 their call expression remain unsupported.
 Named async functions can also be passed as ordinary function values:

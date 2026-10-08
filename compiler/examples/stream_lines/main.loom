@@ -1,11 +1,9 @@
-import std.stream.FromIterator
 import std.stream.Filtered
-import std.stream.from_iter
 import std.stream.filter
 import std.stream.take
 import std.stream.try_fold
-import std.file.lines.Lines
-import std.file.lines.read
+import std.file.lines.AsyncLines
+import std.file.lines.stream
 import std.file.FileError
 import std.result.Result
 import std.list.new
@@ -18,10 +16,6 @@ import std.process.exit_code
 import std.text.concat
 import std.time.sleep_ms
 
-fn open_lines(path Text) Result[FromIterator[Lines], FileError] {
-    from_iter(read, path)
-}
-
 async fn nonempty(line Result[Text, FileError]) Bool {
     sleep_ms(1).await
     match line {
@@ -30,8 +24,8 @@ async fn nonempty(line Result[Text, FileError]) Bool {
     }
 }
 
-fn selected_lines(path Text) Result[Filtered[FromIterator[Lines]], FileError] {
-    filter(open_lines, path, nonempty)
+fn selected_lines(path Text) Filtered[AsyncLines] {
+    filter(stream, path, nonempty)
 }
 
 async fn append_line(values List[Text], line Result[Text, FileError]) Result[List[Text], FileError] {
@@ -41,7 +35,7 @@ async fn append_line(values List[Text], line Result[Text, FileError]) Result[Lis
 }
 
 async fn first_lines(path Text) Result[List[Text], FileError] {
-    scoped source = take(selected_lines, path, 2)?
+    scoped source = take(selected_lines, path, 2)
     try_fold(source, new[Text](), append_line).await
 }
 

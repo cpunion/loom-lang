@@ -1,6 +1,7 @@
 import std.resource.Dispose
 import std.resource.MustScope
 import std.int.to_text
+import std.iter.Iterator
 
 record OwnedCounter {
     state List[Int]
@@ -31,12 +32,16 @@ impl Stream for OwnedCounter {
     }
 }
 
-fn open_counter(events List[Int]) Result[OwnedCounter, Text] {
+fn create_counter(events List[Int]) OwnedCounter {
     push(events, -1)
-    Result.Ok(OwnedCounter {
-            state = [0]
-            events = events
-        })
+    OwnedCounter {
+        state = [0]
+        events = events
+    }
+}
+
+fn open_counter(events List[Int]) Result[OwnedCounter, Text] {
+    Result.Ok(create_counter(events))
 }
 
 async fn rendered(value Int) Text {
@@ -71,6 +76,44 @@ test async fn owned_stream_factories_compose_without_copying_and_close_once() {
         Result.Err(_) => false
     }
     assert length(empty) == 2 && empty[0] == -1 && empty[1] == 99
+}
+
+impl Iterator for OwnedCounter {
+    type Item = Int
+
+    fn next(self OwnedCounter) Option[Int] {
+        let value = self.state[0]
+        if value == 5 {
+            return Option.None
+        }
+        self.state[0] = value + 1
+        push(self.events, value)
+        Option.Some(value)
+    }
+}
+
+fn immediate_iterator(events List[Int]) FromIterator[OwnedCounter] {
+    from_iter(create_counter, events)
+}
+
+fn immediate_selected(events List[Int]) Filtered[FromIterator[OwnedCounter]] {
+    filter(immediate_iterator, events, even)
+}
+
+fn immediate_rendered(events List[Int]) Mapped[Filtered[FromIterator[OwnedCounter]], Text] {
+    map(immediate_selected, events, rendered)
+}
+
+test async fn infallible_factories_compose_all_adapters_and_dispose_once() {
+    let events = new[Int]()
+    {
+        scoped source = take(immediate_rendered, events, 2)
+        let values = collect(source).await
+        assert length(values) == 2 && values[0] == "0" && values[1] == "2"
+        assert length(events) == 4
+    }
+    assert length(events) == 5 && events[0] == -1 && events[1] == 0 &&
+    events[2] == 1 && events[3] == 2 && events[4] == 99
 }
 
 fn failed_counter(events List[Int]) Result[OwnedCounter, Text] {

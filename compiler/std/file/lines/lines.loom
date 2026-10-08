@@ -31,6 +31,7 @@ record LineFile {
 }
 
 record LineState {
+    worker Bool
     handle List[Int]
     chunk List[Bytes]
     cursor List[Int]
@@ -44,34 +45,48 @@ fn line_cell[T](value T) List[T] {
     cell
 }
 
+fn line_state(handle Int, worker Bool) LineState {
+    let pending Option[FileError] = Option.None
+    LineState {
+        worker = worker
+        handle = line_cell(handle)
+        chunk = line_cell(std.bytes.new())
+        cursor = line_cell(0)
+        ended = line_cell(false)
+        pending = line_cell(pending)
+    }
+}
+
 // Open once; pull/decode one line at a time. The caller must enter scoped.
 pub fn read(path Text) Result[Lines, FileError] {
-    let pending Option[FileError] = Option.None
     let handle = open(path)
     if handle < 0 {
         return Result.Err(FileError.Open)
     }
     Result.Ok(Lines {
             file = LineFile {
-                state = LineState {
-                    handle = line_cell(handle)
-                    chunk = line_cell(std.bytes.new())
-                    cursor = line_cell(0)
-                    ended = line_cell(false)
-                    pending = line_cell(pending)
-                }
+                state = line_state(handle, false)
             }
         })
 }
 
-fn close_lines(state LineState) Int {
+fn release_lines(state LineState) Int {
     let handle = get(state.handle, 0)
+    set(state.handle, 0, -1)
+    set(state.ended, 0, true)
+    handle
+}
+
+fn close_lines(state LineState) Int {
+    let handle = release_lines(state)
     if handle < 0 {
         return 0
     }
-    set(state.handle, 0, -1)
-    set(state.ended, 0, true)
-    close(handle)
+    if state.worker {
+        file_abort(handle)
+    } else {
+        close(handle)
+    }
 }
 
 // Explicit close reports failure; scoped cleanup remains the fallback.
@@ -106,6 +121,43 @@ fn pending_line(state LineState) Option[Result[Text, FileError]] {
     }
 }
 
+// Consume only the current chunk. Both I/O modes use the same line framing.
+fn buffered_line(state LineState, output Bytes, carried Bool) (Bool, Bool) {
+    let chunk = get(state.chunk, 0)
+    var cursor = get(state.cursor, 0)
+    var carriage = carried
+    while cursor < std.bytes.length(chunk) {
+        let byte = std.bytes.get(chunk, cursor)
+        cursor = cursor + 1
+        if byte == 10 {
+            set(state.cursor, 0, cursor)
+            return (true, false)
+        }
+        if carriage {
+            std.bytes.push(output, 13)
+        }
+        carriage = byte == 13
+        if !carriage {
+            std.bytes.push(output, byte)
+        }
+    }
+    set(state.cursor, 0, cursor)
+    (false, carriage)
+}
+
+fn finished_line(state LineState, output Bytes, carriage Bool, status Int) Option[Result[Text, FileError]] {
+    if status < 0 {
+        set(state.pending, 0, Option.Some(FileError.Close))
+    }
+    if carriage {
+        std.bytes.push(output, 13)
+    }
+    if std.bytes.length(output) != 0 {
+        return decoded_line(state, output)
+    }
+    pending_line(state)
+}
+
 // LF ends a line; a preceding CR is removed. A bare CR is ordinary content.
 // Final unterminated content is returned, but no extra item follows a final LF.
 // Errors are yielded once, never confused with EOF. Each Text is an isolated copy.
@@ -117,42 +169,21 @@ pub fn next(value Lines) Option[Result[Text, FileError]] {
     let output = std.bytes.new()
     var carriage = false
     while true {
-        let chunk = get(state.chunk, 0)
-        let cursor = get(state.cursor, 0)
-        if cursor == std.bytes.length(chunk) {
-            let buffer = std.bytes.new()
-            let count = read(get(state.handle, 0), buffer, 8192)
-            if count < 0 {
-                return line_failure(state, FileError.Read)
-            }
-            if count == 0 {
-                if close_lines(state) < 0 {
-                    set(state.pending, 0, Option.Some(FileError.Close))
-                }
-                if carriage {
-                    std.bytes.push(output, 13)
-                }
-                if std.bytes.length(output) != 0 {
-                    return decoded_line(state, output)
-                }
-                return pending_line(state)
-            }
-            set(state.chunk, 0, buffer)
-            set(state.cursor, 0, 0)
-        } else {
-            let byte = std.bytes.get(chunk, cursor)
-            set(state.cursor, 0, cursor + 1)
-            if byte == 10 {
-                return decoded_line(state, output)
-            }
-            if carriage {
-                std.bytes.push(output, 13)
-            }
-            carriage = byte == 13
-            if !carriage {
-                std.bytes.push(output, byte)
-            }
+        let ready, carried = buffered_line(state, output, carriage)
+        carriage = carried
+        if ready {
+            return decoded_line(state, output)
         }
+        let buffer = std.bytes.new()
+        let count = read(get(state.handle, 0), buffer, 8192)
+        if count < 0 {
+            return line_failure(state, FileError.Read)
+        }
+        if count == 0 {
+            return finished_line(state, output, carriage, close_lines(state))
+        }
+        set(state.chunk, 0, buffer)
+        set(state.cursor, 0, 0)
     }
     Option.None
 }

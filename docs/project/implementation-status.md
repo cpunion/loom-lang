@@ -755,10 +755,12 @@ intermediate Value tree or runtime schema registry. Source Stream resource
 factories now compose owned `from_iter`/map/filter/take pipelines with a final
 scoped owner. Directly awaited borrows keep that owner alive while child Tasks
 drain on cancellation and faults; saving or forwarding a borrowing Task rejects.
-The [file pipeline](../../compiler/examples/stream_lines/README.md) covers real
-input, early termination and errors at O0/O2 under moving GC. Lifting synchronous
-file lines does not provide nonblocking file I/O. Document sequences, general
-borrow-retaining adapters, async resource acquisition and application-grade
+The [file pipeline](../../compiler/examples/stream_lines/README.md) uses a lazy
+`std.file.lines.stream`: bounded native workers perform open/read/normal close,
+and both I/O modes share line framing and UTF-8 checks. Infallible resource
+factories compose owned adapters without an artificial Result. Lifting a
+synchronous Iterator still does not make its I/O nonblocking. Document sequences,
+general borrow-retaining adapters, async resource acquisition and application-grade
 networking remain open.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;

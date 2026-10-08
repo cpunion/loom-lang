@@ -1,6 +1,28 @@
+import std.file.write_bytes
+import std.fs.remove_file
+import std.text.to_bytes
+import std.bytes.push
+
 test async fn open_errors_propagate_without_creating_a_stream_owner() {
     assert match first_lines("").await {
         Result.Err(_) => true
         Result.Ok(_) => false
+    }
+}
+
+test async fn the_file_pipeline_stops_before_an_invalid_suffix() {
+    let path = "loom-stream-lines-example-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    let bytes = to_bytes("\nfirst\r\n\nsecond\n")
+    std.bytes.push(bytes, 255)
+    assert match write_bytes(path, bytes) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match first_lines(path).await {
+        Result.Ok(values) => length(values) == 2 && values[0] == "first" && values[1] == "second"
+        Result.Err(_) => false
     }
 }
