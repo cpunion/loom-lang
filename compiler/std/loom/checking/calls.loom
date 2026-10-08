@@ -81,13 +81,14 @@ fn template(context Context, declaration Int, count Int) Result[Int, Failure] {
     data_type(context.env, declaration, abstract_arguments(context.env, count), 0)
 }
 
-fn pending_resource_exit(value Expr, loops Int) Bool {
+fn pending_resource_exit(value Expr, loops Int, suspension Bool) Bool {
     // Inspect selected checked code, not source branches or closure bodies.
     // Result propagation is already a match with a returning error arm.
-    if value.kind == ExprKind.Return || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend {
+    if (suspension && (value.kind == ExprKind.Await || value.kind == ExprKind.Suspend)) ||
+        (!suspension && value.kind == ExprKind.Return) {
         return true
     }
-    if loops == 0 && (value.kind == ExprKind.Break || value.kind == ExprKind.Continue) {
+    if !suspension && loops == 0 && (value.kind == ExprKind.Break || value.kind == ExprKind.Continue) {
         return true
     }
     var index = 0
@@ -97,7 +98,7 @@ fn pending_resource_exit(value Expr, loops Int) Bool {
         } else {
             loops
         }
-        if pending_resource_exit(get(value.children, index), nested) {
+        if pending_resource_exit(get(value.children, index), nested, suspension) {
             return true
         }
         index = index + 1
@@ -107,7 +108,7 @@ fn pending_resource_exit(value Expr, loops Int) Bool {
         let body = get(value.arms, index).body
         var member = 0
         while member < length(body) {
-            if pending_resource_exit(get(body, member), loops) {
+            if pending_resource_exit(get(body, member), loops, suspension) {
                 return true
             }
             member = member + 1
@@ -120,13 +121,17 @@ fn pending_resource_exit(value Expr, loops Int) Bool {
 // Register each completed resource field before evaluating the next field.
 // Successful construction transfers all fields into the result, deactivates
 // the guards and pops their registrations. Faults leave the earlier guards
-// active, so the normal fault drain disposes each completed field.
+// active across faults and suspension, so fault/cancellation drain disposes
+// each completed field. Preserve NoSuspend's eager operand restriction before
+// replacing fields with statement temporaries.
 fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected Int, fields List[Expr]) Result[Expr, Failure] {
     let body = new[Expr]()
     let rebuilt = new[Expr]()
     let flags = new[Int]()
     let cleanups = new[Int]()
+    let suspension_marker = resource_concept(context.env, "NoSuspend")
     var active = false
+    var no_suspend_pending = false
     var index = 0
     while index < length(fields) {
         let field = get(fields, index)
@@ -141,9 +146,13 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
         } else {
             field
         }
-        if active && pending_resource_exit(value, 0) {
-            return Result.Err(error(context, source, "a resource field cannot precede return, ?, loop exit or await during aggregate construction"))
+        if active && pending_resource_exit(value, 0, false) {
+            return Result.Err(error(context, source, "a resource field cannot precede return, ? or loop exit during aggregate construction"))
         }
+        if no_suspend_pending && pending_resource_exit(value, 0, true) {
+            return Result.Err(error(context, source, "a NoSuspend operand is still pending; finish its operation before awaiting"))
+        }
+        no_suspend_pending = no_suspend_pending || (suspension_marker >= 0 && no_suspend(context, field.ty, suspension_marker)?)
         let resource = must_scope(context, field.ty)?
         let local = length(context.locals)
         push(context.locals, Local {

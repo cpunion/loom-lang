@@ -17,6 +17,13 @@ directly as `(task_a, task_b).await`, with `all`'s policy and no import needed.
 Two-argument `any(task_a, task_b)` and `race(task_a, task_b)` overloads
 accept Tasks with the same result type and use the List join policies.
 
+Tuple joins also accept fresh MustScope results. The example scopes a tuple
+containing two leases and ordinary Text; resource fields are borrowed until
+the tuple's block ends, then disposed in reverse order. Tuple `settled` keeps
+only each active completed resource payload. Partial construction remains
+protected during waits, faults and cancellation. Resource-bearing dynamic List
+joins remain unfinished.
+
 | `std.task` function | Awaited result | Rule |
 | --- | --- | --- |
 | `all(tasks)` | `List[T]` | Input order; the first observed fault fails the join and drains siblings. |

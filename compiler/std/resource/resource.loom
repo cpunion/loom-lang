@@ -1,5 +1,8 @@
 // The compiler recognizes these declarations by their trusted package identity.
 // Disposal is synchronous; external resources must not depend on GC cleanup.
+import std.option.Option
+import std.result.Result
+
 pub concept Dispose {
     fn dispose(self Self)
 }
@@ -8,6 +11,23 @@ pub concept MustScope {}
 
 // Independent of disposal: values carrying this marker cannot cross suspension.
 pub concept NoSuspend {}
+
+// Structural containers drain their stored MustScope fields after these hooks.
+// Ordinary payloads need no Dispose conformance and retain shared semantics.
+impl[Ts...] Dispose for (Ts...) {
+    fn dispose(self (Ts...)) {
+    }
+}
+
+impl[T] Dispose for Option[T] {
+    fn dispose(self Option[T]) {
+    }
+}
+
+impl[T, E] Dispose for Result[T, E] {
+    fn dispose(self Result[T, E]) {
+    }
+}
 
 // As with record fields, the compiler disposes stored MustScope elements after
 // the container hook. Ordinary discardable elements retain shared semantics.
