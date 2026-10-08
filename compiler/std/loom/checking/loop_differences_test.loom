@@ -1,0 +1,153 @@
+test fn loop_differences_relate_cursors_and_independently_updated_results() {
+    discard accepted("""
+        fn count(limit Int) Int
+        requires limit >= 0
+        ensures result == limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = total + 1
+                cursor = cursor + 1
+            }
+            total
+        }
+        fn offset(limit Int) Int
+        requires limit >= 0 && limit <= 9223372036854775800
+        ensures result == limit + 7 {
+            var cursor = 0
+            var total = 7
+            while cursor < limit {
+                cursor = cursor + 1
+                total = total + 1
+            }
+            total
+        }
+        fn symbolic(start Int, limit Int, initial Int) Int
+        requires start >= 0 && limit >= start && initial >= start
+        ensures result - limit == initial - start {
+            var cursor = start
+            var total = initial
+            while cursor < limit {
+                total = total + 1
+                cursor = cursor + 1
+            }
+            total
+        }
+        """)
+}
+
+test fn loop_differences_recheck_all_backedges_early_exits_and_zero_iterations() {
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0
+        ensures result == limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                cursor = cursor + 1
+                if cursor > 3 {
+                    continue
+                }
+                total = total + 1
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0
+        ensures result == limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                if cursor < 3 {
+                    total = total + 1
+                }
+                cursor = cursor + 1
+            }
+            total
+        }
+        fn main() {
+            assert wrong(2) == 2
+        }
+        """)
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0
+        ensures result == limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                if cursor > 2 {
+                    return 0
+                }
+                total = total + 1
+                cursor = cursor + 1
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0
+        ensures result == limit {
+            var cursor = 0
+            var total = 1
+            while cursor < limit {
+                total = total + 1
+                cursor = cursor + 1
+            }
+            total
+        }
+        """)
+}
+
+test fn mathematical_loop_differences_do_not_define_overflowing_source_contracts() {
+    rejects("""
+        fn symbolic(start Int, limit Int, initial Int) Int
+        requires limit >= start
+        ensures result - limit == initial - start {
+            var cursor = start
+            var total = initial
+            while cursor < limit {
+                total = total + 1
+                cursor = cursor + 1
+            }
+            total
+        }
+        """)
+}
+
+test fn loop_differences_compose_with_structural_pack_extents() {
+    discard accepted("""
+        fn count[Ts...](values (Int, Ts..., Bool)) Int
+        ensures result >= 2 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn repeated[Ts...](values (Ts..., Int, Ts...)) Int
+        ensures result >= 1 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong[Ts...](values (Int, Ts..., Bool)) Int
+        ensures result > 2 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        """)
+}

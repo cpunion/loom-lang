@@ -626,6 +626,13 @@ checking inductiveness. Scalar lexical cleanup retains its checked order and
 return snapshots. Guard calls use fresh checked results, not stable syntactic
 invariant terms. Resource cleanup and general heap-content proofs remain unsupported. See the
 [native loop example](../../compiler/examples/loop_contracts).
+Written Int guard cursors also propose mathematical entry-difference relations
+with other written Int locals, after existing storage/quantifier candidates.
+Every relation is proved on entry and all backedges; conditional updates and
+early exits cannot borrow a sampled correlation. The
+[difference example](../../compiler/examples/loop_contracts/differences.loom)
+covers independent counters, symbolic offsets, helper/cleanup updates and
+structural pack minimum extents. Source arithmetic definedness is unchanged.
 
 Unrestricted content mutation, strengthening existing mutable alias graphs,
 general loop/recursive proofs, arbitrary `old` snapshots and general Float induction

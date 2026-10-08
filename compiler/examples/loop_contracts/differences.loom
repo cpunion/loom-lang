@@ -1,0 +1,74 @@
+fn copied_counter(start Int, limit Int) Int
+requires limit >= start
+ensures result == limit {
+    var cursor = start
+    var total = start
+    while cursor < limit {
+        total = step(total)
+        cursor = step(cursor)
+    }
+    total
+}
+
+fn offset_counter(start Int, limit Int, initial Int) Int
+requires start >= 0 && limit >= start && initial >= start
+ensures result - limit == initial - start {
+    var cursor = start
+    var total = initial
+    while cursor < limit {
+        cursor = cursor + 1
+        total = total + 1
+    }
+    total
+}
+
+fn cleanup_counter(limit Int) Int
+requires limit >= 0
+ensures result == limit {
+    var cursor = 0
+    var total = 0
+    while cursor < limit {
+        defer {
+            cursor = cursor + 1
+        }
+        total = total + 1
+    }
+    total
+}
+
+fn framed_count[Ts...](values (Int, Ts..., Bool)) Int
+ensures result >= 2 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+fn repeated_count[Ts...](values (Ts..., Int, Ts...)) Int
+ensures result >= 1 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+fn difference_exercise() {
+    assert copied_counter(0, 0) == 0
+    assert copied_counter(-3, 4) == 4
+    assert copied_counter(9223372036854775806, 9223372036854775807) == 9223372036854775807
+    assert copied_counter(-9223372036854775808, -9223372036854775807) == -9223372036854775807
+    assert offset_counter(2, 5, 9) == 12
+    assert offset_counter(9223372036854775807, 9223372036854775807, 9223372036854775807) == 9223372036854775807
+    assert cleanup_counter(0) == 0 && cleanup_counter(42) == 42
+    assert framed_count((1, true)) == 2
+    assert framed_count((1, "a", [2], false)) == 4
+    assert repeated_count((1,)) == 1
+    assert repeated_count((true, "a", 1, false, "b")) == 5
+    assert comptime {
+        copied_counter(0, 42)
+    } == 42
+}

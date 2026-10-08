@@ -15,6 +15,11 @@ implementation, not a compatibility ledger for previous prototypes.
   affine extents and scalar/List loop proofs; keep mixed element observations
   opaque and native iteration statically expanded.
 
+- Infer checked entry-difference relations between written Int loop cursors and
+  counters. Reuse ordinary entry/backedge verification for separate updates,
+  symbolic offsets and stronger structural-pack bounds; retain source overflow
+  obligations and the existing inference budget.
+
 - Allow checked scoped-resource borrows through directly awaited async calls;
   reject escaping borrowing Tasks and keep NoSuspend/Task-result restrictions.
   Add source Stream factory pipelines with ordinary nested cleanup, cancellation
