@@ -42,7 +42,12 @@ ensures result >= 0 {
 concept StructuralCount {
     fn count[Ts...](self Self, values (Int, Ts..., Bool)) Int
     ensures result >= 0 {
-        structural_count(values)
+        var total = 0
+        comptime for item in values {
+            discard item
+            total = total + 1
+        }
+        total
     }
 }
 
