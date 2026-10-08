@@ -1,0 +1,97 @@
+fn structural_count[Ts...](values (Int, Ts..., Bool)) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+fn repeated_count[Ts...](values (Ts..., Int, Ts...)) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+fn structural_indices[As..., Bs...](log List[Int], left (As...), values (As..., Bool, Bs...), right (Bs...)) Int
+ensures result >= 0 && length(log) >= old(length(log)) {
+    var total = 0
+    comptime for index, item in values {
+        discard item
+        push(log, index)
+        total = total + index
+    }
+    total
+}
+
+fn paired_count[As..., Bs...](values (Int, ShapePair[As, Bs]...)) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
+
+concept StructuralCount {
+    fn count[Ts...](self Self, values (Int, Ts..., Bool)) Int
+    ensures result >= 0 {
+        var total = 0
+        comptime for item in values {
+            discard item
+            total = total + 1
+        }
+        total
+    }
+}
+
+impl StructuralCount for Bool {
+}
+
+impl StructuralCount for Int {
+    fn count[Us...](self Int, values (Int, Us..., Bool)) Int {
+        var total = 0
+        comptime for item in values {
+            discard item
+            total = total + 1
+        }
+        total
+    }
+}
+
+fn exercise_structural_induction() {
+    assert structural_count((1, true)) == 2
+    assert structural_count((1, "a", [2], false)) == 4
+    assert repeated_count((1,)) == 1
+    assert repeated_count((true, "a", 1, false, "b")) == 5
+    assert comptime {
+        structural_count((1, (true, "nested"), false))
+    } == 3
+    let callback fn((Int, Text, Bool)) Int = structural_count
+    assert callback((1, "callback", true)) == 3
+    let defaulted dyn StructuralCount = true
+    let overridden dyn StructuralCount = 1
+    assert defaulted.count((1, false)) == 2
+    assert overridden.count((1, "override", false)) == 3
+    assert paired_count((1,)) == 1
+    assert paired_count((1, ShapePair {
+                first = true
+                second = "text"
+            })) == 2
+
+    let log = [42]
+    assert structural_indices(log, pack(), (true,), pack()) == 0
+    assert structural_indices(log, (1,), (1, true, "a", false), ("a", false)) == 6
+    assert length(log) == 6
+    assert log[0] == 42 && log[1] == 0
+    assert log[2] == 0 && log[3] == 1 && log[4] == 2 && log[5] == 3
+    let effects List[Int] = []
+    assert structural_count((mark(effects, 1), mark(effects, 2), true)) == 3
+    assert length(effects) == 2 && effects[0] == 1 && effects[1] == 2
+}

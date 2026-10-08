@@ -349,6 +349,15 @@ ensures result >= 0 {
     }
     total
 }
+fn structural_count[As..., Bs...](left (As...), values (Int, As..., Bool, Bs...), right (Bs...)) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = total + 1
+    }
+    total
+}
 fn pack[Ts...](values Ts...) (Ts...) { values }
 fn repeat[Ts...](values (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) { values }
 fn paired[Ts...](left Ts..., marker Bool, right Ts...) (Ts..., Ts...) {
@@ -396,6 +405,8 @@ fn main() {
     assert values.0 + values.1 == 42 && values.2
     assert sum(40, true, 1) == 42 && sum() == 0
     assert counted() == 0 && counted(40, true, 1) == 3
+    assert structural_count(pack(), (1, true), pack()) == 2
+    assert structural_count((40,), (1, 40, true, 2, false), (2, false)) == 5
     let empty = Packet { values = pack() }
     discard empty
     discard pack(pack()...)

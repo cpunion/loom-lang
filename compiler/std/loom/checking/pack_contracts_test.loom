@@ -244,6 +244,133 @@ test fn variadic_induction_rejects_sampling_shadowing_and_changed_control() {
         """)
 }
 
+test fn structural_pack_induction_composes_fixed_repeated_and_independent_widths() {
+    list_length_contract("""
+        import std.list.push
+        import std.list.length
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn count[As..., Bs...](left (As...), values (Int, As..., Bool, Bs...), right (Bs...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn repeated[Ts...](values (Ts..., Int, Ts...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn append[As..., Bs...](log List[Int], left (As...), values (As..., Bool, Bs...), right (Bs...)) Int
+        ensures result >= 0 && length(log) >= old(length(log)) {
+            var total = 0
+            comptime for index, item in values {
+                discard item
+                push(log, index)
+                total = total + index
+            }
+            total
+        }
+        fn main() {
+            assert count(pack(), (1, true), pack()) == 2
+            assert count(("a",), (1, "a", true, 2, false), (2, false)) == 5
+            assert repeated((1,)) == 1
+            assert repeated((true, 1, false)) == 3
+            let log = [42]
+            assert append(log, (1,), (1, true, "a"), ("a",)) == 3
+            assert length(log) == 4 && log[1] == 0 && log[2] == 1 && log[3] == 2
+        }
+        """, true)
+}
+
+test fn structural_pack_induction_does_not_sample_nonempty_expansions() {
+    rejects("""
+        fn wrong[As..., Bs...](left (As...), values (Int, As..., Bool, Bs...), right (Bs...)) Int
+        ensures result > 2 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn main() {
+            assert wrong((2,), (1, 2, true, "a"), ("a",)) == 4
+        }
+        """)
+    rejects("""
+        fn wrong[Ts...](values (Ts..., Int, Ts...)) Int
+        ensures result == 1 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong[As..., Bs...](values (As..., Bool, Bs...)) Int
+        ensures result >= 0 {
+            comptime for index, item in values {
+                discard item
+                if index >= 3 {
+                    return -1
+                }
+            }
+            0
+        }
+        """)
+}
+
+test fn structural_pack_induction_keeps_element_and_control_boundaries() {
+    rejects("""
+        concept Value {
+            fn value(self Self) Int
+            ensures result >= 0
+        }
+        fn wrong[Ts... Value](values (Ts..., Int)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong[Ts...](values (Int, Ts...)) Int
+        ensures result >= 0 {
+            while true {
+                comptime for item in values {
+                    discard item
+                    break
+                }
+                return -1
+            }
+            0
+        }
+        """)
+    rejects("""
+        fn wrong[Ts...](values (Int, Ts...)) Int
+        ensures result >= 0 {
+            let values = (1,)
+            comptime for item in values {
+                discard item
+            }
+            0
+        }
+        """)
+}
+
 fn pack_observation_contracts() Text {
     """
     concept Value {
