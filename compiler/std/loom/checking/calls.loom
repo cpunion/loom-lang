@@ -199,7 +199,7 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     let selection = data_selection(context, node, declaration, child(node, 0).children, desired, plain_inputs(new[Node]()))?
     let shape = get(context.env.types, data_type_grouped(context.env, declaration,
-        abstract_arguments(context.env, selection.count), selection.widths, 0)?)
+            abstract_arguments(context.env, selection.count), selection.widths, 0)?)
     if shape.kind != TypeKind.Record {
         return Result.Err(error(context, node, "construction requires a record type"))
     }
@@ -296,7 +296,7 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     }
     let selection = data_selection(context, node, declaration, types, desired, inputs)?
     let shape = get(context.env.types, data_type_grouped(context.env, declaration,
-        abstract_arguments(context.env, selection.count), selection.widths, 0)?)
+            abstract_arguments(context.env, selection.count), selection.widths, 0)?)
     if shape.kind != TypeKind.Enum {
         return Result.Err(error(context, node, "variant construction requires an enum"))
     }
@@ -553,7 +553,7 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
         }
         index = index + 1
     }
-    let matches = matching_overloads(context, node, options, types, values, expected)?
+    let matches = matching_overloads(context, node, options, types, values, expected, inferred, length(options) == 1)?
     let value = invoke_selected(context, node, choose_overload(context, node, matches)?, inputs, values, probes)?
     Result.Ok(empty_inputs(context, inputs, node, value))
 }
@@ -565,7 +565,8 @@ record OverloadSet {
     missing_requirement Bool
 }
 
-fn matching_overloads(context Context, node Node, options List[Int], types List[Node], values List[Expr], expected Int) Result[OverloadSet, Failure] {
+fn matching_overloads(context Context, node Node, options List[Int], types List[Node], values List[Expr], expected Int,
+    inferred List[Int], checked Bool) Result[OverloadSet, Failure] {
     let matches = new[Instance]()
     let widening = new[Bool]()
     var exact = false
@@ -574,14 +575,21 @@ fn matching_overloads(context Context, node Node, options List[Int], types List[
     while index < length(options) {
         let id = get(options, index)
         let candidate_signature = get(context.env.signatures, id)
-        let args = supplied_call(context, node, types, candidate_signature)?
+        // A sole candidate already inferred every input while checking it.
+        // Reuse only that invocation's result; all admission checks stay below.
+        let args = if checked {
+            inferred
+        } else {
+            let arguments = supplied_call(context, node, types, candidate_signature)?
+            var argument = 0
+            while argument < length(values) {
+                discard infer(context.env, get(candidate_signature.params, argument), get(values, argument).ty, arguments)
+                argument = argument + 1
+            }
+            arguments
+        }
         var matched = true
         var widened = false
-        var argument = 0
-        while argument < length(values) {
-            discard infer(context.env, get(candidate_signature.params, argument), get(values, argument).ty, args)
-            argument = argument + 1
-        }
         if matched && !complete(args) && expected >= 0 {
             let result_hint = if async_signature(context.env, candidate_signature) {
                 if get(context.env.types, expected).kind == TypeKind.Task {
@@ -598,7 +606,7 @@ fn matching_overloads(context Context, node Node, options List[Int], types List[
         }
         if matched && complete(args) {
             if satisfies_arguments(context, candidate_signature, args, node)? {
-                argument = 0
+                var argument = 0
                 while argument < length(values) {
                     let target = substitute(context.env, candidate_signature.symbol, get(candidate_signature.params, argument), args, node)?
                     let value = get(values, argument)

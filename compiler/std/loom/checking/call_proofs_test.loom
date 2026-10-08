@@ -8,7 +8,9 @@ test fn direct_body_calls_use_verified_summaries_or_pure_scalar_bodies() {
         calls = calls + dynamic_count(function.body, ExprKind.Call)
         // A source parameter and result binding only: the proof's call-result
         // and argument snapshots never become emitted function locals.
-        if length(function.postconditions) != 0 { assert length(function.locals) == 2 }
+        if length(function.postconditions) != 0 {
+            assert length(function.locals) == 2
+        }
         index = index + 1
     }
     assert calls == 2
@@ -45,4 +47,59 @@ test fn body_call_summaries_do_not_skip_declaration_proofs() {
     }
     rejects(concat(identity, "fn hidden[T](value Int) Int ensures result == value { comptime if T == Int { identity(value) } else { 0 } }\nfn main() { discard hidden[Int](3) }"))
     rejects("fn looping(value Int) Int { var count = value\nwhile count > 0 { count = count - 1 }\ncount }\nfn unsupported(value Int) Int ensures result <= value { looping(value) }")
+}
+
+test fn single_call_inference_retains_context_weakening_and_requirements() {
+    discard accepted("""
+        type Positive = Int where self > 0
+        fn keep[T](value T) T {
+            value
+        }
+        fn empty[T]() List[T] {
+            []
+        }
+        async fn empty_async[T]() List[T] {
+            []
+        }
+        fn pair[T](first T, second T) (T, T) {
+            (first, second)
+        }
+        fn value() Int {
+            7
+        }
+        fn apply[T](comptime callback fn() T) T {
+            callback()
+        }
+        async fn main() {
+            let Selected = Int
+            let positive = Positive(7)
+            assert keep[Selected](positive) == 7
+            let values List[Bool] = empty()
+            discard values
+            let later List[Text] = empty_async().await
+            discard later
+            let both = pair(positive, positive)
+            assert both.0 == 7 && both.1 == 7
+            assert apply(value) == 7
+            assert comptime { apply(value) } == 7
+        }
+        """)
+    rejects("""
+        fn pair[T](first T, second T) (T, T) {
+            (first, second)
+        }
+        fn main() {
+            discard pair(1, true)
+        }
+        """)
+    rejects("""
+        concept Required {
+        }
+        fn keep[T Required](value T) T {
+            value
+        }
+        fn main() {
+            discard keep(true)
+        }
+        """)
 }
