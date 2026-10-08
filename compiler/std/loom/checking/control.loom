@@ -256,14 +256,17 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
             var field = 0
             while field < length(fields) {
                 let binding = get(bindings, field)
-                if !borrowed && must_scope(context, get(fields, field))? {
-                    discard resource_payload(context, binding, match_body(arm))?
+                if !borrowed && binding.kind == NodeKind.Wildcard && must_scope(context, get(fields, field))? {
+                    return Result.Err(error(context, binding, "a wildcard cannot discard a resource payload"))
                 }
                 if binding.kind == NodeKind.Wildcard {
                     push(locals, -1)
                 } else {
                     push(locals, length(current.locals))
                     current = bind_local(current, binding, binding.value, get(fields, field), false, context.head)?
+                    if !borrowed && must_scope(context, get(fields, field))? {
+                        resource_payload_binding(current)
+                    }
                     if borrowed && must_scope(context, get(fields, field))? {
                         resource_borrow_local(current, length(current.locals) - 1)
                     }
@@ -272,10 +275,10 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
             }
         } else {
             whole = length(current.locals)
-            if !borrowed && must_scope(context, value.ty)? {
-                discard resource_payload(context, pattern, match_body(arm))?
-            }
             current = bind_local(current, pattern, pattern.value, value.ty, false, context.head)?
+            if !borrowed && must_scope(context, value.ty)? {
+                resource_payload_binding(current)
+            }
             if borrowed && must_scope(context, value.ty)? {
                 resource_borrow_local(current, whole)
             }

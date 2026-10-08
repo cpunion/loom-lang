@@ -899,6 +899,7 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
                 local = result_local
                 constant = -1
                 previous = context.head
+                resource_payload = false
             })
         context = context_at(context, binding)
     }

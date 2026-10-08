@@ -1,0 +1,130 @@
+fn resource_reconstruction_header() Text {
+    concat(resource_enum_header(), """
+        import std.option.Option
+        record Rebuilt {
+            tag Int
+            first Handle
+            second Handle
+        }
+        impl Dispose for Rebuilt {
+            fn dispose(self Rebuilt) {
+            }
+        }
+        fn tag() Int {
+            7
+        }
+        """)
+}
+
+test fn fresh_match_payloads_reconstruct_through_existing_aggregate_guards() {
+    resource_accept(concat(resource_reconstruction_header(), """
+        fn reorder(log List[Int]) Bundle {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => {
+                    return Bundle.Pair(second, first, value)
+                }
+                Bundle.Empty => Bundle.Empty
+            }
+        }
+        fn record_pair(log List[Int]) Rebuilt {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => Rebuilt {
+                    tag = tag()
+                    second = second
+                    first = first
+                }
+                Bundle.Empty => Rebuilt {
+                    tag = 0
+                    first = make(log)
+                    second = make(log)
+                }
+            }
+        }
+        fn tuple_pair(log List[Int]) (Int, Handle, Handle) {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => (tag(), second, first)
+                Bundle.Empty => (0, make(log), make(log))
+            }
+        }
+        fn list_pair(log List[Int]) List[Handle] {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => [second, first]
+                Bundle.Empty => []
+            }
+        }
+        fn direct(log List[Int]) Handle {
+            match Option.Some(make(log)) {
+                Option.Some(value) => {
+                    return value
+                }
+                Option.None => make(log)
+            }
+        }
+        fn run(log List[Int]) {
+            scoped first = reorder(log)
+            scoped second = record_pair(log)
+            scoped third = tuple_pair(log)
+            scoped fourth = list_pair(log)
+            scoped fifth = direct(log)
+        }
+        """))
+}
+
+test fn reconstructed_payloads_cannot_copy_borrows_duplicate_or_abandon_owners() {
+    resource_reject(concat(resource_reconstruction_header(), """
+        fn copied(value Handle, log List[Int]) Bundle {
+            Bundle.Pair(value, make(log), 1)
+        }
+        """))
+    resource_reject(concat(resource_reconstruction_header(), """
+        fn copied(log List[Int]) Bundle {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => Bundle.Pair(first, first, value)
+                Bundle.Empty => Bundle.Empty
+            }
+        }
+        """))
+    resource_reject(concat(resource_reconstruction_header(), """
+        fn abandoned(log List[Int]) List[Handle] {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => [first]
+                Bundle.Empty => []
+            }
+        }
+        """))
+    resource_reject(concat(resource_reconstruction_header(), """
+        fn delayed(log List[Int]) Bundle {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => {
+                    assert true
+                    Bundle.Pair(first, second, value)
+                }
+                Bundle.Empty => Bundle.Empty
+            }
+        }
+        """))
+}
+
+test fn preexisting_no_suspend_payloads_cannot_cross_earlier_awaited_fields() {
+    resource_reject_reason(concat(resource_reconstruction_header(), """
+        import std.resource.NoSuspend
+        impl NoSuspend for Handle {
+        }
+        async fn number() Int {
+            1
+        }
+        async fn rebuilt(log List[Int]) {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => {
+                    scoped result = Rebuilt {
+                        tag = number().await
+                        first = first
+                        second = second
+                    }
+                }
+                Bundle.Empty => {
+                }
+            }
+        }
+        """), "a NoSuspend value is still in scope; leave its block before awaiting")
+}

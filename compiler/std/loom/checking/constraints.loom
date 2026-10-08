@@ -91,6 +91,7 @@ fn predicate_context(env Environment, ty Int, locals List[Local], self_local Int
             local = self_local
             constant = -1
             previous = -1
+            resource_payload = false
         })
     Result.Ok(Context {
             lexical = new_lexical()

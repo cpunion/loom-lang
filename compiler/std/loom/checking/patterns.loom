@@ -103,11 +103,11 @@ fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, de
                 return Result.Err(error(context, node, "a wildcard cannot discard a resource payload"))
             }
         } else {
-            if !borrowed && must_scope(context, ty)? {
-                discard resource_payload(context, node, body)?
-            }
             local = length(current.locals)
             current = bind_local(current, node, node.value, ty, false, boundary)?
+            if !borrowed && must_scope(context, ty)? {
+                resource_payload_binding(current)
+            }
             if borrowed && must_scope(context, ty)? {
                 resource_borrow_local(current, local)
             }

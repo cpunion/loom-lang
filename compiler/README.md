@@ -3569,6 +3569,13 @@ that scoped enum or a borrowed receiver borrows payloads, including nested and
 guarded patterns. It does not permit copying, returning, manually disposing, or
 putting those payloads into another `scoped` binding. See the
 [enum cleanup tests](examples/cleanup/resource_enum_test.loom).
+Fresh, unscoped match payloads may immediately transfer into new record, tuple,
+enum or List constructors. Existing payloads receive pending protection before
+other field expressions run; those expressions retain their source order.
+Failures and cancellation drain the pending values, while successful construction
+transfers them to the new aggregate. Borrowed/scoped values, duplicate transfers
+and abandoned payloads still reject. NoSuspend payloads cannot cross an await.
+See the [reconstruction tests](examples/cleanup/resource_reconstruction_test.loom).
 Resource Lists support fresh literals and dynamically sized construction:
 
 ```loom

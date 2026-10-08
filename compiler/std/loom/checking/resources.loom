@@ -210,20 +210,29 @@ fn resource_binding(context Context, node Node, value Expr) Result[Bool, Failure
     Result.Ok(true)
 }
 
-fn resource_payload(context Context, binding Node, body Node) Result[Bool, Failure] {
-    if binding.kind == NodeKind.Wildcard {
-        return Result.Err(error(context, binding, "a wildcard cannot discard a resource payload"))
-    }
-    if length(body.children) != 0 {
-        let first = child(body, 0)
-        if first.kind == NodeKind.Scoped {
-            let input = child(first, length(first.children) - 1)
-            if input.kind == NodeKind.Name && input.value == binding.value {
-                return Result.Ok(true)
-            }
+fn resource_payload_binding(context Context) {
+    let binding = get(context.bindings, context.head)
+    set(context.bindings, context.head, Binding {
+            name = binding.name
+            local = binding.local
+            constant = binding.constant
+            previous = binding.previous
+            resource_payload = true
+        })
+}
+
+// This lexical origin avoids recursively querying ordinary constructor values.
+// It is not ownership evidence and never survives into emitted program data.
+fn resource_payload_local(context Context, local Int) Bool {
+    var head = context.head
+    while head >= 0 {
+        let binding = get(context.bindings, head)
+        if binding.local == local {
+            return binding.resource_payload
         }
+        head = binding.previous
     }
-    Result.Err(error(context, binding, "a resource payload must immediately enter scoped before any other operation"))
+    false
 }
 
 fn scoped_receiver_root(context Context, value Expr) Bool {

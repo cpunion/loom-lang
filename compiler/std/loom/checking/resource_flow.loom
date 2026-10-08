@@ -194,7 +194,7 @@ fn resource_function(analysis ResourceAnalysis, id Int, borrowed List[Int]) Resu
         return Result.Err(resource_error(flow, current.body, "a resource return must transfer a fresh value"))
     }
     if resource_pending(flow) {
-        return Result.Err(resource_error(flow, current.body, "a resource payload must immediately enter scoped"))
+        return Result.Err(resource_error(flow, current.body, "a resource payload must immediately enter scoped or transfer into a fresh result"))
     }
     var fresh = !current.body.falls || value.fresh
     index = 0
@@ -276,9 +276,9 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Res
 fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
     let kind = expr.kind
     let current = get(flow.analysis.functions, flow.function)
-    if resource_pending(flow) && kind != ExprKind.Block && kind != ExprKind.Local &&
+    if resource_pending(flow) && kind != ExprKind.Block && kind != ExprKind.Local && kind != ExprKind.Return &&
     !(kind == ExprKind.Let && get(current.locals, expr.index).is_scoped) {
-        return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped before any other operation"))
+        return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped or transfer before any other operation"))
     }
     if kind == ExprKind.Local {
         let value = get(flow.locals, expr.index)
@@ -582,7 +582,7 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
             field = field + 1
         }
         if resource_pending(branch) && output.pending < 0 {
-            return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped"))
+            return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped or transfer into a fresh result"))
         }
         protected = protected || output.protected
         if get(arm.body, length(arm.body) - 1).falls {

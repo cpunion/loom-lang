@@ -77,6 +77,7 @@ fn method_contract_context(context Context, declaration Int) Result[Context, Fai
                 local = local
                 constant = -1
                 previous = aliases.head
+                resource_payload = false
             })
         aliases = context_at(aliases, binding)
     }
@@ -132,6 +133,7 @@ fn validate_concept_contracts(env Environment, id Int) Result[Bool, Failure] {
                 local = local
                 constant = -1
                 previous = context.head
+                resource_payload = false
             })
         discard contracts(context_at(context, binding), node, NodeKind.Ensures)?
     }
@@ -223,6 +225,7 @@ fn declared_method_summary(env Environment, id Int, arguments List[Int], constan
             local = result_local
             constant = -1
             previous = scope.context.head
+            resource_payload = false
         })
     let postconditions = contracts(context_at(scope.context, binding), declaration, NodeKind.Ensures)?
     if length(postconditions) == 0 {
