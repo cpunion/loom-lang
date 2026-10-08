@@ -2197,7 +2197,7 @@ Raw aliases cannot flow into bindings outside that body or otherwise
 escape; previously published headers are not the next iteration's draft.
 Nested iteration bodies, early exits, cleanup and unrelated waits retain these
 same rules. Headers allocated outside a repeating publication, publication in
-loop conditions, mutable binding origins and unsupported draft operations remain conservative.
+loop conditions and unsupported draft operations remain conservative.
 Unknown predicates keep the ordinary `Result` boundary.
 The [structural builder example](examples/record_refinement/structural_drafts.loom)
 uses a generic record with a tuple field and an independently writable notes List.
@@ -2205,8 +2205,15 @@ The [iteration example](examples/record_refinement/epochs.loom) builds distinct
 published headers across iterations, CTFE, cleanup and suspension.
 The [raw update example](examples/record_refinement/raw_updates.loom) retains
 sharing through preserving helpers, cleanup, checked rejection and a real wait.
-Mutable/conditional bindings, aggregate arguments and captured mutating callbacks
-without a proved header identity still reject rather than acquire a constraint.
+Straight-line mutable bindings use private value snapshots: rebinding a variable
+does not rebind earlier aliases or the published header. Fresh reassignment,
+inline aggregate copies and eager argument snapshots reuse the same allocation
+and preservation rules; no rewritten locals enter executable IR or caches.
+The [binding example](examples/record_refinement/versions.loom) checks once-only
+effects, old aliases, cleanup, CTFE and real waits. Conditional/loop-carried
+rebindings and delayed mutable reads/writes retain their original slots and remain
+conservative, as do aggregate arguments and captured mutating callbacks without
+a proved header identity.
 `PositiveValues(existing_list)` still rejects when the input can have external
 writable aliases or unsafe later raw uses. No automatic copy, ownership syntax or
 runtime monitor is installed. Copies of a constrained value keep sharing its storage.

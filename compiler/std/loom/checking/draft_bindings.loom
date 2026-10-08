@@ -1,0 +1,191 @@
+record DraftCandidate {
+    source Expr
+    value Expr
+}
+
+record DraftBindings {
+    env Environment
+    locals List[Local]
+    eligible List[Bool]
+    versions List[Int]
+    originals List[Expr]
+    candidates List[DraftCandidate]
+    valid List[Bool]
+}
+
+// Delayed reads and control-flow joins need their original mutable slots until
+// their value/epoch is proved. Never replace a cleanup read with an earlier
+// registration-time snapshot or a loop-carried value with one iteration's RHS.
+fn draft_binding_limits(value Expr, eligible List[Bool], conditional Bool, delayed Bool, depth Int) Bool {
+    if depth >= 256 {
+        return false
+    }
+    if (value.kind == ExprKind.Assign && (conditional || delayed)) ||
+    (value.kind == ExprKind.Local && delayed) || value.kind == ExprKind.ResourceDrain {
+        if value.index >= 0 && value.index < length(eligible) {
+            set(eligible, value.index, false)
+        }
+    }
+    let later = delayed || value.kind == ExprKind.Defer || value.kind == ExprKind.Cleanup ||
+    value.kind == ExprKind.ResourceDrain || value.kind == ExprKind.Deferred
+    var index = 0
+    while index < length(value.children) {
+        let branch = conditional || value.kind == ExprKind.While ||
+        ((value.kind == ExprKind.If || (value.kind == ExprKind.Binary &&
+                    (value.text == "&&" || value.text == "||"))) && index != 0)
+        if !draft_binding_limits(get(value.children, index), eligible, branch, later, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if !draft_binding_limits(get(body, item), eligible, true, later, depth + 1) {
+                return false
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn draft_version(scope DraftBindings, value Expr, depth Int) Expr {
+    if depth >= 256 {
+        set(scope.valid, 0, false)
+        return value
+    }
+    let children = new[Expr](length(value.children))
+    var index = 0
+    while index < length(value.children) {
+        push(children, draft_version(scope, get(value.children, index), depth + 1))
+        index = index + 1
+    }
+    let arms = new[Arm](length(value.arms))
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let body = new[Expr](length(arm.body))
+        var item = 0
+        while item < length(arm.body) {
+            push(body, draft_version(scope, get(arm.body, item), depth + 1))
+            item = item + 1
+        }
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = arm.bindings
+                whole = arm.whole
+                body = body
+            })
+        index = index + 1
+    }
+    var kind = value.kind
+    var local = value.index
+    if kind == ExprKind.Local {
+        local = get(scope.versions, local)
+    }
+    if (kind == ExprKind.Let || kind == ExprKind.Assign) && get(scope.eligible, value.index) {
+        let original = get(scope.locals, value.index)
+        local = length(scope.locals)
+        push(scope.locals, Local {
+                name = original.name
+                ty = original.ty
+                mutable = false
+                is_scoped = false
+            })
+        set(scope.versions, value.index, local)
+        kind = ExprKind.Let
+    }
+    let normalized = Expr {
+        kind = kind
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = local
+        children = children
+        arms = arms
+        falls = value.falls
+    }
+    if draft_construction(scope.env, value) && draft_place(draft_input(value), 0) {
+        index = 0
+        while index < length(scope.originals) {
+            if same_draft_construction(value, get(scope.originals, index)) {
+                push(scope.candidates, DraftCandidate {
+                        source = value
+                        value = normalized
+                    })
+            }
+            index = index + 1
+        }
+    }
+    normalized
+}
+
+// This private SSA view changes neither executable IR nor source bindings.
+// A reassignment creates a new value snapshot while earlier aliases still refer
+// to the old header. Only admitted straight-line mutable data slots are renamed;
+// opaque cells, resources, conditional writes and delayed reads stay mutable.
+fn versioned_drafts(env Environment, current Function, originals List[Expr], candidates List[DraftCandidate]) Function {
+    let eligible = new[Bool](length(current.locals))
+    let versions = new[Int](length(current.locals))
+    var index = 0
+    while index < length(current.locals) {
+        let local = get(current.locals, index)
+        push(eligible, index >= length(current.params) && local.mutable && !local.is_scoped &&
+            get(env.types, local.ty).kind != TypeKind.Frame && !inline_constraint_base(env, local.ty, 0))
+        push(versions, index)
+        index = index + 1
+    }
+    var allowed = draft_binding_limits(current.body, eligible, false, false, 0)
+    var any = false
+    index = 0
+    while index < length(eligible) {
+        any = any || get(eligible, index)
+        index = index + 1
+    }
+    if !allowed || !any {
+        index = 0
+        while index < length(originals) {
+            let candidate = get(originals, index)
+            push(candidates, DraftCandidate {
+                    source = candidate
+                    value = candidate
+                })
+            index = index + 1
+        }
+        return current
+    }
+    let scope = DraftBindings {
+        env = env
+        locals = std.list.clone(current.locals)
+        eligible = eligible
+        versions = versions
+        originals = originals
+        candidates = new[DraftCandidate]()
+        valid = invariant_flag(true)
+    }
+    let body = draft_version(scope, current.body, 0)
+    allowed = get(scope.valid, 0)
+    index = 0
+    while allowed && index < length(scope.candidates) {
+        push(candidates, get(scope.candidates, index))
+        index = index + 1
+    }
+    Function {
+        is_async = current.is_async
+        symbol = current.symbol
+        arguments = current.arguments
+        params = current.params
+        result = current.result
+        locals = scope.locals
+        preconditions = current.preconditions
+        postconditions = current.postconditions
+        result_local = current.result_local
+        body = body
+        runtime_name = current.runtime_name
+        span = current.span
+    }
+}
