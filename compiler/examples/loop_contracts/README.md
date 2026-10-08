@@ -21,6 +21,13 @@ These are mathematical candidates, not assumptions that two updates match;
 conditional writes, early returns and every `continue` remain checked. Source
 contract arithmetic still requires its own definedness proof.
 
+Constant affine assignments also suggest weighted pair relations. The
+[affine example](affine.loom) proves different-rate and opposite-direction
+counters, including lexical cleanup and compile-time calls. These suggestions
+reuse the same mathematical arithmetic and induction checks, not a second
+executor or trusted update-pattern rule. General multi-local affine synthesis
+and nonlinear invariants remain outside this candidate generator.
+
 The current subset includes Int/Bool local assignments, branches, early returns
 and nested loops. `break` preserves the state at its exit; `continue` must
 preserve the invariant at its backedge. Both target the nearest loop, including

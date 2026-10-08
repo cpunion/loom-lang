@@ -1,0 +1,156 @@
+test fn affine_loop_candidates_prove_weighted_and_opposite_counters() {
+    discard accepted("""
+        fn identity(value Int) Int
+        ensures result == value {
+            value
+        }
+        fn doubled(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = total + 2
+                cursor = cursor + 1
+            }
+            total
+        }
+        fn remaining(limit Int) Int
+        requires limit >= 0
+        ensures result == limit {
+            var cursor = identity(limit)
+            var total = 0
+            while cursor > 0 {
+                cursor = cursor - 1
+                total = total + 1
+            }
+            total
+        }
+        fn weighted(limit Int) Int
+        requires limit >= 0 && limit <= 3074457345618258602
+        ensures result == 3 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = total + 6 - 3
+                cursor = cursor + 4 - 3
+            }
+            total
+        }
+        """)
+}
+
+test fn affine_loop_candidates_never_trust_translation_syntax() {
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                if cursor < 3 {
+                    total = total + 2
+                }
+                cursor = cursor + 1
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                cursor = cursor + 1
+                if cursor > 3 {
+                    continue
+                }
+                total = total + 2
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 1
+            while cursor < limit {
+                total = total + 2
+                cursor = cursor + 1
+            }
+            total
+        }
+        """)
+}
+
+test fn affine_loop_candidates_recheck_cleanup_and_early_return_paths() {
+    discard accepted("""
+        fn count(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                defer {
+                    cursor = cursor + 1
+                }
+                total = total + 2
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                defer {
+                    cursor = cursor + 1
+                }
+                total = total + 2
+                if cursor > 3 {
+                    return total
+                }
+            }
+            total
+        }
+        """)
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                defer {
+                    cursor = cursor + 2
+                }
+                total = total + 2
+                cursor = cursor + 1
+            }
+            total
+        }
+        """)
+}
+
+test fn affine_loop_math_does_not_define_source_arithmetic() {
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == (2 * limit + 2) - 2 {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = total + 2
+                cursor = cursor + 1
+            }
+            total
+        }
+        """)
+}

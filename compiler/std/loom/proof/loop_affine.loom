@@ -1,0 +1,171 @@
+// Term IDs here are local slots, not logical variable identities. Evaluate the
+// same mathematical affine form in entry, head and actual backedge states.
+fn loop_affine_value(terms List[Term], state State) Result[Value, Text] {
+    var value = constant(integer(0))
+    var index = 0
+    while index < length(terms) {
+        let term = get(terms, index)
+        match get(state.locals, term.id) {
+            Value.Number(local) => {
+                value = add(value, scale(local, term.factor))
+            }
+            _ => {
+                return Result.Err("loop affine invariant needs an Int local")
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(Value.Number(value))
+}
+
+fn loop_affine_pair(proof Verification, candidates List[LoopCandidate], left Int, right Int, a Number, b Number, entry State) Result[Bool, Text] {
+    if length(candidates) >= 64 {
+        return Result.Ok(true)
+    }
+    discard loop_step(proof)?
+    var index = 0
+    while index < length(candidates) {
+        match get(candidates, index) {
+            LoopCandidate.Affine(terms, _) => {
+                if length(terms) == 2 && get(terms, 0).id == left && get(terms, 1).id == right &&
+                compare(product(get(terms, 0).factor, b), product(get(terms, 1).factor, a)) == 0 {
+                    return Result.Ok(true)
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    let terms = [Term {
+            id = left
+            factor = a
+        }, Term {
+            id = right
+            factor = b
+        }]
+    match loop_affine_value(terms, entry) {
+        Result.Ok(initial) => {
+            discard add_loop_candidate(candidates, LoopCandidate.Affine(terms, initial), entry)?
+        }
+        Result.Err(_) => {
+        }
+    }
+    Result.Ok(true)
+}
+
+// Read constant translations from ordinary affine assignments over independent
+// symbolic locals. These are coefficient suggestions only: branches, helpers,
+// nested loops and multiple stores still run through normal induction checking.
+fn loop_affine_rates(proof Verification, expr Expr, symbols State, rates List[List[Number]]) Result[Bool, Text] {
+    discard loop_step(proof)?
+    if expr.kind == ExprKind.Assign && get(proof.function.locals, expr.index).ty == 1 {
+        match pure(get(expr.children, 0), symbols) {
+            Result.Ok(Value.Number(next)) => {
+                let delta = add(next, scale(variable(expr.index), integer(-1)))
+                if length(delta.terms) == 0 && length(delta.constant.digits) != 0 {
+                    let choices = get(rates, expr.index)
+                    var found = false
+                    var index = 0
+                    while index < length(choices) {
+                        found = found || compare(get(choices, index), delta.constant) == 0
+                        index = index + 1
+                    }
+                    if !found && length(choices) < 64 {
+                        push(choices, delta.constant)
+                    }
+                }
+            }
+            _ => {
+            }
+        }
+    }
+    var index = 0
+    while index < length(expr.children) {
+        discard loop_affine_rates(proof, get(expr.children, index), symbols, rates)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// Keep guard-anchored differences first, then propose weighted conservation
+// a*x+b*y from observed affine translation coefficients. Neither matching
+// syntax nor sampled executions establish a candidate. Every relation needs
+// its ordinary entry proof and all backedges, including cleanup and continues.
+fn loop_affine_candidates(proof Verification, guard Expr, body Expr, candidates List[LoopCandidate], writes List[Bool], entry State) Result[Bool, Text] {
+    var paired = false
+    var left = 0
+    while left < length(writes) && length(candidates) < 64 {
+        if get(writes, left) && get(proof.function.locals, left).ty == 1 && scan_mentions(guard, left) {
+            match get(entry.locals, left) {
+                Value.Number(_) => {
+                    var right = 0
+                    while right < length(writes) && length(candidates) < 64 {
+                        if right != left && get(writes, right) && get(proof.function.locals, right).ty == 1 &&
+                        (!scan_mentions(guard, right) || right > left) {
+                            match get(entry.locals, right) {
+                                Value.Number(_) => {
+                                    paired = true
+                                    discard loop_affine_pair(proof, candidates, left, right, integer(1), integer(-1), entry)?
+                                }
+                                _ => {
+                                }
+                            }
+                        }
+                        right = right + 1
+                    }
+                }
+                _ => {
+                }
+            }
+        }
+        left = left + 1
+    }
+    if !paired || length(candidates) >= 64 {
+        return Result.Ok(true)
+    }
+    let locals = new[Value]()
+    let rates = new[List[Number]]()
+    var index = 0
+    while index < length(writes) {
+        // Entry-state observations may append proof-only slots after the
+        // declared locals. They have values, but no source Local type entry.
+        push(locals, if index < length(proof.function.locals) && get(proof.function.locals, index).ty == 1 {
+                Value.Number(variable(index))
+            } else {
+                Value.Empty
+            })
+        push(rates, new[Number]())
+        index = index + 1
+    }
+    discard loop_affine_rates(proof, body, State {
+            locals = locals
+            facts = new[Predicate]()
+            extents = new[ListExtent]()
+            observations = new[Observation]()
+        }, rates)?
+    left = 0
+    while left < length(writes) && length(candidates) < 64 {
+        if get(writes, left) && get(proof.function.locals, left).ty == 1 && scan_mentions(guard, left) {
+            var right = 0
+            while right < length(writes) && length(candidates) < 64 {
+                if right != left && get(writes, right) && get(proof.function.locals, right).ty == 1 &&
+                (!scan_mentions(guard, right) || right > left) {
+                    var a = 0
+                    while a < length(get(rates, left)) && length(candidates) < 64 {
+                        var b = 0
+                        while b < length(get(rates, right)) && length(candidates) < 64 {
+                            discard loop_affine_pair(proof, candidates, left, right,
+                                get(get(rates, right), b), negate(get(get(rates, left), a)), entry)?
+                            b = b + 1
+                        }
+                        a = a + 1
+                    }
+                }
+                right = right + 1
+            }
+        }
+        left = left + 1
+    }
+    Result.Ok(true)
+}

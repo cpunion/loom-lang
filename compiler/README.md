@@ -2804,9 +2804,12 @@ The prover freshens scalar leaves and List handles of written locals, then
 proposes per-path entry/range bounds, List length bounds and weakened relational
 guards. Written Int guard cursors also propose entry-difference relations with
 other written Int locals, after existing storage/quantifier proposals and within
-the same candidate budget. These mathematical relations can connect separately
-updated counters and symbolic offsets; source arithmetic still needs its own
-definedness proof. Rebinding a List preserves no handle identity. If a loop can both rebind
+the same candidate budget. Constant affine translations additionally suggest
+weighted pair relations, such as `total - 2 * cursor` or `total + remaining`.
+These mathematical candidates connect separately updated counters and symbolic
+offsets; translation syntax is not evidence and source arithmetic still needs
+its own definedness proof. Candidate generation remains guard-anchored and
+pairwise, not general affine invariant synthesis. Rebinding a List preserves no handle identity. If a loop can both rebind
 handles and resize storage, all tracked extents are freshened before induction;
 its initial binding cannot identify every later resize target. Whole-value
 reconstruction does not retain stale sibling fields. Other unsupported leaves

@@ -1,0 +1,61 @@
+fn doubled_count(limit Int) Int
+requires limit >= 0 && limit <= 4611686018427387903
+ensures result == 2 * limit {
+    var cursor = 0
+    var total = 0
+    while cursor < limit {
+        total = total + 2
+        cursor = cursor + 1
+    }
+    total
+}
+
+fn remaining_count(limit Int) Int
+requires limit >= 0
+ensures result == limit {
+    var cursor = limit
+    var total = 0
+    while cursor > 0 {
+        cursor = cursor - 1
+        total = total + 1
+    }
+    total
+}
+
+fn cleanup_doubled_count(limit Int) Int
+requires limit >= 0 && limit <= 4611686018427387903
+ensures result == 2 * limit {
+    var cursor = 0
+    var total = 0
+    while cursor < limit {
+        defer {
+            cursor = cursor + 1
+        }
+        total = total + 2
+    }
+    total
+}
+
+fn weighted_count(limit Int) Int
+requires limit >= 0 && limit <= 3074457345618258602
+ensures result == 3 * limit {
+    var cursor = 0
+    var total = 0
+    while cursor < limit {
+        cursor = cursor + 4 - 3
+        total = total + 6 - 3
+    }
+    total
+}
+
+fn affine_exercise() {
+    assert doubled_count(0) == 0
+    assert doubled_count(21) == 42
+    assert remaining_count(0) == 0
+    assert remaining_count(42) == 42
+    assert cleanup_doubled_count(21) == 42
+    assert weighted_count(14) == 42
+    assert comptime {
+        doubled_count(21) + remaining_count(42)
+    } == 84
+}

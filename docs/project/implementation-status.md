@@ -633,6 +633,11 @@ early exits cannot borrow a sampled correlation. The
 [difference example](../../compiler/examples/loop_contracts/differences.loom)
 covers independent counters, symbolic offsets, helper/cleanup updates and
 structural pack minimum extents. Source arithmetic definedness is unchanged.
+Constant affine assignments also suggest weighted pair relations over the same
+mathematical value theory. The [affine example](../../compiler/examples/loop_contracts/affine.loom)
+covers different-rate and opposite-direction counters, cleanup and CTFE;
+matching translation syntax supplies coefficients, never proof. The generator
+remains guard-anchored and pairwise, not general affine invariant synthesis.
 
 Unrestricted content mutation, strengthening existing mutable alias graphs,
 general loop/recursive proofs, arbitrary `old` snapshots and general Float induction
