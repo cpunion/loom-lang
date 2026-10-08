@@ -386,8 +386,14 @@ invariant-preserving footprint, including fault-only exits. The
 readers across preserving updates, suspension and cleanup without copying.
 The [raw update example](../../compiler/examples/record_refinement/raw_updates.loom)
 uses those same proofs through raw header aliases and checked failure.
-Loop-local publication, mutable binding origins and general nested graph
-publication remain open. Conditional aliases, aggregate arguments and captured
+Loop-body publication now admits a fresh immutable allocation per iteration,
+including nested loops, early exits, cleanup and unrelated waits. Ephemeral
+origin analysis rejects raw aliases retained in outer bindings; typed
+publications may escape without conflating later iteration headers. See the
+[iteration example](../../compiler/examples/record_refinement/epochs.loom).
+Publication in loop conditions, repeated publication of an outer allocation,
+mutable binding origins and general nested graph publication remain open.
+Conditional aliases, aggregate arguments and captured
 mutating callbacks without a proved header identity remain conservative.
 
 Every declared `ensures` requires a static proof. The CLI submits remaining

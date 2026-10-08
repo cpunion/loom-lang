@@ -2191,11 +2191,18 @@ eager expressions is analyzed separately. Alternatives are not treated as later
 executions, and a return ends its path. Unrelated awaits do not expose a private builder. Pending
 arguments/initializers still cannot transport raw aliases across publication.
 Active lexical cleanup must satisfy the same non-publishing and preservation rules,
-including fault-only exits. Loop-local publication,
-mutable binding origins and unsupported draft operations remain conservative.
+including fault-only exits. Loop-body publication uses a separate allocation
+epoch when its fresh immutable binding is inside the iteration.
+Raw aliases cannot flow into bindings outside that body or otherwise
+escape; previously published headers are not the next iteration's draft.
+Nested iteration bodies, early exits, cleanup and unrelated waits retain these
+same rules. Headers allocated outside a repeating publication, publication in
+loop conditions, mutable binding origins and unsupported draft operations remain conservative.
 Unknown predicates keep the ordinary `Result` boundary.
 The [structural builder example](examples/record_refinement/structural_drafts.loom)
 uses a generic record with a tuple field and an independently writable notes List.
+The [iteration example](examples/record_refinement/epochs.loom) builds distinct
+published headers across iterations, CTFE, cleanup and suspension.
 The [raw update example](examples/record_refinement/raw_updates.loom) retains
 sharing through preserving helpers, cleanup, checked rejection and a real wait.
 Mutable/conditional bindings, aggregate arguments and captured mutating callbacks

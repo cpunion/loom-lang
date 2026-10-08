@@ -391,6 +391,11 @@ fn unpublished_draft(env Environment, functions List[Function], current Function
     if root.local < 0 {
         return false
     }
+    let bodies = [current.body]
+    if !draft_epochs(env, current.body, candidate, root.local, bodies, 0) {
+        return false
+    }
+    let body = get(bodies, length(bodies) - 1)
     let reads = invariant_reads(env, functions, current.body, true, 2, -1)
     let updates = DraftUpdates {
         env = env
@@ -443,12 +448,13 @@ fn unpublished_draft(env Environment, functions List[Function], current Function
                 })
             cleanup = cleanup + 1
         }
-        discard draft_path(scope, current.body, 0)
+        discard draft_path(scope, body, 0)
         more = get(scope.frame.changed, 0)
         rounds = rounds + 1
     }
     let valid = !more && get(scope.reads.valid, 0) && get(scope.phase, 0) == 2 &&
-    !origin_shared(get(scope.frame.returned, 0))
+    !origin_shared(get(scope.frame.returned, 0)) &&
+    (length(bodies) == 1 || confined_draft_epoch(body, scope.frame))
     if valid {
         let accepted = get(updates.operations, 0)
         var index = 0
