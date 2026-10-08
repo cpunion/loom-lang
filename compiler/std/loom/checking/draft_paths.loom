@@ -4,12 +4,17 @@ record DraftCleanup {
     active Bool
 }
 
+record DraftRoot {
+    local Int
+    origin InputOrigin
+}
+
 record DraftPublication {
     reads InvariantReads
     observations InvariantReads
     frame InvariantFrame
     candidate Expr
-    root Int
+    root DraftRoot
     // 0: before the fresh binding; 1: private builder; 2: published.
     phase List[Int]
     cleanups List[DraftCleanup]
@@ -46,30 +51,89 @@ fn draft_definitions(value Expr, local Int, definitions List[Expr], depth Int) {
     }
 }
 
-fn draft_root(env Environment, functions List[Function], current Function, local Int) Int {
-    var root = local
+fn missing_draft_root() DraftRoot {
+    DraftRoot {
+        local = -1
+        origin = origin_empty()
+    }
+}
+
+// Follow immutable bindings and inline projections to the actual allocation.
+// A field path marks only the protected header, not unrelated shared siblings.
+// Mutable containers/cells and unknown aggregate factories supply no evidence.
+fn draft_root(env Environment, functions List[Function], current Function, input Expr) DraftRoot {
+    var value = input
+    var path = new[Int]()
+    var local = -1
+    var fields = new[Int]()
     var depth = 0
     while depth < 64 {
-        if root < length(current.params) || root >= length(current.locals) ||
-        get(current.locals, root).mutable {
-            return -1
+        if length(path) == 0 && constraint_fresh(env, functions, value) {
+            var origin = origin_input()
+            var field = length(fields)
+            while field > 0 {
+                field = field - 1
+                origin = origin_field(origin, get(fields, field))
+            }
+            return DraftRoot {
+                local = local
+                origin = origin
+            }
         }
-        let definitions = new[Expr]()
-        draft_definitions(current.body, root, definitions, 0)
-        if length(definitions) != 1 || length(get(definitions, 0).children) != 1 {
-            return -1
+        if value.kind == ExprKind.Local {
+            if value.index < length(current.params) || value.index >= length(current.locals) ||
+            get(current.locals, value.index).mutable {
+                return missing_draft_root()
+            }
+            let definitions = new[Expr]()
+            draft_definitions(current.body, value.index, definitions, 0)
+            if length(definitions) != 1 || length(get(definitions, 0).children) != 1 {
+                return missing_draft_root()
+            }
+            local = value.index
+            fields = path
+            value = get(get(definitions, 0).children, 0)
+        } else {
+            if value.kind == ExprKind.Field && length(value.children) == 1 {
+                let selected = ints(value.index)
+                var field = 0
+                while field < length(path) {
+                    push(selected, get(path, field))
+                    field = field + 1
+                }
+                path = selected
+                value = get(value.children, 0)
+            } else {
+                if value.kind == ExprKind.Record && length(path) > 0 {
+                    let wanted = get(path, 0)
+                    let rest = new[Int]()
+                    var field = 1
+                    while field < length(path) {
+                        push(rest, get(path, field))
+                        field = field + 1
+                    }
+                    field = 0
+                    var found = false
+                    while field < length(value.children) && !found {
+                        let initializer = get(value.children, field)
+                        if initializer.index == wanted && length(initializer.children) == 1 {
+                            value = get(initializer.children, 0)
+                            found = true
+                        }
+                        field = field + 1
+                    }
+                    if !found {
+                        return missing_draft_root()
+                    }
+                    path = rest
+                } else {
+                    return missing_draft_root()
+                }
+            }
         }
-        let input = get(get(definitions, 0).children, 0)
-        if constraint_fresh(env, functions, input) {
-            return root
-        }
-        if input.kind != ExprKind.Local {
-            return -1
-        }
-        root = input.index
         depth = depth + 1
     }
-    -1
+    missing_draft_root()
 }
 
 // Registrations can be nested in compiler-emitted scoped initialization blocks.
@@ -157,8 +221,8 @@ fn draft_prefix(scope DraftPublication, value Expr, depth Int) InputOrigin {
         return origin
     }
     draft_registrations(scope, value, true, depth + 1)
-    if value.kind == ExprKind.Let && value.index == scope.root {
-        invariant_bind(scope.frame, scope.root, origin_input())
+    if value.kind == ExprKind.Let && value.index == scope.root.local {
+        invariant_bind(scope.frame, scope.root.local, scope.root.origin)
         set(scope.phase, 0, 1)
         return origin_empty()
     }
@@ -323,8 +387,8 @@ fn draft_path(scope DraftPublication, value Expr, depth Int) Bool {
 }
 
 fn unpublished_draft(env Environment, functions List[Function], current Function, candidate Expr) Bool {
-    let root = draft_root(env, functions, current, draft_input(candidate).index)
-    if root < 0 {
+    let root = draft_root(env, functions, current, draft_input(candidate))
+    if root.local < 0 {
         return false
     }
     let reads = invariant_reads(env, functions, current.body, true, 2, -1)

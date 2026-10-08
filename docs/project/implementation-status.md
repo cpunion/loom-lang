@@ -369,7 +369,11 @@ copying or a runtime monitor, and unknown predicates still return checked Result
 The [draft example](../../compiler/examples/record_refinement/drafts.loom) covers
 CTFE, shared constrained updates and suspension. Publication follows blocks,
 branches, matches, eager expressions and returns, including ordinary local
-copies and unrelated waits. Pending operands cannot transport raw aliases across
+copies and unrelated waits. Immutable record/tuple projections also resolve to
+fresh headers, including directly initialized nested inline fields; origin paths
+leave unrelated shared siblings writable. See the
+[structural builder](../../compiler/examples/record_refinement/structural_drafts.loom).
+Pending operands cannot transport raw aliases across
 that boundary. Active defer/scoped cleanup needs a checked non-publishing,
 read-only footprint, including fault-only exits. The
 [reader example](../../compiler/examples/record_refinement/readers.loom) retains

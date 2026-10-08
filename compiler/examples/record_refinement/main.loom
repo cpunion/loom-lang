@@ -64,6 +64,7 @@ fn main() {
     assert draft_constraint_scope()
     assert branch_draft_scope()
     assert draft_reader_scope()
+    assert structural_draft_scope()
     assert invariant_callback_scope()
     assert shared_invariant_scope()
     assert invariant_effect_scope()

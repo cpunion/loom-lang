@@ -1,0 +1,117 @@
+test fn inline_builder_fields_retain_precise_draft_origins() {
+    list_constraint_accept(concat(list_constraint_source(), """
+        record Builder[T] {
+            data (T, List[Int])
+            notes List[Int]
+        }
+        pub fn build[T](tag T, notes List[Int]) (List[Int], Result[Positive, ConstraintError]) {
+            let builder = Builder {
+                data = (tag, [1, 2])
+                notes = notes
+            }
+            let copied = builder
+            let draft = copied.data.1
+            push(draft, 3)
+            let published = Positive(copied.data.1)
+            push(builder.notes, 9)
+            assert sum(builder.data.1) == 6
+            (builder.notes, published)
+        }
+        pub fn direct() Result[Positive, ConstraintError] {
+            let builder = ([1, 2], true)
+            push(builder.0, 3)
+            Positive(builder.0)
+        }
+        pub fn existing_binding() Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let builder = (true, draft)
+            let alias = builder.1
+            push(alias, 3)
+            Positive(alias)
+        }
+        """))
+}
+
+test fn builder_projection_does_not_hide_writable_aliases_or_external_inputs() {
+    let header = concat(list_constraint_source(), concat("""
+        record Builder {
+            values List[Int]
+            notes List[Int]
+        }
+        """, "\n"))
+    list_constraint_reject(concat(header, """
+        pub fn invalid() Result[Positive, ConstraintError] {
+            let builder = Builder {
+                values = [1, 2]
+                notes = []
+            }
+            let published = Positive(builder.values)
+            builder.values[0] = -1
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(output List[Builder]) Result[Positive, ConstraintError] {
+            let builder = Builder {
+                values = [1, 2]
+                notes = []
+            }
+            push(output, builder)
+            Positive(builder.values)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(input List[Int]) Result[Positive, ConstraintError] {
+            let builder = Builder {
+                values = input
+                notes = []
+            }
+            Positive(builder.values)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid() (Builder, Result[Positive, ConstraintError]) {
+            let builder = Builder {
+                values = [1, 2]
+                notes = []
+            }
+            let published = Positive(builder.values)
+            (builder, published)
+        }
+        """))
+}
+
+test fn structural_draft_freshness_is_revalidated_after_cached_factory_edits() {
+    let source = concat(list_constraint_source(), """
+        fn prepare(input List[Int]) List[Int] {
+            clone(input)
+        }
+        pub fn build(input List[Int]) Result[Positive, ConstraintError] {
+            let builder = (prepare(input), input)
+            push(builder.0, 3)
+            Positive(builder.0)
+        }
+        """)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(list_constraint_files(concat(source, "\nfn unrelated() {}\n"))),
+        false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(source, "clone(input)"), "input")
+    assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
