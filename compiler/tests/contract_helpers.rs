@@ -36,6 +36,23 @@ requires value > 0
     discard quotient
     Positive(value)
 }
+
+fn weighted_step(value Int, gate Int, ignored Int) Int
+requires gate > 0
+ensures result == value + 2 {
+    value + 2
+}
+
+fn weighted_count(gate Int, divisor Int) Int
+ensures result == 6 {
+    var cursor = 0
+    var total = 0
+    while cursor < 3 {
+        total = weighted_step(total, gate, gate / divisor)
+        cursor = cursor + 1
+    }
+    total
+}
 "#;
     let artifact = common::executable(directory.path(), "contracts");
     let ir_path = directory.path().join("contracts.ll");
@@ -49,18 +66,18 @@ requires value > 0
                 .output()
                 .unwrap(),
         );
-        for (value, divisor, failure) in [
-            (7, 1, None),
-            (0, 1, Some("precondition failed")),
-            (7, 0, Some("division by zero")),
+        for (body, failure) in [
+            (
+                "assert good(7) == 7\nassert after_division(7, 1) == 7",
+                None,
+            ),
+            ("discard good(0)", Some("precondition failed")),
+            ("discard after_division(7, 0)", Some("division by zero")),
+            ("assert weighted_count(7, 1) == 6", None),
+            ("discard weighted_count(0, 1)", Some("precondition failed")),
+            ("discard weighted_count(7, 0)", Some("division by zero")),
         ] {
-            fs::write(
-                &source,
-                format!(
-                    "{definitions}\nfn main() {{\n    assert good({value}) == 7\n    assert after_division({value}, {divisor}) == 7\n}}"
-                ),
-            )
-            .unwrap();
+            fs::write(&source, format!("{definitions}\nfn main() {{\n{body}\n}}")).unwrap();
             success(
                 &common::command(&[
                     "build",

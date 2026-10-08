@@ -2806,6 +2806,11 @@ guards. Written Int guard cursors also propose entry-difference relations with
 other written Int locals, after existing storage/quantifier proposals and within
 the same candidate budget. Constant affine translations additionally suggest
 weighted pair relations, such as `total - 2 * cursor` or `total + remaining`.
+Finite pure helpers and exact scalar/inline-field result summaries can supply
+the same translation coefficients, including declared concept guarantees.
+Projection reuses the ordinary result template without requiring facts about
+unobserved shared siblings. This optional expansion has a separate 256-step
+budget; an opaque result or exhausted suggestion supplies no assumed value.
 These mathematical candidates connect separately updated counters and symbolic
 offsets; translation syntax is not evidence and source arithmetic still needs
 its own definedness proof. Candidate generation remains guard-anchored and

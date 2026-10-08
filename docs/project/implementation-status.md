@@ -633,8 +633,12 @@ all-backedge verification. The [difference example](../../compiler/examples/loop
 covers symbolic offsets, helper/cleanup updates and structural pack minimums;
 the [affine example](../../compiler/examples/loop_contracts/affine.loom) covers
 different-rate and opposite-direction counters and CTFE. Source arithmetic
-definedness is unchanged. Generation remains bounded, guard-anchored and pairwise,
-not general affine invariant synthesis.
+definedness is unchanged. Finite pure helpers and exact checked scalar/inline-field
+summaries supply the same coefficients through an isolated optional expansion;
+unspecified leaves and exhausted hints establish nothing. The
+[helper example](../../compiler/examples/loop_contracts/helper_affine.loom) covers
+once-only effects, generic/dyn guarantees and structural packs. Generation remains
+bounded, guard-anchored and pairwise, not general affine invariant synthesis.
 
 Unrestricted content mutation, strengthening existing mutable alias graphs,
 general loop/recursive proofs, arbitrary `old` snapshots and general Float induction

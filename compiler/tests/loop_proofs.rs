@@ -27,6 +27,11 @@ fn inferred_loop_contracts_compile_without_runtime_proof_helpers() {
             !fs::read_to_string(&ir).unwrap().contains("91827365"),
             "a proof-only helper became native code"
         );
-        success(&Command::new(&artifact).output().unwrap());
+        success(
+            &Command::new(&artifact)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
     }
 }

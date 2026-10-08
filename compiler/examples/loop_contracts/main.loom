@@ -72,6 +72,7 @@ ensures result >= 0
 fn exercise() {
     difference_exercise()
     affine_exercise()
+    helper_affine_exercise()
     aggregate_exercise()
     assert count(0) == 0
     assert count(10000) == 10000

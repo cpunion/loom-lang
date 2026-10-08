@@ -1,0 +1,106 @@
+import std.list.new
+import std.list.push
+import std.list.length
+
+record CountStep {
+    next Int
+    notes List[Int]
+}
+
+fn mark_count(log List[Int], value Int) Int
+ensures result == value {
+    push(log, value)
+    value
+}
+
+fn next_count(log List[Int], value Int) CountStep
+ensures result.next == value + 2 {
+    push(log, value + 1)
+    CountStep {
+        next = value + 2
+        notes = log
+    }
+}
+
+fn increment_count(value Int) Int {
+    value + 1
+}
+
+concept CountAdvance {
+    fn advance(self Self, value Int) Int
+    ensures result == value + 2
+}
+
+impl CountAdvance for Bool {
+    fn advance(self Bool, value Int) Int {
+        value + 2
+    }
+}
+
+fn generic_helper_count[T CountAdvance](actor T, limit Int) Int
+requires limit >= 0 && limit <= 4611686018427387903
+ensures result == 2 * limit {
+    var cursor = 0
+    var total = 0
+    while cursor < limit {
+        total = actor.advance(total)
+        cursor = cursor + 1
+    }
+    total
+}
+
+fn dyn_helper_count(actor dyn CountAdvance, limit Int) Int
+requires limit >= 0 && limit <= 4611686018427387903
+ensures result == 2 * limit {
+    var cursor = 0
+    var total = 0
+    while cursor < limit {
+        total = actor.advance(total)
+        cursor = cursor + 1
+    }
+    total
+}
+
+fn weighted_framed_count[Ts...](values (Int, Ts..., Bool)) Int
+ensures result >= 4 {
+    var total = 0
+    comptime for item in values {
+        discard item
+        total = increment_count(total) + 1
+    }
+    total
+}
+
+fn helper_count(log List[Int], limit Int) Int
+requires limit >= 0 && limit <= 4611686018427387903
+ensures result == 2 * limit {
+    var cursor = 0
+    var total = 0
+    while cursor < limit {
+        defer {
+            cursor = increment_count(cursor)
+        }
+        total = next_count(log, mark_count(log, total)).next
+    }
+    total
+}
+
+fn helper_affine_exercise() {
+    let log List[Int] = []
+    assert helper_count(log, 0) == 0 && length(log) == 0
+    assert helper_count(log, 3) == 6
+    assert length(log) == 6
+    var index = 0
+    while index < length(log) {
+        assert log[index] == index
+        index = index + 1
+    }
+    assert comptime {
+        helper_count(new[Int](), 21)
+    } == 42
+    assert generic_helper_count(true, 21) == 42
+    let dynamic dyn CountAdvance = true
+    assert dyn_helper_count(dynamic, 21) == 42
+    assert weighted_framed_count((1, true)) == 4
+    assert weighted_framed_count((1, "text", [2], false)) == 8
+}

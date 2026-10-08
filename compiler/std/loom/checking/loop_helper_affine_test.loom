@@ -1,0 +1,211 @@
+test fn loop_affine_helpers_compose_summaries_and_finite_pure_bodies() {
+    discard accepted("""
+        fn add_two(value Int) Int
+        ensures result == value + 2 {
+            value + 2
+        }
+        fn identity(value Int) Int
+        ensures result == value {
+            value
+        }
+        fn add_one(value Int) Int {
+            let next = value + 1
+            next
+        }
+        fn count(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = identity(add_two(total))
+                cursor = add_one(cursor)
+            }
+            total
+        }
+        fn composed(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = add_one(total) + 1
+                cursor = cursor + 1
+            }
+            total
+        }
+        concept Advance {
+            fn advance(self Self, value Int) Int
+            ensures result == value + 2
+        }
+        fn generic_count[T Advance](actor T, limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = actor.advance(total)
+                cursor = cursor + 1
+            }
+            total
+        }
+        fn dynamic_count(actor dyn Advance, limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = actor.advance(total)
+                cursor = cursor + 1
+            }
+            total
+        }
+        fn framed[Ts...](values (Int, Ts..., Bool)) Int
+        ensures result >= 4 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = add_two(total)
+            }
+            total
+        }
+        """)
+}
+
+test fn loop_affine_helper_projections_keep_effects_out_of_suggestions() {
+    list_length_contract("""
+        import std.list.push
+        record Step {
+            next Int
+            notes List[Int]
+        }
+        fn mark(log List[Int], value Int) Int
+        ensures result == value {
+            push(log, value)
+            value
+        }
+        fn advance(log List[Int], value Int) Step
+        ensures result.next == value + 2 {
+            push(log, value + 1)
+            Step {
+                next = value + 2
+                notes = log
+            }
+        }
+        fn count(log List[Int], limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = advance(log, mark(log, total)).next
+                cursor = cursor + 1
+            }
+            total
+        }
+        """, true)
+}
+
+test fn loop_affine_helper_syntax_never_establishes_a_relation() {
+    let header = """
+        fn add_two(value Int) Int
+        ensures result == value + 2 {
+            value + 2
+        }
+        """
+    rejects(concat(header, """
+        fn wrong(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                cursor = cursor + 1
+                if cursor > 3 {
+                    continue
+                }
+                total = add_two(total)
+            }
+            total
+        }
+        """))
+    rejects(concat(header, """
+        fn wrong(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == (2 * limit + 2) - 2 {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = add_two(total)
+                cursor = cursor + 1
+            }
+            total
+        }
+        """))
+    rejects("""
+        fn add_two(value Int) Int
+        ensures result == value + 2 {
+            value + 1
+        }
+        """)
+    rejects("""
+        fn maybe_two(value Int, full Bool) Int
+        ensures result >= value {
+            if full {
+                value + 2
+            } else {
+                value + 1
+            }
+        }
+        fn wrong(limit Int, full Bool) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = maybe_two(total, full)
+                cursor = cursor + 1
+            }
+            total
+        }
+        """)
+}
+
+test fn loop_affine_helper_cache_replay_rechecks_changed_translation() {
+    let source = """
+        fn add_two(value Int) Int
+        ensures result == value + 2 {
+            value + 2
+        }
+        pub fn count(limit Int) Int
+        requires limit >= 0 && limit <= 4611686018427387903
+        ensures result == 2 * limit {
+            var cursor = 0
+            var total = 0
+            while cursor < limit {
+                total = add_two(total)
+                cursor = cursor + 1
+            }
+            total
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, concat(source, "\nfn unrelated() {}\n")) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    // Both the helper body and its promise remain true. The unchanged caller
+    // must nevertheless lose its cached proof of the old translation.
+    let changed = std.text.join(std.text.split(source, "value + 2"), "value + 3")
+    assert changed != source
+    assert match cached_source(restored_definition_cache(initial), changed) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
