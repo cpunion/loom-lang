@@ -420,13 +420,16 @@ async fn main() {
     let published = PositiveValues(draft)
     fill_positive(draft, 3)
     append_positive(draft, 4)
-    draft = [-1]
+    set(draft, 0, {
+        draft = [-1]
+        PositiveElement(5)
+    })
     assert draft[0] == -1
     discard run(fn() Int {
         0
     }).await
     assert match published {
-        Result.Ok(values) => length(values) == 4 && values[0] == 3 && values[3] == 4
+        Result.Ok(values) => length(values) == 4 && values[0] == 5 && values[3] == 4
         Result.Err(_) => false
     }
 }
