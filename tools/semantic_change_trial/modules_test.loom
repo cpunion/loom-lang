@@ -8,6 +8,7 @@ fn module_fixture(directory Text) Result[Text, Text] {
     discard create_dir(directory)
     discard std.file.write_text(path(directory, "loom.toml"), "[module]\nname = \"sample\"\nversion = \"0.1.0\"\n")
     discard std.file.write_text(path(directory, "loom.lock"), "loom-lock 3\n")
+    discard std.file.write_text(path(directory, "obsolete.txt"), "old documentation\n")
     discard std.file.write_text(path(directory, "main.loom"), """
         import sample.app.entry
 
@@ -81,6 +82,15 @@ fn module_fixture_branches(staging Text) Result[Text, Text] {
     discard module_fixture(base)?
     discard module_fixture(left)?
     discard module_fixture(right)?
+    let edited = std.bytes.new()
+    std.bytes.push(edited, 0)
+    std.bytes.push(edited, 254)
+    std.bytes.push(edited, 10)
+    discard write_bytes(path(left, "data.bin"), edited)
+    discard std.file.write_text(path(left, "README.txt"), "updated alongside the application\n")
+    discard create_dir(path(right, "docs"))
+    discard std.file.write_text(path(right, "docs/usage.txt"), "updated alongside the library\n")
+    discard remove_file(path(right, "obsolete.txt"))
     discard std.file.write_text(path(left, "lib/value.loom"), """
         fn secret() Int {
             7
@@ -167,7 +177,7 @@ fn module_lifecycle(staging Text) Result[Text, Text] {
     assert contains(preview, concat("review token: ", reviewed.token))
     assert contains(preview, "=== lib/moved.loom ===")
     assert contains(preview, "=== checks/nested/.loom-ids ===")
-    assert contains(preview, "preserved asset data.bin sha256 ")
+    assert contains(preview, "asset data.bin sha256 ")
     let output = path(staging, "output")
     discard apply_module(reviewed.token, output, "compiler/std", base, left, right)?
     assert contains(text_at(path(output, "lib/moved.loom")), "2")
@@ -178,7 +188,10 @@ fn module_lifecycle(staging Text) Result[Text, Text] {
             return Result.Err("missing copied binary asset")
         }
     }
-    assert std.bytes.length(binary) == 3 && std.bytes.get(binary, 0) == 0 && std.bytes.get(binary, 1) == 255
+    assert std.bytes.length(binary) == 3 && std.bytes.get(binary, 0) == 0 && std.bytes.get(binary, 1) == 254
+    assert text_at(path(output, "README.txt")) == "updated alongside the application\n"
+    assert text_at(path(output, "docs/usage.txt")) == "updated alongside the library\n"
+    discard vacant(path(output, "obsolete.txt"))?
     assert text_at(path(output, "loom.lock")) == text_at(path(base, "loom.lock"))
     let published = read_module(output)?
     let reloaded = module_context(published, "compiler/std")?
@@ -256,7 +269,7 @@ fn module_rejections(staging Text) Result[Text, Text] {
     discard std.file.write_text(path(right, "lib/value_test.loom"), "test fn private_secret() { assert secret() == 7 }\n")
     discard std.file.write_text(path(right, "loom.lock"), "loom-lock 3\n# changed\n")
     assert match preview_module("compiler/std", base, left, right) {
-        Result.Err(message) => contains(message, "manifest, lock or non-source assets changed")
+        Result.Err(message) => contains(message, "manifest or lock changed")
         Result.Ok(_) => false
     }
     remove_module_fixture(staging)

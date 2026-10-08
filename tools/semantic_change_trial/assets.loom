@@ -1,0 +1,99 @@
+import std.bytes.get
+import std.bytes.length
+
+fn asset_index(assets List[Asset], relative Text) Int {
+    var index = 0
+    while index < length(assets) {
+        if get(assets, index).relative == relative {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn equal_asset(left List[Asset], a Int, right List[Asset], b Int) Bool {
+    if a < 0 || b < 0 {
+        return a < 0 && b < 0
+    }
+    let first = get(left, a).bytes
+    let second = get(right, b).bytes
+    if std.bytes.length(first) != std.bytes.length(second) {
+        return false
+    }
+    var index = 0
+    while index < std.bytes.length(first) {
+        if std.bytes.get(first, index) != std.bytes.get(second, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+// Assets have no declaration identity. Select a changed byte sequence only
+// when the other side retained the baseline, or both sides chose equal bytes.
+// Configuration still pins the checked package/dependency graph.
+fn merge_assets(base List[Asset], left List[Asset], right List[Asset]) Result[List[Asset], Text] {
+    let paths = new[Text]()
+    let branches = [base, left, right]
+    var branch = 0
+    while branch < length(branches) {
+        let assets = get(branches, branch)
+        var index = 0
+        while index < length(assets) {
+            let relative = get(assets, index).relative
+            var found = false
+            var previous = 0
+            while previous < length(paths) {
+                found = found || get(paths, previous) == relative
+                previous = previous + 1
+            }
+            if !found {
+                push(paths, relative)
+            }
+            index = index + 1
+        }
+        branch = branch + 1
+    }
+    let merged = new[Asset]()
+    var index = 0
+    while index < length(paths) {
+        let relative = get(paths, index)
+        let original = asset_index(base, relative)
+        let a = asset_index(left, relative)
+        let b = asset_index(right, relative)
+        let same_left = equal_asset(base, original, left, a)
+        let same_right = equal_asset(base, original, right, b)
+        if (relative == "loom.toml" || relative == "loom.lock") && (!same_left || !same_right) {
+            return Result.Err("module manifest or lock changed; explicit resolution required")
+        }
+        if equal_asset(left, a, right, b) || same_right {
+            if a >= 0 {
+                push(merged, get(left, a))
+            }
+        } else if same_left {
+            if b >= 0 {
+                push(merged, get(right, b))
+            }
+        } else {
+            return Result.Err(concat("concurrent asset edits or deletion versus edit: ", relative))
+        }
+        index = index + 1
+    }
+    // Individually valid trees can create a file/directory conflict together.
+    index = 0
+    while index < length(merged) {
+        var other = 0
+        while other < index {
+            let a = get(merged, index).relative
+            let b = get(merged, other).relative
+            if starts_with(a, concat(b, "/")) || starts_with(b, concat(a, "/")) {
+                return Result.Err("merged assets conflict as a file and directory")
+            }
+            other = other + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(merged)
+}

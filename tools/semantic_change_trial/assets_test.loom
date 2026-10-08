@@ -1,0 +1,54 @@
+fn asset(relative Text, value Int) Asset {
+    let bytes = std.bytes.new()
+    std.bytes.push(bytes, 0)
+    std.bytes.push(bytes, value)
+    std.bytes.push(bytes, 255)
+    Asset {
+        relative = relative
+        bytes = bytes
+    }
+}
+
+test fn assets_use_three_way_bytes_without_guessing_binary_conflicts_or_config_changes() {
+    let base = [asset("data.bin", 1), asset("removed.txt", 2)]
+    let left = [asset("data.bin", 3), asset("removed.txt", 2), asset("added.txt", 4)]
+    let right = [asset("data.bin", 1)]
+    let branches = [left, right]
+    var order = 0
+    while order < 2 {
+        let merged = match merge_assets(base, get(branches, order), get(branches, 1 - order)) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                new[Asset]()
+            }
+        }
+        assert length(merged) == 2
+        assert equal_asset(merged, asset_index(merged, "data.bin"), left, 0)
+        assert equal_asset(merged, asset_index(merged, "added.txt"), left, 2)
+        assert asset_index(merged, "removed.txt") < 0
+        order = order + 1
+    }
+    assert match merge_assets(base, left, [asset("data.bin", 4), asset("removed.txt", 2)]) {
+        Result.Err(message) => contains(message, "concurrent asset edits")
+        Result.Ok(_) => false
+    }
+    assert match merge_assets(base, left, [asset("removed.txt", 2)]) {
+        Result.Err(message) => contains(message, "deletion versus edit")
+        Result.Ok(_) => false
+    }
+    assert match merge_assets(base, left, left) {
+        Result.Ok(value) => length(value) == 3
+        Result.Err(_) => false
+    }
+    let config = [asset("loom.lock", 1)]
+    assert match merge_assets(config, [asset("loom.lock", 2)], config) {
+        Result.Err(message) => contains(message, "manifest or lock changed")
+        Result.Ok(_) => false
+    }
+    assert match merge_assets(new[Asset](), [asset("docs", 1)], [asset("docs/usage.txt", 2)]) {
+        Result.Err(message) => contains(message, "file and directory")
+        Result.Ok(_) => false
+    }
+}

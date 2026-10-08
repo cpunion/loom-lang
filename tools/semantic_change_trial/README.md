@@ -24,10 +24,13 @@ Each snapshot has regular `loom.toml` and `loom.lock` files and a `.loom-ids`
 sidecar in every directory package, including test-only packages. For example,
 initialize `sample` at the module root and `sample.parser` in its `parser`
 directory with the existing `init` command; carry those sidecars between branches.
-The package set and import graph remain fixed. Configuration and non-source assets
-must match in all three snapshots; binary assets are preserved byte-for-byte and
-their hashes appear in review. Their changes require explicit resolution, not a
-guessed textual merge. `.git`, build `target`, `node_modules` and identity recovery
+The package set and import graph remain fixed. Manifest and lock bytes must match
+in all three snapshots. Other assets use whole-file three-way byte comparison:
+one-sided edits/additions/deletions and identical concurrent edits combine;
+different concurrent edits, deletion versus edit and file/directory conflicts
+require explicit resolution. There is no guessed textual or binary merge. Asset
+hashes appear in review and output retains the selected bytes, not file modes.
+`.git`, build `target`, `node_modules` and identity recovery
 directories are excluded. Nested modules require a separate merge; symlink and
 nonregular snapshot entries reject.
 
