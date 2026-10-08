@@ -712,7 +712,7 @@ fn constrained(values List[Int]) Sorted {
     .unwrap();
     let aliased = check();
     assert!(!aliased.status.success());
-    assert!(String::from_utf8_lossy(&aliased.stderr).contains("non-publishing factory"));
+    assert!(String::from_utf8_lossy(&aliased.stderr).contains("fresh unpublished storage"));
     fs::write(&construction, wrapper).unwrap();
     success(&check());
 }
