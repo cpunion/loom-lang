@@ -626,18 +626,15 @@ checking inductiveness. Scalar lexical cleanup retains its checked order and
 return snapshots. Guard calls use fresh checked results, not stable syntactic
 invariant terms. Resource cleanup and general heap-content proofs remain unsupported. See the
 [native loop example](../../compiler/examples/loop_contracts).
-Written Int guard cursors also propose mathematical entry-difference relations
-with other written Int locals, after existing storage/quantifier candidates.
-Every relation is proved on entry and all backedges; conditional updates and
-early exits cannot borrow a sampled correlation. The
-[difference example](../../compiler/examples/loop_contracts/differences.loom)
-covers independent counters, symbolic offsets, helper/cleanup updates and
-structural pack minimum extents. Source arithmetic definedness is unchanged.
-Constant affine assignments also suggest weighted pair relations over the same
-mathematical value theory. The [affine example](../../compiler/examples/loop_contracts/affine.loom)
-covers different-rate and opposite-direction counters, cleanup and CTFE;
-matching translation syntax supplies coefficients, never proof. The generator
-remains guard-anchored and pairwise, not general affine invariant synthesis.
+Written Int guard cursors propose mathematical entry-difference and weighted
+pair relations after existing storage/quantifier candidates. Constant affine
+translations supply coefficients, never proof: every relation needs entry and
+all-backedge verification. The [difference example](../../compiler/examples/loop_contracts/differences.loom)
+covers symbolic offsets, helper/cleanup updates and structural pack minimums;
+the [affine example](../../compiler/examples/loop_contracts/affine.loom) covers
+different-rate and opposite-direction counters and CTFE. Source arithmetic
+definedness is unchanged. Generation remains bounded, guard-anchored and pairwise,
+not general affine invariant synthesis.
 
 Unrestricted content mutation, strengthening existing mutable alias graphs,
 general loop/recursive proofs, arbitrary `old` snapshots and general Float induction

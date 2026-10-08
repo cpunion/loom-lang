@@ -2809,8 +2809,9 @@ weighted pair relations, such as `total - 2 * cursor` or `total + remaining`.
 These mathematical candidates connect separately updated counters and symbolic
 offsets; translation syntax is not evidence and source arithmetic still needs
 its own definedness proof. Candidate generation remains guard-anchored and
-pairwise, not general affine invariant synthesis. Rebinding a List preserves no handle identity. If a loop can both rebind
-handles and resize storage, all tracked extents are freshened before induction;
+pairwise, not general affine invariant synthesis. Rebinding a List preserves no
+handle identity. If a loop can both rebind handles and resize storage, all tracked
+extents are freshened before induction;
 its initial binding cannot identify every later resize target. Whole-value
 reconstruction does not retain stale sibling fields. Other unsupported leaves
 are not admitted as written aggregate locals. Each candidate

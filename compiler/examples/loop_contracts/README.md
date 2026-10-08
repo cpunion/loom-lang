@@ -37,8 +37,8 @@ Direct body and guard calls reuse verified summaries or finite pure expansion.
 Guard results are reevaluated at each tested head, not assumed stable by spelling.
 Pure expansion can propose bounds for guards such as `below(value, limit)`;
 those proposals pass the same entry/backedge checks as direct comparisons.
-Unsupported effects, resource cleanup and heap mutation
-reject in a required proof. Unknown proofs remain build errors;
+Unmodeled effects and resource cleanup reject in a required proof;
+List extent/content proofs have their own supported fragment. Unknown proofs remain build errors;
 there are no generated loop-invariant checks, termination promises or proofs
-that arithmetic cannot fault. List sorting/permutation proofs remain separate
-work. Ordinary loops without `ensures` are not restricted by this proof subset.
+that arithmetic cannot fault. Ordinary loops without `ensures` are not restricted
+by this proof subset.
