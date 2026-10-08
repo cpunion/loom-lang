@@ -2,6 +2,7 @@ import std.list.view.View
 import std.list.view.capture
 import std.list.view.get
 import std.list.view.length
+import std.iter.Iterator
 
 enum EncodeFrame {
     Value(Value, Int)
@@ -20,6 +21,14 @@ record EncoderState {
 
 pub record Encoder {
     advance fn() Option[Result[Bytes, WriteError]]
+}
+
+impl Iterator for Encoder {
+    type Item = Result[Bytes, WriteError]
+
+    fn next(self Encoder) Option[Result[Bytes, WriteError]] {
+        std.json.next(self)
+    }
 }
 
 // Copies share one serialized cursor. Output chunks need not end at UTF-8 or

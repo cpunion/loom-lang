@@ -81,3 +81,6 @@ Constrained Lists retain their constrained handle and starting length rather
 than exposing a writable unconstrained view; synchronize mutations while encoding.
 The async writer uses the same cursor. Record-at-a-time document sequences are
 not provided.
+
+`Encoder` implements `std.iter.Iterator` with `Item = Result[Bytes, WriteError]`,
+so normal iterator consumers and `std.stream.from_iter` can use the same cursor.

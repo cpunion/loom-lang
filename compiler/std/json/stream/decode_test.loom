@@ -20,6 +20,18 @@ test async fn typed_stream_constructs_visible_shapes_after_fragmented_input() {
         Result.Ok(value) => value[0] == 1 && value[1] == 2
         _ => false
     }
+    let encoded = std.json.encoder(StreamEntry {
+            name = "hé中",
+            values = [1, 2]
+        }, 1)
+    let packet = fn(item Result[Bytes, WriteError]) Result[Bytes, WriteError] {
+        item
+    }
+    let roundtrip Result[StreamEntry, TypedError[WriteError]] = decode(from_iter(encoded), packet).await
+    assert match roundtrip {
+        Result.Ok(value) => value.name == "hé中" && value.values[1] == 2
+        _ => false
+    }
 }
 
 test async fn typed_stream_retains_input_syntax_and_conversion_errors() {
