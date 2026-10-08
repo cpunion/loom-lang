@@ -391,16 +391,21 @@ including nested loops, early exits, cleanup and unrelated waits. Ephemeral
 origin analysis rejects raw aliases retained in outer bindings; typed
 publications may escape without conflating later iteration headers. See the
 [iteration example](../../compiler/examples/record_refinement/epochs.loom).
-Straight-line mutable bindings now use ephemeral value snapshots for origin
-analysis. A new assignment can establish a fresh header while older aliases
-retain the earlier one; eager arguments keep their evaluated value across a
-later argument's rebind. Original source occurrences, not rewritten locals,
+Mutable bindings now use ephemeral value snapshots and structured value joins
+for origin analysis. A new assignment can establish a fresh header while older
+aliases retain the earlier one; eager arguments keep their evaluated value
+across a later argument's rebind. `if`, `match` and short-circuit joins retain
+the actual branch effects once, separately from possible resulting values.
+Every possible allocation must be fresh and unpublished; branch-local exports
+are checked before the join. Equal origin sets do not identify independent
+choices or establish predicates for unselected headers. Original source occurrences, not rewritten locals,
 receive publication approval. Executable IR, public bindings and persisted
 evidence are unchanged. The
 [binding example](../../compiler/examples/record_refinement/versions.loom)
-covers sharing, once-only effects, CTFE, cleanup and suspension.
+covers sharing, once-only effects, CTFE, cleanup and suspension; the
+[join example](../../compiler/examples/record_refinement/joins.loom) adds branches.
 Publication in loop conditions, repeated publication of an outer allocation,
-control-flow-joined/loop-carried mutable origins and general nested graph
+loop-carried mutable origins and general nested graph
 publication remain open. Delayed mutable reads/writes, conditional aliases,
 aggregate arguments and captured mutating callbacks without a proved header
 identity remain conservative.

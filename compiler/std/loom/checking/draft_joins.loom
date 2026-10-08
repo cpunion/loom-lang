@@ -1,0 +1,175 @@
+fn draft_snapshot(scope DraftBindings, original Int) Int {
+    let local = get(scope.locals, original)
+    let version = length(scope.locals)
+    push(scope.locals, Local {
+            name = local.name
+            ty = local.ty
+            mutable = false
+            is_scoped = false
+        })
+    version
+}
+
+fn draft_versions_restore(scope DraftBindings, versions List[Int]) {
+    var index = 0
+    while index < length(versions) {
+        set(scope.versions, index, get(versions, index))
+        index = index + 1
+    }
+}
+
+fn draft_node(value Expr, kind ExprKind, ty Int, text Text, index Int, children List[Expr], arms List[Arm], falls Bool) Expr {
+    Expr {
+        kind = kind
+        ty = ty
+        span = value.span
+        text = text
+        index = index
+        children = children
+        arms = arms
+        falls = falls
+    }
+}
+
+fn draft_local(scope DraftBindings, source Expr, local Int) Expr {
+    draft_node(source, ExprKind.Local, get(scope.locals, local).ty, "", local, new[Expr](), new[Arm](), true)
+}
+
+// A private join over already evaluated values. Its opaque selectors describe
+// alternatives, not executable tests. Original branch effects occur once, in
+// the retained source node; no join enters emission or persistent evidence.
+fn draft_join(scope DraftBindings, source Expr, value Expr, entry List[Int], alternatives List[List[Int]]) Expr {
+    draft_versions_restore(scope, entry)
+    if length(alternatives) == 0 {
+        return value
+    }
+    let selectors = new[Int]()
+    let joins = new[Expr]()
+    var index = 0
+    while index < length(entry) {
+        if get(scope.eligible, index) && get(entry, index) != index {
+            let first = get(get(alternatives, 0), index)
+            var same = true
+            var branch = 1
+            while branch < length(alternatives) {
+                same = same && first == get(get(alternatives, branch), index)
+                branch = branch + 1
+            }
+            if same {
+                set(scope.versions, index, first)
+            } else {
+                while length(selectors) + 1 < length(alternatives) {
+                    let selector = length(scope.locals)
+                    push(scope.locals, Local {
+                            name = ""
+                            ty = 2
+                            mutable = false
+                            is_scoped = false
+                        })
+                    push(selectors, selector)
+                }
+                branch = length(alternatives) - 1
+                var chosen = draft_local(scope, source, get(get(alternatives, branch), index))
+                while branch > 0 {
+                    branch = branch - 1
+                    chosen = draft_node(source, ExprKind.If, chosen.ty, "draft value join", -1,
+                        [draft_local(scope, source, get(selectors, branch)),
+                            draft_local(scope, source, get(get(alternatives, branch), index)), chosen], new[Arm](), true)
+                }
+                let version = draft_snapshot(scope, index)
+                push(joins, draft_node(source, ExprKind.Let, 0, "", version, [chosen], new[Arm](), true))
+                set(scope.versions, index, version)
+            }
+        }
+        index = index + 1
+    }
+    if length(joins) == 0 {
+        return value
+    }
+    let children = new[Expr]()
+    var saved = -1
+    if value.ty == 0 {
+        push(children, value)
+    } else {
+        saved = length(scope.locals)
+        push(scope.locals, Local {
+                name = ""
+                ty = value.ty
+                mutable = false
+                is_scoped = false
+            })
+        push(children, draft_node(source, ExprKind.Let, 0, "", saved, [value], new[Arm](), value.falls))
+    }
+    index = 0
+    while index < length(joins) {
+        push(children, get(joins, index))
+        index = index + 1
+    }
+    if saved >= 0 {
+        push(children, draft_local(scope, source, saved))
+    }
+    draft_node(source, ExprKind.Block, value.ty, "", -1, children, new[Arm](), value.falls)
+}
+
+fn draft_if(scope DraftBindings, value Expr, depth Int) Expr {
+    let children = [draft_version(scope, get(value.children, 0), depth + 1)]
+    let entry = std.list.clone(scope.versions)
+    let alternatives = new[List[Int]]()
+    var index = 1
+    while index < length(value.children) {
+        draft_versions_restore(scope, entry)
+        let branch = draft_version(scope, get(value.children, index), depth + 1)
+        push(children, branch)
+        if branch.falls {
+            push(alternatives, std.list.clone(scope.versions))
+        }
+        index = index + 1
+    }
+    if length(children) == 2 {
+        push(alternatives, entry)
+    }
+    draft_join(scope, value, draft_node(value, value.kind, value.ty, value.text, value.index,
+            children, value.arms, value.falls), entry, alternatives)
+}
+
+fn draft_match(scope DraftBindings, value Expr, depth Int) Expr {
+    let children = [draft_version(scope, get(value.children, 0), depth + 1)]
+    let entry = std.list.clone(scope.versions)
+    let alternatives = new[List[Int]]()
+    let arms = new[Arm]()
+    var index = 0
+    while index < length(value.arms) {
+        draft_versions_restore(scope, entry)
+        let arm = get(value.arms, index)
+        let body = new[Expr]()
+        var item = 0
+        while item < length(arm.body) {
+            push(body, draft_version(scope, get(arm.body, item), depth + 1))
+            item = item + 1
+        }
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = arm.bindings
+                whole = arm.whole
+                body = body
+            })
+        if all_fall(body) {
+            push(alternatives, std.list.clone(scope.versions))
+        }
+        index = index + 1
+    }
+    draft_join(scope, value, draft_node(value, value.kind, value.ty, value.text, value.index,
+            children, arms, value.falls), entry, alternatives)
+}
+
+fn draft_short_circuit(scope DraftBindings, value Expr, depth Int) Expr {
+    let left = draft_version(scope, get(value.children, 0), depth + 1)
+    let entry = std.list.clone(scope.versions)
+    let right = draft_version(scope, get(value.children, 1), depth + 1)
+    let alternatives = [entry]
+    if right.falls {
+        push(alternatives, std.list.clone(scope.versions))
+    }
+    draft_join(scope, value, draft_node(value, value.kind, value.ty, value.text, value.index,
+            [left, right], value.arms, value.falls), entry, alternatives)
+}

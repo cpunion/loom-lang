@@ -29,6 +29,7 @@ fn draft_borrow(updates DraftUpdates, value Expr) Expr {
 // invalid storage. Follow immutable definitions to prove actual identity.
 fn draft_update(updates DraftUpdates, value Expr, inputs List[InputOrigin]) Bool {
     let arguments = new[Expr]()
+    var borrowed = missing_draft_root()
     var index = 0
     while index < length(value.children) {
         let argument = get(value.children, index)
@@ -37,8 +38,15 @@ fn draft_update(updates DraftUpdates, value Expr, inputs List[InputOrigin]) Bool
                 return false
             }
             let root = draft_root(updates.env, updates.functions, get(updates.current, 0), argument)
-            if root.local != updates.root.local || root.local < 0 ||
-            !origin_covers(root.origin, updates.root.origin) || !origin_covers(updates.root.origin, root.origin) {
+            if root.local < 0 || !draft_protected_root(root, updates.root) {
+                return false
+            }
+            // A possibly selected allocation has the predicate only when it
+            // is the published header. Never import predicates from distinct
+            // alternatives into one operation, or equate independent joins.
+            if borrowed.local < 0 {
+                borrowed = root
+            } else if !same_draft_root(borrowed, root) {
                 return false
             }
             push(arguments, draft_borrow(updates, argument))
