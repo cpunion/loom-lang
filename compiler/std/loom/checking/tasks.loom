@@ -228,10 +228,6 @@ fn task_signature(env Environment, signature Signature, node Node) Result[Bool, 
     var index = 0
     while index < length(signature.params) {
         discard task_transfer_type(env, signature, get(signature.params, index), node)?
-        if asynchronous && !is_static(signature, index) && resource_type(env, signature.symbol,
-            signature.requirements, get(signature.params, index), new[Int]())? {
-            return Result.Err(failure(env, signature.symbol, node, "async parameters cannot contain MustScope resources"))
-        }
         if marker >= 0 && !is_static(signature, index) && marker_type(env, signature.symbol,
             signature.requirements, get(signature.params, index), marker, new[Int]())? {
             return Result.Err(failure(env, signature.symbol, node, "async parameters cannot contain NoSuspend values"))

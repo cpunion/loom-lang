@@ -38,9 +38,33 @@ callback effects. A stopped cursor can be resumed when its producer allows it.
 Callers must serialize pulls on shared cursors; this protocol supplies no
 cross-thread or reentrant exclusivity guarantee.
 
-Resource ownership is not transferred through these Tasks. MustScope producers
-and owned resource pipelines need a separate safe boundary; they are not added
-here. [TCP chunks](../net/tcp/chunks/README.md) borrow an explicitly closed socket.
+## Scoped producers
+
+Factory overloads of `from_iter`, `map`, `filter` and `take` create owned pipelines:
+
+```loom
+// create(input) returns Result[S, E], where S implements Stream, Dispose
+// and MustScope. Each factory runs once, before any pull.
+scoped source = take(create, input, 2)?
+let values = collect(source).await
+```
+
+`from_iter(create, input)` instead accepts an Iterator factory with the same
+resource bounds. Lifting it does not make synchronous I/O nonblocking.
+Wrappers retain MustScope and ordinary nested disposal, allowing further factory
+composition. A factory error creates no owner; `take(..., 0)` still opens and
+closes the source without pulling. The limit is checked before acquisition.
+
+Async resource parameters are checked borrows, not ownership transfers. Their
+calls must be directly awaited: `source.next().await` and `collect(source).await`
+keep the owner alive until children drain, including cancellation and faults.
+Storing, returning, joining or forwarding a borrowing Task rejects. An existing
+scoped producer also cannot be copied into a returned adapter; use a factory.
+NoSuspend resources still cannot cross suspension. Async acquisition returning
+a MustScope value and general borrow-retaining adapters remain unsupported.
+See the [file pipeline](../../examples/stream_lines/README.md).
+
+[TCP chunks](../net/tcp/chunks/README.md) borrow an explicitly closed socket.
 Synchronous algorithms should keep using `std.iter`, avoiding a Task per item.
 
 Run the [example](../../examples/streams/README.md), or test the library with

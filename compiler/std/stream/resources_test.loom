@@ -1,0 +1,193 @@
+import std.resource.Dispose
+import std.resource.MustScope
+import std.int.to_text
+
+record OwnedCounter {
+    state List[Int]
+    events List[Int]
+}
+
+impl MustScope for OwnedCounter {
+}
+
+impl Dispose for OwnedCounter {
+    fn dispose(self OwnedCounter) {
+        push(self.events, 99)
+    }
+}
+
+impl Stream for OwnedCounter {
+    type Item = Int
+
+    async fn next(self OwnedCounter) Option[Int] {
+        let value = self.state[0]
+        if value == 5 {
+            return Option.None
+        }
+        self.state[0] = value + 1
+        push(self.events, value)
+        sleep_ms(1).await
+        Option.Some(value)
+    }
+}
+
+fn open_counter(events List[Int]) Result[OwnedCounter, Text] {
+    push(events, -1)
+    Result.Ok(OwnedCounter {
+            state = [0]
+            events = events
+        })
+}
+
+async fn rendered(value Int) Text {
+    sleep_ms(1).await
+    to_text(value)
+}
+
+fn selected_counter(events List[Int]) Result[Filtered[OwnedCounter], Text] {
+    filter(open_counter, events, even)
+}
+
+fn rendered_counter(events List[Int]) Result[Mapped[Filtered[OwnedCounter], Text], Text] {
+    map(selected_counter, events, rendered)
+}
+
+async fn pipeline(events List[Int], count Int) Result[List[Text], Text] {
+    scoped source = take(rendered_counter, events, count)?
+    Result.Ok(collect(source).await)
+}
+
+test async fn owned_stream_factories_compose_without_copying_and_close_once() {
+    let events = new[Int]()
+    assert match pipeline(events, 2).await {
+        Result.Ok(values) => length(values) == 2 && values[0] == "0" && values[1] == "2"
+        Result.Err(_) => false
+    }
+    assert length(events) == 5 && events[0] == -1 && events[1] == 0 &&
+    events[2] == 1 && events[3] == 2 && events[4] == 99
+    let empty = new[Int]()
+    assert match pipeline(empty, 0).await {
+        Result.Ok(values) => length(values) == 0
+        Result.Err(_) => false
+    }
+    assert length(empty) == 2 && empty[0] == -1 && empty[1] == 99
+}
+
+fn failed_counter(events List[Int]) Result[OwnedCounter, Text] {
+    push(events, -2)
+    Result.Err("cannot open")
+}
+
+async fn failed_pipeline(events List[Int]) Result[List[Int], Text] {
+    scoped source = take(failed_counter, events, 2)?
+    Result.Ok(collect(source).await)
+}
+
+test async fn a_factory_error_does_not_create_or_dispose_an_owner() {
+    let events = new[Int]()
+    assert match failed_pipeline(events).await {
+        Result.Err(error) => error == "cannot open"
+        Result.Ok(_) => false
+    }
+    assert length(events) == 1 && events[0] == -2
+}
+
+record OwnedWaiting {
+    events List[Text]
+}
+
+impl MustScope for OwnedWaiting {
+}
+
+impl Dispose for OwnedWaiting {
+    fn dispose(self OwnedWaiting) {
+        push(self.events, "owner closed")
+    }
+}
+
+impl Stream for OwnedWaiting {
+    type Item = Text
+
+    async fn next(self OwnedWaiting) Option[Text] {
+        defer {
+            push(self.events, "pull cleaned")
+        }
+        push(self.events, "pull started")
+        sleep_ms(10000).await
+        Option.Some("late")
+    }
+}
+
+fn open_waiting(events List[Text]) Result[OwnedWaiting, Text] {
+    Result.Ok(OwnedWaiting {
+            events = events
+        })
+}
+
+async fn wait_pipeline(events List[Text]) Result[List[Text], Text] {
+    defer {
+        push(events, "consumer cleaned")
+    }
+    scoped source = take(open_waiting, events, 1)?
+    Result.Ok(collect(source).await)
+}
+
+test async fn cancellation_drains_the_borrowed_pull_before_disposing_its_owner() {
+    let events = new[Text]()
+    let pending = wait_pipeline(events)
+    sleep_ms(5).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert length(events) == 4
+    assert events[0] == "pull started" && events[1] == "pull cleaned" &&
+    events[2] == "owner closed" && events[3] == "consumer cleaned"
+}
+
+async fn wait_callback_pipeline(events List[Int]) Result[List[Int], Text] {
+    scoped source = map(open_counter, events, async fn(value Int) Int {
+            defer {
+                push(events, 101)
+            }
+            push(events, 100)
+            sleep_ms(10000).await
+            value
+        })?
+    Result.Ok(collect(source).await)
+}
+
+test async fn cancellation_drains_the_callback_before_disposing_its_source() {
+    let events = new[Int]()
+    let pending = wait_callback_pipeline(events)
+    while length(events) < 3 {
+        sleep_ms(1).await
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert length(events) == 5 && events[0] == -1 && events[1] == 0 &&
+    events[2] == 100 && events[3] == 101 && events[4] == 99
+}
+
+async fn faulting(value Int) Int {
+    sleep_ms(1).await
+    assert value != 1
+    value
+}
+
+async fn fault_pipeline(events List[Int]) Result[List[Int], Text] {
+    scoped source = map(open_counter, events, faulting)?
+    Result.Ok(collect(source).await)
+}
+
+test async fn callback_faults_dispose_the_owned_source_once() {
+    let events = new[Int]()
+    assert match outcome(fault_pipeline(events)).await {
+        Outcome.Faulted(error) => contains(error.message, "assertion failed")
+        _ => false
+    }
+    assert length(events) == 4 && events[0] == -1 && events[1] == 0 &&
+    events[2] == 1 && events[3] == 99
+}

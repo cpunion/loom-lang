@@ -1,0 +1,6 @@
+test async fn open_errors_propagate_without_creating_a_stream_owner() {
+    assert match first_lines("").await {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

@@ -217,8 +217,12 @@ overload discriminator. Defaults, associated results and type/comptime parameter
 share ordinary method specialization. Sparse witnesses call constructors; a private
 label preserves the actual dynamic creation site. Synchronous dynamic methods can
 also transfer direct Task parameters/results using their caller's owner.
-Async MustScope/NoSuspend parameters and scoped receiver escape remain rejected;
-this does not establish a structured resource lifetime across a child call.
+Async MustScope parameters are checked borrows when their call is directly
+awaited. The caller retains the owner through completion or cancellation drain;
+the borrowing Task cannot be saved, forwarded, joined or returned. Checked
+direct calls also retain Dispose-only borrows; indirect calls require MustScope.
+NoSuspend parameters and MustScope Task results remain rejected. Async resource
+acquisition and general borrowing Tasks require further lifetime support.
 See the [method example](../../compiler/examples/async_methods).
 
 Named async references have type `fn(A) Task[B]`, shared with synchronous Task

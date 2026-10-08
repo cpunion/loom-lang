@@ -17,6 +17,7 @@ constructors as static calls, without a separate executor or runtime type search
 Unused methods do not enter a closed executable's reachability.
 
 An implementation must match its concept's `async` modifier. Task inputs/results
-remain one-shot. `NoSuspend` and `MustScope` parameters are rejected for async
-methods; scoped receivers cannot escape into their child Tasks. This does not
-yet provide structured async borrowing or Task-bearing aggregates/function values.
+remain one-shot. NoSuspend parameters still reject. Scoped receivers can be
+borrowed by directly awaited calls: completion or cancellation drains their
+children before the owner is disposed. The borrowing Task cannot be stored,
+forwarded or returned. See the [scoped stream trial](../stream_lines/README.md).
