@@ -1,0 +1,93 @@
+// Optional coefficient suggestions, never established facts. Calls keep their
+// ordinary eager arguments, effects, faults and requirements in execute; this
+// isolated expansion only proposes a relation for entry/backedge verification.
+fn loop_affine_hint(context Expansion, value Expr, bindings List[ExpansionBinding], locals List[Local], depth Int) Result[Expr, Text] {
+    discard expansion_step(context, depth)?
+    if length(value.arms) != 0 {
+        return Result.Err("affine suggestion needs an ordinary expression")
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, loop_affine_hint(context, get(value.children, index), bindings, locals, depth + 1)?)
+        index = index + 1
+    }
+    let prepared = proof_expr(value, value.kind, value.ty, value.text, value.index, children)
+    if value.kind == ExprKind.Coerce {
+        return Result.Ok(get(children, 0))
+    }
+    if value.kind == ExprKind.Field {
+        return expanded_field(context, prepared, get(children, 0), depth + 1)
+    }
+    if value.kind != ExprKind.Call || value.index < 0 || value.index >= length(context.program.functions) {
+        return Result.Ok(prepared)
+    }
+    let function = get(context.program.functions, value.index)
+    if function.runtime_name != "" || !helper_type(context.program, function.result, 0) ||
+    length(function.params) != length(children) {
+        return Result.Ok(prepared)
+    }
+    if length(function.postconditions) != 0 {
+        let arguments = new[ExpansionBinding]()
+        index = 0
+        while index < length(children) {
+            push(arguments, ExpansionBinding {
+                    local = index
+                    value = get(children, index)
+                })
+            index = index + 1
+        }
+        let path = proof_expr(value, ExprKind.Local, function.result, "", function.result_local, new[Expr]())
+        // Reuse the ordinary scalar/aggregate result template. Unspecified
+        // leaves remain opaque; a declared bound is not an exact translation.
+        return summarized_value(context, function, path, prepared, arguments, depth + 1)
+    }
+    // Helpers without a summary use the existing finite pure-body expansion.
+    // Unknown or effectful arguments may still be ignored by an outer summary;
+    // retain the call when this optional expansion cannot describe its value.
+    match expanded(context, prepared, proof_bool(value, true), bindings, locals, false, 0, depth + 1) {
+        Result.Ok(hint) => Result.Ok(hint)
+        Result.Err(_) => Result.Ok(prepared)
+    }
+}
+
+fn loop_affine_update(proof Verification, value Expr, symbols State, budget List[Int]) Result[Value, Text] {
+    let direct = pure(value, symbols)
+    match direct {
+        Result.Ok(_) => {
+            return direct
+        }
+        Result.Err(_) => {
+        }
+    }
+    if loop_call_free(value) || get(budget, 0) <= 0 {
+        return direct
+    }
+    let bindings = new[ExpansionBinding]()
+    var index = 0
+    while index < length(proof.function.locals) {
+        push(bindings, ExpansionBinding {
+                local = index
+                value = proof_expr(value, ExprKind.Local, get(proof.function.locals, index).ty,
+                    "", index, new[Expr]())
+            })
+        index = index + 1
+    }
+    let binders = new[Int]()
+    push(binders, 0)
+    let context = Expansion {
+        program = proof.program
+        list_lengths = false
+        budget = budget
+        active = new[Int]()
+        checks = new[Evaluation]()
+        observations = new[Int]()
+        origins = new[ObservationOrigin]()
+        binders = binders
+    }
+    let suggestion = loop_affine_hint(context, value, bindings, proof.function.locals, 0)?
+    if !bounded_contract(suggestion) {
+        return Result.Err("affine suggestion expression budget exhausted")
+    }
+    pure(suggestion, symbols)
+}

@@ -28,6 +28,13 @@ reuse the same mathematical arithmetic and induction checks, not a second
 executor or trusted update-pattern rule. General multi-local affine synthesis
 and nonlinear invariants remain outside this candidate generator.
 
+The [helper example](helper_affine.loom) derives coefficients from finite pure
+helpers and exact checked scalar/inline-field summaries, including generic/dyn
+concept calls and structural pack iteration. Unspecified shared siblings remain
+opaque. The native example checks once-only argument effects and their order;
+optional expansion does not replace executable calls, requirements or faults.
+Every proposed relation still needs the same entry/backedge proof.
+
 The current subset includes Int/Bool local assignments, branches, early returns
 and nested loops. `break` preserves the state at its exit; `continue` must
 preserve the invariant at its backedge. Both target the nearest loop, including
