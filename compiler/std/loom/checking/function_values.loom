@@ -64,7 +64,7 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         let candidate = get(context.env.signatures, id)
         static_only = static_only || has_static(candidate)
         let count = candidate.parameters - parameter_offset(context.env, candidate.symbol)
-        if !has_static(candidate) &&(length(supplied_types) == 0 || length(supplied_types) == count) {
+        if !has_static(candidate) && (length(supplied_types) == 0 || length(supplied_types) == count) {
             let inferred = supplied_call(context, node, supplied_types, candidate)?
             if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
@@ -103,7 +103,9 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
     if reflection_intrinsic(context.env, selected_signature.symbol) {
         return Result.Err(error(context, node, "type reflection must be called directly; use a source wrapper for a function value"))
     }
-    if length(context.env.packs) != 0 { discard check_pack_arity(context.env, selected)? }
+    if length(context.env.packs) != 0 {
+        discard check_pack_arity(context.env, selected)?
+    }
     if async_signature(context.env, selected_signature) && has(symbol(context.env, selected_signature.symbol).node, NodeKind.Intrinsic) {
         return Result.Err(error(context, node, "private async intrinsics must be awaited directly"))
     }
@@ -130,7 +132,11 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
     if length(inputs.nodes) != count {
         return Result.Err(error(context, node, "function value argument count does not match"))
     }
-    let callable = if count == 0 { input_effects(context, inputs, -1, node, callee) } else { callee }
+    let callable = if count == 0 {
+        input_effects(context, inputs, -1, node, callee)
+    } else {
+        callee
+    }
     let values = expressions(callable)
     var index = 0
     while index < count {
@@ -141,7 +147,9 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
     discard task_call_context(context, node, values, output, false)?
     if callable.kind == ExprKind.FunctionRef && callable.index >= 0 && !direct_task(context.env, output) {
         let arguments = new[Expr]()
-        if length(callee.children) != 0 { push(arguments, get(callee.children, 0)) }
+        if length(callee.children) != 0 {
+            push(arguments, get(callee.children, 0))
+        }
         index = 1
         while index < length(values) {
             push(arguments, get(values, index))
@@ -197,12 +205,16 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         }
         index = index + 1
     }
-    let methods = matching_overloads(context, node, options, types, values, expected)?
+    let methods = matching_overloads(context, node, options, types, values, expected, options, false)?
     if field_matches && length(methods.candidates) != 0 {
         return Result.Err(error(context, node, "ambiguous function field and concept method; parenthesize the field or use Concept.method(value, ...)"))
     }
     if field_matches {
-        let arguments = expressions(if count == 0 { input_effects(context, inputs, -1, node, callee) } else { callee })
+        let arguments = expressions(if count == 0 {
+                input_effects(context, inputs, -1, node, callee)
+            } else {
+                callee
+            })
         index = 0
         while index < count {
             let argument = if probing && get(probes, index + 1) {
