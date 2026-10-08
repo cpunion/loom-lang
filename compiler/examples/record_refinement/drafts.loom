@@ -1,7 +1,7 @@
 import std.time.sleep_ms
 
-// Raw builder aliases stop at publication. The checked boundary retains the
-// exact built header; only constrained handles can be used afterwards.
+// The checked boundary retains the exact built header. Raw aliases may still
+// observe it, but only constrained handles can authorize later mutation.
 fn fill_draft(values List[Int], count Int) List[Int] {
     var index = 0
     while index < count {

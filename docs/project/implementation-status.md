@@ -361,14 +361,19 @@ before recursive expansion exhausts the compiler stack.
 
 Fresh local List drafts can now be populated through finite non-publishing
 helpers, aliases and loops before a checked publication boundary.
-Existing origin analysis validates publication effects; raw aliases and captures
-must have no later use, including cleanup. The built header is retained without
+Existing origin analysis validates publication effects; later raw aliases and
+known captures may read but cannot mutate or export protected storage, including
+from cleanup. Local copies retain their origins, and implicit aggregate returns
+cannot leak raw handles. The built header is retained without
 copying or a runtime monitor, and unknown predicates still return checked Results.
 The [draft example](../../compiler/examples/record_refinement/drafts.loom) covers
 CTFE, shared constrained updates and suspension. Publication follows blocks,
 branches, matches, eager expressions and returns, including ordinary local
-copies and unrelated waits. Pending operands and active defer/scoped cleanup
-cannot transport raw aliases across that boundary, including fault-only exits.
+copies and unrelated waits. Pending operands cannot transport raw aliases across
+that boundary. Active defer/scoped cleanup needs a checked non-publishing,
+read-only footprint, including fault-only exits. The
+[reader example](../../compiler/examples/record_refinement/readers.loom) retains
+readers across preserving updates, suspension and cleanup without copying.
 Loop-local publication, mutable binding origins and general nested graph
 publication remain open.
 
