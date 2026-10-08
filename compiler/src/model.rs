@@ -154,6 +154,7 @@ pub enum Primitive {
     TaskWaitNext,
     TaskNextResult,
     TaskNextTerminalResult,
+    TaskNextTerminalIndex,
     TaskNextTerminalFailure,
     TaskStatus,
     TaskFailure,

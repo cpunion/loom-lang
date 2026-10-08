@@ -88,6 +88,10 @@ async fn main() {
         assert length(closed) == 0
     }
     assert length(closed) == 2 && closed[0] == 2 && closed[1] == 1
+    {
+        scoped winner = any(lease(3, closed), lease(4, closed)).await
+        assert winner.id == 3 || winner.id == 4
+    }
     let number, text, _ = all((item(7), label(), sleep_ms(0))).await
     assert number == 7 && text == "ready"
     let first, second = settled((item(8), label())).await

@@ -589,6 +589,7 @@ impl Converter<'_> {
             Primitive::TaskWaitNext
             | Primitive::TaskNextResult
             | Primitive::TaskNextTerminalResult
+            | Primitive::TaskNextTerminalIndex
             | Primitive::TaskNextTerminalFailure => {
                 let expected = if operation == Primitive::TaskWaitNext {
                     Type::Bool
@@ -1589,6 +1590,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_wait_next" => P::TaskWaitNext,
         "task_next_result" => P::TaskNextResult,
         "task_next_terminal_result" => P::TaskNextTerminalResult,
+        "task_next_terminal_index" => P::TaskNextTerminalIndex,
         "task_next_terminal_failure" => P::TaskNextTerminalFailure,
         "task_status" => P::TaskStatus,
         "task_failure" => P::TaskFailure,
@@ -1635,6 +1637,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitNext
         | P::TaskNextResult
         | P::TaskNextTerminalResult
+        | P::TaskNextTerminalIndex
         | P::TaskNextTerminalFailure => 0,
         P::FloatFromInt
         | P::FloatToInt

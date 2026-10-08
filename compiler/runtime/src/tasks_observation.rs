@@ -9,6 +9,7 @@ pub(super) struct Observation {
     members: HashMap<u64, i64>,
     ready: BTreeSet<(u64, u64)>,
     selected_fault: Option<u64>,
+    selected_index: Option<i64>,
 }
 
 pub(super) fn contains(core: &Core, parent: u64, child: u64) -> bool {
@@ -137,6 +138,7 @@ pub(super) extern "C-unwind" fn loom_rt_task_next_result() -> i64 {
             .ok_or("task observation result is not ready")?;
         let index = group.members.remove(&child).expect("registered completion");
         group.selected_fault = None;
+        group.selected_index = None;
         core.tasks.get_mut(&child).unwrap().waiter = None;
         Ok(index)
     })
@@ -159,8 +161,9 @@ pub(super) extern "C-unwind" fn loom_rt_task_next_terminal_result() -> i64 {
                 .ready
                 .pop_first()
                 .ok_or("task terminal result is not ready")?;
-            group.members.remove(&child).expect("registered completion");
+            let index = group.members.remove(&child).expect("registered completion");
             group.selected_fault = None;
+            group.selected_index = Some(index);
             child
         };
         let status = match core.tasks[&child].state {
@@ -180,6 +183,22 @@ pub(super) extern "C-unwind" fn loom_rt_task_next_terminal_result() -> i64 {
         };
         core.tasks.get_mut(&child).unwrap().waiter = None;
         Ok(status)
+    })
+}
+
+/// Read the index belonging to the selected terminal event, not a second event.
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_next_terminal_index() -> i64 {
+    edit(|_, core| {
+        let current = core.current.ok_or("task observation outside a resume")?;
+        let task = core.tasks.get_mut(&current).unwrap();
+        if !matches!(task.state, State::Running) {
+            return Err("task terminal index is not ready");
+        }
+        task.observation
+            .as_mut()
+            .and_then(|group| group.selected_index.take())
+            .ok_or("task terminal index is not ready")
     })
 }
 
@@ -331,6 +350,8 @@ mod tests {
             }
             loom_rt_collect();
             assert_eq!(loom_rt_task_next_terminal_result(), 0);
+            loom_rt_collect();
+            assert_eq!(loom_rt_task_next_terminal_index(), 0);
             let successful = (*(*slots).cast::<Frame>()).successful;
             assert_eq!(loom_rt_task_await(successful), 1);
             loom_rt_task_result(successful);
@@ -338,6 +359,7 @@ mod tests {
             assert_eq!(loom_rt_task_next_terminal_result(), 1);
             let diagnostic = loom_rt_task_next_terminal_failure();
             assert!(text_bytes(diagnostic).ends_with(b"observed failure"));
+            assert_eq!(loom_rt_task_next_terminal_index(), 1);
             let failing = (*(*slots).cast::<Frame>()).failing;
             outcomes::loom_rt_task_drain(failing, 1);
             0

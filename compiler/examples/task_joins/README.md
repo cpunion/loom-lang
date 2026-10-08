@@ -21,8 +21,10 @@ Tuple joins also accept fresh MustScope results. The example scopes a tuple
 containing two leases and ordinary Text; resource fields are borrowed until
 the tuple's block ends, then disposed in reverse order. Tuple `settled` keeps
 only each active completed resource payload. Partial construction remains
-protected during waits, faults and cancellation. Resource-bearing dynamic List
-joins remain unfinished.
+protected during waits, faults and cancellation. `any` and `race` retain a typed
+winning Task until every loser has drained, then transfer its fresh resource or
+Outcome into the caller's scope. Dynamic List `all`/`settled` with resource results
+remain unfinished.
 
 | `std.task` function | Awaited result | Rule |
 | --- | --- | --- |

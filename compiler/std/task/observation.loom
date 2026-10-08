@@ -13,3 +13,6 @@ enum TaskTerminal {
 }
 
 async intrinsic fn task_next_terminal() TaskTerminal
+
+// Keep selection metadata together without extracting the resource payload.
+async intrinsic fn task_next_event() (Int, TaskTerminal)

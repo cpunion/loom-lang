@@ -3811,9 +3811,13 @@ payloads receive recursive cleanup. Scoped or borrowed resources still cannot
 be returned or transferred into another Task. Tuple `all`, `settled` and tuple
 `.await` also retain resource results through partial construction, fault and
 cancellation. Their complete results enter one `scoped` tuple; field reads borrow
-its resources rather than extracting new owners. Resource-bearing List joins
-remain unfinished. See the [native resource-result tests](examples/cleanup/task_resource_result_test.loom)
-and [tuple join tests](examples/cleanup/task_resource_join_test.loom).
+its resources rather than extracting new owners. List and two-argument `any`/`race`
+also support fresh resource results: selection retains the original typed winning
+Task until every loser drains, then extracts its value or Outcome. A loser cleanup
+fault also drains the untransferred winner. Resource-bearing List `all`/`settled`
+remain unfinished. See the [native resource-result tests](examples/cleanup/task_resource_result_test.loom),
+[tuple join tests](examples/cleanup/task_resource_join_test.loom), and
+[selection tests](examples/cleanup/task_resource_selection_test.loom).
 Resource factory overloads
 of [`std.stream`](std/stream/README.md) compose scoped async pipelines from
 fallible or infallible factories. [`std.file.lines.stream`](std/file/lines/README.md)
