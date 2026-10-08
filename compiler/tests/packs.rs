@@ -351,12 +351,7 @@ ensures result >= 0 {
 }
 fn structural_count[As..., Bs...](left (As...), values (Int, As..., Bool, Bs...), right (Bs...)) Int
 ensures result >= 0 {
-    var total = 0
-    comptime for item in values {
-        discard item
-        total = total + 1
-    }
-    total
+    counted(values...)
 }
 fn pack[Ts...](values Ts...) (Ts...) { values }
 fn repeat[Ts...](values (Ts..., Bool, Ts...)) (Ts..., Bool, Ts...) { values }

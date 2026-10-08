@@ -1,0 +1,82 @@
+fn tuple_count[Ts...](values (Ts...)) Int
+ensures result >= 0 {
+    counted(values...)
+}
+
+fn forwarded_count[As..., Bs...](left (As...), right (Bs...)) Int
+ensures result >= 0 {
+    tuple_count(left) + counted(right...)
+}
+
+fn forwarded_measure[Ts...Measurement](values (Ts...)) Int
+ensures result >= 0 {
+    measured(values...)
+}
+
+fn forwarded_record[Ts...Measurement](log List[Int], values (Ts...))
+ensures length(log) >= old(length(log)) {
+    recorded(log, values...)
+}
+
+fn keep_context[Ts...](value Int, context Ts...) Int
+ensures result == value {
+    value
+}
+
+fn forwarded_context[Ts...](value Int, context (Ts...)) Int
+ensures result == value {
+    keep_context(value, context...)
+}
+
+fn recursive_context[Ts...](remaining Int, context (Ts...)) Int
+requires remaining >= 0
+ensures result == 0 {
+    if remaining == 0 {
+        0
+    } else {
+        recursive_context(remaining - 1, context)
+    }
+}
+
+concept ForwardedMeasurement {
+    fn measure[Ts...Measurement](self Self, values (Ts...)) Int
+    ensures result >= 0 {
+        forwarded_measure(values)
+    }
+}
+
+impl ForwardedMeasurement for Bool {
+}
+
+impl ForwardedMeasurement for Int {
+    fn measure[Us...](self Int, values (Us...)) Int {
+        measured(values...)
+    }
+}
+
+fn exercise_forwarding() {
+    assert forwarded_count(pack(), pack()) == 0
+    assert forwarded_count((1, true), ("a", [2], false)) == 5
+    assert tuple_count((1, (true, "nested"))) == 2
+    assert forwarded_measure((1, true, 40)) == 42
+    assert comptime {
+        forwarded_measure((40, true, 1))
+    } == 42
+    let callback fn((Int, Bool, Int)) Int = forwarded_measure
+    assert callback((40, true, 1)) == 42
+    let defaulted dyn ForwardedMeasurement = true
+    let overridden dyn ForwardedMeasurement = 1
+    assert defaulted.measure((40, true, 1)) == 42
+    assert overridden.measure((40, true, 1)) == 42
+    assert defaulted.measure(pack()) == 0
+    assert recursive_context(4, (true, "context", [1])) == 0
+    assert comptime {
+        recursive_context(3, (false, "compile time"))
+    } == 0
+    let log List[Int] = []
+    forwarded_record(log, (true, 1))
+    assert length(log) == 4
+    assert log[0] == 0 && log[1] == 10 && log[2] == 1 && log[3] == 11
+    assert forwarded_context(mark(log, 42), (mark(log, 2), mark(log, 3))) == 42
+    assert length(log) == 7 && log[4] == 42 && log[5] == 2 && log[6] == 3
+}

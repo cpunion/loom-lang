@@ -1,0 +1,173 @@
+// Proof-only forwarding calls instantiate a universally checked family summary.
+// No pack value or sampled native specialization enters this private closure.
+fn pack_proof_caller(context Context) Int {
+    let signature = source_signature_id(context.env, context.signature.symbol)
+    let instance = pack_instance(context.env, signature)
+    if instance < 0 || !erased_pack(get(context.env.packs, instance)) {
+        return -1
+    }
+    get(context.env.packs, instance).source
+}
+
+fn pack_schema_equal(left Node, right Node) Bool {
+    if left.kind != right.kind || left.value != right.value || length(left.children) != length(right.children) {
+        return false
+    }
+    var index = 0
+    while index < length(left.children) {
+        if !pack_schema_equal(child(left, index), child(right, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn pack_forwarded_shape(parameter Node) Node {
+    let ty = child(parameter, 0)
+    if ty.kind == NodeKind.Spread {
+        pack_node(ty, NodeKind.TupleType, "", source_nodes(ty))
+    } else {
+        ty
+    }
+}
+
+// A bare callee pack accepts the complete forwarded sequence. Repeated inputs
+// must describe the same ordered types, not merely an equal total width.
+fn pack_call_parameter(declaration Node, parameter Node) Int {
+    let ty = child(parameter, 0)
+    let spread = if ty.kind == NodeKind.TupleType && length(ty.children) == 1 {
+        child(ty, 0)
+    } else {
+        ty
+    }
+    if spread.kind != NodeKind.Spread || child(spread, 0).kind != NodeKind.Type || length(child(spread, 0).children) != 0 {
+        return -1
+    }
+    let packs = declared_packs(declaration)
+    var index = 0
+    while index < length(packs) {
+        if get(packs, index).value == child(spread, 0).value {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let owner = pack_proof_caller(context)
+    if owner < 0 {
+        return Result.Err(error(context, node, "variadic proof calls are private to checked family proofs"))
+    }
+    let path = slice(node.value, length("$packcall#"), length(node.value))
+    let root = slice(path, 0, first_dot(path))
+    let caller = symbol(context.env, owner)
+    let erased = pack_proof_sources(caller.node)
+    var shadowed = lookup(context, root) >= 0 || parameter_name(context, root)
+    var name = 0
+    while name < length(erased) {
+        shadowed = shadowed || root == get(erased, name)
+        name = name + 1
+    }
+    if shadowed {
+        return Result.Err(error(context, node, "variadic forwarding proof needs an unshadowed declared function"))
+    }
+    let options = candidates(context.env.source, caller.file, caller.test_only, path)
+    if length(options) != 1 {
+        return Result.Err(error(context, node, "variadic forwarding proof needs one declared function, not unresolved overloads"))
+    }
+    let target = get(options, 0)
+    let callee = symbol(context.env, target)
+    let declaration = callee.node
+    if callee.owner >= 0 || declaration.kind != NodeKind.Function || pack_parameter(declaration) < 0 ||
+    !has(declaration, NodeKind.Ensures) || has(declaration, NodeKind.Async) || length(child(node, 0).children) != 0 {
+        return Result.Err(error(context, node, "variadic forwarding proof needs a synchronous family with declared postconditions and inferred type arguments"))
+    }
+    let parameters = group(declaration, NodeKind.Parameters)
+    let inputs = child(node, 1).children
+    if length(parameters) != length(inputs) {
+        return Result.Err(error(context, node, "variadic forwarding proof needs one source sequence per pack parameter"))
+    }
+    let sources = group(caller.node, NodeKind.Parameters)
+    let packs = declared_packs(declaration)
+    let selected = new[Int]()
+    var index = 0
+    while index < length(packs) {
+        push(selected, -1)
+        index = index + 1
+    }
+    let values = new[Node]()
+    index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        let argument = get(inputs, index)
+        let source = pack_forwarded_parameter(caller.node, argument)
+        if has_type_expansion(child(parameter, 0)) {
+            let pack = pack_call_parameter(declaration, parameter)
+            if pack < 0 || source < 0 || has(parameter, NodeKind.Comptime) ||
+            (child(parameter, 0).kind == NodeKind.Spread) != (argument.kind == NodeKind.Spread) {
+                return Result.Err(error(context, argument, "variadic forwarding proof needs a matching bare value pack or tuple pack"))
+            }
+            let shape = pack_forwarded_shape(get(sources, source))
+            if shape.kind != NodeKind.TupleType {
+                return Result.Err(error(context, argument, "variadic forwarding proof needs an ordered tuple sequence"))
+            }
+            let previous = get(selected, pack)
+            if previous >= 0 && !pack_schema_equal(shape, pack_forwarded_shape(get(sources, previous))) {
+                return Result.Err(error(context, argument, "repeated forwarded packs must retain the same ordered type schema"))
+            }
+            set(selected, pack, source)
+        } else {
+            if source >= 0 || argument.kind == NodeKind.Spread {
+                return Result.Err(error(context, argument, "a forwarded sequence cannot escape into a fixed proof argument"))
+            }
+            push(values, argument)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(packs) {
+        let source = get(selected, index)
+        if source < 0 {
+            return Result.Err(error(context, node, "variadic forwarding proof cannot infer an unbound pack"))
+        }
+        let parameter = get(sources, source)
+        let input = pack_node(parameter, NodeKind.Name, parameter.value, new[Node]())
+        let width = pack_proof_loop_width(caller.node, input)
+        var element = if width >= 0 {
+            pack_proof_value_pack(caller.node, input, width)
+        } else {
+            -1
+        }
+        if element < 0 && length(get(packs, index).children) != 0 {
+            return Result.Err(error(context, node, "bounded forwarding needs a source pack with declared element requirements"))
+        }
+        // For a mixed sequence the unconstrained family cannot observe element
+        // types or values. Supply an existing abstract witness, not a concrete
+        // sampled type; its value carries no content or nonempty-pack evidence.
+        if element < 0 {
+            let source_packs = declared_packs(caller.node)
+            var pack = 0
+            while pack < length(source_packs) && element < 0 {
+                if mentions_pack(child(parameter, 0), get(source_packs, pack).value) {
+                    element = pack
+                }
+                pack = pack + 1
+            }
+        }
+        if element < 0 {
+            return Result.Err(error(context, node, "variadic forwarding proof cannot establish an abstract element domain"))
+        }
+        push(values, pack_node(parameter, NodeKind.Name, pack_proof_element_value(element), new[Node]()))
+        match pack_proof_loop_extent(caller.node, input) {
+            Option.Some(extent) => push(values, extent)
+            Option.None => {
+                return Result.Err(error(context, node, "variadic forwarding proof cannot establish the source extent"))
+            }
+        }
+        index = index + 1
+    }
+    let signature = erased_pack_signature(context.env, target)?
+    invoke(context, node, ints(signature), new[Node](), plain_inputs(values), new[Expr](), expected)
+}

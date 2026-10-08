@@ -1,0 +1,250 @@
+import std.text.find
+
+test fn pack_forwarding_composes_universal_summaries_without_concrete_callers() {
+    discard accepted("""
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn tuple_count[Ts...](values (Ts...)) Int
+        ensures result >= 0 {
+            count(values...)
+        }
+        fn forwarded[As..., Bs...](left (As...), right (Bs...)) Int
+        ensures result >= 0 {
+            tuple_count(left) + count(right...)
+        }
+        fn structural[Ts...](values (Int, Ts..., Bool)) Int
+        ensures result >= 0 {
+            tuple_count(values)
+        }
+        fn repeated[Ts...](first Ts..., second Ts...) Int
+        ensures result >= 0 {
+            count(first...) + tuple_count(second)
+        }
+        fn same[Ts...](first (Ts...), second Ts...) Int
+        ensures result >= 0 {
+            tuple_count(first) + count(second...)
+        }
+        fn same_forward[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            same(values, values...)
+        }
+        fn twice[Us..., Vs...](left (Us...), right (Vs...)) Int
+        ensures result >= 0 {
+            forwarded(left, right)
+        }
+        fn descend[Ts...](remaining Int, values Ts...) Int
+        requires remaining >= 0
+        ensures result == 0 {
+            if remaining == 0 {
+                0
+            } else {
+                descend(remaining - 1, values...)
+            }
+        }
+        """)
+}
+
+test fn pack_forwarding_keeps_bounds_fixed_arguments_and_list_effects() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        concept Value {
+            fn value(self Self) Int
+            ensures result >= 0
+        }
+        fn sum[Ts... Value](initial Int, values (Ts...)) Int
+        requires initial >= 0
+        ensures result >= initial {
+            var total = initial
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        fn forward[Us... Value](input Int, values Us...) Int
+        requires input >= 0
+        ensures result >= input {
+            sum(input, values)
+        }
+        fn append[Ts...](log List[Int], values Ts...)
+        ensures length(log) >= old(length(log)) {
+            comptime for index, item in values {
+                discard item
+                push(log, index)
+            }
+        }
+        fn forward_append[Us...](log List[Int], values (Int, Us..., Bool))
+        ensures length(log) >= old(length(log)) {
+            append(log, values...)
+        }
+        """, true)
+}
+
+test fn pack_forwarding_resolves_the_defining_packages_private_helpers() {
+    let files = source_files("""
+        import rules.keep
+        fn private_keep(value Int) Int {
+            -1
+        }
+        fn forward[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            keep(value, values...)
+        }
+        fn main() {
+            assert forward(42, (true, "context")) == 42
+        }
+        """)
+    push(files, source_file("rules", """
+        fn private_keep(value Int) Int
+        ensures result == value {
+            value
+        }
+        pub fn keep[Ts...](value Int, values Ts...) Int
+        ensures result == value {
+            private_keep(value)
+        }
+        """, false))
+    assert match checked(files) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            show_failure(fixture_project(files), failed)
+            false
+        }
+    }
+}
+
+test fn pack_forwarding_requires_the_callee_proof_and_public_requirements() {
+    rejects("""
+        fn wrong[Ts...](values Ts...) Int
+        ensures result > 0 {
+            0
+        }
+        fn forward[Us...](values Us...) Int
+        ensures result > 0 {
+            wrong(values...)
+        }
+        """)
+    rejects("""
+        concept Value {
+            fn value(self Self) Int
+            ensures result >= 0
+        }
+        fn sum[Ts... Value](values Ts...) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        fn forward[Us...](values Us...) Int
+        ensures result >= 0 {
+            sum(values...)
+        }
+        """)
+    rejects("""
+        fn keep[Ts...](value Int, values Ts...) Int
+        ensures result == value {
+            value
+        }
+        fn wrong[Us...](values Us...) Int
+        ensures result > 0 {
+            keep(0, values...)
+        }
+        """)
+}
+
+test fn pack_forwarding_rejects_changed_bindings_and_incompatible_sequences() {
+    rejects("""
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            0
+        }
+        fn count(value Bool) Int {
+            -1
+        }
+        fn forward[Us...](values Us...) Int
+        ensures result >= 0 {
+            count(values...)
+        }
+        """)
+    rejects("""
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            0
+        }
+        fn forward[Us...](values Us...) Int
+        ensures result >= 0 {
+            let count = fn(value Bool) Int { -1 }
+            count(values...)
+        }
+        """)
+    rejects("""
+        fn pair[Ts...](first (Ts...), second (Ts...)) Int
+        ensures result >= 0 {
+            0
+        }
+        fn forward[As..., Bs...](first (As...), second (Bs...)) Int
+        ensures result >= 0 {
+            pair(first, second)
+        }
+        """)
+    rejects("""
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            0
+        }
+        fn forward[Us...](count Us..., values Us...) Int
+        ensures result >= 0 {
+            count(values...)
+        }
+        """)
+}
+
+test fn pack_forwarding_cache_replay_rechecks_edited_family_guarantees() {
+    let source = """
+        fn keep[Ts...](value Int, values Ts...) Int
+        ensures result == value {
+            value
+        }
+        pub fn forward[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            keep(value, values...)
+        }
+        pub fn answer() Int {
+            forward(42, (true, "context"))
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, concat(source, "\nfn unrelated() {}\n")) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let clause = "ensures result == value"
+    let offset = std.text.find(source, clause)
+    assert offset >= 0
+    let invalid = concat(slice(source, 0, offset), concat("ensures result > value", slice(source, offset + length(clause), length(source))))
+    assert invalid != source
+    assert match cached_source(restored, invalid) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let changed_binding = concat(source, "\nfn keep(value Int, extra Bool) Int { -1 }\n")
+    assert match cached_source(restored_definition_cache(initial), changed_binding) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose required variadic contracts across checked synchronous family calls,
+  retaining symbolic widths, declared element bounds and ordered type schemas.
+  Forward named value/tuple sequences without sampling types or arities; keep
+  helper proof calls outside native reachability and recheck changed bindings.
+
 - Extend universal variadic contract induction to structural tuple inputs with
   fixed fields, repeated/independent packs and elementwise expansions. Reuse
   affine extents and scalar/List loop proofs; keep mixed element observations

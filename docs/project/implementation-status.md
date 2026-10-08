@@ -246,6 +246,13 @@ elementwise expansions retain the shared width selected by shape checking. The
 covers global indices, List effects, CTFE, function references and inherited
 native/dyn methods. Mixed elements do not inherit a single pack's concept bounds,
 and the existing scalar invariant fragment is unchanged.
+Named sequences can now forward into a synchronous family's bare value/tuple
+packs and compose universally checked postconditions. Fixed inputs and effects
+use ordinary call rules; repeated inputs retain the same ordered type schema.
+The [forwarding example](../../compiler/examples/variadics/forwarding.loom) covers
+declared bounds, independent groups, CTFE, callbacks and inherited dyn methods.
+Structural callee patterns, overloaded/indirect/async callees, explicit type
+arguments and newly assembled sequences still reject in family proofs.
 Type-dependent induction, opaque element escape, pack-dependent results and
 non-tuple structural sources still reject. A
 single type pack can
