@@ -1,0 +1,45 @@
+fn publish_with_raw_updates(events List[Int]) Result[PositiveValues, ConstraintError] {
+    let builder = ([1, 2], true)
+    let alias = builder.0
+    defer {
+        alias[0] = 6
+        push(events, values_sum(alias))
+    }
+    let published = PositiveValues(builder.0)
+    alias[0] = 3
+    push(builder.0, PositiveElement(4))
+    fill_positive(alias, 5)
+    assert values_sum(builder.0) == 15
+    published
+}
+
+fn raw_update_scope() Bool {
+    let events List[Int] = []
+    let published = publish_with_raw_updates(events)
+    assert length(events) == 1 && events[0] == 16
+    match published {
+        Result.Ok(values) => values_sum(values) == 16
+        Result.Err(_) => false
+    }
+}
+
+test async fn raw_updates_retain_identity_across_waits_and_checked_failure() {
+    let draft = [1, 2]
+    let alias = draft
+    let published = PositiveValues(draft)
+    sleep_ms(1).await
+    alias[0] = 4
+    append_positive(draft, 3)
+    assert length(alias) == 4 && values_sum(alias) == 12
+    assert match published {
+        Result.Ok(values) => values_sum(values) == 12
+        Result.Err(_) => false
+    }
+    let invalid = [-1, 2]
+    let rejected = PositiveValues(invalid)
+    invalid[1] = 3
+    assert invalid[0] == -1 && match rejected {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

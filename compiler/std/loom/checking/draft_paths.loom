@@ -18,6 +18,7 @@ record DraftPublication {
     // 0: before the fresh binding; 1: private builder; 2: published.
     phase List[Int]
     cleanups List[DraftCleanup]
+    permissions List[InvariantPermission]
 }
 
 fn draft_definitions(value Expr, local Int, definitions List[Expr], depth Int) {
@@ -208,10 +209,9 @@ fn draft_prefix(scope DraftPublication, value Expr, depth Int) InputOrigin {
         if !draft_raw_use(value, scope.frame, depth) {
             return origin_empty()
         }
-        // Raw aliases may still observe the published header. The same checked
-        // footprint must exclude mutation, publication and opaque retention;
-        // origins continue through local copies and known callback captures.
-        let origin = invariant_origin(scope.observations, scope.frame, value, depth + 1)
+        // The default is read-only. A proved operation may preserve the complete
+        // predicate without publishing the header or changing its representation.
+        let origin = invariant_origin(scope.observations, scope.frame, value, depth + 1, scope.permissions)
         // A statement's shared result may be the enclosing function/block's
         // implicit return. Local bindings retain origins without returning one;
         // scalar consumers can read an alias, but raw results cannot escape.
@@ -274,7 +274,7 @@ fn draft_path(scope DraftPublication, value Expr, depth Int) Bool {
         while index < length(scope.cleanups) {
             let cleanup = get(scope.cleanups, index)
             if cleanup.active && draft_raw_use(cleanup.body, scope.frame, depth + 1) {
-                discard invariant_origin(scope.observations, scope.frame, cleanup.body, depth + 1)
+                discard invariant_origin(scope.observations, scope.frame, cleanup.body, depth + 1, scope.permissions)
             }
             index = index + 1
         }
@@ -386,12 +386,26 @@ fn draft_path(scope DraftPublication, value Expr, depth Int) Bool {
     value.falls
 }
 
-fn unpublished_draft(env Environment, functions List[Function], current Function, candidate Expr) Bool {
+fn unpublished_draft(env Environment, functions List[Function], current Function, candidate Expr, operations List[Expr]) Bool {
     let root = draft_root(env, functions, current, draft_input(candidate))
     if root.local < 0 {
         return false
     }
     let reads = invariant_reads(env, functions, current.body, true, 2, -1)
+    let updates = DraftUpdates {
+        env = env
+        functions = functions
+        current = [current]
+        root = root
+        ty = draft_type(candidate)
+        operations = [new[Expr]()]
+    }
+    let permissions = [InvariantPermission {
+            allow = fn(value Expr, inputs List[InputOrigin]) Bool {
+                draft_update(updates, value, inputs)
+            }
+            effects = reads
+        }]
     let scope = DraftPublication {
         reads = reads
         observations = InvariantReads {
@@ -410,12 +424,14 @@ fn unpublished_draft(env Environment, functions List[Function], current Function
         root = root
         phase = ints(0)
         cleanups = new[DraftCleanup]()
+        permissions = permissions
     }
     var more = true
     var rounds = 0
     while more && get(scope.reads.valid, 0) && rounds < 256 {
         set(scope.frame.changed, 0, false)
         set(scope.phase, 0, 0)
+        set(updates.operations, 0, new[Expr]())
         let active = length(scope.cleanups)
         var cleanup = 0
         while cleanup < active {
@@ -431,6 +447,15 @@ fn unpublished_draft(env Environment, functions List[Function], current Function
         more = get(scope.frame.changed, 0)
         rounds = rounds + 1
     }
-    !more && get(scope.reads.valid, 0) && get(scope.phase, 0) == 2 &&
+    let valid = !more && get(scope.reads.valid, 0) && get(scope.phase, 0) == 2 &&
     !origin_shared(get(scope.frame.returned, 0))
+    if valid {
+        let accepted = get(updates.operations, 0)
+        var index = 0
+        while index < length(accepted) {
+            push(operations, get(accepted, index))
+            index = index + 1
+        }
+    }
+    valid
 }

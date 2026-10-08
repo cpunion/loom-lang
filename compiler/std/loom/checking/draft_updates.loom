@@ -1,0 +1,67 @@
+record DraftUpdates {
+    env Environment
+    functions List[Function]
+    current List[Function]
+    root DraftRoot
+    ty Int
+    operations List[List[Expr]]
+}
+
+fn draft_type(candidate Expr) Int {
+    if candidate.kind == ExprKind.Coerce {
+        candidate.ty
+    } else {
+        // checked list: saved input; if predicate { Ok(refined input) } else ...
+        let condition = get(candidate.children, 1)
+        let accepted = get(get(condition.children, 1).children, 0)
+        get(accepted.children, 0).ty
+    }
+}
+
+fn draft_borrow(updates DraftUpdates, value Expr) Expr {
+    let node = predicate_node(updates.env, get(updates.env.types, updates.ty).symbol)
+    let refined = expression(ExprKind.Coerce, updates.ty, node, "", -1, expressions(value), value.falls)
+    expression(ExprKind.Coerce, value.ty, node, "", -1, expressions(refined), value.falls)
+}
+
+// A may-origin only says an argument can reach the protected allocation. It
+// cannot justify assuming its predicate: another branch might return fresh,
+// invalid storage. Follow immutable definitions to prove actual identity.
+fn draft_update(updates DraftUpdates, value Expr, inputs List[InputOrigin]) Bool {
+    let arguments = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        let argument = get(value.children, index)
+        if origin_shared(get(inputs, index)) {
+            if argument.ty != base_type(updates.env, updates.ty) {
+                return false
+            }
+            let root = draft_root(updates.env, updates.functions, get(updates.current, 0), argument)
+            if root.local != updates.root.local || root.local < 0 ||
+            !origin_covers(root.origin, updates.root.origin) || !origin_covers(updates.root.origin, root.origin) {
+                return false
+            }
+            push(arguments, draft_borrow(updates, argument))
+        } else {
+            push(arguments, argument)
+        }
+        index = index + 1
+    }
+    let operation = Expr {
+        kind = value.kind
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = value.index
+        children = arguments
+        arms = value.arms
+        falls = value.falls
+    }
+    if !constraint_operation(updates.env, updates.functions, operation) {
+        return false
+    }
+    // Proof-only borrows never enter executable IR or persistent certificates.
+    // Shared builds independently revalidate these operations and write sets.
+    push(get(updates.operations, 0), operation)
+    true
+}

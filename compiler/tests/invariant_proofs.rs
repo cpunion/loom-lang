@@ -410,6 +410,42 @@ async fn main() {
             .unwrap(),
     );
 
+    let raw_concurrent = [
+        UPDATE_TYPES,
+        r#"
+import std.task.worker.run
+import std.result.Result
+async fn main() {
+    let draft = [1, 2]
+    let published = PositiveValues(draft)
+    fill_positive(draft, 3)
+    append_positive(draft, 4)
+    discard run(fn() Int {
+        0
+    }).await
+    assert match published {
+        Result.Ok(values) => length(values) == 4 && values[0] == 3 && values[3] == 4
+        Result.Err(_) => false
+    }
+}
+"#,
+    ]
+    .concat();
+    fs::write(&main, raw_concurrent).unwrap();
+    success(&check());
+    success(&common::loom(&[
+        "build",
+        path,
+        "--output",
+        artifact.to_str().unwrap(),
+    ]));
+    success(
+        &Command::new(&artifact)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+
     // A sequentially preserving copy can break an ordering invariant if a
     // worker changes the right-hand cell between the read and the store.
     let sequential = r#"
@@ -439,6 +475,62 @@ fn main() {
     let stale_copy = check();
     assert!(!stale_copy.status.success());
     assert!(String::from_utf8_lossy(&stale_copy.stderr).contains("interference-safe"));
+
+    // Proof-only borrows on raw draft aliases must enter the same shared-build
+    // revalidation as source-typed borrows, without changing executable IR.
+    let raw_copy = sequential.replace(
+        "    let values = Ordered([1, 2])\n    copy_right_to_left(values)\n    assert values[0] == 2",
+        "    let draft = [1, 2]\n    let published = Ordered(draft)\n    copy_right_to_left(draft)\n    discard published",
+    );
+    fs::write(&main, &raw_copy).unwrap();
+    success(&check());
+    fs::write(
+        &main,
+        raw_copy.replace("fn main()", "async fn main()").replace(
+            "    copy_right_to_left(draft)",
+            "    discard run(fn() Int {\n        0\n    }).await\n    copy_right_to_left(draft)",
+        ),
+    )
+    .unwrap();
+    let stale_raw = check();
+    assert!(!stale_raw.status.success());
+    assert!(String::from_utf8_lossy(&stale_raw.stderr).contains("interference-safe"));
+
+    let raw_observer = [
+        UPDATE_TYPES,
+        r#"
+import std.task.worker.run
+import std.result.Result
+fn unchanged(values PositiveValues) Int
+ensures result == old(values[0])
+{
+    values[0]
+}
+async fn main() {
+    let draft = [1, 2]
+    let published = PositiveValues(draft)
+    draft[0] = 3
+    match published {
+        Result.Ok(values) => {
+            discard unchanged(values)
+        }
+        Result.Err(_) => {}
+    }
+    discard run(fn() Int {
+        0
+    }).await
+}
+"#,
+    ]
+    .concat();
+    fs::write(&main, raw_observer).unwrap();
+    let stale_raw_observer = check();
+    assert!(!stale_raw_observer.status.success());
+    assert!(
+        String::from_utf8_lossy(&stale_raw_observer.stderr).contains("interference-safe"),
+        "{}",
+        String::from_utf8_lossy(&stale_raw_observer.stderr)
+    );
 
     let observer = r#"
 import std.task.worker.run

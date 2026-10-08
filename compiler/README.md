@@ -2174,8 +2174,14 @@ account amounts while allowing their unobserved notes to remain shared and mutab
 The local draft keeps its actual header without copying. Existing origin and
 checked call-footprint rules must establish that it was not published.
 After construction, raw aliases and known captures may perform checked
-non-publishing reads, including from `defer` and `scoped` cleanup. They cannot
-mutate or export the protected storage. Local copies retain their origins;
+non-publishing reads, including from `defer` and `scoped` cleanup. Immutable
+local/field aliases to the actual header can also use the same complete-predicate
+preservation proofs as constrained borrows: atomic stores and finite source
+helpers must preserve the invariant after every store, not only on return.
+Conditional may-aliases supply no assumed constraint. These proof-only borrows
+do not change executable types or add checks; worker builds independently
+revalidate mutation and withdraw stale content/extent observations.
+Aliases cannot export the protected storage. Local copies retain their origins;
 returning a raw handle, including an implicit aggregate return, rejects.
 The analysis follows immutable local copies and record/tuple field projections
 back to fresh storage. A builder may hold the fresh header directly in a nested
@@ -2184,12 +2190,16 @@ construction's checked execution path through blocks, branches, matches and
 eager expressions is analyzed separately. Alternatives are not treated as later
 executions, and a return ends its path. Unrelated awaits do not expose a private builder. Pending
 arguments/initializers still cannot transport raw aliases across publication.
-Active lexical cleanup must satisfy the same read-only, non-publishing rules,
+Active lexical cleanup must satisfy the same non-publishing and preservation rules,
 including fault-only exits. Loop-local publication,
 mutable binding origins and unsupported draft operations remain conservative.
 Unknown predicates keep the ordinary `Result` boundary.
 The [structural builder example](examples/record_refinement/structural_drafts.loom)
 uses a generic record with a tuple field and an independently writable notes List.
+The [raw update example](examples/record_refinement/raw_updates.loom) retains
+sharing through preserving helpers, cleanup, checked rejection and a real wait.
+Mutable/conditional bindings, aggregate arguments and captured mutating callbacks
+without a proved header identity still reject rather than acquire a constraint.
 `PositiveValues(existing_list)` still rejects when the input can have external
 writable aliases or unsafe later raw uses. No automatic copy, ownership syntax or
 runtime monitor is installed. Copies of a constrained value keep sharing its storage.
