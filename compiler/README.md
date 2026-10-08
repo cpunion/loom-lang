@@ -3825,11 +3825,14 @@ fault also drains the untransferred winner. Dynamic List `all`/`settled` keep
 resource results in their original producers until terminal notifications finish,
 then construct the guarded result List in input order. Empty Lists, fail-fast
 drain and cancellation use the same path as ordinary results; no per-input wrapper
-Task is introduced. Resource-bearing `first_ok` and `cancel_when` remain unfinished.
+Task is introduced. `cancel_when` and deadlines drain the trigger before transferring
+terminal resource work; a trigger cleanup fault also drains untransferred work,
+and an earlier work fault remains primary. Resource-bearing `first_ok` remains unfinished.
 See the [native resource-result tests](examples/cleanup/task_resource_result_test.loom),
 [tuple join tests](examples/cleanup/task_resource_join_test.loom), and
 [selection tests](examples/cleanup/task_resource_selection_test.loom), plus
-[dynamic List tests](examples/cleanup/task_resource_list_join_test.loom).
+[dynamic List tests](examples/cleanup/task_resource_list_join_test.loom) and
+[cancellation tests](examples/cleanup/task_resource_cancellation_test.loom).
 Resource factory overloads
 of [`std.stream`](std/stream/README.md) compose scoped async pipelines from
 fallible or infallible factories. [`std.file.lines.stream`](std/file/lines/README.md)

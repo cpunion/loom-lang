@@ -40,8 +40,14 @@ test async fn list_all_and_settled_preserve_input_order_and_empty_inputs() {
     }
     assert length(all[Int]([]).await) == 0
     assert length(settled[Int]([]).await) == 0
-    assert length(settled[Int]({ [] }).await) == 0
-    assert length(settled[Int](if true { [] } else { [] }).await) == 0
+    assert length(settled[Int]({
+                []
+            }).await) == 0
+    assert length(settled[Int](if true {
+                []
+            } else {
+                []
+            }).await) == 0
     let ordinary = all([ordinary_error()]).await
     match ordinary[0] {
         Result.Err(error) => {
@@ -73,13 +79,17 @@ test async fn tuple_all_and_settled_keep_distinct_result_types_and_input_order()
     assert first == "typed result" && second == 5
 }
 
-fn no_tasks[Ts...](values Ts...) (Ts...) { values }
+fn no_tasks[Ts...](values Ts...) (Ts...) {
+    values
+}
 
 fn three_tasks() (Task[Int], Task[Text], Task[Bool]) {
     (delayed(8, 4), successful(), bool_result())
 }
 
-async fn bool_result() Bool { true }
+async fn bool_result() Bool {
+    true
+}
 
 test async fn tuple_settled_accepts_empty_singleton_and_larger_tuple_values() {
     let empty = settled(no_tasks()).await
@@ -101,12 +111,19 @@ test async fn tuple_settled_accepts_empty_singleton_and_larger_tuple_values() {
 
     let first, second, third = settled((failed(), sleep_ms(0), quick_child())).await
     match first {
-        Outcome.Faulted(error) => { assert contains(error.message, "assertion failed") }
-        _ => { assert false }
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
     }
     match second {
-        Outcome.Completed(_) => {}
-        _ => { assert false }
+        Outcome.Completed(_) => {
+        }
+        _ => {
+            assert false
+        }
     }
     let child = completed(third)
     assert child.await == 7
@@ -133,7 +150,9 @@ test async fn tuple_all_observes_later_fault_and_drains_every_sibling() {
         Outcome.Faulted(error) => {
             assert contains(error.message, "assertion failed")
         }
-        _ => { assert false }
+        _ => {
+            assert false
+        }
     }
     assert first[1] == "started" && first[2] == "cleaned"
     assert last[1] == "started" && last[2] == "cleaned"
@@ -146,7 +165,9 @@ test async fn tuple_all_preserves_primary_fault_over_loser_cleanup_fault() {
         Outcome.Faulted(error) => {
             assert contains(error.message, "primary join failure")
         }
-        _ => { assert false }
+        _ => {
+            assert false
+        }
     }
     assert cleanup[1] == "remaining cleanup"
     assert pending[1] == "started" && pending[2] == "cleaned"

@@ -1,0 +1,131 @@
+import std.task.cancel_when
+import std.task.deadline.at
+
+test async fn cancellation_signals_drain_resources_before_transferring_either_terminal_order() {
+    let trace List[Int] = []
+    let work = acquire_async(1, trace)
+    let signal = acquire_async(2, trace)
+    while length(trace) < 2 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = cancel_when(work, signal).await
+        match selected {
+            Outcome.Completed(value) => {
+                assert value.id == 1
+            }
+            _ => {
+                assert false
+            }
+        }
+        assert length(trace) == 3 && trace[2] == 2
+    }
+    assert length(trace) == 4 && trace[3] == 1
+    let earlier_signal = acquire_async(3, trace)
+    let later_work = acquire_async(4, trace)
+    while length(trace) < 6 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = cancel_when(later_work, earlier_signal).await
+        match selected {
+            Outcome.Completed(value) => {
+                assert value.id == 4
+            }
+            _ => {
+                assert false
+            }
+        }
+        assert length(trace) == 7 && trace[6] == 3
+    }
+    assert length(trace) == 8 && trace[7] == 4
+}
+
+test async fn cancellation_signal_cleanup_preserves_the_primary_fault_and_drains_untransferred_work() {
+    let primary_trace List[Int] = []
+    let failed = selection_failure(primary_trace)
+    let broken_signal = acquire_pair_async(primary_trace, true)
+    while length(primary_trace) < 2 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = cancel_when(failed, broken_signal).await
+        match selected {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "task_resource_selection_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(primary_trace) == 5
+    assert primary_trace[2] == 3 && primary_trace[3] == 2 && primary_trace[4] == 1
+    let trace List[Int] = []
+    let work = acquire_async(1, trace)
+    let signal = acquire_pair_async(trace, true)
+    while length(trace) < 3 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = outcome(cancel_when(work, signal)).await
+        match selected {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "resource_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 7
+    assert trace[3] == 3 && trace[4] == 2 && trace[5] == 1 && trace[6] == 1
+}
+
+async fn acquire_after_signal(id Int, trace List[Int]) Leaf {
+    sleep_ms(10000).await
+    acquire(id, trace)
+}
+
+test async fn resource_signals_and_deadlines_cancel_pending_work_but_keep_terminal_values() {
+    let trace List[Int] = []
+    {
+        scoped selected = cancel_when(acquire_after_signal(1, trace), acquire_async(2, trace)).await
+        match selected {
+            Outcome.Cancelled => {
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 2 && trace[0] == 20 && trace[1] == 2
+    let completed = acquire_async(3, trace)
+    while length(trace) < 3 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = at(completed, 0).await
+        match selected {
+            Outcome.Completed(value) => {
+                assert value.id == 3
+            }
+            _ => {
+                assert false
+            }
+        }
+        assert length(trace) == 3
+    }
+    assert length(trace) == 4 && trace[3] == 3
+    {
+        scoped selected = at(acquire_after_signal(4, trace), 0).await
+        match selected {
+            Outcome.Cancelled => {
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 4
+}

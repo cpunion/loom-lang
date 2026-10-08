@@ -225,8 +225,9 @@ NoSuspend parameters/results remain rejected. Fresh MustScope results are owned
 by their completed Task until one-shot extraction; an unextracted result drains
 through typed frame callbacks on fault/cancellation. Extraction transfers to a
 receiver's `scoped`, including after `.await?`. Scoped/borrowed resources cannot
-be returned or transferred into a Task. Resource-bearing tuple/List joins and
-general borrowing Tasks remain unfinished.
+be returned or transferred into a Task. Tuple/List `all`/`settled`, List/pair
+`any`/`race`, cancellation signals and deadlines use the same typed result
+ownership. Resource-bearing `first_ok` and general borrowing Tasks remain unfinished.
 See the [method example](../../compiler/examples/async_methods).
 
 Named async references have type `fn(A) Task[B]`, shared with synchronous Task
