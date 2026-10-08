@@ -249,7 +249,7 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Res
     }
     if expr.kind == ExprKind.TaskCall && length(borrowed) == 0 {
         // Its body is checked independently. With no caller borrow there is
-        // no additional lifetime summary, and Task resource results are banned.
+        // no additional lifetime summary. The Task owns its eventual result.
         return Result.Ok(resource_value(false, false, -1))
     }
     if (expr.kind != ExprKind.Call && expr.kind != ExprKind.TaskCall) || expr.index < 0 {
@@ -377,8 +377,21 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         if task.kind == ExprKind.TaskCall || task.kind == ExprKind.Call ||
         task.kind == ExprKind.IndirectCall || task.kind == ExprKind.DynCall {
             discard resource_call(flow, task, false, true)?
-            return Result.Ok(resource_value(false, false, -1))
+        } else {
+            discard resource_expression(flow, task, false)?
         }
+        // Every producer must prove its MustScope result fresh; Task flow
+        // separately proves that this extraction consumes the one-shot handle.
+        return Result.Ok(resource_value(false, flow_resource(flow, expr.ty)?, -1))
+    }
+    if (kind == ExprKind.Suspend && expr.text == "task_outcome") ||
+    (kind == ExprKind.Intrinsic && expr.text == "task_cancel") {
+        var index = 0
+        while index < length(expr.children) {
+            discard resource_expression(flow, get(expr.children, index), false)?
+            index = index + 1
+        }
+        return Result.Ok(resource_value(false, flow_resource(flow, expr.ty)?, -1))
     }
     if kind == ExprKind.Call || kind == ExprKind.TaskCall || kind == ExprKind.IndirectCall || kind == ExprKind.DynCall {
         return resource_call(flow, expr, automatic, false)

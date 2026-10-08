@@ -53,6 +53,7 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
         locals = locals
         preconditions = established
         postconditions = expressions(predicate)
+        result_cleanup = new[Expr]()
         result_local = result_local
         body = body
         runtime_name = ""

@@ -34,7 +34,7 @@ fn fixture(body Expr, preconditions List[Expr], postcondition Expr) Function {
     push(locals, Local { name = "x" ty = 1 mutable = false is_scoped = false })
     push(locals, Local { name = "result" ty = 1 mutable = false is_scoped = false })
     Function { is_async = false symbol = 0 arguments = new[Int]() params = params result = 1 locals = locals
-        preconditions = preconditions postconditions = nodes(postcondition) result_local = 1
+        preconditions = preconditions postconditions = nodes(postcondition) result_cleanup = new[Expr]() result_local = 1
         body = body runtime_name = "" span = body.span }
 }
 fn verified(function Function) Bool {

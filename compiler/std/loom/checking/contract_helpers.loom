@@ -38,7 +38,7 @@ fn contract_helpers(node Node) Bool {
 }
 fn with_contracts(function Function, preconditions List[Expr], postconditions List[Expr]) Function {
     Function { is_async = function.is_async symbol = function.symbol arguments = function.arguments params = function.params result = function.result
-        locals = function.locals preconditions = preconditions postconditions = postconditions result_local = function.result_local
+        locals = function.locals preconditions = preconditions postconditions = postconditions result_cleanup = function.result_cleanup result_local = function.result_local
         body = function.body runtime_name = function.runtime_name span = function.span }
 }
 fn proof_body_calls(value Expr) Bool {
@@ -107,7 +107,7 @@ fn with_body(function Function, body Expr) Function {
         locals = function.locals
         preconditions = function.preconditions
         postconditions = function.postconditions
-        result_local = function.result_local
+        result_cleanup = function.result_cleanup result_local = function.result_local
         body = body
         runtime_name = function.runtime_name
         span = function.span

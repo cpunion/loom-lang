@@ -46,7 +46,7 @@ fn pending(graph Graph, id Int, spills List[Int], live List[Flow]) Expr {
     block(values, 0, graph.span, false)
 }
 
-fn ending(graph Graph, id Int, pc Int, spills List[Int], live List[Flow]) Expr {
+fn ending(graph Graph, id Int, pc Int, spills List[Int], live List[Flow], result_callbacks List[Int]) Expr {
     let current = get(graph.states, id)
     if current.exit == Exit.Unreachable {
         let failed = one(node(ExprKind.Assert, 0, graph.span, -1, one(boolean(false, graph.span))))
@@ -99,11 +99,18 @@ fn ending(graph Graph, id Int, pc Int, spills List[Int], live List[Flow]) Expr {
     else {
         push(completed, store(graph, 0, current.value))
     }
+    var index = 0
+    while index < length(result_callbacks) {
+        let callback = node(ExprKind.FunctionRef, function_type(graph.types, ints(get(graph.locals, 0).ty), 0),
+            graph.span, get(result_callbacks, index), new[Expr]())
+        push(completed, operation("task_result_cleanup_push", 0, graph.span, one(callback)))
+        index = index + 1
+    }
     push(completed, returned(graph, 0))
     block(completed, 0, graph.span, false)
 }
 
-fn emitted(graph Graph, spills List[Int], live List[Flow]) Expr {
+fn emitted(graph Graph, spills List[Int], live List[Flow], result_callbacks List[Int]) Expr {
     let pc = temporary(graph, 1)
     let values = one(node(ExprKind.Let, 0, graph.span, pc, one(field(graph, 1, 1))))
     var index = 1
@@ -120,7 +127,7 @@ fn emitted(graph Graph, spills List[Int], live List[Flow]) Expr {
     while index < length(graph.states) {
         let condition = labeled(node(ExprKind.Binary, 2, graph.span, -1, pair(local(graph, pc), integer(index, graph.span))), "==")
         let body = clone(get(graph.states, index).code)
-        push(body, ending(graph, index, pc, spills, live))
+        push(body, ending(graph, index, pc, spills, live, result_callbacks))
         push(dispatch, node(ExprKind.If, 0, graph.span, -1,
                 pair(condition, block(body, 0, graph.span, false))))
         index = index + 1

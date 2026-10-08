@@ -17,7 +17,7 @@ test fn compile_time_purity_rejects_tasks_but_allows_async_references() {
             locals = new[Local]()
             preconditions = new[Expr]()
             postconditions = new[Expr]()
-            result_local = -1
+            result_cleanup = new[Expr]() result_local = -1
             body = literal(1)
             runtime_name = ""
             span = Span {
@@ -49,10 +49,10 @@ test fn compile_time_purity_rejects_synchronous_task_parameters_and_results() {
     let locals = new[Local]()
     push(locals, Local { name = "task" ty = 6 mutable = false is_scoped = false })
     push(program.functions, Function { is_async = false symbol = 0 arguments = new[Int]() params = params result = 6 locals = locals
-        preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1 body = local(0, 6)
+        preconditions = new[Expr]() postconditions = new[Expr]() result_cleanup = new[Expr]() result_local = -1 body = local(0, 6)
         runtime_name = "" span = Span { start = 7 end = 8 } })
     push(program.functions, Function { is_async = false symbol = 1 arguments = new[Int]() params = params result = 1 locals = locals
-        preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1 body = literal(1)
+        preconditions = new[Expr]() postconditions = new[Expr]() result_cleanup = new[Expr]() result_local = -1 body = literal(1)
         runtime_name = "" span = Span { start = 7 end = 8 } })
     assert match validate(program, node(ExprKind.FunctionRef, 1, "", 0, new[Expr]())) {
         Result.Ok(_) => true, Result.Err(_) => false

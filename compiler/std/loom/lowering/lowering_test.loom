@@ -42,6 +42,7 @@ fn test_function(params List[Int], output Int, locals List[Local], body Expr) Fu
         locals = locals
         preconditions = new[Expr]()
         postconditions = new[Expr]()
+        result_cleanup = new[Expr]()
         result_local = -1
         body = body
         runtime_name = ""
@@ -330,7 +331,7 @@ test fn edge_bindings_and_argument_snapshots_are_live_at_the_correct_point() {
     push(spills, -1)
     push(spills, -1)
     push(spills, 2)
-    let terminator = ending(timer, 1, temporary(timer, 1), spills, timer_live)
+    let terminator = ending(timer, 1, temporary(timer, 1), spills, timer_live, new[Int]())
     let saved_state = get(get(terminator.children, 2).children, 1)
     assert saved_state.kind == ExprKind.FrameStore && saved_state.index == 1
     assert get(saved_state.children, 1).text == "1"

@@ -763,8 +763,9 @@ The [file pipeline](../../compiler/examples/stream_lines/README.md) uses a lazy
 and both I/O modes share line framing and UTF-8 checks. Infallible resource
 factories compose owned adapters without an artificial Result. Lifting a
 synchronous Iterator still does not make its I/O nonblocking. Document sequences,
-general borrow-retaining adapters, async resource acquisition and application-grade
-networking remain open.
+general borrow-retaining adapters, resource-bearing joins and application-grade
+networking remain open. Fresh async resource acquisition uses the Task result
+ownership described below.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;
 large-object storage is separate and stress tests relocate all sizes. Ordinary
@@ -796,8 +797,12 @@ and typed cleanup cover nested records/enums/Lists and recursive resource trees.
 Fresh MustScope results crossing a cleanup boundary remain protected until transfer;
 an exit fault drains their resource members rather than leaking the pending result.
 Cleanup drains after secondary faults while retaining the first diagnostic;
-OOM/external termination offer no guarantee. Scoped resources cannot transfer
-into Tasks, but directly awaited calls may borrow them until all child cleanup
+OOM/external termination offer no guarantee. Fresh MustScope Task results remain
+owned by the completed producer until one-shot extraction; cancellation/fault
+drain disposes unextracted results through typed frame callbacks. Native tests
+cover recursive resources, Outcome/Result containers, `.await?`, dynamic/captured
+factories and failed outgoing cleanup at O0/O2 with moving GC. Existing scoped
+resources cannot transfer into Tasks, but directly awaited calls may borrow them until all child cleanup
 finishes. NoSuspend guards retain their stronger suspension restriction.
 See [cleanup](../../compiler/README.md#lexical-cleanup).
 

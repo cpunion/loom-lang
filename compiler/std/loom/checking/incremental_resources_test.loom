@@ -38,3 +38,55 @@ test fn scoped_resource_bodies_reuse_without_skipping_current_flow_checks() {
         Result.Ok(_) => false
     }
 }
+
+test fn restored_task_result_cleanups_are_rekeyed_and_detached_from_public_data() {
+    let source = concat(resource_header(), """
+        async fn acquire(log List[Int]) Handle {
+            make(log)
+        }
+        async fn main() {
+            scoped value = acquire([0]).await
+            assert value.use() == 7
+        }
+        """)
+    let initial = definition_cache()
+    let first = match check_project_cached(fixture_project(resource_source_files(source)), false,
+        build_inputs(no_input_reader), initial) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let original = get(first.program.functions, cached_function(first, "acquire"))
+    assert length(original.result_cleanup) == 1 && original.result_local >= 0
+    let cache = restored_definition_cache(initial)
+    push(original.result_cleanup, original.body)
+    let changed = concat("fn unrelated(value Bool) Bool { value }\n", source)
+    let current = match check_project_cached(fixture_project(resource_source_files(changed)), false,
+        build_inputs(no_input_reader), cache) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert bodies_reused(cache) > 0
+    let acquired = get(current.program.functions, cached_function(current, "acquire"))
+    assert length(acquired.result_cleanup) == 1
+    let cleanup = get(acquired.result_cleanup, 0)
+    assert cleanup.kind == ExprKind.Call
+    assert cleanup.span.start >= acquired.span.start
+    assert get(current.bindings.symbols, get(current.program.functions, cleanup.index).symbol).name == "dispose"
+    let again = restored_definition_cache(cache)
+    push(acquired.result_cleanup, acquired.body)
+    let replayed = match check_project_cached(fixture_project(resource_source_files(source)), false,
+        build_inputs(no_input_reader), again) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(get(replayed.program.functions, cached_function(replayed, "acquire")).result_cleanup) == 1
+}

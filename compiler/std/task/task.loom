@@ -1,3 +1,5 @@
+import std.resource.Dispose
+
 pub record TaskFault {
     message Text
 }
@@ -6,6 +8,12 @@ pub enum Outcome[T] {
     Completed(T)
     Faulted(TaskFault)
     Cancelled
+}
+
+// The compiler drains the active MustScope payload after this container hook.
+impl[T] Dispose for Outcome[T] {
+    fn dispose(self Outcome[T]) {
+    }
 }
 
 async intrinsic fn task_outcome[T](task Task[T]) Outcome[T]

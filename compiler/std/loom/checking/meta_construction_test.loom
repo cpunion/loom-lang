@@ -11,6 +11,7 @@ fn constructed(text Text) Result[std.loom.typed.Program, Failure] {
         """, text))
     push(files, source_file("std.meta", input_file("../../meta/construction.loom"), true))
     push(files, source_file("std.option", input_file("../../option/option.loom"), true))
+    push(files, source_file("std.resource", input_file("../../resource/resource.loom"), true))
     push(files, source_file("std.list", input_file("../../list/list.loom"), true))
     checked(files)
 }

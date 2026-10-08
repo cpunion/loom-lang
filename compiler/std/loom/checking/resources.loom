@@ -93,6 +93,11 @@ fn marker_type(env Environment, owner Int, obligations List[Requirement], ty Int
     if shape.kind == TypeKind.Function {
         return Result.Ok(false)
     }
+    // A Task owns its unextracted result; its handle has a separate one-shot
+    // obligation, not the lexical scope of the resource inside that result.
+    if shape.kind == TypeKind.Task && capability == resource_concept(env, "MustScope") {
+        return Result.Ok(false)
+    }
     // Nominal arguments and dyn associated bindings describe types, not stored
     // values. Follow their concrete fields below; List/Task hold their payload.
     var index = 0

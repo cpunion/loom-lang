@@ -282,14 +282,19 @@ fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Resul
     }
     let body = block(context, child(node, part(node, NodeKind.Block)), saved.signature.result, true)?
     var result_local = -1
-    if has(node, NodeKind.Ensures) {
+    let owned_result = has(node, NodeKind.Async) && must_scope(context, saved.signature.result)?
+    if owned_result || has(node, NodeKind.Ensures) {
         result_local = length(context.locals)
-        push(context.locals, Local { name = "result" ty = saved.signature.result mutable = false is_scoped = false })
+        push(context.locals, Local { name = "result" ty = saved.signature.result mutable = false is_scoped = owned_result })
         let binding = length(context.bindings)
         push(context.bindings, Binding { name = "result" local = result_local constant = -1 previous = context.head })
         context = context_at(context, binding)
         // Captures used only by a contract still belong to the environment.
         discard contracts(context, node, NodeKind.Ensures)?
+    }
+    let result_cleanup = new[Expr]()
+    if owned_result {
+        discard resource_cleanups(context, node, atom(ExprKind.Local, saved.signature.result, node, result_local), result_cleanup, 0)?
     }
     let prefix = new[Expr]()
     index = 0
@@ -310,7 +315,7 @@ fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Resul
     push(prefix, body)
     let function = Function { is_async = has(node, NodeKind.Async) symbol = saved.signature.symbol arguments = ints(saved.environment)
         params = saved.signature.params result = saved.signature.result locals = context.locals preconditions = preconditions
-        postconditions = new[Expr]() result_local = result_local body = expression(ExprKind.Block, body.ty, node, "", -1, prefix, body.falls)
+        postconditions = new[Expr]() result_cleanup = result_cleanup result_local = result_local body = expression(ExprKind.Block, body.ty, node, "", -1, prefix, body.falls)
         runtime_name = "" span = node.span }
     discard task_flow(context, function)?
     Result.Ok(CheckedBody { context = context function = function })

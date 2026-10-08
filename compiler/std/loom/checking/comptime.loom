@@ -147,7 +147,7 @@ fn computed_index(context Context, node Node, input Node, expected Int) Result[I
     if saved >= 0 { return Result.Ok(saved) }
     let program = prepared(stage)?
     let body = close_function(stage, Function { is_async = false symbol = stage.signature.symbol arguments = stage.arguments params = new[Int]() result = value.ty
-        locals = stage.locals preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1 body = value runtime_name = "" span = value.span })
+        locals = stage.locals preconditions = new[Expr]() postconditions = new[Expr]() result_cleanup = new[Expr]() result_local = -1 body = value runtime_name = "" span = value.span })
     discard check_computation_effects(stage, program.functions, body)?
     match evaluate_in(stage, program, body.body, length(body.locals)) {
         Result.Ok(value) => {

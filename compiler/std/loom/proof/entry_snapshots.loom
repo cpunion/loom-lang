@@ -328,6 +328,7 @@ fn snapshot_function(function Function, conditions List[Expr]) Function {
         locals = function.locals
         preconditions = function.preconditions
         postconditions = conditions
+        result_cleanup = function.result_cleanup
         result_local = function.result_local
         body = function.body
         runtime_name = function.runtime_name

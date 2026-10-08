@@ -45,6 +45,7 @@ fn worker_parking(graph Graph, source Expr, start Int, loop Loop) Value {
             locals = locals
             preconditions = new[Expr]()
             postconditions = new[Expr]()
+            result_cleanup = new[Expr]()
             result_local = -1
             body = block(one(body), 0, source.span, true)
             runtime_name = ""

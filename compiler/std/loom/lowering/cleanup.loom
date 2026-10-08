@@ -229,7 +229,7 @@ fn cleanup_callbacks(program Program, source Function, context CleanupRewrite) {
         let mapping = new[Int]()
         var id = 0
         while id < length(context.source_locals) {
-            let declared =(id < length(plan.declarations) && get(plan.declarations, id)) || get(context.source_locals, id).ty == 0
+            let declared = (id < length(plan.declarations) && get(plan.declarations, id)) || get(context.source_locals, id).ty == 0
             push(mapping, if declared {
                     length(locals)
                 } else {
@@ -254,4 +254,50 @@ fn cleanup_callbacks(program Program, source Function, context CleanupRewrite) {
         push(program.functions, generated(source, ints(context.frame), 0, locals, cleanup_rewrite(rewritten, plan.body)))
         index = index + 1
     }
+}
+
+fn result_cleanup_callbacks(program Program, source Function, frame Int) List[Int] {
+    let callbacks = new[Int]()
+    if length(source.result_cleanup) == 0 {
+        return callbacks
+    }
+    assert source.result_local >= 0
+    let captures = flags(length(source.locals))
+    set(captures, source.result_local, true)
+    let fields = new[Int]()
+    var index = 0
+    while index < length(source.locals) {
+        push(fields, if index == source.result_local {
+                0
+            } else {
+                -1
+            })
+        index = index + 1
+    }
+    let plans = new[CleanupPlan]()
+    index = 0
+    while index < length(source.result_cleanup) {
+        let body = get(source.result_cleanup, index)
+        let used = flags(length(source.locals))
+        let declared = flags(length(source.locals))
+        cleanup_bindings(body, used, declared)
+        push(plans, CleanupPlan {
+                id = index
+                body = block(one(body), 0, body.span, body.falls)
+                declarations = declared
+            })
+        push(callbacks, length(program.functions) + index)
+        index = index + 1
+    }
+    cleanup_callbacks(program, source, CleanupRewrite {
+            frame = frame
+            callback_type = function_type(program.types, ints(frame), 0)
+            fields = fields
+            captures = captures
+            source_locals = source.locals
+            locals = new[Int]()
+            plans = plans
+            callbacks = callbacks
+        })
+    callbacks
 }

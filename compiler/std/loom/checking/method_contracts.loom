@@ -237,6 +237,7 @@ fn declared_method_summary(env Environment, id Int, arguments List[Int], constan
             locals = scope.context.locals
             preconditions = scope.preconditions
             postconditions = postconditions
+            result_cleanup = new[Expr]()
             result_local = result_local
             body = expression(ExprKind.Deferred, current.result, declaration, "", -1, new[Expr](), true)
             runtime_name = ""

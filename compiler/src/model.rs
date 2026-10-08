@@ -147,6 +147,7 @@ pub enum Primitive {
     TaskAdopt,
     TaskReturn,
     TaskCleanupPush,
+    TaskResultCleanupPush,
     TaskCleanupPop,
     TaskAwait,
     TaskObserve,

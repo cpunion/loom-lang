@@ -162,6 +162,9 @@ pub record Function {
     locals List[Local]
     preconditions List[Expr]
     postconditions List[Expr]
+    // Latent typed drops for an async result owned by its completed Task.
+    // They read result_local; ordinary execution and proofs do not run them.
+    result_cleanup List[Expr]
     result_local Int
     body Expr
     runtime_name Text

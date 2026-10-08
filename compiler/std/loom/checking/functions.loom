@@ -859,13 +859,14 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
         expression(ExprKind.Block, current.result, item.node, "", -1, expressions(call), call.falls)
     }
     var result_local = -1
-    if has(item.node, NodeKind.Ensures) || inherited_method_contract(env, current.symbol, NodeKind.Ensures) {
+    let owned_result = has(item.node, NodeKind.Async) && must_scope(context, current.result)?
+    if owned_result || has(item.node, NodeKind.Ensures) || inherited_method_contract(env, current.symbol, NodeKind.Ensures) {
         result_local = length(context.locals)
         push(context.locals, Local {
                 name = "result"
                 ty = current.result
                 mutable = false
-                is_scoped = false
+                is_scoped = owned_result
             })
         let binding = length(context.bindings)
         push(context.bindings, Binding {
@@ -876,6 +877,10 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
             })
         context = context_at(context, binding)
     }
+    let result_cleanup = new[Expr]()
+    if owned_result {
+        discard resource_cleanups(context, item.node, atom(ExprKind.Local, current.result, item.node, result_local), result_cleanup, 0)?
+    }
     let checked_function = Function {
         is_async = has(item.node, NodeKind.Async)
         symbol = current.symbol
@@ -885,6 +890,7 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
         locals = context.locals
         preconditions = scope.preconditions
         postconditions = new[Expr]()
+        result_cleanup = result_cleanup
         result_local = result_local
         body = body
         runtime_name = if runtime_name == "resource_generate" {
