@@ -38,5 +38,5 @@ test fn terminal_extraction_lowers_without_a_coroutine_or_additional_task() {
     assert operations(extraction.body, "task_await") == 1
     assert operations(extraction.body, "task_result") == 1
     assert operations(extraction.body, "task_release") == 1
-    assert operations(extraction.body, "task_spawn") == 0
+    assert operations(extraction.body, "task_create") == 0
 }
