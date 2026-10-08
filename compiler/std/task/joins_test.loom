@@ -387,3 +387,15 @@ test async fn dynamic_input_count_does_not_create_a_recursive_join_chain() {
     let values = all(tasks).await
     assert length(values) == count && values[0] == 0 && values[199] == 199
 }
+
+fn completed[T](value Outcome[T]) T {
+    match value {
+        Outcome.Completed(value) => value
+        Outcome.Faulted(error) => {
+            fault_text(error.message)
+        }
+        Outcome.Cancelled => {
+            fault_text("task was cancelled")
+        }
+    }
+}

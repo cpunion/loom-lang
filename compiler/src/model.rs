@@ -162,6 +162,7 @@ pub enum Primitive {
     TaskDrain,
     FaultText,
     TaskResult,
+    TaskResultCase,
     TaskRelease,
     TaskRun,
     TaskWaitTimer,

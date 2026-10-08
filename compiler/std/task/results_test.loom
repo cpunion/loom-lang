@@ -60,3 +60,33 @@ test async fn first_ok_drains_losers_and_does_not_hide_cleanup_faults() {
     }
     assert length(events) == 2
 }
+
+async fn nested_result(value Int, success Bool) Result[Task[Int], Task[Int]] {
+    if success {
+        Result.Ok(selected_number(value))
+    } else {
+        Result.Err(selected_number(value))
+    }
+}
+
+test async fn first_ok_preserves_tasks_inside_success_and_error_payloads() {
+    match first_ok([nested_result(1, false), nested_result(2, true)]).await {
+        Result.Ok(child) => {
+            assert child.await == 2
+        }
+        Result.Err(children) => {
+            discard all(children).await
+            assert false
+        }
+    }
+    match first_ok([nested_result(3, false), nested_result(4, false)]).await {
+        Result.Err(children) => {
+            let values = all(children).await
+            assert values[0] == 3 && values[1] == 4
+        }
+        Result.Ok(child) => {
+            discard child.await
+            assert false
+        }
+    }
+}

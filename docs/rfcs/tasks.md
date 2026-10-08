@@ -227,7 +227,9 @@ through typed frame callbacks on fault/cancellation. Extraction transfers to a
 receiver's `scoped`, including after `.await?`. Scoped/borrowed resources cannot
 be returned or transferred into a Task. Tuple/List `all`/`settled`, List/pair
 `any`/`race`, cancellation signals and deadlines use the same typed result
-ownership. Resource-bearing `first_ok` and general borrowing Tasks remain unfinished.
+ownership. `first_ok` inspects a terminal enum case without extracting its payload,
+then transfers the selected Ok or an input-ordered guarded error List. General
+borrowing Tasks remain unfinished.
 See the [method example](../../compiler/examples/async_methods).
 
 Named async references have type `fn(A) Task[B]`, shared with synchronous Task

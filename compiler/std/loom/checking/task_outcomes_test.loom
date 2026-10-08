@@ -13,6 +13,8 @@ fn outcome_checked(body Text, valid Bool) {
         intrinsic fn task_cancel[T](task Task[T]) Outcome[T]
         intrinsic fn task_ready_result[T](task Task[T]) T
         intrinsic fn task_ready_outcome[T](task Task[T]) Outcome[T]
+        intrinsic fn task_ready_case[T](task Task[T]) (Int, Task[T])
+        intrinsic fn task_ready_payload[T, P](task Task[T], variant Int) P
         async fn item() Int {
             7
         }
@@ -20,6 +22,12 @@ fn outcome_checked(body Text, valid Bool) {
         }
         async fn nested() Task[Int] {
             item()
+        }
+        async fn classified() Outcome[Int] {
+            Outcome.Completed(7)
+        }
+        async fn nested_case() Outcome[Task[Int]] {
+            Outcome.Completed(item())
         }
         pub async fn run() {
         """
@@ -35,6 +43,29 @@ fn outcome_checked(body Text, valid Bool) {
             assert !valid
         }
     }
+}
+
+test fn enum_case_inspection_preserves_one_shot_and_typed_payload_obligations() {
+    outcome_checked("""
+        let variant, retained = task_ready_case(classified())
+        assert variant == 0
+        assert task_ready_payload[Outcome[Int], Int](retained, variant) == 7
+        """, true)
+    outcome_checked("""
+        let original = classified()
+        let variant, retained = task_ready_case(original)
+        discard variant
+        discard task_ready_payload[Outcome[Int], Int](retained, 0)
+        discard original.await
+        """, false)
+    outcome_checked("discard task_ready_case(classified())", false)
+    outcome_checked("discard task_ready_case(item())", false)
+    outcome_checked("discard task_ready_payload[Outcome[Int], Text](classified(), 0)", false)
+    outcome_checked("""
+        let child = task_ready_payload[Outcome[Task[Int]], Task[Int]](nested_case(), 0)
+        assert child.await == 7
+        """, true)
+    outcome_checked("discard task_ready_payload[Outcome[Task[Int]], Task[Int]](nested_case(), 0)", false)
 }
 
 test fn task_outcomes_consume_handles_without_erasing_nested_obligations() {

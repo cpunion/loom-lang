@@ -1,0 +1,85 @@
+// Inspect only the discriminator while the producer retains its payload and
+// returned children. Check the requested type/case before one-shot extraction.
+fn task_payload_function(types List[Type], source Function) Function {
+    let name = source.runtime_name
+    if name != "task_ready_case" && name != "task_ready_payload" {
+        return source
+    }
+    let span = source.span
+    let task = node(ExprKind.Local, get(source.params, 0), span, 0, new[Expr]())
+    let ready = labeled(node(ExprKind.Assert, 0, span, -1,
+            one(operation("task_await", 2, span, one(task)))), "task result is not terminal")
+    let body = one(ready)
+    if name == "task_ready_case" {
+        let fields = pair(node(ExprKind.Field, 1, span, 0,
+                one(operation("task_result_case", 1, span, one(task)))),
+            node(ExprKind.Field, task.ty, span, 1, one(task)))
+        push(body, node(ExprKind.Record, source.result, span, -1, fields))
+        return generated(source, source.params, source.result, source.locals,
+            block(body, source.result, span, true))
+    }
+    let logical = get(get(types, task.ty).arguments, 0)
+    let variants = get(types, logical).variants
+    let requested = node(ExprKind.Local, 1, span, 1, new[Expr]())
+    let locals = clone(source.locals)
+    let arms = new[Arm]()
+    var valid = boolean(false, span)
+    var variant = 0
+    while variant < length(variants) {
+        let fields = get(variants, variant).fields
+        if length(fields) == 1 && get(fields, 0) == source.result {
+            let matches = labeled(node(ExprKind.Binary, 2, span, -1,
+                    pair(requested, integer(variant, span))), "==")
+            valid = labeled(node(ExprKind.Binary, 2, span, -1, pair(valid, matches)), "||")
+            let binding = length(locals)
+            push(locals, Local {
+                    name = ""
+                    ty = source.result
+                    mutable = false
+                    is_scoped = false
+                })
+            push(arms, Arm {
+                    variant = variant
+                    bindings = ints(binding)
+                    whole = -1
+                    body = one(block(one(node(ExprKind.Local, source.result, span, binding, new[Expr]())),
+                            source.result, span, true))
+                })
+        }
+        variant = variant + 1
+    }
+    let matches = labeled(node(ExprKind.Binary, 2, span, -1,
+            pair(operation("task_result_case", 1, span, one(task)), requested)), "==")
+    push(body, labeled(node(ExprKind.Assert, 0, span, -1,
+                one(labeled(node(ExprKind.Binary, 2, span, -1, pair(valid, matches)), "&&"))),
+            "task payload case/type mismatch"))
+    let impossible = nonfall(operation("fault_text", 0, span,
+            one(labeled(node(ExprKind.Text, 3, span, -1, new[Expr]()), "task payload case/type mismatch"))))
+    push(arms, Arm {
+            variant = -1
+            bindings = new[Int]()
+            whole = -1
+            body = one(block(one(impossible), source.result, span, false))
+        })
+    let extraction = Expr {
+        kind = ExprKind.Match
+        ty = source.result
+        span = span
+        text = ""
+        index = -1
+        children = one(operation("task_result", logical, span, one(task)))
+        arms = arms
+        falls = true
+    }
+    let saved = length(locals)
+    push(locals, Local {
+            name = ""
+            ty = source.result
+            mutable = false
+            is_scoped = false
+        })
+    push(body, node(ExprKind.Let, 0, span, saved, one(extraction)))
+    push(body, operation("task_release", 0, span, one(task)))
+    push(body, node(ExprKind.Local, source.result, span, saved, new[Expr]()))
+    generated(source, source.params, source.result, locals, block(body, source.result, span, true))
+}

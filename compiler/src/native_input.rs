@@ -794,15 +794,21 @@ impl Converter<'_> {
             }
             Primitive::TaskAwait
             | Primitive::TaskResult
+            | Primitive::TaskResultCase
             | Primitive::TaskRelease
             | Primitive::TaskStatus
             | Primitive::TaskFailure
             | Primitive::TaskCancelBegin => {
                 let logical = self.task_result(arguments[0].ty)?;
+                if operation == Primitive::TaskResultCase
+                    && !matches!(logical, Type::Data(id) if matches!(self.program.types[id].kind, c::DataKind::Enum(_)))
+                {
+                    return Err("checked task case requires an enum result".into());
+                }
                 let expected = match operation {
                     Primitive::TaskAwait => Type::Bool,
                     Primitive::TaskRelease | Primitive::TaskCancelBegin => Type::Unit,
-                    Primitive::TaskStatus => Type::Int,
+                    Primitive::TaskStatus | Primitive::TaskResultCase => Type::Int,
                     Primitive::TaskFailure => Type::Text,
                     _ => logical,
                 };
@@ -1598,6 +1604,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_drain" => P::TaskDrain,
         "fault_text" => P::FaultText,
         "task_result" => P::TaskResult,
+        "task_result_case" => P::TaskResultCase,
         "task_release" => P::TaskRelease,
         "task_run" => P::TaskRun,
         "task_wait_timer" => P::TaskWaitTimer,
@@ -1685,6 +1692,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskCleanupPop
         | P::TaskResultCleanupPush
         | P::TaskResult
+        | P::TaskResultCase
         | P::TaskWorkerResult
         | P::TaskRelease
         | P::TaskStatus

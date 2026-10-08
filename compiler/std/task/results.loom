@@ -1,34 +1,43 @@
 import std.result.Result
+import std.resource.generate
 
 // First Ok, cancelling and draining the rest. Ordinary errors are collected in
 // input order if all fail; execution/cleanup faults still fail the whole join.
-// Empty input returns Err([]). As with race, unselected completed values are
-// not resource finalizers: their external resources remain the caller's duty.
+// Payloads stay in their original producer frames until selection is complete.
+// Empty input returns Err([]). Unselected MustScope values drain with their Tasks.
 pub async fn first_ok[T, E](tasks List[Task[Result[T, E]]]) Result[T, List[E]] {
     let batch = watch(tasks)
     var pending = batch.slots
     var remaining = batch.count
-    var errors = new[Option[E]]()
-    var index = 0
-    while index < remaining {
-        errors = append(errors, Option.None)
-        index = index + 1
-    }
     while remaining > 0 {
-        let index = task_next().await
-        let task, rest = take_slot(pending, index)
-        pending = rest
-        match completed(task_outcome(task).await) {
-            Result.Ok(value) => {
-                drain(pending, false)
-                return Result.Ok(value)
+        let index, terminal = task_next_event().await
+        match terminal {
+            TaskTerminal.Faulted(error) => {
+                drain(pending, true)
+                fault_text(error.message)
             }
-            Result.Err(error) => {
-                errors = put_slot(errors, index, error)
+            TaskTerminal.Cancelled => {
+                drain(pending, false)
+                fault_text("task was cancelled")
+            }
+            TaskTerminal.Completed => {
+                let task, rest = take_slot(pending, index)
+                let variant, retained = task_ready_case(task)
+                if variant == 0 {
+                    drain(rest, false)
+                    return Result.Ok(task_ready_payload[Result[T, E], T](retained, 0))
+                }
+                pending = put_slot(rest, index, retained)
             }
         }
         remaining = remaining - 1
     }
-    drain(pending, false)
-    Result.Err(filled(errors))
+    let count = batch.count
+    Result.Err(generate(count, pending,
+            fn(index Int, slots List[Option[Task[Result[T, E]]]]) (E, List[Option[Task[Result[T, E]]]]) {
+                let task, rest = take_slot(slots, count - 1 - index)
+                (task_ready_payload[Result[T, E], E](task, 1), rest)
+            }, fn(slots List[Option[Task[Result[T, E]]]]) {
+                drain(slots, false)
+            }))
 }

@@ -192,6 +192,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::FileAbort => {
                 self.runtime_call("file_abort", Some(self.context.i64_type().into()), values)
             }
+            Primitive::TaskResultCase => {
+                let frame = self
+                    .runtime_call("task_peek_result", Some(pointer.into()), values)?
+                    .ok_or("missing completed frame")?
+                    .into_pointer_value();
+                // Checked enum results start with an Int tag. Read only that
+                // scalar; never expose or disarm the producer's managed payload.
+                Ok(Some(self.builder.build_load(
+                    self.context.i64_type(),
+                    frame,
+                    "task.result.case",
+                )?))
+            }
             Primitive::TaskResult => {
                 let frame = self
                     .runtime_call("task_result", Some(pointer.into()), values)?

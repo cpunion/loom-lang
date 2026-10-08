@@ -413,6 +413,14 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "task_ready_result" {
         return runtime(1, ints(intern(env, TypeKind.Task, -1, ints(parameter))), parameter)
     }
+    if name == "task_ready_case" {
+        let task = intern(env, TypeKind.Task, -1, ints(parameter))
+        return runtime(1, ints(task), intern(env, TypeKind.Tuple, -1, two_types(1, task)))
+    }
+    if name == "task_ready_payload" {
+        let payload = get(abstract_arguments(env, 2), 1)
+        return runtime(2, two_types(intern(env, TypeKind.Task, -1, ints(parameter)), 1), payload)
+    }
     if name == "task_drain" {
         return runtime(1, two_types(intern(env, TypeKind.Task, -1, ints(parameter)), 2), 0)
     }
@@ -862,6 +870,28 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     discard task_signature(env, current, item.node)?
     let scope = function_scope(env, current, arguments, constants, emit)?
     var context = scope.context
+    if runtime_name == "task_ready_case" || runtime_name == "task_ready_payload" {
+        let logical = get(get(env.types, get(current.params, 0)).arguments, 0)
+        if concrete(env, logical) {
+            discard expand_type(env, logical, 0)?
+            let shape = get(env.types, logical)
+            if shape.kind != TypeKind.Enum {
+                return Result.Err(error(context, item.node, "task case inspection requires an enum result"))
+            }
+            if runtime_name == "task_ready_payload" && concrete(env, current.result) {
+                var found = false
+                var variant = 0
+                while variant < length(shape.variants) {
+                    let fields = get(shape.variants, variant).fields
+                    found = found || (length(fields) == 1 && get(fields, 0) == current.result)
+                    variant = variant + 1
+                }
+                if !found {
+                    return Result.Err(error(context, item.node, "task payload type must match a single-field result variant"))
+                }
+            }
+        }
+    }
     let body = if runtime_name == "" {
         block(context, child(item.node, part(item.node, NodeKind.Block)), current.result, true)?
     } else if runtime_name == "resource_generate" || runtime_name == "resource_generate_state" {

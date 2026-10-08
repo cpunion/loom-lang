@@ -25,6 +25,11 @@ intrinsic fn task_ready_result[T](task Task[T]) T
 
 intrinsic fn task_ready_outcome[T](task Task[T]) Outcome[T]
 
+// The returned handle still owns the enum payload. No managed value escapes.
+intrinsic fn task_ready_case[T](task Task[T]) (Int, Task[T])
+
+intrinsic fn task_ready_payload[T, P](task Task[T], variant Int) P
+
 // Result.Err is a completed value. Only child execution/cleanup faults become
 // fault data; OOM and unexpected runtime failures still terminate the process.
 pub async fn outcome[T](task Task[T]) Outcome[T] {

@@ -2,6 +2,7 @@ import std.task.all
 import std.task.settled
 import std.task.any
 import std.task.race
+import std.task.first_ok
 import std.task.Outcome
 import std.time.sleep_ms
 import std.list.new
@@ -44,6 +45,14 @@ async fn lease(id Int, closed List[Int]) Lease {
     Lease {
         id = id
         closed = closed
+    }
+}
+
+async fn try_lease(id Int, closed List[Int], success Bool) Result[Lease, Text] {
+    if success {
+        Result.Ok(lease(id, closed).await)
+    } else {
+        Result.Err("unavailable")
     }
 }
 
@@ -137,6 +146,22 @@ async fn main() {
         assert length(resources) == count && length(resource_closed) == 0
     }
     assert length(resource_closed) == count
+    let selected_closed List[Int] = []
+    {
+        scoped selected = first_ok([
+                try_lease(1, selected_closed, false),
+                try_lease(2, selected_closed, true)
+            ]).await
+        match selected {
+            Result.Ok(value) => {
+                assert value.id == 2 && length(selected_closed) == 0
+            }
+            Result.Err(_) => {
+                assert false
+            }
+        }
+    }
+    assert length(selected_closed) == 1 && selected_closed[0] == 2
     let values = all(start(count)).await
     let outcomes = settled(start(count)).await
     assert length(values) == count && length(outcomes) == count

@@ -881,6 +881,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskDrain
             | Primitive::FaultText
             | Primitive::TaskResult
+            | Primitive::TaskResultCase
             | Primitive::TaskRelease
             | Primitive::TaskRun
             | Primitive::TaskWaitTimer
