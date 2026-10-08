@@ -11,8 +11,12 @@ import std.net.tcp.close_stream
 import std.net.tcp.chunks.read
 import std.json.Value
 import std.json.stringify
+import std.json.encode
+import std.json.from_value
 import std.json.stream.StreamError
+import std.json.stream.TypedError
 import std.json.stream.parse
+import std.json.stream.decode
 import std.json.stream.write
 import std.result.Result
 import std.text.to_bytes
@@ -23,6 +27,12 @@ import std.bytes.push
 import std.time.sleep_ms
 import std.task.cancel
 import std.task.Outcome
+
+pub record Echo {
+    name Text
+    amount Value
+    items List[Value]
+}
 
 fn packet(item Result[Bytes, TcpError]) Result[Bytes, TcpError] {
     item
@@ -54,7 +64,13 @@ async fn reply(server Stream, value Value) Result[Int, TcpError] {
     let sink = async fn(chunk Bytes) Result[Int, TcpError] {
         write_bytes(server, chunk).await
     }
-    let count = match std.json.stream.write(value, 3, sink).await {
+    let message = match from_value[Echo](value) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(TcpError.Write)
+        }
+    }
+    let count = match std.json.stream.write(message, 3, sink).await {
         Result.Ok(value) => value
         _ => {
             return Result.Err(TcpError.Write)
@@ -101,10 +117,10 @@ async fn trial() Result[Bool, TcpError] {
         _ => false
     }
     let replying = reply(server, value)
-    let echoed = parse(read(client, 2), packet).await
+    let echoed Result[Echo, TypedError[TcpError]] = decode(read(client, 2), packet).await
     assert replying.await? == length(expected)
     assert match echoed {
-        Result.Ok(value) => match stringify(value) {
+        Result.Ok(value) => match encode(value) {
             Result.Ok(text) => text == expected
             _ => false
         }

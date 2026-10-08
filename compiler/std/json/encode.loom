@@ -1,18 +1,23 @@
 import std.reflect.describe
 import std.reflect.Kind
+import std.reflect.Type
 import std.int.to_text
 import std.float.to_text
 import std.float.is_finite
 
 // Descriptors are consumed during specialization, never visited at runtime.
 // Refinements keep their validated value but encode as their underlying shape.
-fn encoding_kind[T]() Kind {
+fn encoding_shape[T]() Type {
     let schema = describe[T]()
     var index = schema.root
     while schema.types[index].kind == Kind.Refined {
         index = schema.types[index].arguments[0]
     }
-    schema.types[index].kind
+    schema.types[index]
+}
+
+fn encoding_kind[T]() Kind {
+    encoding_shape[T]().kind
 }
 
 fn encode_value[T](output Bytes, value T, depth Int) Result[Bool, WriteError] {

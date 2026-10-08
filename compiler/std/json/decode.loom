@@ -9,6 +9,7 @@ pub enum DecodeError {
     FieldCount
     MissingField(Text)
     UnsupportedType
+    DepthExceeded
 }
 
 fn object_field(fields List[(Text, Value)], name Text) Result[Value, DecodeError] {
@@ -23,13 +24,29 @@ fn object_field(fields List[(Text, Value)], name Text) Result[Value, DecodeError
     Result.Err(DecodeError.MissingField(name))
 }
 
-fn decode_items[T](value Value) Result[List[T], DecodeError] {
+fn decode_number(raw Text) Result[Text, DecodeError] {
+    match number_end(raw, 0) {
+        Result.Ok(end) => {
+            if end == std.text.length(raw) {
+                return Result.Ok(raw)
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    Result.Err(DecodeError.InvalidNumber)
+}
+
+fn decode_items[T](value Value, depth Int) Result[List[T], DecodeError] {
+    if depth >= 64 {
+        return Result.Err(DecodeError.DepthExceeded)
+    }
     match value {
         Value.Array(items) => {
             let output = std.list.new[T]()
             var index = 0
             while index < std.list.length(items) {
-                std.list.push(output, decode_value[T](get(items, index))?)
+                std.list.push(output, decode_value[T](get(items, index), depth + 1)?)
                 index = index + 1
             }
             Result.Ok(output)
@@ -38,7 +55,7 @@ fn decode_items[T](value Value) Result[List[T], DecodeError] {
     }
 }
 
-fn decode_value[T](value Value) Result[T, DecodeError] {
+fn decode_value[T](value Value, depth Int) Result[T, DecodeError] {
     comptime if T == Value {
         return Result.Ok(value)
     }
@@ -50,7 +67,7 @@ fn decode_value[T](value Value) Result[T, DecodeError] {
     }
     comptime if T == Int {
         return match value {
-            Value.Number(raw) => match std.int.parse(raw) {
+            Value.Number(raw) => match std.int.parse(decode_number(raw)?) {
                 Result.Ok(number) => Result.Ok(number)
                 Result.Err(_) => Result.Err(DecodeError.InvalidNumber)
             }
@@ -59,7 +76,7 @@ fn decode_value[T](value Value) Result[T, DecodeError] {
     }
     comptime if T == Float {
         return match value {
-            Value.Number(raw) => match std.float.parse(raw) {
+            Value.Number(raw) => match std.float.parse(decode_number(raw)?) {
                 Result.Ok(number) => {
                     if !is_finite(number) {
                         return Result.Err(DecodeError.InvalidNumber)
@@ -78,9 +95,12 @@ fn decode_value[T](value Value) Result[T, DecodeError] {
         }
     }
     comptime if describe[T]().types[0].kind == Kind.List {
-        return decode_items(value)
+        return decode_items(value, depth)
     }
     comptime if describe[T]().types[0].kind == Kind.Tuple {
+        if depth >= 64 {
+            return Result.Err(DecodeError.DepthExceeded)
+        }
         return match value {
             Value.Array(items) => {
                 let count = comptime {
@@ -90,7 +110,7 @@ fn decode_value[T](value Value) Result[T, DecodeError] {
                     return Result.Err(DecodeError.FieldCount)
                 }
                 let fields = comptime map index, Field in T {
-                    decode_value[Field](get(items, index))?
+                    decode_value[Field](get(items, index), depth + 1)?
                 }
                 Result.Ok(fields)
             }
@@ -98,6 +118,9 @@ fn decode_value[T](value Value) Result[T, DecodeError] {
         }
     }
     comptime if describe[T]().types[0].kind == Kind.Record {
+        if depth >= 64 {
+            return Result.Err(DecodeError.DepthExceeded)
+        }
         return match value {
             Value.Object(items) => {
                 let count = comptime {
@@ -107,7 +130,7 @@ fn decode_value[T](value Value) Result[T, DecodeError] {
                     return Result.Err(DecodeError.FieldCount)
                 }
                 let fields = comptime map name, Field in T {
-                    decode_value[Field](object_field(items, name)?)?
+                    decode_value[Field](object_field(items, name)?, depth + 1)?
                 }
                 let assembled T = from_fields(fields)
                 Result.Ok(assembled)
@@ -116,6 +139,12 @@ fn decode_value[T](value Value) Result[T, DecodeError] {
         }
     }
     Result.Err(DecodeError.UnsupportedType)
+}
+
+// Convert an existing tree without serializing/reparsing it. Construction uses
+// the same visible shapes as decode; mutable recursive inputs stay bounded.
+pub fn from_value[T](value Value) Result[T, DecodeError] {
+    decode_value[T](value, 0)
 }
 
 // Exact visible shapes: no implicit enum, refinement, null or extra-field policy.
@@ -127,5 +156,5 @@ pub fn decode[T](input Text) Result[T, DecodeError] {
             return Result.Err(DecodeError.Syntax(problem))
         }
     }
-    decode_value[T](value)
+    from_value[T](value)
 }

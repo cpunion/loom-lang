@@ -1,0 +1,23 @@
+import std.json.DecodeError
+import std.json.from_value
+
+pub enum TypedError[E] {
+    Stream(StreamError[E])
+    Conversion(DecodeError)
+}
+
+// Parse to EOF before constructing T. No intermediate serialized Text, hidden
+// defaults or stream-item protocol is added; cancellation follows parse.
+pub async fn decode[T, S Stream, E](source S, bytes fn(S.Item) Result[Bytes, E])
+Result[T, TypedError[E]] {
+    let value = match parse(source, bytes).await {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(TypedError.Stream(failed))
+        }
+    }
+    match std.json.from_value[T](value) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(failed) => Result.Err(TypedError.Conversion(failed))
+    }
+}

@@ -98,3 +98,28 @@ test fn typed_json_rejects_wrong_fields_numbers_and_implicit_constraints() {
         }
     }
 }
+
+test fn typed_json_converts_existing_trees_and_bounds_recursive_inputs() {
+    let value = Value.Array([Value.Number("1"), Value.Number("2")])
+    assert match from_value[List[Int]](value) {
+        Result.Ok(items) => items[0] == 1 && items[1] == 2
+        _ => false
+    }
+    let spellings = ["+1", "01", "1 ", "NaN"]
+    var index = 0
+    while index < std.list.length(spellings) {
+        let spelling = spellings[index]
+        assert match from_value[Float](Value.Number(spelling)) {
+            Result.Err(DecodeError.InvalidNumber) => true
+            _ => false
+        }
+        index = index + 1
+    }
+    let children = std.list.new[Value]()
+    let root = Value.Object([("name", Value.String("root")), ("children", Value.Array(children))])
+    push(children, root)
+    assert match from_value[Tree](root) {
+        Result.Err(DecodeError.DepthExceeded) => true
+        _ => false
+    }
+}

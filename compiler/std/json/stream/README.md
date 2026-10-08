@@ -19,8 +19,22 @@ restart. The caller closes borrowed resources after child Tasks drain. Input
 size limits and deadlines belong to the caller/producer. This parses one
 document into a `Value`, not a lazy sequence of array items or JSON documents.
 
-`write(value, chunk_size, sink).await` encodes a `Value` without preparing a full
-serialized Text. The positive chunk size bounds fresh output buffers. The
+`decode(source, bytes).await` constructs a visible typed shape after the same
+EOF check, using `std.json.from_value`. Infer the target from the result type:
+
+```loom
+let message Result[Message, TypedError[ReadError]] = decode(source, packet).await
+```
+
+`TypedError.Stream(StreamError[E])` preserves input/syntax errors;
+`TypedError.Conversion(std.json.DecodeError)` preserves construction errors.
+It retains the parsed tree during conversion, not a second complete Text.
+Record fields, numbers, unsupported/private types and constraints follow the
+ordinary typed decoder; no defaults or constraint bypass is introduced.
+
+`write(value, chunk_size, sink).await` encodes a `Value` or supported typed shape
+without preparing a full serialized Text or an intermediate typed `Value` tree.
+The positive chunk size bounds fresh output buffers. The
 callback has type `fn(Bytes) Task[Result[Int, E]]`; it must complete each whole
 chunk before returning its byte count, as TCP/TLS `write_bytes` does. Calls run
 serially, providing backpressure. Success returns the total byte count.
@@ -30,11 +44,11 @@ validation errors. `Count(expected, reported)` rejects partial, negative or
 excessive success counts, without pulling another chunk or guessing a retry.
 Already-emitted bytes are not undone, and cancellation drains the pending sink
 without closing the caller's resource. Neither operation freezes shared input
-data. Generic typed streaming encoding and document sequences remain open.
+data. Document sequences remain open.
 
 The [TCP example](../../../examples/json_stream/main.loom) sends UTF-8 and escapes
 one byte at a time, exercises cancellation followed by a fresh parse, then
-echoes the value through three-byte output chunks:
+echoes the value through three-byte output chunks and decodes a typed record:
 
 ```sh
 target/loom run compiler/examples/json_stream
