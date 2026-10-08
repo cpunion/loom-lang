@@ -132,7 +132,46 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
     let suspension_marker = resource_concept(context.env, "NoSuspend")
     var active = false
     var no_suspend_pending = false
+    // Fresh match payloads already exist before any constructor argument runs.
+    // Adopt all direct resource locals before installing guards or evaluating
+    // other fields. Reads cannot fault; normal freshness checks reject borrows
+    // and repeated transfers. Factory expressions keep their source order.
+    let retained = new[Int]()
     var index = 0
+    while index < length(fields) {
+        let field = get(fields, index)
+        let value = if kind == ExprKind.Record {
+            get(field.children, 0)
+        } else {
+            field
+        }
+        var local = -1
+        if value.kind == ExprKind.Local && must_scope(context, field.ty)? {
+            local = length(context.locals)
+            push(context.locals, Local {
+                    name = ""
+                    ty = field.ty
+                    mutable = false
+                    is_scoped = true
+                })
+            push(body, expression(ExprKind.Let, 0, node, "", local, expressions(value), true))
+        }
+        push(retained, local)
+        index = index + 1
+    }
+    index = 0
+    while index < length(fields) {
+        let local = get(retained, index)
+        if local >= 0 {
+            let field = get(fields, index)
+            let reference = atom(ExprKind.Local, field.ty, node, local)
+            discard pending_scope(context, node, reference, body, flags, cleanups)?
+            active = true
+            no_suspend_pending = no_suspend_pending || (suspension_marker >= 0 && no_suspend(context, field.ty, suspension_marker)?)
+        }
+        index = index + 1
+    }
+    index = 0
     while index < length(fields) {
         let field = get(fields, index)
         let source = Node {
@@ -154,21 +193,24 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
         }
         no_suspend_pending = no_suspend_pending || (suspension_marker >= 0 && no_suspend(context, field.ty, suspension_marker)?)
         let resource = must_scope(context, field.ty)?
-        let local = length(context.locals)
-        push(context.locals, Local {
-                name = ""
-                ty = field.ty
-                mutable = false
-                is_scoped = resource
-            })
-        push(body, expression(ExprKind.Let, 0, source, "", local, expressions(value), value.falls))
+        var local = get(retained, index)
+        if local < 0 {
+            local = length(context.locals)
+            push(context.locals, Local {
+                    name = ""
+                    ty = field.ty
+                    mutable = false
+                    is_scoped = resource
+                })
+            push(body, expression(ExprKind.Let, 0, source, "", local, expressions(value), value.falls))
+        }
         let reference = atom(ExprKind.Local, field.ty, source, local)
         push(rebuilt, if kind == ExprKind.Record {
                 expression(ExprKind.Field, field.ty, source, "", field.index, expressions(reference), true)
             } else {
                 reference
             })
-        if resource {
+        if resource && get(retained, index) < 0 {
             discard pending_scope(context, source, reference, body, flags, cleanups)?
             active = true
         }
@@ -279,7 +321,8 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
         }
         index = index + 1
     }
-    if resources > 1 || (resources == 1 && last + 1 != length(fields)) {
+    let retained = resources == 1 && get(get(fields, last).children, 0).kind == ExprKind.Local
+    if resources > 1 || retained || (resources == 1 && last + 1 != length(fields)) {
         return pending_aggregate(context, node, ty, ExprKind.Record, -1, fields)
     }
     Result.Ok(expression(ExprKind.Record, ty, node, "", -1, fields, all_fall(fields)))
@@ -346,8 +389,9 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     }
     let ty = constructed_group_type(context, declaration, arguments, shape.pack_widths, node)?
     index = 0
-    while index + 1 < length(values) {
-        if must_scope(context, get(values, index).ty)? {
+    while index < length(values) {
+        let value = get(values, index)
+        if (index + 1 < length(values) || value.kind == ExprKind.Local) && must_scope(context, value.ty)? {
             return Result.Ok(empty_inputs(context, inputs, node,
                     pending_aggregate(context, node, ty, ExprKind.Variant, selected, values)?))
         }

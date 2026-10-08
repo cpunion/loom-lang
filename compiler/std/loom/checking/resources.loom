@@ -210,22 +210,6 @@ fn resource_binding(context Context, node Node, value Expr) Result[Bool, Failure
     Result.Ok(true)
 }
 
-fn resource_payload(context Context, binding Node, body Node) Result[Bool, Failure] {
-    if binding.kind == NodeKind.Wildcard {
-        return Result.Err(error(context, binding, "a wildcard cannot discard a resource payload"))
-    }
-    if length(body.children) != 0 {
-        let first = child(body, 0)
-        if first.kind == NodeKind.Scoped {
-            let input = child(first, length(first.children) - 1)
-            if input.kind == NodeKind.Name && input.value == binding.value {
-                return Result.Ok(true)
-            }
-        }
-    }
-    Result.Err(error(context, binding, "a resource payload must immediately enter scoped before any other operation"))
-}
-
 fn scoped_receiver_root(context Context, value Expr) Bool {
     if value.kind == ExprKind.Local {
         return get(context.locals, value.index).is_scoped ||

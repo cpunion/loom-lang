@@ -1,0 +1,128 @@
+enum AcquiredPair {
+    Pair(Leaf, Leaf)
+}
+
+impl Dispose for AcquiredPair {
+    fn dispose(self AcquiredPair) {
+    }
+}
+
+record RebuiltPair {
+    label Int
+    first Leaf
+    second Leaf
+}
+
+impl Dispose for RebuiltPair {
+    fn dispose(self RebuiltPair) {
+    }
+}
+
+fn acquired_pair(trace List[Int]) AcquiredPair {
+    AcquiredPair.Pair(acquire(1, trace), acquire(2, trace))
+}
+
+async fn rewrap_result(trace List[Int]) Result[Leaf, List[Text]] {
+    match try_acquire_async(trace, false).await {
+        Result.Ok(value) => {
+            return Result.Ok(value)
+        }
+        Result.Err(error) => Result.Err([error])
+    }
+}
+
+fn rebuilt_list(trace List[Int]) List[Leaf] {
+    match acquired_pair(trace) {
+        AcquiredPair.Pair(first, second) => [second, first]
+    }
+}
+
+fn reconstruction_trial() Int {
+    let trace List[Int] = []
+    {
+        scoped values = rebuilt_list(trace)
+        assert values[0].id == 2 && values[1].id == 1
+    }
+    assert length(trace) == 4
+    assert trace[0] == 10 && trace[1] == 20 && trace[2] == 1 && trace[3] == 2
+    7
+}
+
+test fn fresh_resource_lists_reconstruct_natively_and_at_compile_time() {
+    assert reconstruction_trial() == 7
+    assert comptime {
+        reconstruction_trial()
+    } == 7
+}
+
+async fn reconstruction_label(trace List[Int], fail Bool, wait Bool) Int {
+    push(trace, 99)
+    if fail {
+        assert false
+    }
+    if wait {
+        sleep_ms(10000).await
+    }
+    7
+}
+
+async fn rebuild_async(trace List[Int], fail Bool, wait Bool) RebuiltPair {
+    match acquired_pair(trace) {
+        AcquiredPair.Pair(first, second) => RebuiltPair {
+            label = reconstruction_label(trace, fail, wait).await
+            second = second
+            first = first
+        }
+    }
+}
+
+test async fn reconstructed_resource_fields_are_protected_before_other_arguments_run() {
+    let wrapped List[Int] = []
+    {
+        scoped selected = rewrap_result(wrapped).await
+        match selected {
+            Result.Ok(value) => {
+                assert value.id == 1
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(wrapped) == 2 && wrapped[1] == 1
+    let completed List[Int] = []
+    {
+        scoped pair = rebuild_async(completed, false, false).await
+        assert pair.label == 7 && pair.first.id == 1 && pair.second.id == 2
+    }
+    assert length(completed) == 5 && completed[3] == 2 && completed[4] == 1
+    let failed List[Int] = []
+    {
+        scoped selected = outcome(rebuild_async(failed, true, false)).await
+        match selected {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "resource_reconstruction_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(failed) == 5 && failed[2] == 99 && failed[3] == 1 && failed[4] == 2
+    let cancelled List[Int] = []
+    let pending = rebuild_async(cancelled, false, true)
+    while length(cancelled) < 3 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = cancel(pending)
+        match selected {
+            Outcome.Cancelled => {
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(cancelled) == 5 && cancelled[2] == 99 && cancelled[3] == 1 && cancelled[4] == 2
+}

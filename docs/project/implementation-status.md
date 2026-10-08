@@ -796,6 +796,11 @@ language faults, suspension and cancellation. MustScope freshness/escape checks
 and typed cleanup cover nested records/enums/Lists and recursive resource trees.
 Fresh MustScope results crossing a cleanup boundary remain protected until transfer;
 an exit fault drains their resource members rather than leaking the pending result.
+Fresh match payloads also reconstruct records, tuples, enums and Lists through
+the same guarded transfer. Existing resource locals enter protection before other
+constructor arguments execute; borrowing, duplicate/omitted transfers and delayed
+adoption still reject. This uses typed resource flow, not an AST requirement that
+the first source statement spell `scoped`.
 Cleanup drains after secondary faults while retaining the first diagnostic;
 OOM/external termination offer no guarantee. Fresh MustScope Task results remain
 owned by the completed producer until one-shot extraction; cancellation/fault
