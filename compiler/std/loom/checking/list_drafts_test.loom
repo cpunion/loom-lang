@@ -105,7 +105,11 @@ test fn restored_draft_checks_revalidate_helper_publication_effects() {
         pub fn build(output List[List[Int]]) Result[Positive, ConstraintError] {
             let draft = [1, 2]
             fill(output, draft)
-            Positive(draft)
+            if length(draft) > 0 {
+                Positive(draft)
+            } else {
+                Result.Ok(Positive([1]))
+            }
         }
         """)
     let initial = definition_cache()

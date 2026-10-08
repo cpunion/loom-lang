@@ -8,6 +8,10 @@ test fn persistent_constraints_preserve_unobserved_shared_data() {
     assert comptime {
         draft_constraint_scope()
     }
+    assert branch_draft_scope()
+    assert comptime {
+        branch_draft_scope()
+    }
     assert comptime {
         list_constraint_scope()
     }

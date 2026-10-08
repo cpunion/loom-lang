@@ -2174,9 +2174,13 @@ account amounts while allowing their unobserved notes to remain shared and mutab
 The local draft keeps its actual header without copying. Existing origin and
 checked call-footprint rules must establish that it was not published, and no
 raw draft alias or capture may be used after construction, including cleanup.
-The current analysis accepts an immutable local binding initialized from fresh
-storage and a top-level construction statement or function tail; conditional or
-loop-local publication and unsupported draft operations remain conservative.
+The analysis follows immutable local copies back to fresh storage and the
+construction's checked execution path through blocks, branches, matches and
+eager expressions. Alternatives are not treated as later executions, and a
+return ends its path. Unrelated awaits do not expose a private builder. Pending
+arguments/initializers and active lexical cleanup still cannot retain raw
+aliases across publication, including fault-only exits. Loop-local publication,
+mutable binding origins and unsupported draft operations remain conservative.
 Unknown predicates keep the ordinary `Result` boundary.
 `PositiveValues(existing_list)` still rejects when the input can have external
 writable aliases or surviving raw uses. No automatic copy, ownership syntax or

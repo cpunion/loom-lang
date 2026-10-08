@@ -1,0 +1,349 @@
+record DraftCleanup {
+    id Int
+    body Expr
+    active Bool
+}
+
+record DraftPublication {
+    reads InvariantReads
+    frame InvariantFrame
+    candidate Expr
+    root Int
+    // 0: before the fresh binding; 1: private builder; 2: published.
+    phase List[Int]
+    cleanups List[DraftCleanup]
+}
+
+fn draft_definitions(value Expr, local Int, definitions List[Expr], depth Int) {
+    if depth >= 256 {
+        // An exhausted search is not evidence for a unique definition.
+        push(definitions, value)
+        push(definitions, value)
+        return
+    }
+    if value.kind == ExprKind.Let && value.index == local {
+        push(definitions, value)
+    }
+    if value.kind == ExprKind.Block && value.text == "checked list" {
+        draft_definitions(draft_input(value), local, definitions, depth + 1)
+        return
+    }
+    var index = 0
+    while index < length(value.children) && length(definitions) < 2 {
+        draft_definitions(get(value.children, index), local, definitions, depth + 1)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) && length(definitions) < 2 {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) && length(definitions) < 2 {
+            draft_definitions(get(body, item), local, definitions, depth + 1)
+            item = item + 1
+        }
+        index = index + 1
+    }
+}
+
+fn draft_root(env Environment, functions List[Function], current Function, local Int) Int {
+    var root = local
+    var depth = 0
+    while depth < 64 {
+        if root < length(current.params) || root >= length(current.locals) ||
+        get(current.locals, root).mutable {
+            return -1
+        }
+        let definitions = new[Expr]()
+        draft_definitions(current.body, root, definitions, 0)
+        if length(definitions) != 1 || length(get(definitions, 0).children) != 1 {
+            return -1
+        }
+        let input = get(get(definitions, 0).children, 0)
+        if constraint_fresh(env, functions, input) {
+            return root
+        }
+        if input.kind != ExprKind.Local {
+            return -1
+        }
+        root = input.index
+        depth = depth + 1
+    }
+    -1
+}
+
+// Registrations can be nested in compiler-emitted scoped initialization blocks.
+// A conditional cleanup cannot retire an outer registration on another path.
+fn draft_registrations(scope DraftPublication, value Expr, definite Bool, depth Int) {
+    if depth >= 256 {
+        set(scope.reads.valid, 0, false)
+        return
+    }
+    if value.kind == ExprKind.Defer && length(value.children) == 1 {
+        var index = 0
+        while index < length(scope.cleanups) {
+            let previous = get(scope.cleanups, index)
+            if previous.id == value.index {
+                set(scope.cleanups, index, DraftCleanup {
+                        id = value.index
+                        body = get(value.children, 0)
+                        active = true
+                    })
+                return
+            }
+            index = index + 1
+        }
+        push(scope.cleanups, DraftCleanup {
+                id = value.index
+                body = get(value.children, 0)
+                active = true
+            })
+        return
+    }
+    if definite && value.kind == ExprKind.Cleanup {
+        var index = 0
+        while index < length(scope.cleanups) {
+            let cleanup = get(scope.cleanups, index)
+            if cleanup.id == value.index {
+                set(scope.cleanups, index, DraftCleanup {
+                        id = cleanup.id
+                        body = cleanup.body
+                        active = false
+                    })
+            }
+            index = index + 1
+        }
+    }
+    var index = 0
+    while index < length(value.children) {
+        let conditional = value.kind == ExprKind.While ||
+        ((value.kind == ExprKind.If || (value.kind == ExprKind.Binary &&
+                    (value.text == "&&" || value.text == "||"))) && index != 0)
+        draft_registrations(scope, get(value.children, index), definite && !conditional, depth + 1)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            draft_registrations(scope, get(body, item), false, depth + 1)
+            item = item + 1
+        }
+        index = index + 1
+    }
+}
+
+fn draft_prefix(scope DraftPublication, value Expr, depth Int) InputOrigin {
+    if depth >= 256 {
+        set(scope.reads.valid, 0, false)
+        return origin_input()
+    }
+    let phase = get(scope.phase, 0)
+    if phase == 2 {
+        if draft_raw_use(value, scope.frame, depth) {
+            set(scope.reads.valid, 0, false)
+        }
+        return origin_empty()
+    }
+    draft_registrations(scope, value, true, depth + 1)
+    if value.kind == ExprKind.Let && value.index == scope.root {
+        invariant_bind(scope.frame, scope.root, origin_input())
+        set(scope.phase, 0, 1)
+        return origin_empty()
+    }
+    if value.kind == ExprKind.Defer {
+        return origin_empty()
+    }
+    // An unpublished fresh header is unreachable from an operation that neither
+    // receives it nor a known alias/capture. In particular, an unrelated await
+    // does not publish the builder or turn its graph into external state.
+    if phase == 0 || !draft_raw_use(value, scope.frame, depth) {
+        return origin_empty()
+    }
+    invariant_origin(scope.reads, scope.frame, value, depth + 1)
+}
+
+fn draft_sequence(scope DraftPublication, values List[Expr], depth Int) Bool {
+    var index = 0
+    while index < length(values) && get(scope.reads.valid, 0) {
+        let value = get(values, index)
+        if draft_occurrences(scope.reads.env, value, scope.candidate, depth) != 0 {
+            if !draft_path(scope, value, depth + 1) {
+                return false
+            }
+        } else {
+            discard draft_prefix(scope, value, depth + 1)
+            if !value.falls {
+                return false
+            }
+        }
+        index = index + 1
+    }
+    true
+}
+
+// Follow the unique checked occurrence, retaining only its executable prefix
+// and continuations. Sibling branches are alternatives, not later executions.
+// Existing origin transfer still handles all branches/loops within the prefix.
+fn draft_path(scope DraftPublication, value Expr, depth Int) Bool {
+    if depth >= 256 || !get(scope.reads.valid, 0) {
+        set(scope.reads.valid, 0, false)
+        return false
+    }
+    if draft_construction(scope.reads.env, value) && same_draft_construction(value, scope.candidate) {
+        if get(scope.phase, 0) != 1 {
+            set(scope.reads.valid, 0, false)
+            return false
+        }
+        var index = 0
+        while index < length(scope.cleanups) {
+            let cleanup = get(scope.cleanups, index)
+            if cleanup.active && draft_raw_use(cleanup.body, scope.frame, depth + 1) {
+                set(scope.reads.valid, 0, false)
+            }
+            index = index + 1
+        }
+        set(scope.phase, 0, 2)
+        return value.falls
+    }
+    if value.kind == ExprKind.While || value.kind == ExprKind.Defer || value.kind == ExprKind.Cleanup ||
+    value.kind == ExprKind.ResourceDrain {
+        // A repeated allocation epoch or cleanup-only invocation requires its
+        // own publication state; never confuse it with this activation's root.
+        set(scope.reads.valid, 0, false)
+        return false
+    }
+    if value.kind == ExprKind.Block {
+        if value.text == "checked list" {
+            return draft_path(scope, draft_input(value), depth + 1)
+        } else {
+            return draft_sequence(scope, value.children, depth + 1)
+        }
+    }
+    if value.kind == ExprKind.If && length(value.children) >= 2 {
+        let condition = get(value.children, 0)
+        if draft_occurrences(scope.reads.env, condition, scope.candidate, depth + 1) != 0 {
+            if !draft_path(scope, condition, depth + 1) {
+                return false
+            }
+            var branch = 1
+            while branch < length(value.children) {
+                discard draft_prefix(scope, get(value.children, branch), depth + 1)
+                branch = branch + 1
+            }
+        } else {
+            discard draft_prefix(scope, condition, depth + 1)
+            var branch = 1
+            while branch < length(value.children) {
+                let body = get(value.children, branch)
+                if draft_occurrences(scope.reads.env, body, scope.candidate, depth + 1) != 0 {
+                    return draft_path(scope, body, depth + 1)
+                }
+                branch = branch + 1
+            }
+        }
+        return value.falls
+    }
+    if value.kind == ExprKind.Match && length(value.children) == 1 {
+        let input = get(value.children, 0)
+        if draft_occurrences(scope.reads.env, input, scope.candidate, depth + 1) != 0 {
+            if !draft_path(scope, input, depth + 1) {
+                return false
+            }
+            var arm = 0
+            while arm < length(value.arms) {
+                let body = get(value.arms, arm).body
+                var item = 0
+                while item < length(body) {
+                    discard draft_prefix(scope, get(body, item), depth + 1)
+                    item = item + 1
+                }
+                arm = arm + 1
+            }
+        } else {
+            let origin = draft_prefix(scope, input, depth + 1)
+            var arm = 0
+            while arm < length(value.arms) {
+                let selected = get(value.arms, arm)
+                var contains = false
+                var item = 0
+                while item < length(selected.body) {
+                    contains = contains || draft_occurrences(scope.reads.env, get(selected.body, item), scope.candidate, depth + 1) != 0
+                    item = item + 1
+                }
+                if contains {
+                    invariant_bind(scope.frame, selected.whole, origin)
+                    item = 0
+                    while item < length(selected.bindings) {
+                        invariant_bind(scope.frame, get(selected.bindings, item), origin_project(origin, item))
+                        item = item + 1
+                    }
+                    return draft_sequence(scope, selected.body, depth + 1)
+                }
+                arm = arm + 1
+            }
+        }
+        return value.falls
+    }
+    var held = origin_empty()
+    var index = 0
+    while index < length(value.children) && get(scope.reads.valid, 0) {
+        let child = get(value.children, index)
+        let input = if value.kind == ExprKind.Record || value.kind == ExprKind.FrameNew {
+            get(child.children, 0)
+        } else {
+            child
+        }
+        if draft_occurrences(scope.reads.env, input, scope.candidate, depth + 1) != 0 {
+            if !draft_path(scope, input, depth + 1) {
+                return false
+            }
+        } else {
+            held = origin_union(held, draft_prefix(scope, input, depth + 1))
+        }
+        index = index + 1
+    }
+    // Eager operands survive until their parent operation. A raw argument or
+    // initializer evaluated before construction must not escape afterwards.
+    if origin_shared(held) || length(value.arms) != 0 {
+        set(scope.reads.valid, 0, false)
+    }
+    value.falls
+}
+
+fn unpublished_draft(env Environment, functions List[Function], current Function, candidate Expr) Bool {
+    let root = draft_root(env, functions, current, draft_input(candidate).index)
+    if root < 0 {
+        return false
+    }
+    let scope = DraftPublication {
+        reads = invariant_reads(env, functions, current.body, true, 2, -1)
+        frame = invariant_frame(length(current.locals), new[InputOrigin]())
+        candidate = candidate
+        root = root
+        phase = ints(0)
+        cleanups = new[DraftCleanup]()
+    }
+    var more = true
+    var rounds = 0
+    while more && get(scope.reads.valid, 0) && rounds < 256 {
+        set(scope.frame.changed, 0, false)
+        set(scope.phase, 0, 0)
+        let active = length(scope.cleanups)
+        var cleanup = 0
+        while cleanup < active {
+            let prior = get(scope.cleanups, cleanup)
+            set(scope.cleanups, cleanup, DraftCleanup {
+                    id = prior.id
+                    body = prior.body
+                    active = false
+                })
+            cleanup = cleanup + 1
+        }
+        discard draft_path(scope, current.body, 0)
+        more = get(scope.frame.changed, 0)
+        rounds = rounds + 1
+    }
+    !more && get(scope.reads.valid, 0) && get(scope.phase, 0) == 2 &&
+    !origin_shared(get(scope.frame.returned, 0))
+}

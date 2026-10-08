@@ -16,17 +16,6 @@ fn draft_input(value Expr) Expr {
     }
 }
 
-fn draft_statement(value Expr) Expr {
-    var current = value
-    var depth = 0
-    while depth < 32 && (current.kind == ExprKind.Let || current.kind == ExprKind.Return) &&
-    length(current.children) == 1 {
-        current = get(current.children, 0)
-        depth = depth + 1
-    }
-    current
-}
-
 fn draft_raw_use(value Expr, frame InvariantFrame, depth Int) Bool {
     if depth >= 256 {
         return true
@@ -56,53 +45,6 @@ fn draft_raw_use(value Expr, frame InvariantFrame, depth Int) Bool {
     false
 }
 
-fn unpublished_draft(env Environment, functions List[Function], current Function,
-    statements List[Expr], boundary Int, local Int) Bool {
-    if local < length(current.params) || local >= length(current.locals) ||
-    get(current.locals, local).mutable {
-        return false
-    }
-    var definition = -1
-    var index = 0
-    while index < boundary {
-        let statement = get(statements, index)
-        if statement.kind == ExprKind.Let && statement.index == local &&
-        length(statement.children) == 1 && constraint_fresh(env, functions, get(statement.children, 0)) {
-            definition = index
-        }
-        index = index + 1
-    }
-    if definition < 0 {
-        return false
-    }
-    let frame = invariant_frame(length(current.locals), new[InputOrigin]())
-    invariant_bind(frame, local, origin_input())
-    let reads = invariant_reads(env, functions, current.body, true, 2, -1)
-    var more = true
-    var rounds = 0
-    while more && get(reads.valid, 0) && rounds < 256 {
-        set(frame.changed, 0, false)
-        index = definition + 1
-        while index < boundary && get(reads.valid, 0) {
-            discard invariant_origin(reads, frame, get(statements, index), 0)
-            index = index + 1
-        }
-        more = get(frame.changed, 0)
-        rounds = rounds + 1
-    }
-    if more || !get(reads.valid, 0) || origin_shared(get(frame.returned, 0)) {
-        return false
-    }
-    index = boundary + 1
-    while index < length(statements) {
-        if draft_raw_use(get(statements, index), frame, 0) {
-            return false
-        }
-        index = index + 1
-    }
-    true
-}
-
 fn same_draft_construction(left Expr, right Expr) Bool {
     left.kind == right.kind && left.ty == right.ty && left.text == right.text &&
     left.span.start == right.span.start && left.span.end == right.span.end &&
@@ -120,6 +62,9 @@ fn draft_occurrences(env Environment, value Expr, candidate Expr, depth Int) Int
         1
     } else {
         0
+    }
+    if value.kind == ExprKind.Block && value.text == "checked list" {
+        return count + draft_occurrences(env, draft_input(value), candidate, depth + 1)
     }
     var index = 0
     while index < length(value.children) && count < 2 {
@@ -139,22 +84,44 @@ fn draft_occurrences(env Environment, value Expr, candidate Expr, depth Int) Int
     count
 }
 
+fn draft_candidates(env Environment, value Expr, candidates List[Expr], depth Int) {
+    if depth >= 256 {
+        return
+    }
+    if draft_construction(env, value) && draft_input(value).kind == ExprKind.Local {
+        push(candidates, value)
+    }
+    if value.kind == ExprKind.Block && value.text == "checked list" {
+        draft_candidates(env, draft_input(value), candidates, depth + 1)
+        return
+    }
+    var index = 0
+    while index < length(value.children) {
+        draft_candidates(env, get(value.children, index), candidates, depth + 1)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            draft_candidates(env, get(body, item), candidates, depth + 1)
+            item = item + 1
+        }
+        index = index + 1
+    }
+}
+
 fn unpublished_drafts(env Environment, functions List[Function], current Function) List[Expr] {
     let drafts = new[Expr]()
-    if current.body.kind != ExprKind.Block {
-        return drafts
-    }
-    let statements = current.body.children
+    let candidates = new[Expr]()
+    draft_candidates(env, current.body, candidates, 0)
     var index = 0
-    while index < length(statements) {
-        let candidate = draft_statement(get(statements, index))
-        if draft_construction(env, candidate) {
-            let input = draft_input(candidate)
-            if input.kind == ExprKind.Local &&
-            draft_occurrences(env, current.body, candidate, 0) == 1 &&
-            unpublished_draft(env, functions, current, statements, index, input.index) {
-                push(drafts, candidate)
-            }
+    while index < length(candidates) {
+        let candidate = get(candidates, index)
+        if draft_occurrences(env, current.body, candidate, 0) == 1 &&
+        unpublished_draft(env, functions, current, candidate) {
+            push(drafts, candidate)
         }
         index = index + 1
     }
