@@ -127,6 +127,17 @@ test fn draft_publication_observes_active_scoped_cleanup_on_fault_only_exits() {
         Result.Err(failed) => std.text.contains(failed.diagnostic.message, "fresh unpublished storage")
         Result.Ok(_) => false
     }
+    let read_only = std.text.join(std.text.split(source, "self.values[0] = -1"),
+        "discard sum(self.values)")
+    let observers = list_constraint_files(read_only)
+    push(observers, get(files, length(files) - 1))
+    assert match checked(observers) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
 }
 
 test fn unpublished_drafts_survive_unrelated_awaits_but_cannot_be_sent_to_pending_tasks() {
@@ -152,4 +163,141 @@ test fn unpublished_drafts_survive_unrelated_awaits_but_cannot_be_sent_to_pendin
             published
         }
         """))
+}
+
+test fn published_drafts_keep_nonpublishing_readers_and_cleanup() {
+    let source = concat(list_constraint_source(), """
+        import std.resource.Dispose
+        import std.resource.MustScope
+        record Observer {
+            values List[Int]
+            events List[Int]
+        }
+        impl Dispose for Observer {
+            fn dispose(self Observer) {
+                push(self.events, sum(self.values))
+            }
+        }
+        impl MustScope for Observer {}
+        fn inspect(callback fn() Int) Int {
+            callback()
+        }
+        pub fn build(events List[Int]) Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let envelope = (draft, true)
+            let callback = fn() Int {
+                sum(envelope.0)
+            }
+            scoped observer = Observer {
+                values = draft
+                events = events
+            }
+            defer {
+                push(events, inspect(callback))
+            }
+            let published = Positive(draft)
+            let later = draft
+            assert sum(later) == inspect(callback)
+            published
+        }
+        """)
+    let files = list_constraint_files(source)
+    push(files, source_file("std.resource", """
+        pub concept Dispose {
+            fn dispose(self Self)
+        }
+        pub concept MustScope {}
+        """, true))
+    assert match checked(files) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+}
+
+test fn published_draft_readers_cannot_hide_mutation_or_export_raw_storage() {
+    let header = list_constraint_source()
+    list_constraint_reject(concat(header, """
+        fn retain(values List[Int]) List[Int] {
+            values
+        }
+        pub fn invalid(output List[List[Int]]) Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let published = Positive(draft)
+            push(output, retain(draft))
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn inspect(values List[Int]) Int {
+            values[0] = -1
+            length(values)
+        }
+        pub fn invalid() Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let published = Positive(draft)
+            assert inspect(draft) > 0
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid() (List[Int], Result[Positive, ConstraintError]) {
+            let draft = [1, 2]
+            let published = Positive(draft)
+            let later = draft
+            (later, published)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid() Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let callback = fn() Int {
+                draft[0] = -1
+                length(draft)
+            }
+            let published = Positive(draft)
+            defer {
+                discard callback()
+            }
+            published
+        }
+        """))
+}
+
+test fn cached_draft_readers_revalidate_the_actual_helper_footprint() {
+    let source = concat(list_constraint_source(), """
+        fn inspect(values List[Int]) Int {
+            length(values)
+        }
+        pub fn build() Result[Positive, ConstraintError] {
+            let draft = [1, 2]
+            let published = Positive(draft)
+            assert inspect(draft) > 0
+            published
+        }
+        """)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(list_constraint_files(concat(source, "\nfn unrelated() {}\n"))),
+        false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(source,
+            "fn inspect(values List[Int]) Int {\n    length(values)\n}"),
+        "fn inspect(values List[Int]) Int {\n    values[0] = -1\n    length(values)\n}")
+    assert changed != source
+    assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
 }

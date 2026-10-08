@@ -27,7 +27,7 @@ test fn unpublished_local_drafts_reuse_fresh_headers_after_building() {
         """))
 }
 
-test fn draft_publication_rejects_surviving_raw_aliases_and_captures() {
+test fn draft_publication_rejects_mutating_raw_aliases_and_captures() {
     let header = list_constraint_source()
     let setup = concat("""
         pub fn invalid() Result[Positive, ConstraintError] {
@@ -48,7 +48,7 @@ test fn draft_publication_rejects_surviving_raw_aliases_and_captures() {
             published
         }
         """)))
-    list_constraint_reject(concat(header, concat(setup, """
+    list_constraint_accept(concat(header, concat(setup, """
             discard callback()
             published
         }

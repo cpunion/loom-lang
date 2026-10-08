@@ -1,0 +1,68 @@
+import std.resource.Dispose
+import std.resource.MustScope
+
+record DraftObserver {
+    values List[Int]
+    events List[Int]
+}
+
+impl Dispose for DraftObserver {
+    fn dispose(self DraftObserver) {
+        push(self.events, values_sum(self.values))
+    }
+}
+
+impl MustScope for DraftObserver {
+}
+
+fn publish_with_readers(events List[Int]) Result[PositiveValues, ConstraintError] {
+    let draft = [1, 2]
+    let envelope = (draft, true)
+    let inspect = fn() Int {
+        values_sum(envelope.0)
+    }
+    scoped observer = DraftObserver {
+        values = draft
+        events = events
+    }
+    defer {
+        push(events, inspect())
+    }
+    let published = PositiveValues(draft)
+    let later = draft
+    assert inspect() == 3 && length(later) == 2
+    match published {
+        Result.Ok(values) => replace_positive(values, 0, PositiveElement(5))
+        Result.Err(_) => {
+        }
+    }
+    assert inspect() == 7 && values_sum(later) == 7
+    published
+}
+
+fn draft_reader_scope() Bool {
+    let events List[Int] = []
+    let published = publish_with_readers(events)
+    assert length(events) == 2 && events[0] == 7 && events[1] == 7
+    match published {
+        Result.Ok(values) => values_sum(values) == 7
+        Result.Err(_) => false
+    }
+}
+
+test async fn raw_readers_observe_preserving_updates_after_suspension() {
+    let draft = [2, 3]
+    let inspect = fn() Int {
+        values_sum(draft)
+    }
+    let published = match PositiveValues(draft) {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            assert false
+            PositiveValues([1])
+        }
+    }
+    sleep_ms(1).await
+    replace_positive(published, 0, PositiveElement(4))
+    assert inspect() == 7
+}
