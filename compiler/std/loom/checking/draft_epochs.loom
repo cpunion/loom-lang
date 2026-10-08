@@ -1,0 +1,101 @@
+// Select a fresh allocation's iteration, not the whole loop as one execution.
+// Both the unique allocation binding and publication must belong to this body.
+// A header created outside a repeated publication never gains epoch isolation.
+fn draft_epochs(env Environment, value Expr, candidate Expr, root Int, bodies List[Expr], depth Int) Bool {
+    if depth >= 256 {
+        return false
+    }
+    if value.kind == ExprKind.While && length(value.children) == 2 {
+        let body = get(value.children, 1)
+        let definitions = new[Expr]()
+        draft_definitions(body, root, definitions, 0)
+        if length(definitions) == 1 && draft_occurrences(env, body, candidate, 0) == 1 {
+            push(bodies, body)
+        }
+    }
+    if value.kind == ExprKind.Block && value.text == "checked list" {
+        return draft_epochs(env, draft_input(value), candidate, root, bodies, depth + 1)
+    }
+    var index = 0
+    while index < length(value.children) {
+        if !draft_epochs(env, get(value.children, index), candidate, root, bodies, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if !draft_epochs(env, get(body, item), candidate, root, bodies, depth + 1) {
+                return false
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn draft_epoch_locals(value Expr, locals List[Bool], depth Int) Bool {
+    if depth >= 256 {
+        return false
+    }
+    if value.kind == ExprKind.Let {
+        set(locals, value.index, true)
+    }
+    var index = 0
+    while index < length(value.children) {
+        if !draft_epoch_locals(get(value.children, index), locals, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        if arm.whole >= 0 {
+            set(locals, arm.whole, true)
+        }
+        var member = 0
+        while member < length(arm.bindings) {
+            let local = get(arm.bindings, member)
+            if local >= 0 {
+                set(locals, local, true)
+            }
+            member = member + 1
+        }
+        member = 0
+        while member < length(arm.body) {
+            if !draft_epoch_locals(get(arm.body, member), locals, depth + 1) {
+                return false
+            }
+            member = member + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+// Raw aliases cannot survive this iteration in an outer binding or capture.
+// Typed publications may escape; their ordinary invariant rules still apply.
+fn confined_draft_epoch(body Expr, frame InvariantFrame) Bool {
+    let locals = new[Bool]()
+    var index = 0
+    while index < length(frame.locals) {
+        push(locals, false)
+        index = index + 1
+    }
+    if !draft_epoch_locals(body, locals, 0) {
+        return false
+    }
+    index = 0
+    while index < length(locals) {
+        if !get(locals, index) && origin_shared(get(frame.locals, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}

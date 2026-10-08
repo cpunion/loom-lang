@@ -1,0 +1,67 @@
+fn build_epochs(count Int, events List[Int]) List[PositiveValues] {
+    let output List[PositiveValues] = []
+    var index = 0
+    while index < count {
+        let builder = ([1, 2], true)
+        let alias = builder.0
+        defer {
+            alias[0] = 4
+            push(events, values_sum(alias))
+        }
+        push(alias, 3)
+        let published = PositiveValues(builder.0)
+        fill_positive(alias, index + 1)
+        match published {
+            Result.Ok(value) => push(output, value)
+            Result.Err(_) => {
+                assert false
+            }
+        }
+        index = index + 1
+    }
+    output
+}
+
+fn loop_draft_scope() Bool {
+    let events List[Int] = []
+    let values = build_epochs(3, events)
+    assert length(values) == 3 && length(events) == 3
+    assert events[0] == 6 && events[1] == 8 && events[2] == 10
+    replace_positive(values[0], 1, PositiveElement(7))
+    values_sum(values[0]) == 12 && values_sum(values[1]) == 8 && values_sum(values[2]) == 10
+}
+
+test fn iteration_headers_remain_distinct_during_compile_time_execution() {
+    assert comptime {
+        loop_draft_scope()
+    }
+}
+
+test async fn private_iteration_headers_survive_real_waits_and_early_exits() {
+    let output List[PositiveValues] = []
+    let events List[Int] = []
+    var index = 0
+    while index < 3 {
+        let draft = [1, 2]
+        defer {
+            push(events, values_sum(draft))
+        }
+        sleep_ms(1).await
+        if index == 0 {
+            index = index + 1
+            continue
+        }
+        let published = PositiveValues(draft)
+        sleep_ms(1).await
+        draft[0] = 4
+        match published {
+            Result.Ok(value) => push(output, value)
+            Result.Err(_) => {
+                assert false
+            }
+        }
+        break
+    }
+    assert length(output) == 1 && values_sum(output[0]) == 6
+    assert length(events) == 2 && events[0] == 3 && events[1] == 6
+}

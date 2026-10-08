@@ -1,0 +1,141 @@
+test fn loop_publication_uses_a_fresh_confined_header_each_iteration() {
+    list_constraint_accept(concat(draft_update_source(), """
+        pub fn build(count Int, events List[Int]) List[PositiveHead] {
+            let output List[PositiveHead] = []
+            var index = 0
+            while index < count {
+                let builder = ([1, 2], true)
+                let alias = builder.0
+                defer {
+                    alias[0] = 4
+                    push(events, length(alias))
+                }
+                push(alias, index)
+                let published = PositiveHead(builder.0)
+                alias[0] = 3
+                match published {
+                    Result.Ok(value) => push(output, value)
+                    Result.Err(_) => {}
+                }
+                index = index + 1
+            }
+            output
+        }
+        pub fn nested(count Int) List[PositiveHead] {
+            let output List[PositiveHead] = []
+            var outer = 0
+            while outer < count {
+                var inner = 0
+                while inner < 2 {
+                    let draft = [1, 2]
+                    if inner == 0 {
+                        inner = inner + 1
+                        continue
+                    }
+                    let checked = PositiveHead(draft)
+                    match checked {
+                        Result.Ok(value) => push(output, value)
+                        Result.Err(_) => {}
+                    }
+                    break
+                }
+                outer = outer + 1
+            }
+            output
+        }
+        """))
+}
+
+test fn iteration_boundaries_cannot_hide_raw_aliases_or_reuse_a_published_header() {
+    let header = draft_update_source()
+    list_constraint_reject(concat(header, """
+        pub fn invalid(count Int) List[PositiveHead] {
+            var saved List[Int] = []
+            let output List[PositiveHead] = []
+            var index = 0
+            while index < count {
+                let draft = [1, 2]
+                let published = PositiveHead(draft)
+                saved = draft
+                match published {
+                    Result.Ok(value) => push(output, value)
+                    Result.Err(_) => {}
+                }
+                index = index + 1
+            }
+            saved[0] = -1
+            output
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(count Int) List[PositiveHead] {
+            let output List[PositiveHead] = []
+            let draft = [1, 2]
+            var index = 0
+            while index < count {
+                let published = PositiveHead(draft)
+                match published {
+                    Result.Ok(value) => push(output, value)
+                    Result.Err(_) => {}
+                }
+                draft[0] = -1
+                index = index + 1
+            }
+            output
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(count Int, escaped List[List[Int]]) {
+            var index = 0
+            while index < count {
+                let draft = [1, 2]
+                push(escaped, draft)
+                discard PositiveHead(draft)
+                index = index + 1
+            }
+        }
+        """))
+}
+
+test fn loop_draft_cache_revalidates_raw_alias_confinement_after_edits() {
+    let source = concat(draft_update_source(), """
+        pub fn build(count Int) List[PositiveHead] {
+            let output List[PositiveHead] = []
+            var saved List[Int] = []
+            var index = 0
+            while index < count {
+                let draft = [1, 2]
+                let published = PositiveHead(draft)
+                draft[0] = 3
+                match published {
+                    Result.Ok(value) => push(output, value)
+                    Result.Err(_) => {}
+                }
+                index = index + 1
+            }
+            output
+        }
+        """)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(list_constraint_files(concat(source, "\nfn unrelated() {}\n"))),
+        false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(source, "draft[0] = 3"), "saved = draft")
+    assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
