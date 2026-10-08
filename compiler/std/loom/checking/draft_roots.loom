@@ -37,7 +37,8 @@ fn draft_allocation_add(allocations List[DraftAllocation], allocation DraftAlloc
 // All alternatives must be fresh and unpublished. Their allocation set is
 // may-reachability only; the join binding retains a separate must-identity.
 fn draft_choice_root(env Environment, functions List[Function], current Function,
-    alternatives List[Expr], path List[Int], local Int, fields List[Int], budget List[Int], depth Int) DraftRoot {
+    alternatives List[Expr], path List[Int], local Int, fields List[Int],
+    identities List[DraftIdentity], budget List[Int], depth Int) DraftRoot {
     var first = missing_draft_root()
     var same = true
     let allocations = new[DraftAllocation]()
@@ -45,7 +46,7 @@ fn draft_choice_root(env Environment, functions List[Function], current Function
     while index < length(alternatives) {
         let value = get(alternatives, index)
         if value.falls {
-            let root = draft_value_root(env, functions, current, value, path, local, fields, budget, depth + 1)
+            let root = draft_value_root(env, functions, current, value, path, local, fields, identities, budget, depth + 1)
             if root.local < 0 {
                 return missing_draft_root()
             }
@@ -73,7 +74,8 @@ fn draft_choice_root(env Environment, functions List[Function], current Function
 }
 
 fn draft_value_root(env Environment, functions List[Function], current Function, input Expr,
-    selected List[Int], anchor Int, anchor_fields List[Int], budget List[Int], level Int) DraftRoot {
+    selected List[Int], anchor Int, anchor_fields List[Int],
+    identities List[DraftIdentity], budget List[Int], level Int) DraftRoot {
     var value = input
     var path = selected
     var local = anchor
@@ -93,13 +95,34 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
             }
         }
         if value.kind == ExprKind.Local {
-            if value.index < length(current.params) || value.index >= length(current.locals) ||
-            get(current.locals, value.index).mutable {
+            if value.index < length(current.params) || value.index >= length(current.locals) {
                 return missing_draft_root()
             }
+            if get(current.locals, value.index).mutable {
+                return draft_stable_root(env, functions, current, value.index, path, identities, budget, depth + 1)
+            }
             let definitions = new[Expr]()
-            draft_definitions(current.body, value.index, definitions, 0)
-            if length(definitions) != 1 || length(get(definitions, 0).children) != 1 {
+            if !draft_definitions(current.body, value.index, definitions, 0) || length(definitions) == 0 {
+                return missing_draft_root()
+            }
+            if length(definitions) > 1 {
+                // Cleanup lowering can repeat immutable alias bindings. Every
+                // definition must identify the same existing header; no repeated
+                // allocation gets a synthetic identity from its reused local ID.
+                let alternatives = new[Expr]()
+                var index = 0
+                while index < length(definitions) {
+                    let definition = get(definitions, index)
+                    if length(definition.children) != 1 {
+                        return missing_draft_root()
+                    }
+                    push(alternatives, get(definition.children, 0))
+                    index = index + 1
+                }
+                return draft_choice_root(env, functions, current, alternatives, path,
+                    -1, new[Int](), identities, budget, depth + 1)
+            }
+            if length(get(definitions, 0).children) != 1 {
                 return missing_draft_root()
             }
             local = value.index
@@ -140,7 +163,7 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
             value = get(value.children, length(value.children) - 1)
         } else if value.kind == ExprKind.If && length(value.children) == 3 {
             return draft_choice_root(env, functions, current,
-                [get(value.children, 1), get(value.children, 2)], path, local, fields, budget, depth + 1)
+                [get(value.children, 1), get(value.children, 2)], path, local, fields, identities, budget, depth + 1)
         } else if value.kind == ExprKind.Match {
             let alternatives = new[Expr]()
             var index = 0
@@ -151,7 +174,7 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
                 }
                 index = index + 1
             }
-            return draft_choice_root(env, functions, current, alternatives, path, local, fields, budget, depth + 1)
+            return draft_choice_root(env, functions, current, alternatives, path, local, fields, identities, budget, depth + 1)
         } else {
             return missing_draft_root()
         }
@@ -161,7 +184,7 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
 }
 
 fn draft_root(env Environment, functions List[Function], current Function, input Expr) DraftRoot {
-    draft_value_root(env, functions, current, input, new[Int](), -1, new[Int](), ints(256), 0)
+    draft_value_root(env, functions, current, input, new[Int](), -1, new[Int](), new[DraftIdentity](), ints(256), 0)
 }
 
 fn draft_protected_root(root DraftRoot, protected DraftRoot) Bool {

@@ -69,6 +69,7 @@ fn main() {
     assert loop_draft_scope()
     assert versioned_draft_scope()
     assert joined_draft_scope()
+    assert stable_draft_scope()
     assert invariant_callback_scope()
     assert shared_invariant_scope()
     assert invariant_effect_scope()
