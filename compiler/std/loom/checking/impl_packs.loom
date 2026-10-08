@@ -93,6 +93,12 @@ fn validate_impl_pack(env Environment, owner Int) Result[Bool, Failure] {
 // prefix/suffix can prove disjointness; unknown sequence unification rejects
 // conservatively rather than sampling arities or depending on declaration order.
 fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth Int) Result[Node, Failure] {
+    type_pattern_schema(env, owner, node, element, depth, false)
+}
+
+// The same nominal constructor schema serves overlap checks and symbolic
+// forwarding. Forwarding retains parameter identities instead of wildcards.
+fn type_pattern_schema(env Environment, owner Int, node Node, element Bool, depth Int, identities Bool) Result[Node, Failure] {
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "implementation target nesting limit exceeded"))
     }
@@ -107,7 +113,7 @@ fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth
         if !selected {
             return Result.Err(failure(env, owner, node, "type expansion must use this declaration's pack"))
         }
-        return Result.Ok(pack_node(node, NodeKind.Spread, "", source_nodes(impl_target_schema(env, owner, child(node, 0), true, depth + 1)?)))
+        return Result.Ok(pack_node(node, NodeKind.Spread, "", source_nodes(type_pattern_schema(env, owner, child(node, 0), true, depth + 1, identities)?)))
     }
     let parameters = group(symbol(env, owner).node, NodeKind.TypeParameters)
     var index = 0
@@ -120,7 +126,11 @@ fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth
             if parameter.kind == NodeKind.TypePack && !element {
                 return Result.Err(failure(env, owner, node, "expand a type pack with ...; it is not one type"))
             }
-            return Result.Ok(pack_node(node, NodeKind.Type, "$parameter", new[Node]()))
+            return Result.Ok(pack_node(node, NodeKind.Type, if identities {
+                        concat("$parameter#", std.int.to_text(index))
+                    } else {
+                        "$parameter"
+                    }, new[Node]()))
         }
         index = index + 1
     }
@@ -140,9 +150,9 @@ fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth
                         return Result.Err(failure(env, owner, member, "expand each nominal pack group with ..."))
                     }
                     let tuple = type_group_pattern(member)
-                    push(children, impl_target_schema(env, owner, tuple, element, depth + 1)?)
+                    push(children, type_pattern_schema(env, owner, tuple, element, depth + 1, identities)?)
                 } else {
-                    push(children, impl_target_schema(env, owner, member, element, depth + 1)?)
+                    push(children, type_pattern_schema(env, owner, member, element, depth + 1, identities)?)
                 }
                 index = index + 1
             }
@@ -153,7 +163,7 @@ fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth
         let inputs = group(node, NodeKind.Parameters)
         index = 0
         while index < length(inputs) {
-            push(children, impl_target_schema(env, owner, get(inputs, index), element, depth + 1)?)
+            push(children, type_pattern_schema(env, owner, get(inputs, index), element, depth + 1, identities)?)
             index = index + 1
         }
         // The result is an anchored last element, even when omitted.
@@ -161,13 +171,13 @@ fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth
         push(children, if length(returns) == 0 {
                 pack_node(node, NodeKind.Type, "0", new[Node]())
             } else {
-                impl_target_schema(env, owner, get(returns, 0), element, depth + 1)?
+                type_pattern_schema(env, owner, get(returns, 0), element, depth + 1, identities)?
             })
         return Result.Ok(pack_node(node, NodeKind.FunctionType, "function", children))
     }
     index = 0
     while index < length(node.children) {
-        push(children, impl_target_schema(env, owner, child(node, index), element, depth + 1)?)
+        push(children, type_pattern_schema(env, owner, child(node, index), element, depth + 1, identities)?)
         index = index + 1
     }
     if node.kind == NodeKind.TupleType {

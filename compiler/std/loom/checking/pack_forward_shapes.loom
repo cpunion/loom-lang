@@ -1,0 +1,179 @@
+record PackForwardShape {
+    pattern Node
+    actual Node
+    element Bool
+}
+
+record PackForwardMatch {
+    values List[List[Node]]
+    known List[Bool]
+}
+
+fn pack_forward_range[T](values List[T], start Int, end Int) List[T] {
+    let output = new[T]()
+    var index = start
+    while index < end {
+        push(output, get(values, index))
+        index = index + 1
+    }
+    output
+}
+
+fn pack_schema_parameter(node Node) Int {
+    if node.kind != NodeKind.Type || !std.text.starts_with(node.value, "$parameter#") {
+        return -1
+    }
+    match std.int.parse(slice(node.value, 11, length(node.value))) {
+        Result.Ok(index) => index
+        Result.Err(_) => -1
+    }
+}
+
+fn pack_schema_sequence_equal(left List[Node], right List[Node]) Bool {
+    if length(left) != length(right) {
+        return false
+    }
+    var index = 0
+    while index < length(left) {
+        if !pack_schema_equal(get(left, index), get(right, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn pack_forward_bind(bindings PackForwardMatch, parameter Int, values List[Node]) Option[PackForwardMatch] {
+    if get(bindings.known, parameter) {
+        return if pack_schema_sequence_equal(get(bindings.values, parameter), values) {
+            Option.Some(bindings)
+        } else {
+            Option.None
+        }
+    }
+    let next = PackForwardMatch {
+        values = std.list.clone(bindings.values)
+        known = std.list.clone(bindings.known)
+    }
+    set(next.values, parameter, values)
+    set(next.known, parameter, true)
+    Option.Some(next)
+}
+
+// Match finite symbolic words, not concrete expansion widths or sample types.
+// A source spread is indivisible: splitting an unknown word invents evidence.
+// All arguments share bindings; ambiguity and exhausted search reject.
+fn pack_forward_search(parameters List[Node], sources List[Node], work List[PackForwardShape], bindings PackForwardMatch,
+    solutions List[PackForwardMatch], budget List[Int], depth Int) {
+    if length(solutions) >= 2 || get(budget, 0) == 0 {
+        return
+    }
+    if depth >= 64 {
+        set(budget, 0, 0)
+        return
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    if length(work) == 0 {
+        push(solutions, bindings)
+        return
+    }
+    let pair = get(work, length(work) - 1)
+    let rest = pack_forward_range(work, 0, length(work) - 1)
+    let parameter = pack_schema_parameter(pair.pattern)
+    if parameter >= 0 {
+        var value = pair.actual
+        if get(parameters, parameter).kind == NodeKind.TypePack {
+            let source = pack_schema_parameter(value)
+            if !pair.element || source < 0 || get(sources, source).kind != NodeKind.TypePack {
+                return
+            }
+            value = pack_node(value, NodeKind.Spread, "", source_nodes(value))
+        }
+        match pack_forward_bind(bindings, parameter, source_nodes(value)) {
+            Option.Some(next) => pack_forward_search(parameters, sources, rest, next, solutions, budget, depth + 1)
+            Option.None => {
+            }
+        }
+        return
+    }
+    if pair.pattern.kind != pair.actual.kind || pair.pattern.value != pair.actual.value {
+        return
+    }
+    pack_forward_sequence(parameters, sources, pair.pattern.children, pair.actual.children, 0, 0,
+        pair.element || pair.pattern.kind == NodeKind.Spread, rest, bindings, solutions, budget, depth + 1)
+}
+
+fn pack_forward_sequence(parameters List[Node], sources List[Node], pattern List[Node], actual List[Node], left Int, right Int,
+    element Bool, work List[PackForwardShape], bindings PackForwardMatch, solutions List[PackForwardMatch], budget List[Int], depth Int) {
+    if length(solutions) >= 2 || get(budget, 0) == 0 {
+        return
+    }
+    if depth >= 64 {
+        set(budget, 0, 0)
+        return
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    if left == length(pattern) {
+        if right == length(actual) {
+            pack_forward_search(parameters, sources, work, bindings, solutions, budget, depth + 1)
+        }
+        return
+    }
+    let node = get(pattern, left)
+    let parameter = if node.kind == NodeKind.Spread {
+        pack_schema_parameter(child(node, 0))
+    } else {
+        -1
+    }
+    if parameter >= 0 && get(parameters, parameter).kind == NodeKind.TypePack {
+        var end = right
+        while end <= length(actual) && length(solutions) < 2 && get(budget, 0) > 0 {
+            match pack_forward_bind(bindings, parameter, pack_forward_range(actual, right, end)) {
+                Option.Some(next) => pack_forward_sequence(parameters, sources, pattern, actual, left + 1, end,
+                    element, work, next, solutions, budget, depth + 1)
+                Option.None => {
+                }
+            }
+            end = end + 1
+        }
+        return
+    }
+    if right >= length(actual) {
+        return
+    }
+    // Process this pair before the remainder, retaining its new bindings.
+    // Tuple nodes provide the same sequence machinery without another matcher.
+    let next = std.list.clone(work)
+    push(next, PackForwardShape {
+            pattern = pack_node(node, NodeKind.TupleType, "tuple", pack_forward_range(pattern, left + 1, length(pattern)))
+            actual = pack_node(node, NodeKind.TupleType, "tuple", pack_forward_range(actual, right + 1, length(actual)))
+            element = element
+        })
+    push(next, PackForwardShape {
+            pattern = node
+            actual = get(actual, right)
+            element = element
+        })
+    pack_forward_search(parameters, sources, next, bindings, solutions, budget, depth + 1)
+}
+
+fn pack_forward_shapes(context Context, caller Node, callee Node, work List[PackForwardShape]) Result[PackForwardMatch, Failure] {
+    let parameters = group(callee, NodeKind.TypeParameters)
+    let bindings = PackForwardMatch {
+        values = new[List[Node]]()
+        known = new[Bool]()
+    }
+    var index = 0
+    while index < length(parameters) {
+        push(bindings.values, new[Node]())
+        push(bindings.known, false)
+        index = index + 1
+    }
+    let solutions = new[PackForwardMatch]()
+    let budget = ints(512)
+    pack_forward_search(parameters, group(caller, NodeKind.TypeParameters), work, bindings, solutions, budget, 0)
+    if get(budget, 0) == 0 || length(solutions) != 1 {
+        return Result.Err(error(context, callee, "variadic forwarding needs one established ordered type-sequence mapping"))
+    }
+    Result.Ok(get(solutions, 0))
+}

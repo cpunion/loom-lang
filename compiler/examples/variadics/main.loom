@@ -41,6 +41,7 @@ fn exercise() {
     exercise_pack_induction()
     exercise_structural_induction()
     exercise_forwarding()
+    exercise_structural_forwarding()
     exercise_pack_observations()
     exercise_methods()
     exercise_static()
