@@ -1,0 +1,143 @@
+import std.list.transfer.append
+import std.task.all
+import std.task.settled
+
+async fn list_join_leaf(id Int, trace List[Int]) Leaf {
+    sleep_ms((5 - id % 5) % 5).await
+    acquire(id, trace)
+}
+
+test async fn resource_list_all_keeps_dynamic_input_order_and_reverse_cleanup() {
+    let count = length(std.process.arguments()) + 4
+    let trace List[Int] = []
+    var tasks List[Task[Leaf]] = []
+    var index = 0
+    while index < count {
+        tasks = append(tasks, list_join_leaf(index + 1, trace))
+        index = index + 1
+    }
+    {
+        scoped values = all(tasks).await
+        assert length(values) == count && length(trace) == count
+        index = 0
+        while index < count {
+            assert values[index].id == index + 1
+            index = index + 1
+        }
+        sleep_ms(0).await
+    }
+    assert length(trace) == count * 2
+    index = 0
+    while index < count {
+        assert trace[count + index] == count - index
+        index = index + 1
+    }
+    {
+        let empty List[Task[Leaf]] = []
+        scoped values = all(empty).await
+        assert length(values) == 0
+    }
+    {
+        let empty List[Task[Leaf]] = []
+        scoped values = settled(empty).await
+        assert length(values) == 0
+    }
+}
+
+async fn list_join_failed_pair(trace List[Int]) Pair {
+    assert false
+    pair_resources(trace, false, false)
+}
+
+test async fn resource_list_settled_keeps_typed_nested_payloads_and_faults() {
+    let trace List[Int] = []
+    {
+        scoped values = settled([
+                acquire_pair_async(trace, false),
+                list_join_failed_pair(trace),
+                acquire_pair_async(trace, false),
+            ]).await
+        assert length(values) == 3 && length(trace) == 4
+        match values[0] {
+            Outcome.Completed(value) => {
+                assert value.first.id == 1 && value.second.id == 2
+            }
+            _ => {
+                assert false
+            }
+        }
+        match values[1] {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "task_resource_list_join_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+        match values[2] {
+            Outcome.Completed(value) => {
+                assert value.first.id + value.second.id == 3
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 10
+    assert trace[4] == 3 && trace[5] == 2 && trace[6] == 1
+    assert trace[7] == 3 && trace[8] == 2 && trace[9] == 1
+}
+
+async fn list_join_fail_after_pair(trace List[Int]) Pair {
+    while length(trace) < 2 {
+        sleep_ms(0).await
+    }
+    assert false
+    pair_resources(trace, false, false)
+}
+
+test async fn resource_list_all_keeps_primary_failure_while_draining_nested_results() {
+    let trace List[Int] = []
+    {
+        scoped selected = outcome(all([
+                    acquire_pair_async(trace, true),
+                    list_join_fail_after_pair(trace),
+                ])).await
+        match selected {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "task_resource_list_join_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 5
+    assert trace[2] == 3 && trace[3] == 2 && trace[4] == 1
+}
+
+async fn list_join_waiting_leaf(trace List[Int]) Leaf {
+    push(trace, 20)
+    sleep_ms(10000).await
+    acquire(2, trace)
+}
+
+async fn list_join_waiting(trace List[Int]) {
+    scoped values = all([acquire_async(1, trace), list_join_waiting_leaf(trace)]).await
+}
+
+test async fn resource_list_cancellation_disposes_completed_unextracted_results() {
+    let trace List[Int] = []
+    let pending = list_join_waiting(trace)
+    while length(trace) < 2 {
+        sleep_ms(0).await
+    }
+    match cancel(pending) {
+        Outcome.Cancelled => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 3 && trace[2] == 1
+}

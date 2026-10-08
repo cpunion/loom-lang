@@ -379,7 +379,7 @@ pub fn lower(original Program) Program {
     var index = 0
     while index < length(source.functions) {
         let function = get(source.functions, index)
-        any = any || function.is_async || function.runtime_name == "list_append" || function.runtime_name == "list_take" || function.runtime_name == "list_replace" || function.runtime_name == "task_cancel"
+        any = any || function.is_async || function.runtime_name == "list_append" || function.runtime_name == "list_take" || function.runtime_name == "list_replace" || function.runtime_name == "task_cancel" || function.runtime_name == "task_ready_result" || function.runtime_name == "task_ready_outcome"
         index = index + 1
     }
     index = 0

@@ -1,58 +1,54 @@
 // Policies stay in Loom. Runtime only supplies terminal notifications, typed
 // extraction, and subtree drain. A helper Task is per group, not per element.
-async fn collect[T](tasks List[Task[T]], fail_fast Bool) List[Option[Outcome[T]]] {
+import std.resource.generate
+
+async fn collect[T](tasks List[Task[T]], fail_fast Bool) Batch[T] {
     let batch = watch(tasks)
-    var pending = batch.slots
     var remaining = batch.count
-    var slots = new[Option[Outcome[T]]]()
-    var index = 0
-    while index < remaining {
-        slots = append(slots, Option.None)
-        index = index + 1
-    }
     while remaining > 0 {
-        let index = task_next().await
-        let task, rest = take_slot(pending, index)
-        pending = rest
-        let value = task_outcome(task).await
-        let kept = if fail_fast {
-            Outcome.Completed(completed(value))
-        } else {
-            value
+        match task_next_terminal().await {
+            TaskTerminal.Faulted(error) => {
+                if fail_fast {
+                    drain(batch.slots, true)
+                    fault_text(error.message)
+                }
+            }
+            TaskTerminal.Cancelled => {
+                if fail_fast {
+                    drain(batch.slots, false)
+                    fault_text("task was cancelled")
+                }
+            }
+            TaskTerminal.Completed => {
+            }
         }
-        slots = put_slot(slots, index, kept)
         remaining = remaining - 1
     }
-    drain(pending, false)
-    slots
+    batch
 }
 
 pub async fn settled[T](tasks List[Task[T]]) List[Outcome[T]] {
-    filled(collect(tasks, false).await)
+    let batch = collect(tasks, false).await
+    let count = batch.count
+    generate(count, batch.slots,
+        fn(index Int, pending List[Option[Task[T]]]) (Outcome[T], List[Option[Task[T]]]) {
+            let task, rest = take_slot(pending, count - 1 - index)
+            (task_ready_outcome(task), rest)
+        }, fn(pending List[Option[Task[T]]]) {
+            drain(pending, false)
+        })
 }
 
 pub async fn all[T](tasks List[Task[T]]) List[T] {
-    var pending = collect(tasks, true).await
-    var values = new[T]()
-    while true {
-        match take_last(pending) {
-            Option.Some(pair) => {
-                let value, rest = pair
-                pending = rest
-                match value {
-                    Option.Some(value) => {
-                        values = append(values, completed(value))
-                    }
-                    Option.None => {
-                        fault_text("task result slot is empty")
-                    }
-                }
-            }
-            Option.None => {
-                return values
-            }
-        }
-    }
+    let batch = collect(tasks, true).await
+    let count = batch.count
+    generate(count, batch.slots,
+        fn(index Int, pending List[Option[Task[T]]]) (T, List[Option[Task[T]]]) {
+            let task, rest = take_slot(pending, count - 1 - index)
+            (task_ready_result(task), rest)
+        }, fn(pending List[Option[Task[T]]]) {
+            drain(pending, false)
+        })
 }
 
 // Selection never erases a typed result. Once every child has completed, a

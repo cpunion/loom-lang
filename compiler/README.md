@@ -3592,6 +3592,13 @@ require a directly awaited call, so the owner outlives its child Tasks and their
 cleanup. The borrowing Task cannot be saved, forwarded or returned. No borrowing
 syntax is required. See the
 [List cleanup tests](examples/cleanup/resource_list_test.loom).
+The four-argument `generate(count, state, next, finish)` overload also accepts
+ordinary elements and an explicit cursor. `next(index, state)` returns
+`(element, next_state)`; `finish(state)` consumes the final state before the List
+transfers. State may carry one-shot Tasks but cannot copy a scoped resource.
+Resource elements remain guarded if a later factory call or `finish` faults.
+This is synchronous construction, not a Task or executor per element. See the
+[stateful construction tests](examples/cleanup/resource_state_test.loom).
 Recursive record/enum layouts through Lists also clean up through finite typed
 helpers. Recursive factories retain the fresh-return requirement; read-only
 recursive traversal borrows the tree. Copying or mutating scoped resource edges
@@ -3814,10 +3821,15 @@ cancellation. Their complete results enter one `scoped` tuple; field reads borro
 its resources rather than extracting new owners. List and two-argument `any`/`race`
 also support fresh resource results: selection retains the original typed winning
 Task until every loser drains, then extracts its value or Outcome. A loser cleanup
-fault also drains the untransferred winner. Resource-bearing List `all`/`settled`
-remain unfinished. See the [native resource-result tests](examples/cleanup/task_resource_result_test.loom),
+fault also drains the untransferred winner. Dynamic List `all`/`settled` keep
+resource results in their original producers until terminal notifications finish,
+then construct the guarded result List in input order. Empty Lists, fail-fast
+drain and cancellation use the same path as ordinary results; no per-input wrapper
+Task is introduced. Resource-bearing `first_ok` and `cancel_when` remain unfinished.
+See the [native resource-result tests](examples/cleanup/task_resource_result_test.loom),
 [tuple join tests](examples/cleanup/task_resource_join_test.loom), and
-[selection tests](examples/cleanup/task_resource_selection_test.loom).
+[selection tests](examples/cleanup/task_resource_selection_test.loom), plus
+[dynamic List tests](examples/cleanup/task_resource_list_join_test.loom).
 Resource factory overloads
 of [`std.stream`](std/stream/README.md) compose scoped async pipelines from
 fallible or infallible factories. [`std.file.lines.stream`](std/file/lines/README.md)
