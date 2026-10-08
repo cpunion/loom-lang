@@ -709,15 +709,17 @@ pub(super) extern "C-unwind" fn loom_rt_task_cleanup_pop(site: i64) {
     edit(|_, core| {
         let id = core.current.ok_or("task cleanup outside a resume")?;
         let task = core.tasks.get_mut(&id).unwrap();
-        if !matches!(task.state, State::Running)
-            || task
-                .cleanups
-                .last()
-                .is_none_or(|cleanup| cleanup.site != site)
-        {
+        if !matches!(task.state, State::Running) {
             return Err("invalid task cleanup registration order");
         }
-        task.cleanups.pop();
+        // Pending return resources remain registered while older lexical
+        // cleanup runs. Remove only that source-selected callback.
+        let position = task
+            .cleanups
+            .iter()
+            .rposition(|cleanup| cleanup.site == site)
+            .ok_or("invalid task cleanup registration order")?;
+        task.cleanups.remove(position);
         Ok(())
     });
 }

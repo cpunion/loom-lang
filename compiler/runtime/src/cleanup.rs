@@ -190,11 +190,26 @@ unsafe extern "C" fn loom_rt_cleanup_push(
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_cleanup_pop(record: *mut Cleanup) {
-    if HEAD.get() != record {
-        super::fatal("invalid cleanup registration order");
+    let mut previous = HEAD.get();
+    if previous == record {
+        // SAFETY: This initialized record and its native frame remain live.
+        HEAD.set(unsafe { (*record).previous });
+        return;
     }
-    // SAFETY: The top record was initialized by push and its frame is live.
-    HEAD.set(unsafe { (*record).previous });
+    // A pending return keeps newer resource guards live while older lexical
+    // cleanup runs. Unlink that exact registration before invoking its body;
+    // fault draining still visits the retained guards in reverse order.
+    while !previous.is_null() {
+        // SAFETY: The active chain contains initialized, live native records.
+        unsafe {
+            if (*previous).previous == record {
+                (*previous).previous = (*record).previous;
+                return;
+            }
+            previous = (*previous).previous;
+        }
+    }
+    super::fatal("invalid cleanup registration order");
 }
 
 // A compiler-generated callback handles one statically typed disposal step.
@@ -482,6 +497,24 @@ mod tests {
         assert!(HEAD.get().is_null());
         drain_to(ptr::null_mut());
         assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn pending_values_keep_newer_guards_during_older_cleanup() {
+        let mut calls = 0usize;
+        let captures = ptr::addr_of_mut!(calls).cast();
+        let mut outer = MaybeUninit::<Cleanup>::uninit();
+        let mut pending = MaybeUninit::<Cleanup>::uninit();
+        unsafe {
+            loom_rt_cleanup_push(outer.as_mut_ptr(), increment, captures);
+            loom_rt_cleanup_push(pending.as_mut_ptr(), increment, captures);
+            loom_rt_cleanup_pop(outer.as_mut_ptr());
+            increment(captures);
+        }
+        assert_eq!(calls, 1);
+        drain_to(ptr::null_mut());
+        assert_eq!(calls, 2);
+        assert!(HEAD.get().is_null());
     }
 
     #[test]

@@ -793,6 +793,8 @@ Native blocking I/O snapshots managed inputs and parks before OS waits.
 Lexical `defer` and `scoped` handle normal exits, propagation, loop exits,
 language faults, suspension and cancellation. MustScope freshness/escape checks
 and typed cleanup cover nested records/enums/Lists and recursive resource trees.
+Fresh MustScope results crossing a cleanup boundary remain protected until transfer;
+an exit fault drains their resource members rather than leaking the pending result.
 Cleanup drains after secondary faults while retaining the first diagnostic;
 OOM/external termination offer no guarantee. Scoped resources cannot transfer
 into Tasks, but directly awaited calls may borrow them until all child cleanup

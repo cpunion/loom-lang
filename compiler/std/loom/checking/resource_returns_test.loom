@@ -1,0 +1,38 @@
+test fn fresh_resource_results_stay_protected_through_outgoing_cleanup() {
+    resource_accept(concat(resource_header(), """
+        fn finish(log List[Int], early Bool) Handle {
+            defer {
+                push(log, 2)
+            }
+            if early {
+                return make(log)
+            }
+            make(log)
+        }
+        fn run(log List[Int]) {
+            scoped first = finish(log, true)
+            scoped second = {
+                defer {
+                    push(log, 3)
+                }
+                finish(log, false)
+            }
+            assert first.use() + second.use() == 14
+        }
+        fn main() {
+            assert comptime {
+                run([0])
+                true
+            }
+        }
+        """))
+    resource_reject(concat(resource_header(), """
+        fn copied(log List[Int]) Handle {
+            scoped value = make(log)
+            defer {
+                push(log, 2)
+            }
+            value
+        }
+        """))
+}

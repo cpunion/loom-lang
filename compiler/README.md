@@ -3472,6 +3472,8 @@ assert value == 5
 ```
 
 A tail or returned value is saved before cleanup, including managed aggregates.
+Fresh MustScope results remain provisionally protected until outgoing cleanup
+succeeds; a cleanup fault disposes the untransferred result and its resource members.
 Cleanup must have no value result; ordinary `discard` remains explicit. Its
 body cannot contain `return`, `?`, `scoped`, or another `defer`, even in an unselected
 compile-time branch. Loop control is allowed only for loops inside the cleanup;
