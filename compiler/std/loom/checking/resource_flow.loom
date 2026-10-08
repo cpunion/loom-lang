@@ -580,7 +580,24 @@ fn resource_functions(env Environment, functions List[Function]) Result[Bool, Fa
     var index = 0
     while index < length(functions) {
         let current = get(functions, index)
-        discard resource_function(analysis, index, new[Int]())?
+        // Scoped roots recursively check ordinary helpers with the actual
+        // borrow vector. Also check every resource-valued result or temporary:
+        // indirect calls rely on factory promises and must scope fresh inputs.
+        var root = false
+        var local = 0
+        while !root && local < length(current.locals) {
+            root = get(current.locals, local).is_scoped
+            local = local + 1
+        }
+        if !root {
+            let requirements = resource_requirements(analysis, index)?
+            let seen = new[Int]()
+            root = resource_type(env, current.symbol, requirements, current.result, seen)? ||
+            resource_values_required(env, current.symbol, requirements, current.body, seen)?
+        }
+        if root {
+            discard resource_function(analysis, index, new[Int]())?
+        }
         index = index + 1
     }
     Result.Ok(true)
