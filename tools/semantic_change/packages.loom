@@ -1,0 +1,410 @@
+// A batch shares one pinned project basis. Propose all package trees first,
+// then check their combined program and retained bindings, never intermediate
+// combinations of a new library with an old consumer. This is source-only;
+// no application or external effect is executed by the merge.
+pub record PackageRevision {
+    directory Text
+    revision Revision
+}
+
+record PackageScope {
+    directory Text
+    package Int
+    indexed Indexed
+}
+
+fn package_revision(values List[PackageRevision], directory Text) Result[PackageRevision, Text] {
+    var found = -1
+    var index = 0
+    while index < length(values) {
+        if get(values, index).directory == directory {
+            if found >= 0 {
+                return Result.Err("duplicate package directory in merge batch")
+            }
+            found = index
+        }
+        index = index + 1
+    }
+    if found < 0 {
+        return Result.Err("package merge branches must select the same directories")
+    }
+    Result.Ok(get(values, found))
+}
+
+fn project_package(project Project, label Text) Result[Int, Text] {
+    let owner = get(project.packages, project.root).instance
+    var index = 0
+    while index < length(project.packages) {
+        if get(project.packages, index).instance == owner &&
+        package_label(project.modules, project.packages, index) == label {
+            return Result.Ok(index)
+        }
+        index = index + 1
+    }
+    Result.Err("merge package is not in the selected module's pinned closure")
+}
+
+fn package_scopes(project Project, revisions List[PackageRevision]) Result[List[PackageScope], Text] {
+    let scopes = new[PackageScope]()
+    var index = 0
+    while index < length(revisions) {
+        let selected = get(revisions, index)
+        let package = project_package(project, selected.revision.package_name)?
+        let current = indexed(selected.revision)?
+        var prior = 0
+        while prior < length(scopes) {
+            let previous = get(scopes, prior)
+            if previous.directory == selected.directory || previous.package == package {
+                return Result.Err("duplicate merge package or directory")
+            }
+            var entry = 0
+            while entry < length(current.entries) {
+                if entry_index(previous.indexed.entries, get(current.entries, entry).id) >= 0 {
+                    return Result.Err("stable declaration identity appears in two packages")
+                }
+                entry = entry + 1
+            }
+            prior = prior + 1
+        }
+        push(scopes, PackageScope {
+                directory = selected.directory
+                package = package
+                indexed = current
+            })
+        index = index + 1
+    }
+    Result.Ok(scopes)
+}
+
+fn package_project(project Project, revisions List[PackageRevision]) Result[Project, Text] {
+    let scopes = package_scopes(project, revisions)?
+    var updated = project
+    var index = 0
+    while index < length(scopes) {
+        let scope = get(scopes, index)
+        updated = contextual_package(updated, scope.package, scope.directory, scope.indexed.revision)?
+        index = index + 1
+    }
+    Result.Ok(updated)
+}
+
+fn package_target(analysis Analysis, scopes List[PackageScope], package Int, path Text,
+    offset Int) Result[BindingTarget, Text] {
+    var file = -1
+    var index = 0
+    while index < length(analysis.bindings.files) {
+        let source = get(analysis.bindings.files, index)
+        if source.package == package && source.path == path {
+            file = index
+        }
+        index = index + 1
+    }
+    if file < 0 {
+        return Result.Err("package reference has no analyzed source file")
+    }
+    let inspection = match inspect_at(analysis, file, offset) {
+        Option.Some(value) => value
+        Option.None => match inspect_independent(analysis.bindings, file, offset) {
+            Option.Some(value) => value
+            Option.None => {
+                return Result.Err("package reference has no checked binding evidence")
+            }
+        }
+    }
+    if length(inspection.definitions) != 1 {
+        return Result.Err("package reference has no unique checked definition")
+    }
+    let location = get(inspection.definitions, 0)
+    if location.file < 0 || location.file >= length(analysis.bindings.files) {
+        return Result.Err("package reference definition has no source file")
+    }
+    let source = get(analysis.bindings.files, location.file)
+    index = 0
+    while index < length(scopes) {
+        let scope = get(scopes, index)
+        if scope.package == source.package {
+            var entry = 0
+            while entry < length(scope.indexed.entries) {
+                let definition = get(scope.indexed.entries, entry)
+                if source.path == join_path(scope.directory, definition.path) &&
+                location.span.start >= definition.start && location.span.end <= definition.end {
+                    return Result.Ok(BindingTarget {
+                            id = definition.id
+                            package = source.package
+                            path = ""
+                            start = location.span.start - definition.start
+                            end = location.span.end - definition.start
+                        })
+                }
+                entry = entry + 1
+            }
+            var declaration = 0
+            while declaration < length(source.tree.children) {
+                let node = get(source.tree.children, declaration)
+                if node.kind == NodeKind.Import && location.span.start >= node.span.start && location.span.end <= node.span.end {
+                    return Result.Ok(BindingTarget {
+                            id = ""
+                            package = source.package
+                            path = source.path
+                            start = location.span.start
+                            end = location.span.end
+                        })
+                }
+                declaration = declaration + 1
+            }
+            return Result.Err("package definition has no stable declaration identity")
+        }
+        index = index + 1
+    }
+    Result.Ok(BindingTarget {
+            id = ""
+            package = source.package
+            path = source.path
+            start = location.span.start
+            end = location.span.end
+        })
+}
+
+fn compare_package_entry(before Analysis, before_scopes List[PackageScope], original Entry,
+    after Analysis, after_scopes List[PackageScope], current Entry, package Int, directory Text) Result[Bool, Text] {
+    let sites = reference_sites(original)?
+    var index = 0
+    while index < length(sites) {
+        let offset = get(sites, index)
+        let expected = package_target(before, before_scopes, package,
+            if directory == "" {
+                original.path
+            } else {
+                join_path(directory, original.path)
+            }, original.start + offset)?
+        let target = package_target(after, after_scopes, package,
+            if directory == "" {
+                current.path
+            } else {
+                join_path(directory, current.path)
+            }, current.start + offset)?
+        if !same_target(expected, target) {
+            return Result.Err("package merge changed a retained checked reference binding")
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn compare_packages(before Analysis, original List[PackageRevision], after Analysis,
+    updated List[PackageRevision]) Result[Bool, Text] {
+    let old_scopes = package_scopes(before.source, original)?
+    let new_scopes = package_scopes(after.source, updated)?
+    var index = 0
+    while index < length(new_scopes) {
+        let scope = get(new_scopes, index)
+        var old_index = 0
+        while old_index < length(old_scopes) && get(old_scopes, old_index).package != scope.package {
+            old_index = old_index + 1
+        }
+        if old_index == length(old_scopes) {
+            return Result.Err("retained package has no original binding scope")
+        }
+        let previous = get(old_scopes, old_index)
+        var entry = 0
+        while entry < length(scope.indexed.entries) {
+            let current = get(scope.indexed.entries, entry)
+            let retained_index = entry_index(previous.indexed.entries, current.id)
+            if retained_index >= 0 && package_entry_active(after, scope.package, current)? {
+                let retained = get(previous.indexed.entries, retained_index)
+                if retained.body == current.body {
+                    discard compare_package_entry(before, old_scopes, retained, after, new_scopes,
+                        current, scope.package, scope.directory)?
+                }
+            }
+            entry = entry + 1
+        }
+        index = index + 1
+    }
+    // Packages not selected for edits are still consumers of the changed API.
+    // Their text is pinned, but their selected overloads need not be unchanged.
+    let owner = get(after.source.packages, after.source.root).instance
+    index = 0
+    while index < length(after.bindings.files) {
+        let file = get(after.bindings.files, index)
+        var selected = get(after.source.packages, file.package).instance != owner
+        var scope = 0
+        while scope < length(new_scopes) {
+            selected = selected || get(new_scopes, scope).package == file.package
+            scope = scope + 1
+        }
+        if !selected {
+            let tree = match parse(file.text) {
+                Result.Ok(value) => value
+                Result.Err(failed) => {
+                    return Result.Err(failed.message)
+                }
+            }
+            var declaration = 0
+            while declaration < length(tree.children) {
+                let node = get(tree.children, declaration)
+                if node.kind != NodeKind.Import {
+                    if !supported(node.kind) {
+                        return Result.Err("pinned consumer has an unsupported declaration; binding review required")
+                    }
+                    let entry = Entry {
+                        id = ""
+                        path = file.path
+                        kind = node.kind
+                        name = node.value
+                        key = ""
+                        start = node.span.start
+                        end = node.span.end
+                        body = slice(file.text, node.span.start, node.span.end)
+                        header = ""
+                    }
+                    if package_entry_active(after, file.package, entry)? {
+                        discard compare_package_entry(before, old_scopes, entry, after, new_scopes,
+                            entry, file.package, "")?
+                    }
+                }
+                declaration = declaration + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn package_entry_active(analysis Analysis, package Int, entry Entry) Result[Bool, Text] {
+    let tree = match parse(entry.body) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(failed.message)
+        }
+    }
+    let testing = ends_with(entry.path, "_test.loom") ||
+    has(get(tree.children, 0), NodeKind.Test)
+    Result.Ok(!testing || (analysis.bindings.tests && package == analysis.bindings.root))
+}
+
+fn package_analysis(project Project, tests Bool) Result[Analysis, Text] {
+    match analyze(project, tests) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(failed) => Result.Err(concat("package merge requires checked source: ", failed.diagnostic.message))
+    }
+}
+
+fn same_package_identities(project Project, base List[PackageRevision], branch List[PackageRevision]) Result[Bool, Text] {
+    let original = package_scopes(project, base)?
+    let updated = package_scopes(project, branch)?
+    var index = 0
+    while index < length(original) {
+        let scope = get(original, index)
+        var entry = 0
+        while entry < length(scope.indexed.entries) {
+            let id = get(scope.indexed.entries, entry).id
+            var package = 0
+            while package < length(updated) {
+                let current = get(updated, package)
+                if current.package != scope.package && entry_index(current.indexed.entries, id) >= 0 {
+                    return Result.Err("declaration crossed package scope; explicit resolution required")
+                }
+                package = package + 1
+            }
+            entry = entry + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn package_changes(base List[PackageRevision], branch List[PackageRevision]) Result[(Bool, Bool, Bool), Text] {
+    var headers = false
+    var edited = false
+    var deleted = false
+    var package = 0
+    while package < length(base) {
+        let original = get(base, package)
+        let before = indexed(original.revision)?
+        let after = indexed(package_revision(branch, original.directory)?.revision)?
+        var index = 0
+        while index < length(before.entries) {
+            let entry = get(before.entries, index)
+            let selected = entry_index(after.entries, entry.id)
+            if selected < 0 {
+                deleted = true
+            } else {
+                let changed = get(after.entries, selected)
+                headers = headers || changed.header != entry.header
+                edited = edited || changed.body != entry.body
+            }
+            index = index + 1
+        }
+        edited = edited || length(after.entries) > length(before.entries)
+        package = package + 1
+    }
+    Result.Ok((headers, edited, deleted))
+}
+
+// Imports, module instances and the selected package set stay pinned. Package
+// scope/visibility changes and unaccounted references require explicit review.
+pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
+    production Project, tests Project) Result[List[PackageRevision], Text] {
+    if length(base) == 0 || length(base) != length(left) || length(base) != length(right) {
+        return Result.Err("package merge branches must select the same nonempty package set")
+    }
+    discard package_scopes(production, base)?
+    discard package_scopes(tests, base)?
+    discard same_package_identities(production, base, left)?
+    discard same_package_identities(production, base, right)?
+    let a_changes = package_changes(base, left)?
+    let b_changes = package_changes(base, right)?
+    if (a_changes.0 && b_changes.1) || (b_changes.0 && a_changes.1) ||
+    (a_changes.2 && b_changes.1) || (b_changes.2 && a_changes.1) {
+        return Result.Err("cross-package signature, contract or deletion versus edit needs explicit resolution")
+    }
+    let merged = new[PackageRevision]()
+    var index = 0
+    while index < length(base) {
+        let original = get(base, index)
+        let a = package_revision(left, original.directory)?.revision
+        let b = package_revision(right, original.directory)?.revision
+        if a.package_name != original.revision.package_name || b.package_name != original.revision.package_name {
+            return Result.Err("package identity changed across merge branches")
+        }
+        if !package_context_matches(production, project_package(production, original.revision.package_name)?,
+            original.directory, original.revision, false) ||
+        !package_context_matches(tests, project_package(tests, original.revision.package_name)?,
+            original.directory, original.revision, true) {
+            return Result.Err("project context must contain every exact baseline package")
+        }
+        if !same_imports(original.revision, a)? || !same_imports(original.revision, b)? ||
+        !same_implicit_imports(original.revision, a)? || !same_implicit_imports(original.revision, b)? {
+            return Result.Err("package merge import bindings changed; explicit resolution required")
+        }
+        push(merged, PackageRevision {
+                directory = original.directory
+                revision = proposed(original.revision, a, b)?
+            })
+        index = index + 1
+    }
+    let owner = get(tests.packages, tests.root).instance
+    var pass = -1
+    while pass < length(tests.packages) {
+        if pass < 0 || get(tests.packages, pass).instance == owner {
+            let testing = pass >= 0
+            let context = if testing {
+                Project {
+                    root = pass
+                    ..tests
+                }
+            } else {
+                production
+            }
+            discard package_analysis(context, testing)?
+            let before_left = package_analysis(package_project(context, left)?, testing)?
+            let before_right = package_analysis(package_project(context, right)?, testing)?
+            let after = package_analysis(package_project(context, merged)?, testing)?
+            discard compare_packages(before_left, left, after, merged)?
+            discard compare_packages(before_right, right, after, merged)?
+        }
+        pass = pass + 1
+    }
+    Result.Ok(merged)
+}

@@ -31,8 +31,8 @@ import std.text.length
 import std.text.slice
 
 // Identity is deliberately supplied by the change store, not inferred from
-// revision-relative AST spans or from a declaration's spelling. This first
-// merge model handles named top-level declarations in one package only.
+// revision-relative AST spans or from a declaration's spelling. Each revision
+// holds one package; checked batches retain the package scopes separately.
 pub record File {
     path Text
     text Text
@@ -1006,14 +1006,18 @@ fn added_import_name(base Indexed, branch Indexed) Result[Bool, Text] {
 }
 
 fn context_matches_base(project Project, directory Text, base Revision, tests Bool) Bool {
-    if package_label(project.modules, project.packages, project.root) != base.package_name {
+    package_context_matches(project, project.root, directory, base, tests)
+}
+
+fn package_context_matches(project Project, package Int, directory Text, base Revision, tests Bool) Bool {
+    if package_label(project.modules, project.packages, package) != base.package_name {
         return false
     }
     var roots = 0
     var index = 0
     while index < length(project.files) {
         let file = get(project.files, index)
-        if file.package == project.root {
+        if file.package == package {
             roots = roots + 1
             var found = false
             var item = 0
@@ -1043,11 +1047,15 @@ fn context_matches_base(project Project, directory Text, base Revision, tests Bo
 }
 
 fn contextual(project Project, directory Text, revision Revision) Result[Project, Text] {
+    contextual_package(project, project.root, directory, revision)
+}
+
+fn contextual_package(project Project, package Int, directory Text, revision Revision) Result[Project, Text] {
     let files = new[SourceFile]()
     var index = 0
     while index < length(project.files) {
         let file = get(project.files, index)
-        if file.package != project.root {
+        if file.package != package {
             push(files, file)
         }
         index = index + 1
@@ -1062,7 +1070,7 @@ fn contextual(project Project, directory Text, revision Revision) Result[Project
             }
         }
         push(files, SourceFile {
-                package = project.root
+                package = package
                 path = join_path(directory, file.path)
                 text = file.text
                 tree = tree

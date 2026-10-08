@@ -985,8 +985,11 @@ normalization compares checked references through exact token edits in productio
 and test views; local shadows, conflicting names and incomplete evidence reject.
 Public/generic rename composition remains unsupported. Pinned contexts and checked type, initializer and
 value-path targets prevent silent nominal or intermediate-field binding drift.
-Applying creates a new tree; arbitrary edits, cross-package
-merges and automatic identity tracking are not implemented.
+Applying creates a new tree. The source library also checks fixed-package batches
+against one pinned production/test basis, including private tests in each package
+and unchanged module consumers whose overload bindings could drift. Module-level
+CLI loading/application, import-graph changes, arbitrary edits and automatic
+identity tracking are not implemented.
 
 The [SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md)
 executes one offline orders upgrade, data-preserving downgrade and re-upgrade.
