@@ -1,0 +1,124 @@
+fn scan_fixture() Expansion {
+    Expansion {
+        program = proof_helpers([])
+        list_lengths = false
+        budget = [4096]
+        active = []
+        checks = []
+        observations = [0]
+        origins = []
+        binders = [0]
+    }
+}
+
+fn scan_locals() List[Local] {
+    [Local {
+            name = "outer"
+            ty = 1
+            mutable = true
+            is_scoped = false
+        }, Local {
+            name = "cursor"
+            ty = 1
+            mutable = true
+            is_scoped = false
+        }, Local {
+            name = "accepted"
+            ty = 2
+            mutable = true
+            is_scoped = false
+        }]
+}
+
+fn scan_body(children List[Expr]) Expr {
+    push(children, expression(ExprKind.Assign, 0, "", 1, [operation("+", local(1), literal("1"))]))
+    expression(ExprKind.Block, 0, "", -1, children)
+}
+
+fn scan_summary(body Expr) Result[ScanExit, Text] {
+    scan_branches(scan_fixture(), body, [ExpansionBinding {
+                local = 0
+                value = local(0)
+            }, ExpansionBinding {
+                local = 1
+                value = expression(ExprKind.Intrinsic, 1, "proof_bound", -1, [])
+            }], scan_locals(), false, 0, 0)
+}
+
+fn scan_stop(summary ScanExit, value Int) Bool {
+    let state = State {
+        locals = [Value.Number(constant(integer(value)))]
+        facts = []
+        extents = []
+        observations = []
+    }
+    match pure(summary.condition, state) {
+        Result.Ok(value) => match boolean(value) {
+            Result.Ok(condition) => holds(condition, [])
+            _ => {
+                assert false
+                false
+            }
+        }
+        _ => {
+            assert false
+            false
+        }
+    }
+}
+
+test fn scan_paths_keep_local_branch_rebinding_and_uniform_exit_conditions() {
+    let accepted = expression(ExprKind.Local, 2, "", 2, [])
+    let no = expression(ExprKind.Bool, 2, "false", -1, [])
+    let body = scan_body([
+            expression(ExprKind.Let, 0, "", 2, [operation(">=", local(0), literal("1"))]),
+            expression(ExprKind.If, 0, "", -1, [accepted,
+                    expression(ExprKind.Assign, 0, "", 2, [operation("<=", local(0), literal("100"))])]),
+            expression(ExprKind.If, 0, "", -1, [expression(ExprKind.Unary, 2, "!", -1, [accepted]),
+                    expression(ExprKind.Return, 2, "", -1, [no])]),
+        ])
+    match scan_summary(body) {
+        Result.Ok(summary) => {
+            assert summary.all_false && !summary.all_true
+            assert scan_stop(summary, 0) && scan_stop(summary, 101)
+            assert !scan_stop(summary, 1) && !scan_stop(summary, 100)
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
+test fn scan_paths_reject_outer_writes() {
+    let bodies = [
+        scan_body([expression(ExprKind.Assign, 0, "", 0, [literal("0")])]),
+        scan_body([expression(ExprKind.Assign, 0, "", 1, [literal("0")])]),
+    ]
+    var index = 0
+    while index < length(bodies) {
+        assert match scan_summary(get(bodies, index)) {
+            Result.Err(_) => true
+            _ => false
+        }
+        index = index + 1
+    }
+}
+
+test fn scan_paths_keep_mixed_and_computed_boolean_exits() {
+    let no = expression(ExprKind.Return, 2, "", -1, [expression(ExprKind.Bool, 2, "false", -1, [])])
+    let choice = expression(ExprKind.Return, 2, "", -1, [operation(">", local(0), literal("100"))])
+    let body = scan_body([
+            expression(ExprKind.If, 0, "", -1, [operation("<", local(0), literal("1")), no]),
+            expression(ExprKind.If, 0, "", -1, [operation(">=", local(0), literal("100")), choice]),
+        ])
+    match scan_summary(body) {
+        Result.Ok(summary) => {
+            assert !summary.all_false && !summary.all_true
+            assert scan_stop(summary, 0) && scan_stop(summary, 100)
+            assert !scan_stop(summary, 1) && !scan_stop(summary, 99)
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

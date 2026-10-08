@@ -1,0 +1,164 @@
+import std.list.length
+
+fn bounded_entries(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        let value = values[index]
+        if value < 1 {
+            return false
+        }
+        if value > 100 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn outside_entries(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        let value = values[index]
+        if value < 1 {
+            return true
+        }
+        if value > 100 {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn branched_entries(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        let value = values[index]
+        var accepted = value >= 1
+        if accepted {
+            accepted = value <= 100
+        }
+        if !accepted {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn branch_equivalence(values List[Int]) Bool
+ensures result
+{
+    bounded_entries(values) == branched_entries(values) &&
+    bounded_entries(values) == !outside_entries(values)
+}
+
+type BoundedEntries = List[Int] where bounded_entries(self)
+
+type BoundedEntry = Int where self >= 1 && self <= 100
+
+fn read_bounded(values BoundedEntries, index Int) Int
+requires index >= 0 && index < length(values)
+ensures result >= 1 && result <= 100
+{
+    values[index]
+}
+
+fn replace_bounded(values BoundedEntries, index Int, replacement BoundedEntry) {
+    values[index] = replacement
+}
+
+fn valid_divisors(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        let divisor = values[index]
+        if divisor <= 0 {
+            return false
+        }
+        let ratio = 100 / divisor
+        if ratio > 100 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+type Divisors = List[Int] where valid_divisors(self)
+
+fn read_divisor(values Divisors, index Int) Int
+requires index >= 0 && index < length(values)
+ensures result > 0
+{
+    values[index]
+}
+
+fn first_decision(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        let value = values[index]
+        if value == 0 {
+            return true
+        }
+        if value < 0 {
+            return false
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn computed_decision(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        let value = values[index]
+        if value <= 0 {
+            return value == 0
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn decision_equivalence(values List[Int]) Bool
+ensures result
+{
+    first_decision(values) == computed_decision(values)
+}
+
+fn first_zero(values List[Int]) Bool
+requires length(values) > 0 && values[0] == 0
+ensures result == first_decision(values)
+{
+    true
+}
+
+fn first_negative(values List[Int]) Bool
+requires length(values) > 0 && values[0] < 0
+ensures result == first_decision(values)
+{
+    false
+}
+
+fn scan_branch_cases() {
+    assert branch_equivalence([])
+    assert branch_equivalence([1, 100, 17])
+    assert branch_equivalence([0, 2, 101])
+    let values = BoundedEntries([1, 100, 17])
+    let alias = values
+    replace_bounded(alias, 1, BoundedEntry(7))
+    assert read_bounded(values, 1) == 7
+    assert read_divisor(Divisors([1, 2, 100]), 2) == 100
+    assert first_zero([0, -1])
+    assert !first_negative([-1, 0])
+    assert !first_decision([])
+    assert first_decision([2, 0, -1])
+    assert !first_decision([2, -1, 0])
+    assert decision_equivalence([])
+    assert decision_equivalence([0, -1])
+    assert decision_equivalence([-1, 0])
+}
+
+test fn scan_branches_compose_through_constraints_and_preserving_stores() {
+    scan_branch_cases()
+}

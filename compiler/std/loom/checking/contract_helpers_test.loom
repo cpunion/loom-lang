@@ -42,7 +42,8 @@ test fn helper_proofs_remain_mandatory_for_templates_and_unsupported_bodies() {
     rejects(concat(admitted, "fn hidden[T](value Int) Int requires value > 0 ensures admitted(result) { comptime if T == Int { value } else { 0 } }\nfn main() { discard hidden[Int](3) }"))
     rejects(concat(admitted, "fn hidden(value Int, comptime chosen Bool) Int requires value > 0 ensures admitted(result) { comptime if chosen { value } else { 0 } }\nfn main() { discard hidden(3, true) }"))
     let callers = "\nfn bad(value Int) Int requires value > 0 ensures helper(result) { value }\nfn main() {}"
-    rejects(concat("fn helper(value Int) Bool { var count = value\nwhile count < 0 { count = count + 1 }\ntrue }", callers))
+    discard accepted(concat("fn helper(value Int) Bool { var count = value\nwhile count < 0 { count = count + 1 }\ntrue }", callers))
+    rejects(concat("fn helper(value Int) Bool { var count = value\nwhile count < 0 { count = count + 2 }\ntrue }", callers))
     rejects(concat("fn helper(value Int) Bool { helper(value) }", callers))
     rejects(concat("fn positive(value Int) Bool { value > 0 }\nfn helper(value Int) Bool { let action = positive\naction(value) }", callers))
     rejects("concept Check { fn positive(self Self) Bool }\nfn bad(value dyn Check) Int ensures value.positive() { 1 }\nfn main() {}")

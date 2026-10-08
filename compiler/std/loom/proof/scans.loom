@@ -171,23 +171,25 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
     while prefix < length(body.children) && get(body.children, prefix).kind == ExprKind.Let {
         prefix = prefix + 1
     }
-    if prefix + 2 != length(body.children) {
+    if length(body.children) == 0 || (counting && prefix + 2 != length(body.children)) {
         return Result.Err("pure scan needs local observations, one test and a unit step")
     }
     let cursor = get(limit_test.children, 0)
     if cursor.kind != ExprKind.Local || cursor.ty != 1 ||
     scan_mentions(get(limit_test.children, 1), cursor.index) ||
-    !scan_unit_step(get(body.children, prefix + 1), cursor.index) {
+    !scan_unit_step(get(body.children, length(body.children) - 1), cursor.index) {
         return Result.Err("pure loop proof needs a stable bound and unit-step cursor")
     }
     if !counting && scan_mentions(tail, cursor.index) {
         return Result.Err("pure Boolean scan tail must not observe its updated cursor")
     }
     let branch = get(body.children, prefix)
-    if branch.kind != ExprKind.If || length(branch.children) != 2 {
+    if counting && (branch.kind != ExprKind.If || length(branch.children) != 2) {
         return Result.Err("pure Boolean scan needs one constant early return")
     }
-    let early_true = scan_return(get(branch.children, 1), true)
+    let simple = prefix + 2 == length(body.children) && branch.kind == ExprKind.If &&
+    length(branch.children) == 2 && (scan_return(get(branch.children, 1), true) ||
+        scan_return(get(branch.children, 1), false))
     if counting {
         let arm = get(branch.children, 1)
         var observation = 0
@@ -203,8 +205,6 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
         scan_mentions(get(branch.children, 0), tail.index) || scan_mentions(get(limit_test.children, 1), tail.index) {
             return Result.Err("count scan needs a zero-based independent accumulator")
         }
-    } else if !early_true && !scan_return(get(branch.children, 1), false) {
-        return Result.Err("pure Boolean scan needs one constant early return")
     }
     let start = expanded(context, cursor, guard, bindings, locals, self, calls, depth + 1)?
     let end = expanded(context, get(limit_test.children, 1), guard, bindings, locals, self, calls, depth + 1)?
@@ -215,29 +215,38 @@ fn expanded_scan(context Expansion, value Expr, guard Expr,
             value = proof_expr(cursor, ExprKind.Intrinsic, 1, "proof_bound", identity, new[Expr]())
         })
     let inner = scan_context(context)
-    var observation = 0
-    while observation < prefix {
-        discard expanded_binding(inner, get(body.children, observation), proof_bool(value, true),
+    let summary = if counting || simple {
+        var observation = 0
+        while observation < prefix {
+            discard expanded_binding(inner, get(body.children, observation), proof_bool(value, true),
+                items, locals, self, calls, depth + 1)?
+            observation = observation + 1
+        }
+        let condition = expanded(inner, get(branch.children, 0), proof_bool(value, true),
             items, locals, self, calls, depth + 1)?
-        observation = observation + 1
+        let early_true = scan_return(get(branch.children, 1), true)
+        ScanExit {
+            condition = condition
+            accepted = if early_true {
+                condition
+            } else {
+                proof_bool(value, false)
+            }
+            all_false = !early_true
+            all_true = early_true
+        }
+    } else {
+        scan_branches(inner, body, items, locals, self, calls, depth + 1)?
     }
-    let condition = expanded(inner, get(branch.children, 0), proof_bool(value, true),
-        items, locals, self, calls, depth + 1)?
     discard scan_checks(context, inner, value, guard, identity, start, end)?
     if counting {
         if start.kind != ExprKind.Integer || start.text != "0" {
             return Result.Err("count scan must start at the beginning of the List")
         }
-        return counted_scan(context, value, condition, end, identity)
+        return counted_scan(context, value, summary.condition, end, identity)
     }
-    let scanned = quantified_value(value, identity, start, end, proof_not(condition))
+    let scanned = quantified_value(value, identity, start, end, proof_not(summary.condition))
     let continuation = expanded(context, tail, proof_and(guard, scanned),
         bindings, locals, self, calls, depth + 1)?
-    // scanned means no early return occurred. Existential search is the
-    // logical dual of the same bounded universal, not another array theory.
-    Result.Ok(if early_true {
-            guarded_value(scanned, continuation)
-        } else {
-            proof_and(scanned, continuation)
-        })
+    Result.Ok(scan_result(context, value, summary, identity, start, end, continuation))
 }

@@ -513,7 +513,12 @@ value. This is not an alias, runtime copy or arbitrary graph snapshot. See the
 [snapshot example](../../compiler/examples/smt_contracts/snapshots.loom) and
 [typed entry columns](../../compiler/examples/list_contracts/snapshots.loom).
 Ordinary bounded pure Boolean scans derive scoped universal predicates and
-their existential duals from constant early returns. Guarded tails, immutable
+their existential duals from uniform constant early returns. Multiple/nested
+conditions and per-iteration local rebinding retain their source guards; mixed
+or computed Boolean returns select the first exiting iteration. Outer-state
+rebinding remains unsupported. See the
+[branch example](../../compiler/examples/smt_contracts/scan_branches.loom).
+Guarded tails, immutable
 typed columns and loop-write proofs use the same rules; see the
 [search example](../../compiler/examples/smt_contracts/searches.loom).
 Complete equality scans over `List[Int]` also derive occurrence counts.

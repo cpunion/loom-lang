@@ -2667,12 +2667,17 @@ and [typed entry columns](examples/list_contracts/snapshots.loom).
 Bounded pure scans can express List predicates over modeled integer elements or
 inline field paths without special
 helper names or a new source quantifier syntax. The current fragment recognizes
-a stable exclusive upper bound, an `Int` cursor incremented by one, and a
-constant Boolean early return followed by a Boolean tail expression. Returning
-false derives a universal predicate; returning true derives its logical dual,
-an existential search. The tail executes only if no early return occurred.
+a stable exclusive upper bound, an `Int` cursor incremented by one, and pure
+Boolean early returns followed by a Boolean tail expression. Iterations may
+contain several conditions, nested branches and local rebinding, but cannot
+rebind outer state before the cursor step. Uniform false exits derive a
+universal predicate; uniform true exits derive its existential dual. Mixed or
+computed Boolean exits use the first exiting iteration, not any later true
+witness. The tail executes only if no early return occurred.
 The [search example](examples/smt_contracts/searches.loom) composes these duals,
 write witnesses and loop clearing over immutable fields beside shared children.
+The [branch example](examples/smt_contracts/scan_branches.loom) covers local
+rebinding, ordered exits and constrained reads/replacements.
 Local element
 observations expand within the iteration; the tail cannot depend on the updated
 cursor. A complete equality scan over `List[Int]` with a
