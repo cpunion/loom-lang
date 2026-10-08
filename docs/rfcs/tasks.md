@@ -257,6 +257,10 @@ parameters do not grant authority to create other Tasks, including through
 indirect calls. Cleanup still cannot create, consume or await Tasks; fault and
 cancellation drain existing children before resource disposal. Resource Lists
 with live Task elements and Dispose-only mixed aggregates remain conservative.
+Read-only matches retain the owning enum's obligations; consuming matches use
+ordinary single-transfer rules. The choice is private static analysis, not a
+second executable branch or replay of effects. Borrowed payloads carry no owned
+obligation across their lexical exits, including `break` and `continue`.
 See the [mixed scope tests](../../compiler/examples/cleanup/resource_task_scope_test.loom).
 
 Task-bearing enums transfer once and expose the active payload through ordinary

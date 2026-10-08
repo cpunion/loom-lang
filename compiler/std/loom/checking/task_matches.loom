@@ -16,6 +16,41 @@ fn task_variant(env Environment, ty Int, variant Int) Bool {
     false
 }
 
+fn task_match(flow TaskFlow, value Expr, allowed Bool, borrowing Bool, borrowed Bool) Result[Bool, Failure] {
+    let input = get(value.children, 0)
+    discard task_sequence(flow, value.children, task_value(flow.context.env, input.ty), borrowed)?
+    if !input.falls {
+        return Result.Ok(false)
+    }
+    let covered = new[Int]()
+    let merged = task_branch(flow)
+    var found = false
+    var index = 0
+    while index < length(value.arms) {
+        let branch = task_branch(flow)
+        let arm = get(value.arms, index)
+        let body = arm.body
+        discard task_match_bindings(branch, value, input.ty, arm, covered, borrowed)?
+        discard task_sequence(branch, body, allowed, borrowing)?
+        if all_fall(body) {
+            discard task_match_consumed(branch, value, arm)?
+            if found && !compatible_task_state(merged, branch) {
+                return Result.Err(task_error(flow, value, "task consumption must agree on all continuing match arms"))
+            }
+            if found {
+                merge_task_states(branch.locals, merged.locals)
+            }
+            task_join(merged, branch)
+            found = true
+        }
+        index = index + 1
+    }
+    if found {
+        task_join(flow, merged)
+    }
+    Result.Ok(task_value(flow.context.env, value.ty) && !borrowing)
+}
+
 fn task_match_bindings(flow TaskFlow, value Expr, ty Int, arm Arm, covered List[Int], borrowed Bool) Result[Bool, Failure] {
     if arm.variant >= 0 {
         push(covered, arm.variant)

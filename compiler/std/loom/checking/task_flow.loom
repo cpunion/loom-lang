@@ -51,6 +51,10 @@ fn task_states(values List[Int]) List[Int] {
 }
 
 fn task_branch(flow TaskFlow) TaskFlow {
+    task_branch(flow, flow.loop_exits)
+}
+
+fn task_branch(flow TaskFlow, exits List[List[Int]]) TaskFlow {
     TaskFlow {
         context = flow.context
         locals = task_states(flow.locals)
@@ -58,7 +62,7 @@ fn task_branch(flow TaskFlow) TaskFlow {
         pending = task_states(flow.pending)
         no_suspend = flow.no_suspend
         loop_entry = flow.loop_entry
-        loop_exits = flow.loop_exits
+        loop_exits = exits
         loop_pending = flow.loop_pending
         cleanup = flow.cleanup
     }
@@ -77,8 +81,12 @@ fn task_join(flow TaskFlow, branch TaskFlow) {
 fn compatible_task_states(left List[Int], right List[Int]) Bool {
     var index = 0
     while index < length(left) {
-        let a = get(left, index)
-        let b = get(right, index)
+        // Read-only bindings carry no owned obligation and can leave a scope.
+        // They must never agree with an owned/live leaf, however.
+        let left_state = get(left, index)
+        let right_state = get(right, index)
+        let a = if left_state == 3 { 0 } else { left_state }
+        let b = if right_state == 3 { 0 } else { right_state }
         if a != b && a != 2 && b != 2 { return false }
         index = index + 1
     }
@@ -345,33 +353,26 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool, borrowing Bool) Resu
     if value.kind == ExprKind.Match {
         let input = get(value.children, 0)
         let borrowed = borrowing || task_borrowed_input(flow, input)?
-        discard task_sequence(flow, value.children, task_value(flow.context.env, input.ty), borrowed)?
-        if !input.falls { return Result.Ok(false) }
-        let covered = new[Int]()
-        let merged = task_branch(flow)
-        var found = false
-        var index = 0
-        while index < length(value.arms) {
-            let branch = task_branch(flow)
-            let arm = get(value.arms, index)
-            let body = arm.body
-            discard task_match_bindings(branch, value, input.ty, arm, covered, borrowed)?
-            discard task_sequence(branch, body, allowed, borrowing)?
-            if all_fall(body) {
-                discard task_match_consumed(branch, value, arm)?
-                if found && !compatible_task_state(merged, branch) {
-                    return Result.Err(task_error(flow, value, "task consumption must agree on all continuing match arms"))
+        if !borrowed && task_value(flow.context.env, input.ty) && task_resource_borrow(flow.context, input.ty)? {
+            // Prefer a read-only match. Its state and loop exits stay private
+            // until accepted; a real transfer uses the ordinary owned path.
+            let exits = new[List[Int]]()
+            let branch = task_branch(flow, exits)
+            match task_match(branch, value, allowed, borrowing, true) {
+                Result.Ok(transferred) => {
+                    task_join(flow, branch)
+                    var index = 0
+                    while index < length(exits) {
+                        push(flow.loop_exits, get(exits, index))
+                        index = index + 1
+                    }
+                    return Result.Ok(transferred)
                 }
-                if found { merge_task_states(branch.locals, merged.locals) }
-                task_join(merged, branch)
-                found = true
+                Result.Err(_) => {
+                }
             }
-            index = index + 1
         }
-        if found {
-            task_join(flow, merged)
-        }
-        return Result.Ok(task && !borrowing)
+        return task_match(flow, value, allowed, borrowing, borrowed)
     }
     if value.kind == ExprKind.Binary &&(value.text == "&&" || value.text == "||") {
         discard task_expression(flow, get(value.children, 0), false)?
