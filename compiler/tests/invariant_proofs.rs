@@ -437,6 +437,19 @@ async fn main() {
         Result.Ok(values) => length(values) == 4 && values[0] == 5 && values[3] == 4
         Result.Err(_) => false
     }
+    var cursor = ([1, 2], 0)
+    while cursor.1 < 3 {
+        cursor = (cursor.0, cursor.1 + 1)
+    }
+    let stable = PositiveValues(cursor.0)
+    discard run(fn() Int {
+        0
+    }).await
+    fill_positive(cursor.0, 6)
+    assert match stable {
+        Result.Ok(values) => length(values) == 2 && values[0] == 6 && values[1] == 6
+        Result.Err(_) => false
+    }
 }
 "#,
     ]
@@ -500,19 +513,32 @@ fn main() {
     copy_right_to_left(draft)
     discard published"#,
     );
-    fs::write(&main, &raw_copy).unwrap();
-    success(&check());
-    fs::write(
-        &main,
-        raw_copy.replace("fn main()", "async fn main()").replace(
-            "    copy_right_to_left(draft)",
-            "    discard run(fn() Int {\n        0\n    }).await\n    copy_right_to_left(draft)",
-        ),
-    )
-    .unwrap();
-    let stale_raw = check();
-    assert!(!stale_raw.status.success());
-    assert!(String::from_utf8_lossy(&stale_raw.stderr).contains("interference-safe"));
+    let stable_copy = sequential.replace(
+        "    let values = Ordered([1, 2])\n    copy_right_to_left(values)\n    assert values[0] == 2",
+        r#"    var cursor = ([1, 2], 0)
+    while cursor.1 < 3 {
+        cursor = (cursor.0, cursor.1 + 1)
+    }
+    let draft = cursor.0
+    let published = Ordered(draft)
+    copy_right_to_left(draft)
+    discard published"#,
+    );
+    for source in [&raw_copy, &stable_copy] {
+        fs::write(&main, source).unwrap();
+        success(&check());
+        fs::write(
+            &main,
+            source.replace("fn main()", "async fn main()").replace(
+                "    copy_right_to_left(draft)",
+                "    discard run(fn() Int {\n        0\n    }).await\n    copy_right_to_left(draft)",
+            ),
+        )
+        .unwrap();
+        let stale_raw = check();
+        assert!(!stale_raw.status.success());
+        assert!(String::from_utf8_lossy(&stale_raw.stderr).contains("interference-safe"));
+    }
 
     let raw_observer = [
         UPDATE_TYPES,

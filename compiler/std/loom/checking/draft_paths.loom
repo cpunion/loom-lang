@@ -26,35 +26,36 @@ record DraftPublication {
     permissions List[InvariantPermission]
 }
 
-fn draft_definitions(value Expr, local Int, definitions List[Expr], depth Int) {
-    if depth >= 256 {
-        // An exhausted search is not evidence for a unique definition.
-        push(definitions, value)
-        push(definitions, value)
-        return
+fn draft_definitions(value Expr, local Int, definitions List[Expr], depth Int) Bool {
+    if depth >= 256 || length(definitions) >= 256 {
+        return false
     }
     if value.kind == ExprKind.Let && value.index == local {
         push(definitions, value)
     }
     if value.kind == ExprKind.Block && value.text == "checked list" {
-        draft_definitions(draft_input(value), local, definitions, depth + 1)
-        return
+        return draft_definitions(draft_input(value), local, definitions, depth + 1)
     }
     var index = 0
-    while index < length(value.children) && length(definitions) < 2 {
-        draft_definitions(get(value.children, index), local, definitions, depth + 1)
+    while index < length(value.children) {
+        if !draft_definitions(get(value.children, index), local, definitions, depth + 1) {
+            return false
+        }
         index = index + 1
     }
     index = 0
-    while index < length(value.arms) && length(definitions) < 2 {
+    while index < length(value.arms) {
         let body = get(value.arms, index).body
         var item = 0
-        while item < length(body) && length(definitions) < 2 {
-            draft_definitions(get(body, item), local, definitions, depth + 1)
+        while item < length(body) {
+            if !draft_definitions(get(body, item), local, definitions, depth + 1) {
+                return false
+            }
             item = item + 1
         }
         index = index + 1
     }
+    true
 }
 
 // Registrations can be nested in compiler-emitted scoped initialization blocks.

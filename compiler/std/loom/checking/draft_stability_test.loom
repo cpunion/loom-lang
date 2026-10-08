@@ -1,0 +1,184 @@
+test fn loop_carried_projections_and_delayed_slots_keep_proved_header_identity() {
+    list_constraint_accept(concat(draft_update_source(), """
+        record Cursor {
+            values List[Int]
+            notes List[Int]
+            index Int
+        }
+        pub fn fields(count Int) Result[PositiveHead, ConstraintError] {
+            var cursor = Cursor {
+                values = [1, 2]
+                notes = [0]
+                index = 0
+            }
+            while cursor.index < count {
+                cursor = Cursor {
+                    index = cursor.index + 1
+                    ..cursor
+                }
+            }
+            defer {
+                cursor = Cursor {
+                    index = 0
+                    ..cursor
+                }
+                cursor.values[0] = 4
+            }
+            let published = PositiveHead(cursor.values)
+            cursor.values[0] = 3
+            cursor.notes[0] = -1
+            published
+        }
+        pub fn tuples(count Int) Result[PositiveHead, ConstraintError] {
+            var cursor = ([1, 2], 0)
+            while cursor.1 < count {
+                cursor = (cursor.0, cursor.1 + 1)
+            }
+            let published = PositiveHead(cursor.0)
+            cursor.0[0] = 3
+            published
+        }
+        pub fn aliases(count Int) Result[PositiveHead, ConstraintError] {
+            var first = [1, 2]
+            var second = first
+            var index = 0
+            while index < count {
+                first = second
+                second = first
+                index = index + 1
+            }
+            let published = PositiveHead(first)
+            second[0] = 3
+            first[1] = 4
+            published
+        }
+        pub fn delayed() Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            defer {
+                draft = draft
+                draft[0] = 3
+            }
+            let published = PositiveHead(draft)
+            published
+        }
+        """))
+}
+
+test fn identity_induction_cannot_hide_new_allocations_or_cross_iteration_aliases() {
+    let header = draft_update_source()
+    list_constraint_reject(concat(header, """
+        fn copy(input List[Int], output List[Int]) {
+            output[0] = input[0]
+        }
+        pub fn invalid(count Int) Result[PositiveHead, ConstraintError] {
+            var draft = [-1, 2]
+            let previous = draft
+            var index = 0
+            while index < count {
+                draft = [1, 2]
+                index = index + 1
+            }
+            let published = PositiveHead(draft)
+            copy(previous, draft)
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        record Cursor {
+            values List[Int]
+            notes List[Int]
+            backup List[Int]
+            index Int
+        }
+        pub fn invalid(count Int) Result[PositiveHead, ConstraintError] {
+            var cursor = Cursor {
+                values = [1, 2]
+                notes = [0]
+                backup = [0]
+                index = 0
+            }
+            while cursor.index < count {
+                cursor = Cursor {
+                    notes = cursor.values
+                    backup = cursor.notes
+                    index = cursor.index + 1
+                    ..cursor
+                }
+            }
+            let published = PositiveHead(cursor.values)
+            cursor.backup[0] = -1
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn copy(input List[Int], output List[Int]) {
+            output[0] = input[0]
+        }
+        pub fn invalid(count Int) Result[PositiveHead, ConstraintError] {
+            var first = [-1, 2]
+            var second = [1, 2]
+            var index = 0
+            while index < count {
+                first = second
+                second = first
+                index = index + 1
+            }
+            let published = PositiveHead(second)
+            copy(first, second)
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            var draft = [1, 2]
+            defer {
+                draft = draft
+                draft[0] = -1
+            }
+            let published = PositiveHead(draft)
+            published
+        }
+        """))
+}
+
+test fn cached_stable_slots_revalidate_each_assignment_and_protected_store() {
+    let source = concat(draft_update_source(), """
+        pub fn build(count Int, input List[Int]) Result[PositiveHead, ConstraintError] {
+            var cursor = ([1, 2], 0)
+            while cursor.1 < count {
+                cursor = (cursor.0, cursor.1 + 1)
+            }
+            let published = PositiveHead(cursor.0)
+            cursor.0[0] = 3
+            published
+        }
+        """)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(list_constraint_files(concat(source, "\nfn unrelated() {}\n"))),
+        false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(source, "cursor = (cursor.0,"), "cursor = (input,")
+    assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let invalid = std.text.join(std.text.split(source, "cursor.0[0] = 3"), "cursor.0[0] = -1")
+    assert match check_project_cached(fixture_project(list_constraint_files(invalid)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

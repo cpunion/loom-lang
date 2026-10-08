@@ -404,8 +404,17 @@ evidence are unchanged. The
 [binding example](../../compiler/examples/record_refinement/versions.loom)
 covers sharing, once-only effects, CTFE, cleanup and suspension; the
 [join example](../../compiler/examples/record_refinement/joins.loom) adds branches.
+Loop-carried and delayed mutable slots can also retain a proved header identity.
+The initializer establishes the identity; every assignment must preserve the
+exact List or aggregate projection. Other fields may change, and the original
+may-origin fixed point still tracks aliases propagated across iterations.
+Proof-group hypotheses never become evidence before all assignments pass; a
+fresh replacement does not inherit the old slot's identity. The
+[stable cursor](../../compiler/examples/record_refinement/stable.loom) covers
+record updates, mutual aliases, cleanup, CTFE and suspension without runtime
+copies or identity monitors.
 Publication in loop conditions, repeated publication of an outer allocation,
-loop-carried mutable origins and general nested graph
+changing loop-carried header identities and general nested graph
 publication remain open. Delayed mutable reads/writes, conditional aliases,
 aggregate arguments and captured mutating callbacks without a proved header
 identity remain conservative.

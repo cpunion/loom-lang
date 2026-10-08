@@ -1,0 +1,68 @@
+record CursorDraft {
+    values List[Int]
+    notes List[Int]
+    index Int
+}
+
+fn publish_stable_cursor(count Int, events List[Int]) Result[PositiveValues, ConstraintError] {
+    var cursor = CursorDraft {
+        values = [1, 2]
+        notes = [0]
+        index = 0
+    }
+    while cursor.index < count {
+        push(events, cursor.index)
+        cursor = CursorDraft {
+            index = cursor.index + 1
+            ..cursor
+        }
+    }
+    defer {
+        cursor = CursorDraft {
+            index = 0
+            ..cursor
+        }
+        cursor.values[0] = 7
+        push(events, values_sum(cursor.values))
+    }
+    let published = PositiveValues(cursor.values)
+    cursor.notes[0] = -1
+    fill_positive(cursor.values, 6)
+    assert cursor.notes[0] == -1 && cursor.index == count
+    published
+}
+
+fn stable_draft_scope() Bool {
+    let events List[Int] = []
+    let published = publish_stable_cursor(3, events)
+    assert length(events) == 4 && events[0] == 0 && events[1] == 1 && events[2] == 2 && events[3] == 13
+    match published {
+        Result.Ok(values) => values_sum(values) == 13
+        Result.Err(_) => false
+    }
+}
+
+test fn stable_cursor_effects_and_cleanup_run_once_at_compile_time() {
+    assert comptime {
+        stable_draft_scope()
+    }
+}
+
+test async fn loop_carried_aliases_keep_identity_through_real_waits() {
+    var first = [1, 2]
+    var second = first
+    var index = 0
+    while index < 3 {
+        first = second
+        second = first
+        index = index + 1
+    }
+    let published = PositiveValues(first)
+    sleep_ms(1).await
+    second[0] = 5
+    fill_positive(first, 6)
+    assert second[0] == 6 && second[1] == 6 && match published {
+        Result.Ok(values) => values_sum(values) == 12
+        Result.Err(_) => false
+    }
+}

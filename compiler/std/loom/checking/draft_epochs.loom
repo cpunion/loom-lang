@@ -8,7 +8,9 @@ fn draft_epochs(env Environment, value Expr, candidate Expr, root Int, bodies Li
     if value.kind == ExprKind.While && length(value.children) == 2 {
         let body = get(value.children, 1)
         let definitions = new[Expr]()
-        draft_definitions(body, root, definitions, 0)
+        if !draft_definitions(body, root, definitions, 0) {
+            return false
+        }
         if length(definitions) == 1 && draft_occurrences(env, body, candidate, 0) == 1 {
             push(bodies, body)
         }
@@ -84,8 +86,7 @@ fn draft_epoch_allocations(body Expr, root DraftRoot) Bool {
     var index = 0
     while index < length(root.allocations) {
         let definitions = new[Expr]()
-        draft_definitions(body, get(root.allocations, index).local, definitions, 0)
-        if length(definitions) != 1 {
+        if !draft_definitions(body, get(root.allocations, index).local, definitions, 0) || length(definitions) != 1 {
             return false
         }
         index = index + 1

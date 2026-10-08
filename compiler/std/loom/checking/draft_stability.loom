@@ -1,0 +1,90 @@
+record DraftIdentity {
+    local Int
+    path List[Int]
+    root DraftRoot
+}
+
+// Induction over every assignment, not sampled loop iterations. The hypothesis
+// is local to this proof group and cannot escape until all writes are checked.
+// Original mutable slots remain in the may-origin fixed point, including other
+// fields through which a protected header can propagate across iterations.
+fn draft_stable_root(env Environment, functions List[Function], current Function, local Int,
+    path List[Int], identities List[DraftIdentity], budget List[Int], depth Int) DraftRoot {
+    if depth >= 64 || get(budget, 0) <= 0 || get(current.locals, local).is_scoped ||
+    get(env.types, get(current.locals, local).ty).kind == TypeKind.Frame {
+        return missing_draft_root()
+    }
+    var index = 0
+    while index < length(identities) {
+        let identity = get(identities, index)
+        if identity.local == local && length(identity.path) == length(path) && origin_prefix(identity.path, path) {
+            return identity.root
+        }
+        index = index + 1
+    }
+    let definitions = new[Expr]()
+    if !draft_definitions(current.body, local, definitions, 0) ||
+    length(definitions) != 1 || length(get(definitions, 0).children) != 1 {
+        return missing_draft_root()
+    }
+    let root = draft_value_root(env, functions, current, get(get(definitions, 0).children, 0),
+        path, local, path, identities, budget, depth + 1)
+    if root.local < 0 {
+        return root
+    }
+    let group = std.list.clone(identities)
+    push(group, DraftIdentity {
+            local = local
+            path = path
+            root = root
+        })
+    if !draft_stable_assignments(env, functions, current, current.body, local, path, root, group, budget, 0) {
+        return missing_draft_root()
+    }
+    root
+}
+
+fn draft_stable_assignments(env Environment, functions List[Function], current Function, value Expr,
+    local Int, path List[Int], root DraftRoot, identities List[DraftIdentity], budget List[Int], depth Int) Bool {
+    if depth >= 256 {
+        return false
+    }
+    if value.kind == ExprKind.Assign && value.index == local {
+        if length(value.children) != 1 {
+            return false
+        }
+        // An unbound new allocation is not the old slot's allocation. Giving
+        // the RHS that slot's anchor would falsely equate fresh replacements.
+        let assigned = draft_value_root(env, functions, current, get(value.children, 0),
+            path, -1, new[Int](), identities, budget, 0)
+        if !same_draft_root(root, assigned) {
+            return false
+        }
+    }
+    if value.kind == ExprKind.Block && value.text == "checked list" {
+        return draft_stable_assignments(env, functions, current, draft_input(value),
+            local, path, root, identities, budget, depth + 1)
+    }
+    var index = 0
+    while index < length(value.children) {
+        if !draft_stable_assignments(env, functions, current, get(value.children, index),
+            local, path, root, identities, budget, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if !draft_stable_assignments(env, functions, current, get(body, item),
+                local, path, root, identities, budget, depth + 1) {
+                return false
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    true
+}

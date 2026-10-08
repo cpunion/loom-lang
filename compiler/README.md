@@ -2196,7 +2196,13 @@ epoch when its fresh immutable binding is inside the iteration.
 Raw aliases cannot flow into bindings outside that body or otherwise
 escape; previously published headers are not the next iteration's draft.
 Nested iteration bodies, early exits, cleanup and unrelated waits retain these
-same rules. Headers allocated outside a repeating publication, publication in
+same rules. Loop-carried or cleanup-delayed mutable bindings may retain a header
+when initialization and every assignment prove the same exact identity. This
+also applies to one record/tuple projection while other fields change. The
+original alias fixed point still tracks references propagated across iterations;
+identity induction does not unroll a loop or identify fresh replacements. See the
+[stable cursor](examples/record_refinement/stable.loom). Changing loop-carried
+header identities, headers allocated outside a repeating publication, publication in
 loop conditions and unsupported draft operations remain conservative.
 Unknown predicates keep the ordinary `Result` boundary.
 The [structural builder example](examples/record_refinement/structural_drafts.loom)
