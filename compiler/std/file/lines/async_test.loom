@@ -97,17 +97,20 @@ test async fn cancelling_a_consumer_closes_its_lazy_file_after_child_drain() {
     let observed = new[LineState]()
     let tokens = new[Int]()
     let pending = paused_lines(path, observed, tokens)
-    // The child starts before the timer, whether open/read has completed or not.
-    sleep_ms(5).await
+    var attempts = 0
+    while std.list.length(tokens) == 0 && attempts < 2000 {
+        sleep_ms(1).await
+        attempts = attempts + 1
+    }
+    assert std.list.length(tokens) == 1
+    let token = tokens[0]
     assert match cancel(pending) {
         Outcome.Cancelled => true
         _ => false
     }
     assert std.list.length(observed) == 1
     assert get(get(observed, 0).handle, 0) == -1 && get(get(observed, 0).ended, 0)
-    if std.list.length(tokens) != 0 {
-        assert async_read(tokens[0], std.bytes.new(), 1).await == -1
-    }
+    assert async_read(token, std.bytes.new(), 1).await == -1
 }
 
 test async fn lazy_file_factories_compose_without_opening_an_unpulled_source() {
