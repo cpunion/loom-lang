@@ -1,0 +1,97 @@
+import std.list.length
+import std.list.push
+
+fn make_task(value Int, ignored Int) Task[Int] {
+    let pending = keep(value, ignored)
+    pending
+}
+
+fn make_pending(value Int) Pending {
+    Pending {
+        task = make_task(value, 0)
+        marker = 1
+    }
+}
+
+fn select_task(flag Bool, value Int) Task[Int] {
+    var index = 0
+    while index < 2 {
+        if flag {
+            return make_task(value, 0)
+        }
+        index = index + 1
+    }
+    make_task(value, 1)
+}
+
+fn make_callback(callback fn(Int, Int) Task[Int], value Int) Task[Int] {
+    callback(value, 0)
+}
+
+fn ignore_source(source dyn TypedSource, value Int) Task[Int] {
+    discard source
+    make_task(value, 0)
+}
+
+async fn factory_saved(value Int) Int
+ensures result == value {
+    var input = value
+    let factory = make_task
+    let pending = factory(input, {
+            input = 0
+            1
+        })
+    input = 3
+    pending.await
+}
+
+async fn factory_boxed(value Int) Int
+ensures result == value {
+    make_pending(value).task.await
+}
+
+async fn factory_selected(flag Bool, value Int) Int
+ensures result == value {
+    select_task(flag, value).await
+}
+
+async fn factory_callback(value Int) Int
+ensures result == value {
+    make_callback(keep, value).await
+}
+
+async fn factory_ignored(source dyn TypedSource, value Int) Int
+ensures result == value {
+    ignore_source(source, value).await
+}
+
+fn factory_cleanup(values List[Int], value Int) Task[Int] {
+    push(values, 1)
+    defer {
+        push(values, 2)
+    }
+    make_task(value, 0)
+}
+
+async fn factory_effects(values List[Int], value Int) (Int, Int)
+ensures result.0 == value && result.1 == 2 {
+    let before = length(values)
+    let pending = factory_cleanup(values, value)
+    let after = length(values)
+    let completed = pending.await
+    (completed, after - before)
+}
+
+async fn exercise_factories() {
+    assert factory_saved(42).await == 42
+    assert factory_boxed(7).await == 7
+    assert factory_selected(true, 3).await == 3
+    assert factory_selected(false, 4).await == 4
+    assert factory_callback(9).await == 9
+    let source dyn TypedSource = false
+    assert factory_ignored(source, 8).await == 8
+    let values List[Int] = []
+    let observed = factory_effects(values, 6).await
+    assert observed.0 == 6 && observed.1 == 2
+    assert length(values) == 2
+}

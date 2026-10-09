@@ -32,6 +32,8 @@ fn with_loop_control(proof Verification, control Option[LoopControl]) Verificati
         query = proof.query
         shared = proof.shared
         preservation = proof.preservation
+        body_calls = proof.body_calls
+        capture_returns = proof.capture_returns
         returns = proof.returns
     }
 }
@@ -494,7 +496,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
         // A nested loop gets a separate context; immutable verification values
         // restore the enclosing target on return. Each inference pass starts
         // fresh, so exits proved using a removed candidate cannot escape.
-        let iteration = with_preservation_returns(with_loop_control(proof, Option.Some(control)))
+        let iteration = with_loop_returns(with_loop_control(proof, Option.Some(control)))
         let backedges = control.backedges
         let exits = control.exits
         var index = 0
@@ -535,7 +537,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             }
         }
         if length(survivors) == length(candidates) && !published {
-            if length(proof.preservation) != 0 {
+            if proof.capture_returns {
                 discard append(proof.returns, iteration.returns)?
             }
             return Result.Ok(exits)

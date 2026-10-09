@@ -1,0 +1,171 @@
+fn task_factory_contract_source() Text {
+    """
+        async fn keep(value Int) Int
+        ensures result == old(value) {
+            value
+        }
+        fn make(value Int, ignored Int) Task[Int] {
+            discard ignored
+            let pending = keep(value)
+            pending
+        }
+        record Pending {
+            task Task[Int]
+            marker Int
+        }
+        fn bundle(value Int) Pending {
+            Pending {
+                task = make(value, 0)
+                marker = 1
+            }
+        }
+        fn choose(flag Bool, value Int) Task[Int] {
+            var index = 0
+            while index < 2 {
+                if flag {
+                    return make(value, 0)
+                }
+                index = index + 1
+            }
+            make(value, 1)
+        }
+        concept Opaque {
+            fn read(self Self) Int
+        }
+        fn ignore(receiver dyn Opaque, value Int) Task[Int] {
+            discard receiver
+            make(value, 0)
+        }
+        async fn forward(value Int) Int
+        ensures result == value {
+            var input = value
+            let pending = make(input, {
+                input = 0
+                1
+            })
+            input = 3
+            pending.await
+        }
+        async fn boxed(value Int) Int
+        ensures result == value {
+            bundle(value).task.await
+        }
+        async fn selected(flag Bool, value Int) Int
+        ensures result == value {
+            choose(flag, value).await
+        }
+        async fn ignored(receiver dyn Opaque, value Int) Int
+        ensures result == value {
+            ignore(receiver, value).await
+        }
+        """
+}
+
+test fn source_task_factories_reuse_arguments_effects_and_return_paths() {
+    let definitions = task_factory_contract_source()
+    // Proofs cover unknown arguments and both return paths without a main.
+    discard accepted(definitions)
+    discard accepted(concat(definitions, """
+        async fn main() {
+            assert forward(42).await == 42
+            assert boxed(7).await == 7
+            assert selected(true, 3).await == 3
+            assert selected(false, 4).await == 4
+        }
+        """))
+    rejects(std.text.join(std.text.split(definitions, "make(value, 1)"), "make(value + 1, 1)"))
+    rejects(std.text.join(std.text.split(definitions, "return make(value, 0)"), "return make(value + 1, 0)"))
+    rejects("""
+        fn make(callback fn(Int) Task[Int], value Int) Task[Int] {
+            callback(value)
+        }
+        async fn wrong(callback fn(Int) Task[Int], value Int) Int
+        ensures result == value {
+            make(callback, value).await
+        }
+        """)
+    rejects("""
+        fn make(value Int) Task[Int] {
+            make(value)
+        }
+        async fn wrong(value Int) Int
+        ensures result == value {
+            make(value).await
+        }
+        """)
+}
+
+test fn source_factory_cleanup_runs_before_the_task_is_returned() {
+    let declarations = """
+        import std.list.length
+        import std.list.push
+        async fn keep(value Int) Int
+        ensures result == value {
+            value
+        }
+        fn make(values List[Int], value Int) Task[Int] {
+            push(values, 1)
+            defer {
+                push(values, 2)
+            }
+            keep(value)
+        }
+        """
+    list_length_contract(concat(declarations, """
+        async fn forward(values List[Int], value Int) Int
+        ensures result == 2 {
+            let before = length(values)
+            let pending = make(values, value)
+            let after = length(values)
+            assert pending.await == value
+            after - before
+        }
+        """), true)
+    // Callee completion does not preserve the caller's current mutable heap.
+    list_length_contract(concat(declarations, """
+        async fn wrong(values List[Int], value Int) Int
+        ensures result == 2 {
+            let before = length(values)
+            discard make(values, value).await
+            length(values) - before
+        }
+        """), false)
+}
+
+test fn source_factory_call_cycles_and_depth_exhaustion_reject_without_recursing_forever() {
+    rejects("""
+        fn first(value Int) Task[Int] {
+            second(value)
+        }
+        fn second(value Int) Task[Int] {
+            first(value)
+        }
+        async fn wrong(value Int) Int
+        ensures result == value {
+            first(value).await
+        }
+        """)
+    var declarations = """
+        async fn keep(value Int) Int
+        ensures result == value {
+            value
+        }
+        fn factory0(value Int) Task[Int] {
+            keep(value)
+        }
+        """
+    var index = 1
+    while index <= 40 {
+        declarations = concat(declarations, concat("\nfn factory", concat(std.int.to_text(index),
+                    concat("(value Int) Task[Int] {\n    factory", concat(std.int.to_text(index - 1), "(value)\n}\n")))))
+        index = index + 1
+    }
+    // A finite source chain also needs a bound, independently of cycle checks.
+    discard accepted(declarations)
+    rejects(concat(declarations, """
+        async fn wrong(value Int) Int
+        ensures result == value {
+            factory40(value).await
+        }
+        """))
+}

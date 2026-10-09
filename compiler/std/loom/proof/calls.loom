@@ -64,6 +64,8 @@ fn verification(function Function, program Program, backend ProofBackend) Verifi
         query = proof_query(backend)
         shared = false
         preservation = new[Expr]()
+        body_calls = new[Int]()
+        capture_returns = false
         returns = new[Outcome]()
     }
 }
@@ -505,7 +507,14 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         index = index + 1
     }
     let prepared = proof_expr(call, ExprKind.Call, call.ty, call.text, call.index, expressions)
-    let value = expanded_call(context, prepared, proof_bool(call, true), references, proof.function.locals, false, 0, 0)?
+    let value = match expanded_call(context, prepared, proof_bool(call, true), references, proof.function.locals, false, 0, 0) {
+        Result.Ok(value) => value
+        // Expansion has not executed effects or committed state. Reuse the
+        // ordinary symbolic executor with the already evaluated arguments.
+        Result.Err(_) => {
+            return source_body_call(proof, call.index, function, arguments, depth)
+        }
+    }
     if !bounded_contract(value) {
         return Result.Err("body helper proof expansion budget exhausted")
     }
@@ -549,33 +558,21 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     if primitive != "" {
         return execute_list_operation(proof, call, primitive, state, depth)
     }
-    if length(proof.preservation) != 0 {
-        return preserving_call(proof, call, function, state, depth)
+    if function.runtime_name != "" || length(function.params) != length(call.children) {
+        return Result.Err("body proof needs a checked source function")
     }
-    // A no-result helper needs no invented result specification. A finite
-    // checked effect footprint can frame its storage; no body value is assumed.
-    let framed_unit = function.result == 0 && (length(function.postconditions) != 0 ||
-        extent_preserving(proof.program, function.body))
-    if function.runtime_name != "" || (!helper_type(proof.program, function.result, 0) && !framed_unit) || length(function.params) != length(call.children) {
-        return Result.Err("body proof needs a checked scalar or inline aggregate source function")
-    }
-    var index = 0
-    while index < length(function.params) {
-        let ty = get(function.params, index)
-        // Independently checked contracts may ignore any typed input. An
-        // unmodeled value supplies no facts; operations and requirements on it
-        // still need proof. Do not enumerate the permitted opaque type kinds.
-        let opaque = length(function.postconditions) != 0 || function.body.kind == ExprKind.Deferred
-        if !helper_type(proof.program, ty, 0) && !opaque {
-            return Result.Err("body proof helper parameters must be scalars or supported inline aggregates, apart from contracted opaque arguments")
-        }
-        index = index + 1
-    }
+    // Opaque inputs carry no facts. Their presence is harmless; actual
+    // operations on them must be supported by the shared execution rules.
     let arguments = call_arguments(proof, call, state, depth)?
     let output = new[Outcome]()
-    index = 0
+    var index = 0
     while index < length(arguments) {
-        discard append(output, applied_call(proof, call, function, get(arguments, index), depth)?)?
+        let input = get(arguments, index)
+        discard append(output, if length(proof.preservation) != 0 {
+                source_body_call(proof, call.index, function, input, depth)?
+            } else {
+                applied_call(proof, call, function, input, depth)?
+            })?
         index = index + 1
     }
     Result.Ok(output)

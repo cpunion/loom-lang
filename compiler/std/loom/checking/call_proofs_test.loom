@@ -46,7 +46,27 @@ test fn body_call_summaries_do_not_skip_declaration_proofs() {
         index = index + 1
     }
     rejects(concat(identity, "fn hidden[T](value Int) Int ensures result == value { comptime if T == Int { identity(value) } else { 0 } }\nfn main() { discard hidden[Int](3) }"))
-    rejects("fn looping(value Int) Int { var count = value\nwhile count > 0 { count = count - 1 }\ncount }\nfn unsupported(value Int) Int ensures result <= value { looping(value) }")
+    let looping = """
+        fn looping(value Int) Int {
+            var count = value
+            while count > 0 {
+                count = count - 1
+            }
+            count
+        }
+        """
+    discard accepted(concat(looping, """
+        fn forward(value Int) Int
+        ensures result <= value {
+            looping(value)
+        }
+        """))
+    rejects(concat(looping, """
+        fn wrong(value Int) Int
+        ensures result < value {
+            looping(value)
+        }
+        """))
 }
 
 test fn single_call_inference_retains_context_weakening_and_requirements() {

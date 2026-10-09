@@ -1692,9 +1692,16 @@ declarations. Private proof promises retain evaluated arguments, not expressions
 to replay at completion. Callee entry observations are independent of the
 caller's creation-time heap; suspension discards unprotected current storage
 facts while preserving past scalar snapshots. Unknown Task targets provide only
-typed results. Guarantees do not apply to cancellation or faults, and general
-Task-returning helper/collection promise inference remains unsupported. See the
+typed results. Guarantees do not apply to cancellation or faults. Finite checked
+synchronous source helpers also preserve returned Task promises, including
+inline aggregates and known callbacks. Their eager effects and lexical cleanup
+run once before returning the Task; completion still has its own entry state.
+Unsupported helper operations or exhausted budgets supply no evidence, and
+collection completion promises remain unsupported. See the
 [async contract example](examples/async_contracts/main.loom).
+The [factory example](examples/async_contracts/factories.loom) covers arguments
+rebound after evaluation, both loop/early-return paths, callbacks, opaque inputs
+and cleanup before a real wait.
 The [typed method example](examples/async_contracts/typed.loom) uses the same
 return-type guarantees through synchronous, async, aggregate and pack calls.
 An await context guides inference without converting its Task handle. Supported
@@ -2698,6 +2705,18 @@ all retained invariants still require entry/backedge proofs. See the
 during an actual sorting loop. The separate
 [quantified example](examples/smt_contracts/quantified.loom) also proves ordering
 and permutation. These proof states add no native object metadata.
+
+Uncontracted source helpers retain the pure-expression fast path. When that
+cannot expand a checked body, ordinary call proofs reuse the symbolic call frame
+also used for continuing invariants. Parameters have once-evaluated values;
+callee locals, early returns, supported loops and cleanup keep their own scope.
+Opaque inputs confer no facts, but their presence alone does not forbid a proof.
+Required predicates still use pure expansion, not effectful execution. Unknown
+operations and match paths reject. Source-body execution rejects active call
+cycles and more than 32 nested invocations; exhausted budgets never prove a
+required contract. Declared
+summaries keep their existing abstraction boundary: a weak contract does not
+silently inherit stronger facts from its implementation.
 
 Aggregate summaries compose through nested calls, field projections and
 whole-value updates. Unconditional proved equalities such as

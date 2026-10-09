@@ -21,6 +21,8 @@ record Verification {
     query ProofQuery
     shared Bool
     preservation List[Expr]
+    body_calls List[Int]
+    capture_returns Bool
     returns List[Outcome]
 }
 
@@ -232,7 +234,7 @@ fn required_condition(condition Expr, state State) Result[Bool, Text] {
 }
 
 fn returned(proof Verification, state State, value Value) Result[Bool, Text] {
-    if length(proof.preservation) != 0 {
+    if proof.capture_returns {
         return add_outcome(proof.returns, Outcome {
                 state = state
                 value = value
@@ -696,6 +698,8 @@ fn verify_entered(proof Verification, state State) Result[Bool, Text] {
         query = proof.query
         shared = proof.shared
         preservation = proof.preservation
+        body_calls = proof.body_calls
+        capture_returns = proof.capture_returns
         returns = proof.returns
     }
     let exits = execute(prepared, function.body, captured.state, 256)?
@@ -769,6 +773,8 @@ fn contract_verification(program Program, function Function, backend ProofBacken
             query = ordinary.query
             shared = shared
             preservation = ordinary.preservation
+            body_calls = ordinary.body_calls
+            capture_returns = ordinary.capture_returns
             returns = ordinary.returns
         })
 }
