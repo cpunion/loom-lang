@@ -379,7 +379,7 @@ pub fn lower(original Program) Program {
     var index = 0
     while index < length(source.functions) {
         let function = get(source.functions, index)
-        any = any || function.is_async || function.runtime_name == "list_append" || function.runtime_name == "list_take" || function.runtime_name == "list_replace" || function.runtime_name == "task_cancel" || function.runtime_name == "task_ready_result" || function.runtime_name == "task_ready_outcome"
+        any = any || function.is_async || function.runtime_name == "list_append" || function.runtime_name == "list_take" || function.runtime_name == "list_replace" || function.runtime_name == "task_cancel" || function.runtime_name == "task_ready_result" || function.runtime_name == "task_ready_outcome" || function.runtime_name == "task_ready_case" || function.runtime_name == "task_ready_payload"
         index = index + 1
     }
     index = 0
@@ -432,7 +432,8 @@ pub fn lower(original Program) Program {
         if function.is_async {
             async_function(program, callbacks, visits, index)
         } else {
-            let selected = outcome_function(program.types, list_function(program.types, function))
+            let selected = outcome_function(program.types,
+                task_payload_function(program.types, list_function(program.types, function)))
             set(program.functions, index, function_body(selected, remap(program, callbacks, selected.body, 0)))
         }
         index = index + 1

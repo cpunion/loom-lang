@@ -402,7 +402,7 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         return Result.Ok(resource_value(false, flow_resource(flow, expr.ty)?, -1))
     }
     if (kind == ExprKind.Suspend && expr.text == "task_outcome") ||
-    (kind == ExprKind.Intrinsic && (expr.text == "task_cancel" || expr.text == "task_ready_result" || expr.text == "task_ready_outcome")) {
+    (kind == ExprKind.Intrinsic && (expr.text == "task_cancel" || expr.text == "task_ready_result" || expr.text == "task_ready_outcome" || expr.text == "task_ready_payload")) {
         var index = 0
         while index < length(expr.children) {
             discard resource_expression(flow, get(expr.children, index), false)?

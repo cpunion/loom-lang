@@ -211,6 +211,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TaskNextTerminalIndex
         | Primitive::TaskStatus
         | Primitive::TaskResult
+        | Primitive::TaskResultCase
         | Primitive::TaskRelease
         | Primitive::FloatToInt
         | Primitive::FloatParse

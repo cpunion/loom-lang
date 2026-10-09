@@ -1,0 +1,106 @@
+import std.resource.MustScope
+
+enum SelectedValue {
+    Empty
+    Number(Int)
+    Label(Text)
+    Another(Int)
+    Nested(Task[Int])
+}
+
+async fn selected_number(value Int) Int {
+    value
+}
+
+async fn selected_value(variant Int) SelectedValue {
+    match variant {
+        0 => SelectedValue.Empty
+        1 => SelectedValue.Number(7)
+        2 => SelectedValue.Label("typed")
+        3 => SelectedValue.Another(9)
+        _ => SelectedValue.Nested(selected_number(11))
+    }
+}
+
+test async fn typed_terminal_projection_is_not_a_result_specific_operation() {
+    let numbered = task_observe(selected_value(3), 0)
+    assert task_next().await == 0
+    let variant, retained = task_ready_case(numbered)
+    assert variant == 3
+    let repeated, again = task_ready_case(retained)
+    assert repeated == variant
+    assert task_ready_payload[SelectedValue, Int](again, variant) == 9
+    let labelled = task_observe(selected_value(2), 1)
+    assert task_next().await == 1
+    assert task_ready_payload[SelectedValue, Text](labelled, 2) == "typed"
+    let nested = task_observe(selected_value(4), 2)
+    assert task_next().await == 2
+    let child = task_ready_payload[SelectedValue, Task[Int]](nested, 4)
+    assert child.await == 11
+}
+
+async fn mismatched_case() Int {
+    let value = task_observe(selected_value(3), 0)
+    assert task_next().await == 0
+    discard task_ready_payload[SelectedValue, Text](value, 3)
+    0
+}
+
+test async fn projection_checks_the_requested_case_and_type_before_extraction() {
+    match outcome(mismatched_case()).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "task payload case/type mismatch")
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+record SelectedLease {
+    closed List[Int]
+}
+
+impl MustScope for SelectedLease {
+}
+
+impl Dispose for SelectedLease {
+    fn dispose(self SelectedLease) {
+        std.list.push(self.closed, 1)
+    }
+}
+
+enum LeasedValue {
+    Lease(SelectedLease)
+    Number(Int)
+}
+
+impl Dispose for LeasedValue {
+    fn dispose(self LeasedValue) {
+    }
+}
+
+async fn leased_value(closed List[Int]) LeasedValue {
+    LeasedValue.Lease(SelectedLease {
+            closed = closed
+        })
+}
+
+async fn mismatched_resource(closed List[Int]) Int {
+    let value = task_observe(leased_value(closed), 0)
+    assert task_next().await == 0
+    task_ready_payload[LeasedValue, Int](value, 0)
+}
+
+test async fn rejected_projection_does_not_disarm_the_producers_resource_cleanup() {
+    let closed List[Int] = []
+    match outcome(mismatched_resource(closed)).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "task payload case/type mismatch")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(closed) == 1 && closed[0] == 1
+}

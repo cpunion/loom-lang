@@ -27,6 +27,8 @@ Outcome into the caller's scope. Dynamic List `all`/`settled` likewise retain
 resource payloads in completed producers until selection finishes, then construct
 their guarded result List in input order. The example also scopes a dynamic List
 of leases, including an empty List when `LOOM_TASK_COUNT=0`.
+It also scopes a fallible lease selected by `first_ok`: ordinary errors are
+skipped, and the chosen lease closes only when the caller's block ends.
 
 | `std.task` function | Awaited result | Rule |
 | --- | --- | --- |
@@ -34,11 +36,16 @@ of leases, including an empty List when `LOOM_TASK_COUNT=0`.
 | `settled(tasks)` | `List[Outcome[T]]` | Input order; collect every outcome without early cancellation. |
 | `any(tasks)` | `T` | First successful completion; fault if none succeeds. |
 | `race(tasks)` | `Outcome[T]` | First terminal outcome. |
+| `first_ok(tasks)` | `Result[T, List[E]]` | First Ok; otherwise input-ordered errors. |
 
 `all` and `settled` accept empty Lists; `any` and `race` fault on empty input.
 An ordinary `Result.Err` is successful completion. No-result Tasks work too:
 `all([sleep_ms(1), sleep_ms(2)]).await` produces a List whose logical length is 2,
 and `any(...).await` has no value result. No source Unit spelling is needed.
+`first_ok` accepts empty input as `Err([])`. Fresh MustScope Ok/error payloads
+remain in their producer frames until selection finishes. Losing resources drain
+before an Ok transfers; all errors transfer into one scoped List. Execution and
+cleanup faults still fail the join, rather than becoming ordinary Result errors.
 
 `any`/`race` retire every loser before returning, including already-completed
 producers that still own returned Tasks. A cleanup fault fails the join unless

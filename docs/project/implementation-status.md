@@ -763,7 +763,7 @@ The [file pipeline](../../compiler/examples/stream_lines/README.md) uses a lazy
 and both I/O modes share line framing and UTF-8 checks. Infallible resource
 factories compose owned adapters without an artificial Result. Lifting a
 synchronous Iterator still does not make its I/O nonblocking. Document sequences,
-general borrow-retaining adapters, resource-bearing `first_ok` and application-grade
+general borrow-retaining adapters and application-grade
 networking remain open. Fresh async resource acquisition uses the Task result
 ownership described below.
 
@@ -828,6 +828,12 @@ stronger suspension restriction.
 `cancel_when` and deadlines also preserve fresh resource results. The trigger
 drains before terminal work transfers; a trigger cleanup fault drains untransferred
 work, while an earlier work fault remains primary.
+`first_ok` retains typed producer handles for ordinary errors and reads only a
+terminal enum discriminator. It drains losers before transferring an Ok, or
+constructs the guarded error List in input order after every producer completes.
+The private projection checks both case and exact payload type before extraction;
+it does not erase values or introduce Result policy in Rust. Nested Task payloads
+retain their one-shot obligations, without per-input wrapper Tasks.
 See [cleanup](../../compiler/README.md#lexical-cleanup).
 
 Source `std.sync.mutex` provides shared mutex identities and lexical

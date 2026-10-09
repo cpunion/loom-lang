@@ -3834,12 +3834,16 @@ then construct the guarded result List in input order. Empty Lists, fail-fast
 drain and cancellation use the same path as ordinary results; no per-input wrapper
 Task is introduced. `cancel_when` and deadlines drain the trigger before transferring
 terminal resource work; a trigger cleanup fault also drains untransferred work,
-and an earlier work fault remains primary. Resource-bearing `first_ok` remains unfinished.
+and an earlier work fault remains primary. `first_ok` likewise retains each typed
+producer while inspecting only its enum discriminator. It drains losers before
+transferring an Ok payload; all-error results use guarded List construction in
+input order. Resources and nested Task payloads use the same source policy.
 See the [native resource-result tests](examples/cleanup/task_resource_result_test.loom),
 [tuple join tests](examples/cleanup/task_resource_join_test.loom), and
 [selection tests](examples/cleanup/task_resource_selection_test.loom), plus
 [dynamic List tests](examples/cleanup/task_resource_list_join_test.loom) and
-[cancellation tests](examples/cleanup/task_resource_cancellation_test.loom).
+[cancellation tests](examples/cleanup/task_resource_cancellation_test.loom) and
+[first-Ok tests](examples/cleanup/task_resource_first_ok_test.loom).
 Resource factory overloads
 of [`std.stream`](std/stream/README.md) compose scoped async pipelines from
 fallible or infallible factories. [`std.file.lines.stream`](std/file/lines/README.md)
@@ -4097,9 +4101,10 @@ before return. Cleanup faults fail an otherwise successful join; existing primar
 faults retain precedence. See the [join example](examples/task_joins).
 `std.task.first_ok` accepts `List[Task[Result[T, E]]]`, skipping ordinary errors
 until an `Ok` arrives. If all fail, it returns errors in input order; empty input
-returns `Err([])`. Execution/cleanup faults still fail the join. Discarded
-completed values do not close external resources; resource-producing races need
-explicit cleanup, as in the TCP source policy.
+returns `Err([])`. Execution/cleanup faults still fail the join. Fresh MustScope
+Ok/error payloads stay in the original producers until selection finishes;
+unselected resources drain before transfer and the caller scopes the complete
+result. Dispose-only values still require explicit resource policy, as in TCP.
 Heterogeneous tuple `all/settled` accept arbitrary arity and preserve input
 order without a per-element helper chain. A statically typed tuple of Tasks can
 also use `.await`, which follows source `std.task.all` policy.

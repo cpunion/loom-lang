@@ -892,6 +892,26 @@ pub(super) extern "C-unwind" fn loom_rt_task_await(child: u64) -> i32 {
 }
 
 #[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_peek_result(child: u64) -> *mut u8 {
+    edit(|owner, core| {
+        let parent = parent(core, child)?;
+        let task = &core.tasks[&child];
+        if task.waiter != Some(parent) {
+            return Err("task result requires await");
+        }
+        if task.result_extracted {
+            return Err("task result already extracted");
+        }
+        if !matches!(task.state, State::Completed(_)) {
+            return Err("task result is not completed");
+        }
+        // No ownership transfer, allocation or collection: generated code reads
+        // the scalar discriminator immediately, while this frame stays rooted.
+        Ok(owner.roots().get(task.frame).expect("rooted task result"))
+    })
+}
+
+#[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_task_result(child: u64) -> *mut u8 {
     let result = edit(|owner, core| {
         let parent = parent(core, child)?;

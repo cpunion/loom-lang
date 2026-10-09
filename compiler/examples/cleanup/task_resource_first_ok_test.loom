@@ -1,0 +1,157 @@
+import std.task.first_ok
+
+async fn resource_choice(id Int, trace List[Int], success Bool, delay Int) Result[Leaf, Leaf] {
+    sleep_ms(delay).await
+    if success {
+        Result.Ok(acquire(id, trace))
+    } else {
+        Result.Err(acquire(id, trace))
+    }
+}
+
+test async fn first_ok_drains_resource_errors_and_losers_before_transferring_the_winner() {
+    let trace List[Int] = []
+    let failed = resource_choice(1, trace, false, 0)
+    let winner = resource_choice(2, trace, true, 0)
+    let loser = resource_choice(3, trace, true, 0)
+    while length(trace) < 3 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = first_ok([failed, winner, loser]).await
+        match selected {
+            Result.Ok(value) => {
+                assert value.id == 2
+            }
+            Result.Err(_) => {
+                assert false
+            }
+        }
+        assert length(trace) == 5
+        assert trace[3] == 1 && trace[4] == 3
+    }
+    assert length(trace) == 6 && trace[5] == 2
+}
+
+test async fn all_resource_errors_transfer_in_input_order_despite_completion_order() {
+    let trace List[Int] = []
+    let later = resource_choice(2, trace, false, 0)
+    while length(trace) == 0 {
+        sleep_ms(0).await
+    }
+    let earlier = resource_choice(1, trace, false, 0)
+    while length(trace) < 2 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = first_ok([earlier, later]).await
+        match selected {
+            Result.Err(errors) => {
+                assert length(errors) == 2 && errors[0].id == 1 && errors[1].id == 2
+                assert length(trace) == 2
+            }
+            Result.Ok(_) => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 4 && trace[2] == 2 && trace[3] == 1
+    {
+        scoped empty = first_ok[Leaf, Leaf]([]).await
+        match empty {
+            Result.Err(errors) => {
+                assert length(errors) == 0
+            }
+            Result.Ok(_) => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 4
+}
+
+async fn pair_choice(trace List[Int], success Bool, fail_dispose Bool) Result[Pair, Pair] {
+    sleep_ms(0).await
+    if success {
+        Result.Ok(pair_resources(trace, false, fail_dispose))
+    } else {
+        Result.Err(pair_resources(trace, false, fail_dispose))
+    }
+}
+
+test async fn first_ok_error_cleanup_fault_also_drains_the_untransferred_success() {
+    let trace List[Int] = []
+    let failed = pair_choice(trace, false, true)
+    let winner = pair_choice(trace, true, false)
+    while length(trace) < 4 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = outcome(first_ok([failed, winner])).await
+        match selected {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "resource_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 10
+    assert trace[4] == 3 && trace[5] == 2 && trace[6] == 1
+    assert trace[7] == 3 && trace[8] == 2 && trace[9] == 1
+}
+
+async fn failed_choice(trace List[Int]) Result[Pair, Pair] {
+    assert false
+    Result.Ok(pair_resources(trace, false, false))
+}
+
+test async fn first_ok_retains_a_primary_execution_fault_over_resource_cleanup_faults() {
+    let trace List[Int] = []
+    let failed = failed_choice(trace)
+    let completed = pair_choice(trace, false, true)
+    while length(trace) < 2 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = outcome(first_ok([failed, completed])).await
+        match selected {
+            Outcome.Faulted(error) => {
+                assert contains(error.message, "task_resource_first_ok_test.loom:")
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 5 && trace[2] == 3 && trace[3] == 2 && trace[4] == 1
+}
+
+async fn pending_choice(trace List[Int]) Result[Leaf, Leaf] {
+    defer {
+        push(trace, 99)
+    }
+    sleep_ms(10000).await
+    Result.Ok(acquire(9, trace))
+}
+
+test async fn cancelling_first_ok_drains_retained_resource_errors_and_pending_work() {
+    let trace List[Int] = []
+    let join = first_ok([resource_choice(1, trace, false, 0), pending_choice(trace)])
+    while length(trace) == 0 {
+        sleep_ms(0).await
+    }
+    sleep_ms(0).await
+    {
+        scoped stopped = cancel(join)
+        match stopped {
+            Outcome.Cancelled => {
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 3 && trace[1] == 1 && trace[2] == 99
+}

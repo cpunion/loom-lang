@@ -15,6 +15,7 @@ enum Case {
     ExtractResult,
     ReleaseResult,
     ExtractResultTwice,
+    PeekAfterExtract,
 }
 
 thread_local! {
@@ -167,10 +168,22 @@ unsafe extern "C-unwind" fn resource_consumer(frame: *mut u8) -> i64 {
             return 1;
         }
         loom_rt_collect();
+        assert_eq!(
+            (*loom_rt_task_peek_result(child).cast::<Frame>()).result,
+            42
+        );
+        loom_rt_collect();
+        assert_eq!(
+            (*loom_rt_task_peek_result(child).cast::<Frame>()).result,
+            42
+        );
         match CASE.get() {
             Case::ReleaseResult => loom_rt_task_release(child),
-            Case::ExtractResult | Case::ExtractResultTwice => {
+            Case::ExtractResult | Case::ExtractResultTwice | Case::PeekAfterExtract => {
                 assert_eq!((*loom_rt_task_result(child).cast::<Frame>()).result, 42);
+                if CASE.get() == Case::PeekAfterExtract {
+                    loom_rt_task_peek_result(child);
+                }
                 if CASE.get() == Case::ExtractResultTwice {
                     loom_rt_task_result(child);
                 }
@@ -192,6 +205,12 @@ fn completed_resource_results_transfer_once_or_drain_all_typed_callbacks() {
     CASE.set(Case::ExtractResult);
     run(construct_resource_consumer, None, &[]);
     CASE.set(Case::ExtractResultTwice);
+    run(
+        construct_resource_consumer,
+        Some(b"task result already extracted"),
+        &[],
+    );
+    CASE.set(Case::PeekAfterExtract);
     run(
         construct_resource_consumer,
         Some(b"task result already extracted"),
