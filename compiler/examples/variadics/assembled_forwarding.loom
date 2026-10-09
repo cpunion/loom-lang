@@ -1,0 +1,76 @@
+fn padded_count[Us...](values (Us...)) Int
+ensures result >= 0 {
+    counted(1, values..., true)
+}
+
+fn explicit_padded_count[Us...](values (Us...)) Int
+ensures result >= 0 {
+    counted[Int, Us..., Bool](1, values..., true)
+}
+
+fn assembled_count[Us..., Vs...](left (Us...), right (Vs...)) Int
+ensures result >= 0 {
+    counted(1, left..., "middle", right..., true)
+}
+
+fn snapshot_context[Us...](value Int, context (Us...)) Int
+ensures result == value {
+    var current = value
+    keep_context(current, {
+            current = current + 1
+            current
+        }, context..., true)
+}
+
+fn marked_context[Us...](log List[Int], context (Us...)) Int
+ensures length(log) == old(length(log)) + 3 {
+    keep_context(mark(log, 42), mark(log, 1), context..., mark(log, 2))
+}
+
+fn keep_tail[Ts...](context Ts..., value Int) Int
+ensures result == value {
+    value
+}
+
+fn snapshot_tail[Us...](value Int, context (Us...)) Int
+ensures result == value + 1 {
+    var current = value
+    keep_tail({
+            current = current + 1
+            false
+        }, context..., current)
+}
+
+async fn assembled_async_context[Us...](value Int, context (Us...)) Int
+ensures result == value {
+    var current = value
+    let pending = async_keep(current, {
+            current = current + 1
+            false
+        }, context..., true)
+    pending.await
+}
+
+fn exercise_assembled_forwarding() {
+    assert padded_count(pack()) == 2
+    assert padded_count((true, "text")) == 4
+    assert explicit_padded_count(("typed",)) == 3
+    assert assembled_count(pack(), pack()) == 3
+    assert assembled_count((1, true), ("text", [2])) == 7
+    assert snapshot_context(42, pack()) == 42
+    assert snapshot_context(42, ("snapshot", true)) == 42
+    assert snapshot_tail(41, pack()) == 42
+    assert snapshot_tail(41, ("snapshot", true)) == 42
+    assert comptime {
+        explicit_padded_count(("compiled", 1))
+    } == 4
+    let callback fn((Text, Bool)) Int = padded_count
+    assert callback(("callback", true)) == 4
+    let log List[Int] = []
+    assert marked_context(log, ("context",)) == 42
+    assert length(log) == 3
+    assert log[0] == 42 && log[1] == 1 && log[2] == 2
+    assert marked_context(log, pack()) == 42
+    assert length(log) == 6
+    assert log[3] == 42 && log[4] == 1 && log[5] == 2
+}

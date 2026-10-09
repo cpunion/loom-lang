@@ -43,6 +43,7 @@ fn exercise() {
     exercise_forwarding()
     exercise_overloaded_forwarding()
     exercise_structural_forwarding()
+    exercise_assembled_forwarding()
     exercise_pack_observations()
     exercise_methods()
     exercise_static()
@@ -91,6 +92,8 @@ async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
 }
 
 async fn exercise_tasks() {
+    assert assembled_async_context(42, pack()).await == 42
+    assert assembled_async_context(42, ("context", true)).await == 42
     exercise_async_contracts().await
     exercise_independent_tasks().await
     exercise_pack_position_tasks().await

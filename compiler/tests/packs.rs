@@ -58,7 +58,7 @@ ensures result == value {
 
 fn forward[Us...](value Int, values (Us...)) Int
 ensures result == value {
-    keep(value, values...)
+    keep(value, "before", values..., true)
 }
 
 fn main() {
@@ -87,7 +87,9 @@ fn main() {
 
     // This contender becomes applicable for another width/type selection even
     // though main's current tuple still calls the original family.
-    let overlapping = format!("{disjoint}\nfn keep(value Int, extra Bool) Int {{ -1 }}\n");
+    let overlapping = format!(
+        "{disjoint}\nfn keep(value Int, leading Text, extra Bool, trailing Bool) Int {{ -1 }}\n"
+    );
     fs::write(&source, overlapping).unwrap();
     let rejected = loom(&["check", package]);
     assert!(!rejected.status.success());

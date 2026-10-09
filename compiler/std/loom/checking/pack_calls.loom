@@ -165,6 +165,46 @@ fn pack_call_target(context Context, caller Node, options List[Int], inputs List
     Result.Ok(selected)
 }
 
+// One ordered argument word uses the same bounded matcher as structural types.
+// Wrappers retain fixed operand positions while their children carry type words.
+fn pack_call_word(context Context, caller Node, inputs List[Node], site Node) Result[Node, Failure] {
+    let sources = group(caller, NodeKind.Parameters)
+    let word = new[Node]()
+    var index = 0
+    while index < length(inputs) {
+        let argument = get(inputs, index)
+        let source = pack_forwarded_parameter(caller, argument)
+        if source >= 0 {
+            let schema = pack_forward_source_schema(context, caller, pack_forwarded_shape(get(sources, source)))?
+            if argument.kind == NodeKind.Spread {
+                if schema.kind != NodeKind.TupleType {
+                    return Result.Err(error(context, argument, "forwarded expansion needs a tuple source sequence"))
+                }
+                var member = 0
+                while member < length(schema.children) {
+                    push(word, child(schema, member))
+                    member = member + 1
+                }
+            } else {
+                push(word, pack_node(argument, NodeKind.Arguments, "$sequence", source_nodes(schema)))
+            }
+        } else {
+            if argument.kind == NodeKind.Spread {
+                return Result.Err(error(context, argument, "variadic forwarding proof needs a named source expansion"))
+            }
+            let schema = match static_probe(context, argument, -1) {
+                Result.Ok(value) => impl_type_schema(context.env, value.ty, argument, true)
+                // A fixed value may need its ordinary contextual hint ([], a
+                // callback, ...). It still has an operand identity for matching.
+                Result.Err(_) => pack_node(argument, NodeKind.Type, "$unresolved", new[Node]())
+            }
+            push(word, pack_node(argument, NodeKind.Arguments, concat("$value#", std.int.to_text(index)), source_nodes(schema)))
+        }
+        index = index + 1
+    }
+    Result.Ok(pack_node(site, NodeKind.TupleType, "tuple", word))
+}
+
 fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let owner = pack_proof_caller(context)
     if owner < 0 {
@@ -193,37 +233,43 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
         return Result.Err(error(context, node, "variadic forwarding proof needs a family with declared postconditions"))
     }
     let parameters = group(declaration, NodeKind.Parameters)
-    if length(parameters) != length(inputs) {
-        return Result.Err(error(context, node, "variadic forwarding proof needs one source sequence per pack parameter"))
-    }
-    let sources = group(caller.node, NodeKind.Parameters)
+    let offset = length(group(declaration, NodeKind.TypeParameters))
     let work = new[PackForwardShape]()
     let types = pack_forward_explicit(context, node, caller.node, target, work)?
-    let values = new[Node]()
+    let patterns = new[Node]()
     var index = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)
-        let argument = get(inputs, index)
-        let source = pack_forwarded_parameter(caller.node, argument)
         if has_type_expansion(child(parameter, 0)) {
-            if source < 0 || has(parameter, NodeKind.Comptime) ||
-            (child(parameter, 0).kind == NodeKind.Spread) != (argument.kind == NodeKind.Spread) {
-                return Result.Err(error(context, argument, "variadic forwarding proof needs a matching named source sequence"))
+            if has(parameter, NodeKind.Comptime) {
+                return Result.Err(error(context, parameter, "variadic forwarding proof needs runtime source sequences"))
             }
-            push(work, PackForwardShape {
-                    pattern = type_pattern_schema(context.env, target, pack_forwarded_shape(parameter), false, 0, true)?
-                    actual = pack_forward_source_schema(context, caller.node, pack_forwarded_shape(get(sources, source)))?
-                    element = false
-                })
+            push(patterns, type_pattern_schema(context.env, target, child(parameter, 0), false, 0, true)?)
         } else {
-            if source >= 0 || argument.kind == NodeKind.Spread {
-                return Result.Err(error(context, argument, "a forwarded sequence cannot escape into a fixed proof argument"))
-            }
-            push(values, argument)
+            push(patterns, pack_node(parameter, NodeKind.Type, concat("$parameter#", std.int.to_text(offset + index)), new[Node]()))
         }
         index = index + 1
     }
+    push(work, PackForwardShape {
+            pattern = pack_node(node, NodeKind.TupleType, "tuple", patterns)
+            actual = pack_call_word(context, caller.node, inputs, node)?
+            element = false
+        })
     let bindings = pack_forward_shapes(context, caller.node, declaration, work)?
+    let values = new[Int]()
+    index = 0
+    while index < length(parameters) {
+        if !has_type_expansion(child(get(parameters, index), 0)) {
+            let value = get(get(bindings.values, offset + index), 0)
+            match std.int.parse(slice(value.value, 7, length(value.value))) {
+                Result.Ok(position) => push(values, position)
+                Result.Err(_) => {
+                    return Result.Err(error(context, value, "forwarded fixed argument needs an established operand"))
+                }
+            }
+        }
+        index = index + 1
+    }
     let signature = erased_pack_signature(context.env, target)?
     let call = pack_node(node, node.kind, node.value, [types, child(node, 1)])
     pack_forward_invoke(context, call, caller.node, declaration, bindings, signature, values, expected)
