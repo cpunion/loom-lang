@@ -1,0 +1,106 @@
+// Project current inline values. Rebinding a List gets no invented identity or
+// alias separation, and its extent observation follows the replacement header.
+fn loop_local_value(value Value, path List[Int]) Result[Value, Text] {
+    var current = value
+    var index = 0
+    while index < length(path) {
+        current = match current {
+            Value.Record(fields) => get(fields, get(path, index))
+            _ => {
+                return Result.Err("loop observation needs an inline projection")
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(current)
+}
+
+fn loop_observation_leaves(proof Verification, observations List[LoopObservation], writes List[Bool], resized List[Int], local Int, path List[Int], initial Value, entry State) Result[Bool, Text] {
+    if length(observations) >= 64 {
+        return Result.Ok(true)
+    }
+    match initial {
+        Value.List(identity) => {
+            if get(writes, local) || extent_modified(list_state(identity, entry)?, entry, resized) {
+                push(observations, LoopObservation.Local(local, path))
+            }
+        }
+        Value.Number(_) => {
+            if get(writes, local) {
+                push(observations, LoopObservation.Local(local, path))
+            }
+        }
+        Value.Record(fields) => {
+            var field = 0
+            while field < length(fields) && length(observations) < 64 {
+                let nested = std.list.clone(path)
+                push(nested, field)
+                discard loop_observation_leaves(proof, observations, writes, resized, local, nested,
+                    get(fields, field), entry)?
+                field = field + 1
+            }
+        }
+        _ => {
+        }
+    }
+    Result.Ok(true)
+}
+
+// Keep existing candidates first. Observe changing lengths and scalar/inline
+// leaves with the same algebra, without requiring an artificial source counter.
+// These are only proposals: entry and every actual backedge must establish them.
+fn loop_observation_candidates(proof Verification, expr Expr, candidates List[LoopCandidate], writes List[Bool], resized List[Int], entry State) Result[Bool, Text] {
+    if length(resized) == 0 {
+        return Result.Ok(true)
+    }
+    let observations = new[LoopObservation]()
+    // Source-written values take priority over inherited caller-frame storage.
+    // Unwritten handles matter only when this loop actually observes them.
+    var phase = 0
+    while phase < 2 && length(observations) < 64 {
+        var local = 0
+        while local < length(writes) && length(observations) < 64 {
+            if get(writes, local) == (phase == 0) &&
+            (get(writes, local) || scan_mentions(expr, local)) {
+                discard loop_observation_leaves(proof, observations, writes, resized, local, new[Int](),
+                    get(entry.locals, local), entry)?
+            }
+            local = local + 1
+        }
+        phase = phase + 1
+    }
+    // Counter/extent relations precede the additional extent/extent proposals.
+    phase = 0
+    while phase < 2 && length(candidates) < 64 {
+        var left = 0
+        while left < length(observations) && length(candidates) < 64 {
+            let first = get(observations, left)
+            let extent = match first {
+                LoopObservation.Local(slot, path) => match loop_local_value(get(entry.locals, slot), path)? {
+                    Value.List(_) => true
+                    _ => false
+                }
+                _ => false
+            }
+            var right = left + 1
+            while right < length(observations) && length(candidates) < 64 {
+                let second = get(observations, right)
+                let other_extent = match second {
+                    LoopObservation.Local(slot, path) => match loop_local_value(get(entry.locals, slot), path)? {
+                        Value.List(_) => true
+                        _ => false
+                    }
+                    _ => false
+                }
+                if (extent || other_extent) && (extent && other_extent) == (phase == 1) {
+                    discard loop_affine_pair(proof, candidates, first, second, integer(1), integer(-1), entry)?
+                    discard loop_affine_pair(proof, candidates, first, second, integer(1), integer(1), entry)?
+                }
+                right = right + 1
+            }
+            left = left + 1
+        }
+        phase = phase + 1
+    }
+    Result.Ok(true)
+}

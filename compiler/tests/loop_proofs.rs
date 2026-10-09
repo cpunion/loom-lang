@@ -63,8 +63,28 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
             "output = append(output, value)",
             "output = append[T]([], value)",
         ),
+        program.replace(
+            "output = append(output, value)\n                continue",
+            "if length(pending) == 0 { continue }\n                output = append(output, value)\n                continue",
+        ),
+        program.replace(
+            "output = append(output, value)\n                continue",
+            "output = append(output, value)\n                defer { discard take_last(output) }\n                continue",
+        ),
         program.replace("current = current / 2.0", "current = -current"),
         program.replace("current = current / 2.0", "current = 0.0 / 0.0"),
+        r#"
+import std.list.length
+import std.list.transfer.take_last
+
+fn invalid(left List[Int], right List[Int])
+ensures length(right) == old(length(right)) {
+    while length(left) > 0 {
+        discard take_last(left)
+    }
+}
+"#
+        .to_owned(),
         r#"
 fn invalid(value Float) Float
 requires value > 0.0

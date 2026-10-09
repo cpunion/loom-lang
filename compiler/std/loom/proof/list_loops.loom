@@ -148,10 +148,10 @@ fn loop_entry_storage_candidates(proof Verification, candidates List[LoopCandida
 // relationships between unrelated read-only lengths and mutable scalar locals.
 fn loop_extent_candidates(proof Verification, candidates List[LoopCandidate], writes List[Bool], resized List[Int], entry State) Result[Bool, Text] {
     var extent = 0
-    while extent < length(entry.extents) {
+    while extent < length(entry.extents) && length(candidates) < 64 {
         let identity = get(entry.extents, extent).identity
         var local = 0
-        while local < length(writes) {
+        while local < length(writes) && length(candidates) < 64 {
             if get(writes, local) {
                 discard loop_step(proof)?
                 match get(entry.locals, local) {
@@ -160,8 +160,9 @@ fn loop_extent_candidates(proof Verification, candidates List[LoopCandidate], wr
                         let offset = add(list_extent(identity, entry)?, scale(initial, integer(-1)))
                         if extent_modified(get(entry.extents, extent), entry, resized) ||
                         (length(offset.terms) == 0 && compare(offset.constant, integer(0)) == 0) {
-                            discard add_loop_candidate(candidates,
-                                LoopCandidate.ExtentLocal(identity, local, offset), entry)?
+                            discard loop_affine_pair(proof, candidates,
+                                LoopObservation.Storage(identity), LoopObservation.Local(local, new[Int]()),
+                                integer(1), integer(-1), entry)?
                         }
                     }
                     _ => {

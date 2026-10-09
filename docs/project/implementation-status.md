@@ -822,11 +822,13 @@ checking inductiveness. Scalar lexical cleanup retains its checked order and
 return snapshots. Guard calls use fresh checked results, not stable syntactic
 invariant terms. Resource cleanup and general heap-content proofs remain unsupported. See the
 [native loop example](../../compiler/examples/loop_contracts).
-Rebound List leaves and inline projections also propose checked current-length
-sum/difference relations with scalar counters. The
+Scalar/inline values and List extents share one affine loop observation model.
+Affected List leaves propose checked current-length sum/difference relations with
+other lengths and written scalar leaves, without an auxiliary source counter. The
 [transfer loop example](../../compiler/examples/loop_contracts/transfers.loom)
-proves generic consume-and-count and consume-and-build loops without inventing
-alias separation. Checked stable headers retain only existing allocation
+proves generic consume-and-count and counter-free consume-and-build loops,
+including inline fields, stable local handles and CTFE, without inventing alias
+separation. Checked stable headers retain only existing allocation
 provenance; the [Task metadata example](../../compiler/examples/async_contracts/metadata.loom)
 also transfers a dynamic Task batch with a verified count/length contract.
 Every actual backedge must preserve the equation;
@@ -842,8 +844,9 @@ definedness is unchanged. Finite pure helpers and exact checked scalar/inline-fi
 summaries supply the same coefficients through an isolated optional expansion;
 unspecified leaves and exhausted hints establish nothing. The
 [helper example](../../compiler/examples/loop_contracts/helper_affine.loom) covers
-once-only effects, generic/dyn guarantees and structural packs. Generation remains
-bounded, guard-anchored and pairwise, not general affine invariant synthesis.
+once-only effects, generic/dyn guarantees and structural packs. Weighted scalar
+proposals remain guard-anchored; storage pairs use affected lengths. Generation
+is bounded and pairwise, not general affine invariant synthesis.
 
 Unrestricted content mutation, strengthening existing mutable alias graphs,
 general loop/recursive proofs, arbitrary `old` snapshots and general Float arithmetic invariant synthesis

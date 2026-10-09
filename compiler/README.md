@@ -3001,12 +3001,14 @@ are not snapshotted; a possibly overlapping write removes evidence. The existing
 64-candidate budget bounds inference, and no loop termination claim is inferred.
 See [loop examples](examples/list_elements/loops.loom).
 
-Rebound Lists and inline List projections also propose sum/difference relations
-between their current length and written scalar counters. Each relation is checked
+Scalar/inline values and List extents share one affine observation model.
+Changing List leaves propose sum/difference relations with other current lengths
+and written scalar leaves, without requiring an auxiliary source counter. Each relation is checked
 at entry and every backedge; it does not identify the current handle with its
 entry handle or assume disjoint storage. The
 [transfer example](examples/loop_contracts/transfers.loom) proves a generic
-consume-and-count loop, including empty inputs. Separate entry/backedge candidates
+consume-and-count and counter-free consume-and-build loops, including empty
+inputs, inline fields, unchanged local handles and compile-time execution. Separate entry/backedge candidates
 can also establish stable List header identities through local and inline
 aggregate rebinding. These are internal alias facts, not observable addresses or
 an assumption that different handles are disjoint. Proved identities retain
@@ -3047,8 +3049,9 @@ unobserved shared siblings. This optional expansion has a separate 256-step
 budget; an opaque result or exhausted suggestion supplies no assumed value.
 These mathematical candidates connect separately updated counters and symbolic
 offsets; translation syntax is not evidence and source arithmetic still needs
-its own definedness proof. Candidate generation remains guard-anchored and
-pairwise, not general affine invariant synthesis. Rebinding a List preserves no
+its own definedness proof. Weighted scalar proposals remain guard-anchored;
+storage pairs observe affected lengths. Generation is bounded and pairwise,
+not general affine invariant synthesis. Rebinding a List preserves no
 handle identity. If a loop can both rebind handles and resize storage, all tracked
 extents are freshened before induction;
 its initial binding cannot identify every later resize target. Whole-value
