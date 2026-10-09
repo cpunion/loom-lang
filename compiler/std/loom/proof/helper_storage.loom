@@ -30,6 +30,19 @@ fn immutable_storage_type(program Program, ty Int, depth Int) Bool {
     true
 }
 
+// Closed inputs cannot carry a mutable graph into a callee. This frames
+// unpublished caller storage, not the callee's purity or scheduling behavior.
+fn closed_storage_inputs(program Program, params List[Int]) Bool {
+    var index = 0
+    while index < length(params) {
+        if !immutable_storage_type(program, get(params, index), 0) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
 fn storage_local(program Program, body Expr) Bool {
     let budget = new[Int]()
     push(budget, 256)

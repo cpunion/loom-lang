@@ -1,0 +1,36 @@
+import std.list.transfer.append
+import std.list.push
+import std.list.length
+import std.time.sleep_ms
+
+async fn retained_item(value Int) Int
+ensures result == value {
+    sleep_ms(1).await
+    value
+}
+
+async fn retained_mutate(values List[Int], value Int) Int
+ensures result == value {
+    push(values, value)
+    value
+}
+
+async fn generated_values(count Int) List[Int]
+requires count >= 0 && count <= 100
+ensures length(result) == count {
+    var output List[Int] = []
+    var index = 0
+    while index < count {
+        let value = retained_item(index).await
+        output = append(output, value)
+        index = index + 1
+    }
+    output
+}
+
+async fn exercise_private_storage() {
+    let values = generated_values(3).await
+    assert length(values) == 3 && values[0] == 0 && values[2] == 2
+    let empty = generated_values(0).await
+    assert length(empty) == 0
+}

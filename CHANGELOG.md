@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Retain proved unpublished List storage across suspension and closed-input
+  call summaries. Track conservative publication through Task inputs, shared
+  stores, function captures, dyn boxing and unknown callbacks in both build
+  modes; published aliases gain no frame. Prove source List construction across
+  real waits and reject a cached edit that transfers its output into a Task.
+
 - Infer stable List header identities through loop entry/backedge verification,
   including inline aggregates. Rebuild the abstract head when an identity
   hypothesis fails and retain publication loss across passes. Compose generic

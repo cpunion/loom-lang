@@ -1,0 +1,103 @@
+test fn suspension_frames_unpublished_lengths_and_elements() {
+    list_transfer_contract("""
+        import std.list.length
+        import std.list.get
+        record Input {
+            number Int
+            label Text
+        }
+        async fn keep(value Int) Int
+        ensures result == value {
+            value
+        }
+        async fn echo(value Input) Int
+        ensures result == value.number {
+            value.number
+        }
+        async fn retained(value Int) Int
+        ensures result == value {
+            let values = [value]
+            discard echo(Input {
+                number = value
+                label = "snapshot"
+            }).await
+            get(values, 0)
+        }
+        async fn generated(count Int) List[Int]
+        requires count >= 0 && count <= 100
+        ensures length(result) == count {
+            var output List[Int] = []
+            var index = 0
+            while index < count {
+                let value = keep(index).await
+                output = append(output, value)
+                index = index + 1
+            }
+            output
+        }
+        """, true)
+}
+
+test fn suspension_does_not_frame_published_graphs_or_captures() {
+    list_transfer_contract("""
+        import std.list.length
+        async fn keep(value Int) Int
+        ensures result == value {
+            value
+        }
+        async fn stale(values List[Int]) Int
+        ensures result == old(length(values)) {
+            discard keep(0).await
+            length(values)
+        }
+        """, false)
+    list_transfer_contract("""
+        import std.list.set
+        import std.list.get
+        async fn change(values List[Int]) {
+            set(values, 0, 7)
+        }
+        async fn stale() Int
+        ensures result == 3 {
+            let values = [3]
+            change(values).await
+            get(values, 0)
+        }
+        """, false)
+    list_transfer_contract("""
+        import std.list.set
+        import std.list.get
+        import std.list.length
+        async fn change(holder List[List[Int]]) {
+            set(get(holder, 0), 0, 7)
+        }
+        fn publish(holder List[List[Int]], values List[Int])
+        ensures length(holder) == old(length(holder)) {
+            set(holder, 0, values)
+        }
+        async fn stale() Int
+        ensures result == 3 {
+            let holder List[List[Int]] = [[]]
+            let pending = change(holder)
+            let values = [3]
+            publish(holder, values)
+            pending.await
+            get(values, 0)
+        }
+        """, false)
+    list_transfer_contract("""
+        import std.list.set
+        import std.list.get
+        async fn invoke(action fn()) {
+            action()
+        }
+        async fn stale() Int
+        ensures result == 3 {
+            let values = [3]
+            invoke(fn() {
+                set(values, 0, 7)
+            }).await
+            get(values, 0)
+        }
+        """, false)
+}

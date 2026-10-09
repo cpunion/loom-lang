@@ -105,7 +105,7 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, receiver_type 
         }
     }
     let stored = list_stored_index(name)
-    if proof.shared && stored >= 0 && stored < length(inputs.values) && mutable_value(get(inputs.values, stored)) {
+    if stored >= 0 && stored < length(inputs.values) && mutable_value(get(inputs.values, stored)) {
         let private_target = match get(inputs.values, 0) {
             Value.List(identity) => match list_state(identity, state) {
                 Result.Ok(extent) => extent.private_storage

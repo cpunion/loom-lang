@@ -96,11 +96,7 @@ fn list_bounds(value Value, state State) State {
 fn forget_extents(proof Verification, state State) State {
     let modified = new[Int]()
     push(modified, -1)
-    forget_modified_extents(proof, if proof.shared {
-            published_storage(state)
-        } else {
-            state
-        }, modified)
+    forget_modified_extents(proof, published_storage(state), modified)
 }
 
 // Fresh handles are private until publication. Opaque calls or storing a
@@ -156,6 +152,8 @@ fn mutable_value(value Value) Bool {
             }
             false
         }
+        Value.Function(_, captures) => mutable_value(Value.Record(captures))
+        Value.Task(_, inputs) => mutable_value(Value.Record(inputs))
         _ => false
     }
 }

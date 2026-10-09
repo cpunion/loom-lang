@@ -1704,8 +1704,17 @@ Async contracts also compose after successful `.await`, including saved Task
 locals, inline aggregate fields, known callbacks and generic/dynamic method
 declarations. Private proof promises retain evaluated arguments, not expressions
 to replay at completion. Callee entry observations are independent of the
-caller's creation-time heap; suspension discards unprotected current storage
-facts while preserving past scalar snapshots. Unknown Task targets provide only
+caller's creation-time heap; suspension discards unprotected published storage
+facts while preserving past scalar snapshots and proved unpublished storage.
+Task inputs carrying mutable graphs, stores into shared containers, dyn boxing
+and unknown callbacks revoke privacy conservatively in both ordinary and worker
+builds. Closed scalar/immutable-inline inputs cannot reach unpublished caller
+storage; checked call summaries retain that frame without assuming purity or
+that other ready Tasks cannot change shared aliases. Loop backedges must preserve
+the frame, including after publication. The
+[private storage example](examples/async_contracts/private_storage.loom) proves
+List construction across real waits; edited Task arguments invalidate its proof.
+Unknown Task targets provide only
 typed results. Guarantees do not apply to cancellation or faults. Finite checked
 synchronous source helpers also preserve returned Task promises, including
 inline aggregates and known callbacks. Their eager effects and lexical cleanup
