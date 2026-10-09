@@ -59,13 +59,16 @@ fn moving_captures_and_scoped_resources_survive_suspension_and_lexical_exits() {
             ir.contains("loom_rt_task_cleanup_push") && ir.contains("loom_rt_task_cleanup_pop")
         );
         assert!(!ir.contains("llvm.coro") && !ir.contains("universal"));
+        let tests = common::executable(temporary.path(), "cleanup-tests");
         success(
             &common::command(&["test", package])
+                .args(["--no-run", "--output"])
+                .arg(&tests)
                 .env("LOOM_OPT_LEVEL", level)
                 .output()
                 .unwrap(),
         );
-        let tests = common::executable(&common::root().join(package).join("target"), "tests");
+        success(&Command::new(&tests).output().unwrap());
         success(&run(&tests));
     }
 }

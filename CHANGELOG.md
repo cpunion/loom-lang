@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Isolate automatic `run`/`test` binaries in exclusive per-invocation directories
+  and clean them after child exit or compilation failure. Concurrent commands
+  no longer overwrite each other or a retained build; `test --no-run` keeps its
+  explicit/default artifact behavior.
+
 - Preserve verified async completion guarantees through finite synchronous Task
   factories, saved results, branches and supported loops. Reuse the existing
   symbolic call frame with once-evaluated inputs and lexical cleanup; bound call

@@ -40,7 +40,8 @@ From the repository root:
 target/loom check compiler/examples/closures
 target/loom test compiler/examples/closures
 target/loom run compiler/examples/closures
-LOOM_GC_STRESS=1 compiler/examples/closures/target/tests
+target/loom test compiler/examples/closures --no-run --output target/closure-tests
+LOOM_GC_STRESS=1 target/closure-tests
 ```
 
 The tests cover shared reassignment, nested escaping captures, compile-time

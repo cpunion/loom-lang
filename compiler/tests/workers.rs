@@ -7,6 +7,7 @@ fn source_workers_share_typed_data_and_drain_under_moving_gc() {
     let cache = temporary.path().join("frontend-cache");
     let example = common::executable(temporary.path(), "workers");
     let ir = temporary.path().join("workers.ll");
+    let tests = common::executable(temporary.path(), "worker-tests");
     for level in ["0", "2"] {
         success(
             &common::command(&[
@@ -15,14 +16,14 @@ fn source_workers_share_typed_data_and_drain_under_moving_gc() {
                 "--frontend-cache",
                 cache.to_str().unwrap(),
             ])
+            .args(["--no-run", "--output"])
+            .arg(&tests)
             .env("LOOM_OPT_LEVEL", level)
             .output()
             .unwrap(),
         );
-        success(&common::run_tasks(&common::executable(
-            &common::root().join("compiler/std/task/worker/target"),
-            "tests",
-        )));
+        success(&std::process::Command::new(&tests).output().unwrap());
+        success(&common::run_tasks(&tests));
         success(
             &common::command(&[
                 "build",

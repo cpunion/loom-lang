@@ -66,8 +66,8 @@ counts or positioned diagnostics. For example:
 
 ```sh
 target/loom parse compiler/loom/main.loom
-target/loom test compiler/std/loom/proof
-LOOM_GC_STRESS=1 compiler/std/loom/proof/target/tests
+target/loom test compiler/std/loom/proof --no-run --output target/proof-tests
+LOOM_GC_STRESS=1 target/proof-tests
 ```
 
 The bootstrap integration gate compares stage 2 and 3 binaries, selected

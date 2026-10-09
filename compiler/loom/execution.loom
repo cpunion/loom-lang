@@ -1,0 +1,53 @@
+// Automatic execution owns an exclusive directory until the child exits.
+// Existing entries are skipped, never reused or recursively removed.
+fn execution_directory(package Text) Result[Text, Text] {
+    let root = join_path(package, "target")
+    match std.fs.create_dir(root) {
+        Result.Ok(_) => {
+        }
+        Result.Err(error) => {
+            if error != std.fs.FsError.AlreadyExists || !match std.fs.entry_kind(root) {
+                Result.Ok(kind) => kind == std.fs.FileKind.Directory,
+                Result.Err(_) => false
+            } {
+                return Result.Err("cannot create execution output directory")
+            }
+        }
+    }
+    var index = 0
+    while index < 1024 {
+        let path = join_path(root, concat("execute-", to_text(index)))
+        match std.fs.create_dir(path) {
+            Result.Ok(_) => {
+                return Result.Ok(path)
+            }
+            Result.Err(error) => {
+                if error != std.fs.FsError.AlreadyExists {
+                    return Result.Err("cannot create private execution directory")
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Err("execution directories are exhausted")
+}
+
+fn compile_and_run(selected Options, prepared Prepared, filename Text) Result[Int, Text] {
+    let directory = execution_directory(selected.path)?
+    let output = join_path(directory, filename)
+    defer {
+        discard std.fs.remove_file(output)
+        discard std.fs.remove_empty_dir(directory)
+    }
+    discard input_preflight(output, prepared.inputs)?
+    discard compile(selected, prepared.input, false, output)?
+    let arguments = new[Text]()
+    push(arguments, output)
+    var index = 0
+    while index < length(selected.program_args) {
+        push(arguments, get(selected.program_args, index))
+        index = index + 1
+    }
+    // Return through lexical cleanup before the driver propagates an exit code.
+    child_status(arguments)
+}

@@ -45,7 +45,8 @@ target/loom check compiler/examples/comptime_closures
 target/loom build compiler/examples/comptime_closures
 target/loom test compiler/examples/comptime_closures
 target/loom run compiler/examples/comptime_closures
-LOOM_GC_STRESS=1 compiler/examples/comptime_closures/target/tests
+target/loom test compiler/examples/comptime_closures --no-run --output target/comptime-closure-tests
+LOOM_GC_STRESS=1 target/comptime-closure-tests
 ```
 
 The tests also cover generic forwarding, shared versus independent arguments,

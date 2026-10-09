@@ -94,6 +94,7 @@ fn source_tcp_check_build_test_run_under_forced_gc() {
     let directory = tempfile::tempdir().unwrap();
     let executable = common::executable(directory.path(), "tcp-loopback");
     let ir = directory.path().join("tcp-loopback.ll");
+    let tests = common::executable(directory.path(), "tcp-tests");
     for level in ["0", "2"] {
         success(
             &common::command(&["check", PACKAGE])
@@ -103,18 +104,18 @@ fn source_tcp_check_build_test_run_under_forced_gc() {
         );
         success(
             &common::command(&["test", PACKAGE])
+                .args(["--no-run", "--output"])
+                .arg(&tests)
                 .env("LOOM_OPT_LEVEL", level)
                 .output()
                 .unwrap(),
         );
+        success(&Command::new(&tests).output().unwrap());
         success(
-            &Command::new(common::executable(
-                &common::root().join(PACKAGE).join("target"),
-                "tests",
-            ))
-            .env("LOOM_GC_STRESS", "1")
-            .output()
-            .unwrap(),
+            &Command::new(&tests)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
         );
         success(
             &common::command(&[

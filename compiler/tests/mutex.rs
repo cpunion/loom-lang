@@ -6,17 +6,18 @@ use common::success;
 fn source_mutex_guards_release_at_lexical_and_fault_boundaries() {
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "mutex");
+    let tests = common::executable(temporary.path(), "mutex-tests");
     for level in ["0", "2"] {
         success(
             &common::command(&["test", "compiler/std/sync/mutex"])
+                .args(["--no-run", "--output"])
+                .arg(&tests)
                 .env("LOOM_OPT_LEVEL", level)
                 .output()
                 .unwrap(),
         );
-        success(&common::run_tasks(&common::executable(
-            &common::root().join("compiler/std/sync/mutex/target"),
-            "tests",
-        )));
+        success(&std::process::Command::new(&tests).output().unwrap());
+        success(&common::run_tasks(&tests));
         success(
             &common::command(&[
                 "build",

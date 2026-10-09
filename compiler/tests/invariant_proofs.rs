@@ -7,21 +7,22 @@ fn invariant_effects_separate_fresh_scratch_from_shared_inputs() {
     let package = "compiler/examples/record_refinement";
     success(&common::loom(&["check", package]));
     let directory = tempfile::tempdir().unwrap();
+    let tests = common::executable(directory.path(), "invariant-tests");
     for level in ["0", "2"] {
         success(
             &common::command(&["test", package])
+                .args(["--no-run", "--output"])
+                .arg(&tests)
                 .env("LOOM_OPT_LEVEL", level)
                 .output()
                 .unwrap(),
         );
+        success(&Command::new(&tests).output().unwrap());
         success(
-            &Command::new(common::executable(
-                &common::root().join(package).join("target"),
-                "tests",
-            ))
-            .env("LOOM_GC_STRESS", "1")
-            .output()
-            .unwrap(),
+            &Command::new(&tests)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
         );
         let artifact = common::executable(directory.path(), "invariant-effects");
         success(

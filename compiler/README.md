@@ -50,8 +50,8 @@ target/loom run compiler/examples/data
 target/loom test compiler/std/loom/checking
 target/loom test compiler/std/result
 target/loom test compiler/std/list
-LOOM_GC_STRESS=1 compiler/std/list/target/tests
 target/loom test compiler/std/list --no-run --output target/list-tests
+LOOM_GC_STRESS=1 target/list-tests
 target/loom build compiler/examples/arguments --output target/arguments
 target/arguments +0010
 
@@ -115,11 +115,16 @@ each tool's command surface.
 `loom test --no-run` produces the native test executable without running it;
 `--output` optionally selects its path. Both forms of source tests and normal
 test-only imports remain included. A package with no tests reports `0 tests`
-without creating a binary. Ordinary `loom test` still compiles and runs its tests.
+without creating a binary. Ordinary `loom test` compiles and runs its tests in
+an exclusively created directory below the package's `target`, then removes its
+executable and directory. `loom run` uses the same policy, so simultaneous runs
+do not overwrite each other's binaries or a previous `loom build` output.
+Use `build` or `test --no-run` to retain an artifact; abrupt compiler termination
+can leave an execution directory, which later commands skip rather than reuse.
 `loom test --recursive [directory]` visits packages in deterministic directory
 order, including test-only packages and children of source-free directories.
-Each package gets its own test scope and `target/tests` executable (`.exe` on
-Windows); imported packages still exclude tests. Hidden directories, `target`,
+Each package gets its own test scope and execution directory; `--no-run` retains
+`target/tests` (`.exe` on Windows). Imported packages still exclude tests. Hidden directories, `target`,
 `node_modules`, directory symlinks and nested modules with their own `loom.toml`
 are not traversed. It continues after a package fails and exits unsuccessfully
 if any selected package failed. `--no-run` checks and compiles the same selection;
