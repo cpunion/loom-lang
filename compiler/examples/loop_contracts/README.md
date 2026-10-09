@@ -35,6 +35,13 @@ opaque. The native example checks once-only argument effects and their order;
 optional expansion does not replace executable calls, requirements or faults.
 Every proposed relation still needs the same entry/backedge proof.
 
+The [transfer example](transfers.loom) uses the same affine observation model for
+scalar leaves and current List extents. It proves consume-and-build lengths
+without an auxiliary counter, including inline record fields, stable local
+handles, empty inputs, `continue`, early returns and compile-time execution.
+Rebinding follows the current header; no alias separation is inferred. Content
+correspondence for general transfer loops remains open.
+
 The [Float example](floats.loom) reuses the same entry/backedge checks for IEEE
 order bounds on scalars and inline fields. Supported unresolved induction steps
 use the existing binary64 SMT theory, not real arithmetic. NaN, subnormal

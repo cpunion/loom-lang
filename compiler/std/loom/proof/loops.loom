@@ -11,12 +11,10 @@ import std.option.Option
 enum LoopCandidate {
     Entry(Int, List[Int], Text, Value)
     Guard(Expr)
-    ExtentLocal(Int, Int, Linear)
-    LocalExtent(Int, List[Int], Int, Number, Linear)
     Header(Int, List[Int], Int)
     EntryExtent(Int, List[Int], Text, Linear)
     Element(Int, Linear, Text, Value)
-    Affine(List[Term], Value)
+    Affine(List[LoopTerm], Value)
 }
 
 record LoopControl {
@@ -208,15 +206,6 @@ fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] 
             boolean(binary(relation, value, initial)?)
         }
         LoopCandidate.Guard(expr) => Result.Ok(bag_fact(boolean(pure(expr, state)?)?, state.facts))
-        LoopCandidate.ExtentLocal(identity, local, offset) => boolean(binary("==",
-                Value.Number(list_extent(identity, state)?),
-                Value.Number(add(list_value_index(get(state.locals, local))?, offset)))?)
-        LoopCandidate.LocalExtent(local, path, scalar, factor, initial) => {
-            let size = loop_local_extent(get(state.locals, local), path, state)?
-            Result.Ok(Predicate.Compare("==", add(add(size,
-                            scale(list_value_index(get(state.locals, scalar))?, factor)),
-                        scale(initial, integer(-1)))))
-        }
         LoopCandidate.Header(local, path, identity) => match loop_local_value(get(state.locals, local), path)? {
             Value.List(current) => Result.Ok(Predicate.Constant(current == identity))
             _ => Result.Err("loop header invariant needs a tracked List")
@@ -534,7 +523,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     // Optional scalar relations cannot displace existing quantified/storage
     // proposals when the shared candidate budget is nearly full.
     discard loop_affine_candidates(proof, guard, body, candidates, writes, observed)?
-    discard loop_transfer_candidates(proof, candidates, writes, resized, observed)?
+    discard loop_observation_candidates(proof, candidates, writes, resized, observed)?
     var headers = loop_header_candidates(proof, candidates, writes, observed)?
     var head = loop_head(proof, writes, storage, candidates, headers)?
     head = loop_query_views(proof, clauses, head)

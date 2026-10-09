@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Unify loop affine observations over scalar/inline values and List extents.
+  Prove consume-and-build length conservation without an auxiliary counter,
+  including rebound inline fields and unchanged local handles. Every equation
+  needs entry and all-backedge verification; rebinding, alias interference and
+  cleanup cannot retain an invalid relation. No runtime invariant is added.
+
 - Compose logical List reads with checked scalar and inline element refinements.
   Preserve representation conversions in pure helper expansion and import type
   invariants only over each version's valid indices. Dynamic Task joins and

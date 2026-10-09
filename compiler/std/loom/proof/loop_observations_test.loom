@@ -1,0 +1,32 @@
+test fn affine_observations_follow_current_inline_values_not_initial_headers() {
+    let entry = with_extent(42, constant(integer(3)), true,
+        with_extent(43, constant(integer(5)), true, State {
+                locals = [Value.Record([Value.List(42), Value.Number(constant(integer(2)))])]
+                facts = []
+                extents = []
+                observations = []
+            }))
+    let terms = [LoopTerm {
+            observation = LoopObservation.Local(0, [0])
+            factor = integer(1)
+        }, LoopTerm {
+            observation = LoopObservation.Local(0, [1])
+            factor = integer(1)
+        }]
+    let candidate = LoopCandidate.Affine(terms, Value.Number(constant(integer(5))))
+    let proof = verification(fixture(literal("0"), [], literal("true")), empty_proof_program())
+    assert loop_candidate_preserved(proof, candidate, entry)
+    let rebound = assigned(entry, 0, Value.Record([Value.List(43), Value.Number(constant(integer(2)))]))
+    assert !loop_candidate_preserved(proof, candidate, rebound)
+    assert match loop_observation_value(LoopObservation.Storage(42), rebound) {
+        Result.Ok(value) => index_relation("==", value, constant(integer(3)), rebound)
+        _ => false
+    }
+    let resized = with_extent(43, constant(integer(3)), true, rebound)
+    assert loop_candidate_preserved(proof, candidate, resized)
+    let unavailable = assigned(resized, 0, Value.Empty)
+    assert match loop_predicate(candidate, unavailable) {
+        Result.Err(_) => true
+        _ => false
+    }
+}

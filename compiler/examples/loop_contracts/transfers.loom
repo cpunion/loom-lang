@@ -32,6 +32,84 @@ fn transfer_exercise() {
     assert word_count == 2 && words[0] == "second"
     let empty, empty_count = transfer_reverse[Int]([])
     assert length(empty) == 0 && empty_count == 0
+    let uncounted = transfer_without_counter([7, 8, 9])
+    assert length(uncounted) == 3 && uncounted[0] == 9 && uncounted[2] == 7
+    assert length(transfer_without_counter[Int]([])) == 0
+    let words_without_counter = transfer_inline(["first", "second"])
+    assert length(words_without_counter) == 2 && words_without_counter[0] == "second"
+    assert length(transfer_inline[Int]([])) == 0
+    let stable = transfer_stable([7, 8, 9])
+    assert length(stable) == 3 && stable[0] == 9 && stable[2] == 7
+    let evaluated = comptime {
+        transfer_without_counter([7, 8, 9])
+    }
+    assert length(evaluated) == 3 && evaluated[0] == 9
+}
+
+fn transfer_without_counter[T](values List[T]) List[T]
+ensures length(result) == old(length(values))
+ensures length(values) == 0 {
+    var pending = values
+    var output List[T] = []
+    while length(pending) > 0 {
+        match take_last(pending) {
+            Option.Some(pair) => {
+                let value, rest = pair
+                pending = rest
+                output = append(output, value)
+                continue
+            }
+            Option.None => {
+            }
+        }
+    }
+    output
+}
+
+record TransferState[T] {
+    pending List[T]
+    output List[T]
+}
+
+fn transfer_inline[T](values List[T]) List[T]
+ensures length(result) == old(length(values))
+ensures length(values) == 0 {
+    var state = TransferState {
+        pending = values
+        output = []
+    }
+    while true {
+        match take_last(state.pending) {
+            Option.Some(pair) => {
+                let value, rest = pair
+                state = TransferState {
+                    pending = rest
+                    output = append(state.output, value)
+                }
+            }
+            Option.None => {
+                return state.output
+            }
+        }
+    }
+}
+
+fn transfer_stable(values List[Int]) List[Int]
+ensures length(result) == old(length(values))
+ensures length(values) == 0 {
+    let output List[Int] = []
+    while length(values) > 0 {
+        match take_last(values) {
+            Option.Some(pair) => {
+                let value, rest = pair
+                discard rest
+                discard append(output, value)
+            }
+            Option.None => {
+            }
+        }
+    }
+    output
 }
 
 fn transfer_reverse[T](values List[T]) (List[T], Int)

@@ -1,24 +1,52 @@
-// Term IDs here are local slots, not logical variable identities. Evaluate the
-// same mathematical affine form in entry, head and actual backedge states.
-fn loop_affine_value(terms List[Term], state State) Result[Value, Text] {
+// Observations select current values, not logical variable identities. A local
+// path may denote an Int or a List extent; Storage observes a particular header.
+enum LoopObservation {
+    Local(Int, List[Int])
+    Storage(Int)
+}
+
+record LoopTerm {
+    observation LoopObservation
+    factor Number
+}
+
+fn same_loop_observation(left LoopObservation, right LoopObservation) Bool {
+    match left {
+        LoopObservation.Local(local, path) => match right {
+            LoopObservation.Local(other, fields) => local == other && same_projection(path, fields)
+            _ => false
+        }
+        LoopObservation.Storage(identity) => match right {
+            LoopObservation.Storage(other) => identity == other
+            _ => false
+        }
+    }
+}
+
+fn loop_observation_value(observation LoopObservation, state State) Result[Linear, Text] {
+    match observation {
+        LoopObservation.Local(local, path) => match loop_local_value(get(state.locals, local), path)? {
+            Value.Number(value) => Result.Ok(value)
+            Value.List(identity) => list_extent(identity, state)
+            _ => Result.Err("loop affine invariant needs an Int or List observation")
+        }
+        LoopObservation.Storage(identity) => list_extent(identity, state)
+    }
+}
+
+// Evaluate one mathematical form in entry, head and actual backedge states.
+fn loop_affine_value(terms List[LoopTerm], state State) Result[Value, Text] {
     var value = constant(integer(0))
     var index = 0
     while index < length(terms) {
         let term = get(terms, index)
-        match get(state.locals, term.id) {
-            Value.Number(local) => {
-                value = add(value, scale(local, term.factor))
-            }
-            _ => {
-                return Result.Err("loop affine invariant needs an Int local")
-            }
-        }
+        value = add(value, scale(loop_observation_value(term.observation, state)?, term.factor))
         index = index + 1
     }
     Result.Ok(Value.Number(value))
 }
 
-fn loop_affine_pair(proof Verification, candidates List[LoopCandidate], left Int, right Int, a Number, b Number, entry State) Result[Bool, Text] {
+fn loop_affine_pair(proof Verification, candidates List[LoopCandidate], left LoopObservation, right LoopObservation, a Number, b Number, entry State) Result[Bool, Text] {
     if length(candidates) >= 64 {
         return Result.Ok(true)
     }
@@ -27,7 +55,8 @@ fn loop_affine_pair(proof Verification, candidates List[LoopCandidate], left Int
     while index < length(candidates) {
         match get(candidates, index) {
             LoopCandidate.Affine(terms, _) => {
-                if length(terms) == 2 && get(terms, 0).id == left && get(terms, 1).id == right &&
+                if length(terms) == 2 && same_loop_observation(get(terms, 0).observation, left) &&
+                same_loop_observation(get(terms, 1).observation, right) &&
                 compare(product(get(terms, 0).factor, b), product(get(terms, 1).factor, a)) == 0 {
                     return Result.Ok(true)
                 }
@@ -37,11 +66,11 @@ fn loop_affine_pair(proof Verification, candidates List[LoopCandidate], left Int
         }
         index = index + 1
     }
-    let terms = [Term {
-            id = left
+    let terms = [LoopTerm {
+            observation = left
             factor = a
-        }, Term {
-            id = right
+        }, LoopTerm {
+            observation = right
             factor = b
         }]
     match loop_affine_value(terms, entry) {
@@ -107,7 +136,9 @@ fn loop_affine_candidates(proof Verification, guard Expr, body Expr, candidates 
                             match get(entry.locals, right) {
                                 Value.Number(_) => {
                                     paired = true
-                                    discard loop_affine_pair(proof, candidates, left, right, integer(1), integer(-1), entry)?
+                                    discard loop_affine_pair(proof, candidates,
+                                        LoopObservation.Local(left, new[Int]()), LoopObservation.Local(right, new[Int]()),
+                                        integer(1), integer(-1), entry)?
                                 }
                                 _ => {
                                 }
@@ -158,7 +189,8 @@ fn loop_affine_candidates(proof Verification, guard Expr, body Expr, candidates 
                     while a < length(get(rates, left)) && length(candidates) < 64 {
                         var b = 0
                         while b < length(get(rates, right)) && length(candidates) < 64 {
-                            discard loop_affine_pair(proof, candidates, left, right,
+                            discard loop_affine_pair(proof, candidates,
+                                LoopObservation.Local(left, new[Int]()), LoopObservation.Local(right, new[Int]()),
                                 get(get(rates, right), b), negate(get(get(rates, left), a)), entry)?
                             b = b + 1
                         }
