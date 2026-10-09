@@ -1,0 +1,64 @@
+fn publication_shape(kind TypeKind, arguments List[Int]) Type {
+    Type {
+        kind = kind
+        symbol = -1
+        arguments = arguments
+        pack_widths = []
+        fields = []
+        variants = []
+        constraint = []
+    }
+}
+
+fn publication_cell_coverage() Result[Bool, Text] {
+    let types = new[Type]()
+    var index = 0
+    while index < 6 {
+        push(types, publication_shape(TypeKind.Int, []))
+        index = index + 1
+    }
+    push(types, publication_shape(TypeKind.List, [1]))
+    push(types, publication_shape(TypeKind.List, [6]))
+    let proof = verification(fixture(literal("0"), [], literal("true")),
+        proof_program_with_types(types))
+    var state = State {
+        locals = []
+        facts = []
+        extents = []
+        observations = []
+    }
+    state = with_extent(10, constant(integer(1)), true, state)
+    state = with_extent(20, constant(integer(1)), true, state)
+    state = with_extent(30, constant(integer(1)), true, state)
+    state = remember_element(20, constant(integer(0)), Value.List(10), state)?
+    let published = published_inputs(proof, [7], [Value.List(20)], 0, state)
+    assert !list_state(10, published)?.private_storage
+    assert !list_state(20, published)?.private_storage
+    assert list_state(30, published)?.private_storage
+    // A later unknown handle may alias any earlier allocation. Different IDs
+    // never authorize a frame, even when another exact graph was complete.
+    let unknown = list_bounds(Value.List(40), state)
+    let aliased = published_inputs(proof, [6], [Value.List(40)], 0, unknown)
+    assert !list_state(10, aliased)?.private_storage
+    assert !list_state(30, aliased)?.private_storage
+    // The first edge is evicted. All remaining cells happen to agree, but that
+    // is no evidence about the missing current index.
+    state = with_extent(20, constant(integer(65)), true, state)
+    index = 0
+    while index < 65 {
+        state = remember_element(20, constant(integer(index)), Value.List(10), state)?
+        index = index + 1
+    }
+    assert length(list_state(20, state)?.cells) == 64
+    let incomplete = published_inputs(proof, [7], [Value.List(20)], 0, state)
+    assert !list_state(30, incomplete)?.private_storage
+    assert !publication_value(proof, 7, Value.List(20), state, [], [0], 0)
+    Result.Ok(true)
+}
+
+test fn nested_publication_requires_complete_cells_and_retains_unknown_alias_overlap() {
+    assert match publication_cell_coverage() {
+        Result.Ok(valid) => valid
+        Result.Err(_) => false
+    }
+}

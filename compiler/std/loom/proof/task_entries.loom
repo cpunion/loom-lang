@@ -3,17 +3,6 @@ import std.loom.typed.contains_tasks
 // The existing one-shot Task check excludes independent writable aliases of
 // Task-bearing containers. Only their outer headers are private to the current
 // consumer; ordinary shared siblings and Task-captured graphs are not framed.
-fn task_storage_member(identities List[Int], identity Int) Bool {
-    var index = 0
-    while index < length(identities) {
-        if get(identities, index) == identity {
-            return true
-        }
-        index = index + 1
-    }
-    false
-}
-
 fn task_storage_leaves(proof Verification, ty Int, value Value, identities List[Int], depth Int) {
     if depth >= 16 || ty < 6 || ty >= length(proof.program.types) {
         return
@@ -23,7 +12,7 @@ fn task_storage_leaves(proof Verification, ty Int, value Value, identities List[
         if contains_tasks(proof.program.types, ty, new[Int]()) {
             match value {
                 Value.List(identity) => {
-                    if !task_storage_member(identities, identity) {
+                    if !storage_identity_member(identities, identity) {
                         push(identities, identity)
                     }
                 }
@@ -94,7 +83,7 @@ fn task_private_value(proof Verification, ty Int, value Value, state State) Stat
     index = 0
     while index < length(current.extents) {
         let extent = get(current.extents, index)
-        push(extents, if task_storage_member(identities, extent.identity) {
+        push(extents, if storage_identity_member(identities, extent.identity) {
                 private_extent(extent, true)
             } else {
                 extent
@@ -133,16 +122,12 @@ fn created_task(proof Verification, target Int, values List[Value], state State)
     index = 0
     while index < length(current.extents) {
         let extent = get(current.extents, index)
-        if task_storage_member(identities, extent.identity) {
+        if storage_identity_member(identities, extent.identity) {
             push(entries, private_extent(extent, true))
         }
         index = index + 1
     }
-    let released = if closed_storage_inputs(proof.program, function.params) {
-        current
-    } else {
-        published_storage(current)
-    }
+    let released = published_inputs(proof, function.params, values, 0, current)
     Outcome {
         state = if length(identities) == 0 {
             released

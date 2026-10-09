@@ -1,0 +1,64 @@
+import std.resource.generate
+
+fn publication_callback(next fn(Int) Int) Int
+ensures result == 7 {
+    let values = [7]
+    discard next(0)
+    get(values, 0)
+}
+
+fn publication_generated[T](count Int, next fn(Int, Int) (T, Int), finish fn(Int)) List[T]
+requires count >= 0 && count <= 100
+ensures length(result) == count {
+    generate(count, 0, next, finish)
+}
+
+fn publication_nested(next fn(List[List[Int]])) Int
+ensures result == 8 {
+    let child = [7]
+    let parent = [child]
+    let separate = [8]
+    next(parent)
+    get(separate, 0)
+}
+
+async fn publication_touch(values List[Int]) {
+    push(values, 9)
+    sleep_ms(1).await
+}
+
+async fn publication_wait(shared List[Int]) Int
+ensures result == 7 {
+    let values = [7]
+    publication_touch(shared).await
+    get(values, 0)
+}
+
+async fn exercise_publication() {
+    let log List[Int] = []
+    assert publication_callback(fn(index Int) Int {
+            push(log, index)
+            index
+        }) == 7
+    let values = publication_generated(3,
+        fn(index Int, state Int) (Int, Int) {
+            push(log, index)
+            (index + state, state + 1)
+        }, fn(state Int) {
+            push(log, state)
+        })
+    assert length(values) == 3 && values[0] == 0 && values[2] == 4
+    assert length(log) == 5 && log[4] == 3
+    let empty = publication_generated(0,
+        fn(index Int, state Int) (Text, Int) {
+            ("unused", state)
+        }, fn(state Int) {
+            assert state == 0
+        })
+    assert length(empty) == 0
+    assert publication_nested(fn(parent List[List[Int]]) {
+            push(get(parent, 0), 99)
+        }) == 8
+    assert publication_wait(log).await == 7
+    assert length(log) == 6 && log[5] == 9
+}

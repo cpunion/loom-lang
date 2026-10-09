@@ -211,9 +211,18 @@ fn indirect_body_call(proof Verification, call Expr, state State, depth Int) Res
             }
             _ => {
                 // An unknown callback contributes only its checked output
-                // type, not a guessed target or a hidden contract.
+                // type, not a guessed target or a hidden contract. Its existing
+                // captures cannot reach a later private allocation unless a
+                // preceding publication or these evaluated arguments expose it.
+                let types = new[Int]()
+                var argument = 0
+                while argument < length(call.children) {
+                    push(types, get(call.children, argument).ty)
+                    argument = argument + 1
+                }
                 discard add_outcome(output, unknown_completion(proof, call,
-                        suspension_state(proof, published_storage(current.state))))?
+                        suspension_state(proof, published_inputs(proof, types,
+                                current.values, 1, current.state))))?
             }
         }
         index = index + 1

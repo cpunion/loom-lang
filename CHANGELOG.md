@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Frame unreachable private List storage across known async inputs and unknown
+  callback arguments. Follow evaluated inline values, selected enum payloads
+  and completely observed nested Lists; possible aliases still publish together.
+  Opaque graphs, missing/evicted cells and exhausted traversal retain conservative
+  invalidation. Source stateful generation length contracts reuse these rules.
+
 - Retain proved private result headers through contracted async abstractions.
   Optional bounded body inspection projects only storage provenance: declared
   contracts still supply all value/content facts, and returned fields gain no
