@@ -118,9 +118,12 @@ fn operation_obligation(context Expansion, value Expr, guard Expr, shape ProofOp
     if list_read_expression(value) {
         return read_obligation(context, value, guard)
     }
-    // Entry reads have their own guarded capture/bounds check. Other partial
-    // primitives retain an obligation even when their value is later discarded.
-    if value.kind != ExprKind.Intrinsic || (!shape.total && !entry_element_expression(value)) {
+    // Children already retain their own evaluation paths, including eager
+    // arguments and short circuits. A total parent adds no new fault: recording
+    // its whole substituted tree repeats those obligations at every wrapper.
+    // Entry reads have their own guarded capture/bounds check. Every other
+    // partial operation remains checked even when its value is discarded.
+    if !shape.total && !entry_element_expression(value) {
         return evaluated(context, guard, value, false)
     }
     Result.Ok(true)

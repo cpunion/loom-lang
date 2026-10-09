@@ -1,0 +1,71 @@
+enum TransferEnvelope[T] {
+    Present(T)
+    Absent
+    Failed(Text)
+}
+
+fn same_envelope(left TransferEnvelope[TransferChoice[Int]], right TransferEnvelope[TransferChoice[Int]]) Bool {
+    match left {
+        TransferEnvelope.Present(value) => match right {
+            TransferEnvelope.Present(other) => same_choice(value, other)
+            _ => false
+        }
+        TransferEnvelope.Absent => match right {
+            TransferEnvelope.Absent => true
+            _ => false
+        }
+        TransferEnvelope.Failed(message) => match right {
+            TransferEnvelope.Failed(other) => message == other
+            _ => false
+        }
+    }
+}
+
+fn reversed_envelopes(output List[TransferEnvelope[TransferChoice[Int]]], before List[TransferEnvelope[TransferChoice[Int]]]) Bool {
+    var index = 0
+    while index < length(output) {
+        if !same_envelope(output[index], before[length(before) - index - 1]) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn reverse_envelopes(values List[TransferEnvelope[TransferChoice[Int]]]) List[TransferEnvelope[TransferChoice[Int]]]
+ensures length(result) == old(length(values)) && reversed_envelopes(result, old(values))
+ensures length(values) == 0 {
+    var rest = values
+    var output List[TransferEnvelope[TransferChoice[Int]]] = []
+    while length(rest) > 0 {
+        match take_last(rest) {
+            Option.Some(pair) => {
+                let envelope, remaining = pair
+                rest = remaining
+                output = append(output, envelope)
+            }
+            Option.None => {
+            }
+        }
+    }
+    output
+}
+
+fn nested_enum_transfer_exercise() {
+    let before = [TransferEnvelope.Present(TransferChoice.Value(7)),
+        TransferEnvelope.Absent(), TransferEnvelope.Present(TransferChoice.Missing()),
+        TransferEnvelope.Failed("offline")]
+    let reversed_values = reverse_envelopes(before)
+    assert length(before) == 0
+    assert reversed_envelopes(reversed_values,
+        [TransferEnvelope.Present(TransferChoice.Value(7)), TransferEnvelope.Absent(),
+            TransferEnvelope.Present(TransferChoice.Missing()), TransferEnvelope.Failed("offline")])
+    assert length(reverse_envelopes([])) == 0
+    let evaluated = comptime {
+        reverse_envelopes([TransferEnvelope.Present(TransferChoice.Missing()),
+                TransferEnvelope.Present(TransferChoice.Value(4)), TransferEnvelope.Failed("retry")])
+    }
+    assert reversed_envelopes(evaluated,
+        [TransferEnvelope.Present(TransferChoice.Missing()),
+            TransferEnvelope.Present(TransferChoice.Value(4)), TransferEnvelope.Failed("retry")])
+}

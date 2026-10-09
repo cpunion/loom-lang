@@ -627,8 +627,11 @@ fn contract_predicates(program Program, locals List[Local], inputs List[Expr], e
         var check_index = 0
         while check_index < length(context.checks) {
             let check = get(context.checks, check_index)
-            if !bounded_contract(check.guard) || !bounded_contract(check.value) {
-                return Result.Err("contract helper proof expansion budget exhausted")
+            if !bounded_contract(check.guard) {
+                return Result.Err("contract helper evaluation guard expansion budget exhausted")
+            }
+            if !bounded_contract(check.value) {
+                return Result.Err("contract helper evaluation value expansion budget exhausted")
             }
             if entry && check.universal {
                 // A false scan may stop before later checks execute.

@@ -43,12 +43,13 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");
     let program = format!(
-        "{}\n{}\n{}\n{}\n{}\nfn main() {{\n    float_loop_exercise()\n    transfer_exercise()\n    transfer_content_exercise()\n    enum_transfer_exercise()\n    opaque_exercise()\n}}\n",
+        "{}\n{}\n{}\n{}\n{}\n{}\nfn main() {{\n    float_loop_exercise()\n    transfer_exercise()\n    transfer_content_exercise()\n    enum_transfer_exercise()\n    nested_enum_transfer_exercise()\n    opaque_exercise()\n}}\n",
         include_str!("../examples/loop_contracts/floats.loom"),
         include_str!("../examples/loop_contracts/transfers.loom"),
         include_str!("../examples/loop_contracts/contents.loom"),
         include_str!("../examples/loop_contracts/opaque.loom"),
-        include_str!("../examples/loop_contracts/enums.loom")
+        include_str!("../examples/loop_contracts/enums.loom"),
+        include_str!("../examples/loop_contracts/nested_enums.loom")
     );
     let cache = package.path().join("cache");
     let check = || {
@@ -76,6 +77,18 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
         program.replace(
             "output = append(output, choice)",
             "output = append(output, TransferChoice.Missing())",
+        ),
+        program.replace(
+            "output = append(output, envelope)",
+            "output = append(output, TransferEnvelope.Absent())",
+        ),
+        program.replace(
+            "TransferEnvelope.Failed(other) => message == other",
+            "TransferEnvelope.Failed(other) => message != other",
+        ),
+        program.replace(
+            "if !same_envelope(output[index], before[length(before) - index - 1])",
+            "if !same_envelope(output[index], before[index])",
         ),
         program.replace(
             "output = append(state.output, choice)",

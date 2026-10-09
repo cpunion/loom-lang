@@ -2942,8 +2942,11 @@ prefix candidates also relate enum tags and selected immutable payload columns
 through the ordinary entry/all-backedge checks. The
 [enum transfer example](examples/loop_contracts/enums.loom) proves reversed tags
 and Int/Text payload fields without counters or auxiliary prefix contracts;
-shared children remain writable and NaN equality supplies no invariant. General
-relational content induction remains open.
+shared children remain writable and NaN equality supplies no invariant. The
+[nested enum example](examples/loop_contracts/nested_enums.loom) composes inner
+helpers and three outer variants, including Text payloads. Returned formulas
+omit their enclosing guard; evaluation checks retain it and every partial
+operation. General relational content induction remains open.
 
 Bounded pure scans can express List predicates over modeled integer elements or
 inline field paths without special

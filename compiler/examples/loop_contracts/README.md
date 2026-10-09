@@ -54,6 +54,10 @@ selected immutable payload fields. Tag and payload candidates are checked
 independently; an inactive payload supplies no fact. It covers empty and mixed
 variants, inline transfer state, early returns, CTFE and shared List children
 beside NaN. Neither those children nor the outer input are copied or frozen.
+The [nested enum example](nested_enums.loom) composes a separate inner match
+helper with three outer variants, including a Text error payload. Enclosing
+evaluation paths and partial-operation checks remain intact without repeating
+them in each returned formula.
 
 The [Float example](floats.loom) reuses the same entry/backedge checks for IEEE
 order bounds on scalars and inline fields. Supported unresolved induction steps
