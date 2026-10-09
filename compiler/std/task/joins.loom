@@ -1,8 +1,10 @@
 // Policies stay in Loom. Runtime only supplies terminal notifications, typed
 // extraction, and subtree drain. A helper Task is per group, not per element.
 import std.resource.generate
+import std.list.length
 
-async fn collect[T](tasks List[Task[T]], fail_fast Bool) Batch[T] {
+async fn collect[T](tasks List[Task[T]], fail_fast Bool) Batch[T]
+ensures result.count == old(length(tasks)) && length(result.slots) == result.count {
     let batch = watch(tasks)
     var remaining = batch.count
     while remaining > 0 {
@@ -27,7 +29,8 @@ async fn collect[T](tasks List[Task[T]], fail_fast Bool) Batch[T] {
     batch
 }
 
-pub async fn settled[T](tasks List[Task[T]]) List[Outcome[T]] {
+pub async fn settled[T](tasks List[Task[T]]) List[Outcome[T]]
+ensures length(result) == old(length(tasks)) {
     let batch = collect(tasks, false).await
     let count = batch.count
     generate(count, batch.slots,
@@ -39,7 +42,8 @@ pub async fn settled[T](tasks List[Task[T]]) List[Outcome[T]] {
         })
 }
 
-pub async fn all[T](tasks List[Task[T]]) List[T] {
+pub async fn all[T](tasks List[Task[T]]) List[T]
+ensures length(result) == old(length(tasks)) {
     let batch = collect(tasks, true).await
     let count = batch.count
     generate(count, batch.slots,

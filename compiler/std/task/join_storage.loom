@@ -1,4 +1,5 @@
 import std.list.new
+import std.list.length
 import std.list.transfer.append
 import std.list.transfer.take_last
 import std.list.transfer.replace
@@ -15,7 +16,8 @@ record Batch[T] {
 
 // Slots are reversed input order. One registration per child; terminal
 // notifications identify slots without rescanning or extra per-element Tasks.
-fn watch[T](tasks List[Task[T]]) Batch[T] {
+fn watch[T](tasks List[Task[T]]) Batch[T]
+ensures result.count == old(length(tasks)) && length(result.slots) == result.count {
     var pending = tasks
     var slots = new[Option[Task[T]]]()
     var count = 0

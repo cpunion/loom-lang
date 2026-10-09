@@ -3079,8 +3079,9 @@ preserving evaluated return snapshots. Guard calls execute with fresh result
 identities using verified summaries or finite pure expansion; their syntax is
 not reused as a stable invariant term. Optional pure expansion can suggest bounds,
 but contributes no assumed facts and every candidate still needs induction.
-Resource cleanup and unmodeled heap operations inside a
-required loop proof still reject; the List extent operations above are supported. The bounded
+Tagged resource cleanup uses the same checked-body analysis. Disarmed callbacks
+may skip unreachable drains; reachable unmodeled drains and heap operations in a
+required loop proof still reject. The List extent operations above are supported. The bounded
 inference neither unrolls a sample of iterations nor adds runtime invariant
 checks. See the [loop contract example](examples/loop_contracts), including
 [nested aggregate state](examples/loop_contracts/aggregates.loom).
@@ -4297,6 +4298,11 @@ now use one-time completion registration and indexed transfer. They support
 dynamic counts, no-result payloads and returned Tasks, draining losing subtrees
 before return. Cleanup faults fail an otherwise successful join; existing primary
 faults retain precedence. See the [join example](examples/task_joins).
+List `all` and `settled` declare verified normal-return contracts:
+`length(result) == old(length(tasks))`. Their source registration/collection
+helpers establish the batch shape, so callers compose a library guarantee
+rather than expanding the join policy. Empty, no-result and resource payloads
+share this contract; fault/cancellation paths promise no normal result.
 `std.task.first_ok` accepts `List[Task[Result[T, E]]]`, skipping ordinary errors
 until an `Ok` arrives. If all fail, it returns errors in input order; empty input
 returns `Err([])`. Execution/cleanup faults still fail the join. Fresh MustScope

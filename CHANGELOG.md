@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Declare and verify dynamic `std.task.all`/`settled` result lengths through
+  ordinary source contracts, including resource payloads. Loop analysis follows
+  tagged cleanup bodies instead of rejecting their metadata; disarmed cleanup
+  skips no reachable effects and unsupported live drains still reject.
+
 - Avoid repeated quadratic structural contradiction searches already covered by
   integer ranges, and skip wrapped-complement searches before any negated fact.
   Retain nonlinear, compound and explicit-negation checks without adding proof

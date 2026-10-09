@@ -1,0 +1,35 @@
+test fn tagged_cleanup_uses_its_checked_body_not_a_resource_exemption() {
+    let drain = expression(ExprKind.ResourceDrain, 0, "", 0, [local(0)])
+    let guarded = expression(ExprKind.If, 0, "", -1,
+        [expression(ExprKind.Bool, 2, "false", -1, []), drain])
+    let cleanup = expression(ExprKind.Cleanup, 0, "resource-disarm", 0, [guarded])
+    let function = fixture(local(0), [], operation("==", local(1), local(0)))
+    let proof = verification(function, empty_proof_program())
+    let entry = State {
+        locals = [Value.Number(variable(0)), Value.Empty]
+        facts = []
+        extents = []
+        observations = []
+    }
+    let writes = [false, false]
+    assert match loop_writes(proof, cleanup, entry, writes, false, 256) {
+        Result.Ok(_) => get(writes, 0)
+        _ => false
+    }
+    assert match execute(proof, cleanup, entry, 256) {
+        Result.Ok(paths) => length(paths) == 1
+        _ => false
+    }
+    let live = expression(ExprKind.Cleanup, 0, "resource-disarm", 0, [drain])
+    assert match execute(proof, live, entry, 256) {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert !extent_preserving(proof.program, live)
+    let empty = expression(ExprKind.Cleanup, 0, "scoped", 0,
+        [expression(ExprKind.Block, 0, "", -1, [])])
+    assert extent_preserving(proof.program, empty)
+    let mutating = expression(ExprKind.Cleanup, 0, "scoped", 0,
+        [expression(ExprKind.Intrinsic, 0, "list_push", -1, [local(0), literal("1")])])
+    assert !extent_preserving(proof.program, mutating)
+}
