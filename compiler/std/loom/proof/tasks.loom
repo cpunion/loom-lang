@@ -1,0 +1,143 @@
+// A promise retains checked call identity and once-evaluated arguments. It is
+// proof-only data: native coroutine frames and scheduling are unchanged.
+fn task_reference(proof Verification, call Expr, state State, depth Int) Result[List[Outcome], Text] {
+    if call.index < 0 || call.index >= length(proof.program.functions) {
+        return Result.Err("task proof has no checked function instance")
+    }
+    if call.kind == ExprKind.TaskCall && !get(proof.program.functions, call.index).is_async {
+        return Result.Err("task proof needs an async function")
+    }
+    let arguments = call_arguments(proof, call, state, depth)?
+    let output = new[Outcome]()
+    var index = 0
+    while index < length(arguments) {
+        let current = get(arguments, index)
+        discard add_outcome(output, Outcome {
+                state = current.state
+                value = if call.kind == ExprKind.FunctionRef {
+                    Value.Function(call.index, current.values)
+                } else {
+                    Value.Task(call.index, current.values)
+                }
+            })?
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+
+fn suspension_state(proof Verification, state State) State {
+    // Other ready Tasks can reach aliases while this one is suspended. Past
+    // scalar reads remain snapshots; only validated storage invariants frame
+    // current observations. Caller heap state is not an async callee's entry.
+    interference(proof, published_storage(state), true)
+}
+
+fn unknown_completion(proof Verification, source Expr, state State) Outcome {
+    let value = record_parameter_value(proof, source.ty, 0)
+    Outcome {
+        state = typed_value_state(proof, source.ty, value, state)
+        value = value
+    }
+}
+
+fn task_completion(proof Verification, expression Expr, state State, depth Int) Result[List[Outcome], Text] {
+    let arguments = call_arguments(proof, expression, state, depth)?
+    let output = new[Outcome]()
+    var index = 0
+    while index < length(arguments) {
+        let current = get(arguments, index)
+        let entry = suspension_state(proof, current.state)
+        let promise = if expression.kind == ExprKind.Await && length(current.values) == 1 {
+            get(current.values, 0)
+        } else {
+            Value.Empty
+        }
+        match promise {
+            Value.Task(target, values) => {
+                if target >= 0 && target < length(proof.program.functions) {
+                    let function = get(proof.program.functions, target)
+                    if function.result != expression.ty || length(function.params) != length(values) {
+                        return Result.Err("task proof has no matching completion signature")
+                    }
+                    if length(function.postconditions) != 0 {
+                        let call = proof_expr(expression, ExprKind.Call, expression.ty, "", target, new[Expr]())
+                        let completed = applied_call(proof, call, function, CallArguments {
+                                state = entry
+                                values = values
+                            }, depth)?
+                        var path = 0
+                        while path < length(completed) {
+                            let returned = get(completed, path)
+                            // A scalar result can carry its callee guarantee,
+                            // but another ready Task may change shared storage
+                            // before the awaiting caller observes that storage.
+                            discard add_outcome(output, Outcome {
+                                    state = suspension_state(proof, returned.state)
+                                    value = returned.value
+                                })?
+                            path = path + 1
+                        }
+                    } else {
+                        discard add_outcome(output, unknown_completion(proof, expression, entry))?
+                    }
+                } else {
+                    discard add_outcome(output, unknown_completion(proof, expression, entry))?
+                }
+            }
+            _ => {
+                discard add_outcome(output, unknown_completion(proof, expression, entry))?
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+
+fn indirect_body_call(proof Verification, call Expr, state State, depth Int) Result[List[Outcome], Text] {
+    let arguments = call_arguments(proof, call, state, depth)?
+    let output = new[Outcome]()
+    var index = 0
+    while index < length(arguments) {
+        let current = get(arguments, index)
+        if length(current.values) == 0 {
+            return Result.Err("indirect proof call has no function value")
+        }
+        match get(current.values, 0) {
+            Value.Function(target, captures) => {
+                if target < 0 || target >= length(proof.program.functions) {
+                    return Result.Err("indirect proof call has no checked target")
+                }
+                let function = get(proof.program.functions, target)
+                let inputs = clone(captures)
+                var argument = 1
+                while argument < length(current.values) {
+                    push(inputs, get(current.values, argument))
+                    argument = argument + 1
+                }
+                if length(inputs) != length(function.params) {
+                    return Result.Err("indirect proof call has no matching signature")
+                }
+                if function.is_async {
+                    discard add_outcome(output, Outcome {
+                            state = current.state
+                            value = Value.Task(target, inputs)
+                        })?
+                } else {
+                    let direct = proof_expr(call, ExprKind.Call, call.ty, "", target, new[Expr]())
+                    discard append(output, applied_call(proof, direct, function, CallArguments {
+                                state = current.state
+                                values = inputs
+                            }, depth)?)?
+                }
+            }
+            _ => {
+                // An unknown callback contributes only its checked output
+                // type, not a guessed target or a hidden contract.
+                discard add_outcome(output, unknown_completion(proof, call,
+                        suspension_state(proof, current.state)))?
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(output)
+}

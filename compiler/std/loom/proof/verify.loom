@@ -109,6 +109,9 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
         std.list.set(proof.fresh, 0, identity + 1)
         return Value.List(identity)
     }
+    if shape.kind == TypeKind.Task {
+        return Value.Task(-1, new[Value]())
+    }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
         // Keep one identity for the nominal scalar and its representation.
         // Entry invariants are added separately after all parameters exist.
@@ -478,7 +481,7 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
         }
         return Result.Ok(values)
     }
-    if expr.kind == ExprKind.Record {
+    if expr.kind == ExprKind.Record || expr.kind == ExprKind.FrameNew {
         return record_outcomes(proof, expr, state, depth - 1)
     }
     if expr.kind == ExprKind.List {
@@ -560,6 +563,15 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
     }
     if expr.kind == ExprKind.Call {
         return body_call(proof, expr, state, depth - 1)
+    }
+    if expr.kind == ExprKind.TaskCall || expr.kind == ExprKind.FunctionRef {
+        return task_reference(proof, expr, state, depth - 1)
+    }
+    if expr.kind == ExprKind.IndirectCall {
+        return indirect_body_call(proof, expr, state, depth - 1)
+    }
+    if expr.kind == ExprKind.Await || expr.kind == ExprKind.Suspend {
+        return task_completion(proof, expr, state, depth - 1)
     }
     let operation = proof_operation(expr)
     if expr.kind == ExprKind.Intrinsic && operation.arity >= 0 && !operation.heap {

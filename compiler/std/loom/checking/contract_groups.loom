@@ -62,7 +62,7 @@ fn prepared_contract_group(stage Context) Result[std.loom.typed.Program, Failure
                 push(members, false)
                 summary = summary + 1
             }
-            set(functions, index, with_body(function, proof_dynamic_calls(function.body, first, [0])))
+            set(functions, index, with_body(function, proof_dynamic_calls(function.body, first, [0], summaries)))
         }
         index = index + 1
     }

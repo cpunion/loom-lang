@@ -82,6 +82,10 @@ enum Value {
     List(Int)
     EntryList(Linear, Int)
     Projected(Int, List[Int], Linear)
+    // Checked targets and evaluated inputs, not executable coroutine frames.
+    // Guarantees become available only on successful completion.
+    Task(Int, List[Value])
+    Function(Int, List[Value])
 }
 
 record ListCell {

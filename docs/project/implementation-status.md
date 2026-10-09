@@ -535,6 +535,17 @@ and inline aggregate concept calls use declared contracts through generic/associ
 not a guessed implementation or hidden receiver knowledge. Private abstract
 summaries are neither executable CTFE bodies nor native functions. Unspecified
 leaves remain independent; shared siblings supply no content or alias facts.
+Async normal-return guarantees also compose through saved Task locals, inline
+aggregates, known callbacks and declared generic/dyn method contracts. A private
+promise retains checked identity and once-evaluated inputs until successful
+await; it adds no runtime frame or persistent IR metadata. Callee entry heap
+observations are fresh, not borrowed from Task creation or the caller's entry.
+Suspension invalidates unprotected current storage while retaining immutable
+scalar snapshots and validated invariants. Unknown targets contribute only
+typed completion values; faults and cancellation supply no normal-return
+guarantee. General Task-returning helper and collection promise inference, plus
+async variadic family proofs, remain open. See the
+[native example](../../compiler/examples/async_contracts/main.loom).
 Immutable Text values, exact literals and established equality facts participate
 in required proofs, including Text leaves beside shared siblings. Distinct unknown
 values never imply unequal contents. Established equality chains and inequalities

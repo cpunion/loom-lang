@@ -1,0 +1,91 @@
+import std.time.sleep_ms
+import std.list.length
+import std.list.push
+
+async fn keep(value Int, ignored Int) Int
+ensures result == old(value) {
+    sleep_ms(1).await
+    value
+}
+
+fn pass(task Task[Int]) Task[Int] {
+    task
+}
+
+record Pending {
+    task Task[Int]
+    marker Int
+}
+
+async fn saved(value Int) Int
+ensures result == value {
+    var input = value
+    let callback = keep
+    let pending = Pending {
+        task = pass(callback(input, {
+                    input = 0
+                    1
+                }))
+        marker = 2
+    }
+    input = 3
+    pending.task.await
+}
+
+concept Echo {
+    async fn echo(self Self, value Text) Text
+    ensures result == value
+}
+
+impl Echo for Bool {
+    async fn echo(self Bool, value Text) Text {
+        sleep_ms(1).await
+        value
+    }
+}
+
+async fn generic[T Echo](receiver T, value Text) Text
+ensures result == value {
+    let pending = receiver.echo(value)
+    pending.await
+}
+
+async fn dynamic(receiver dyn Echo, value Text) Text
+ensures result == value {
+    receiver.echo(value).await
+}
+
+async fn counted(value Int) Int
+requires value >= 0 && value <= 100
+ensures result == value {
+    if value == 0 {
+        0
+    } else {
+        counted(value - 1).await + 1
+    }
+}
+
+async fn measure(values List[Int]) Int
+ensures result == old(length(values)) {
+    length(values)
+}
+
+async fn exercise() {
+    assert saved(42).await == 42
+    assert generic(true, "ready").await == "ready"
+    let receiver dyn Echo = false
+    assert dynamic(receiver, "é😀").await == "é😀"
+    assert counted(8).await == 8
+    let values List[Int] = []
+    let pending = measure(values)
+    push(values, 7)
+    assert pending.await == 1
+}
+
+async fn main() {
+    exercise().await
+}
+
+test async fn guarantees_survive_suspension() {
+    exercise().await
+}
