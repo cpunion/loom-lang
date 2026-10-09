@@ -70,6 +70,17 @@ ensures result == old(length(values)) {
     length(values)
 }
 
+type Positive = Int where self > 0
+
+async fn positive() Positive {
+    Positive(7)
+}
+
+async fn widened() Int
+ensures result > 0 {
+    positive().await
+}
+
 async fn exercise() {
     assert saved(42).await == 42
     assert generic(true, "ready").await == "ready"
@@ -80,6 +91,7 @@ async fn exercise() {
     let pending = measure(values)
     push(values, 7)
     assert pending.await == 1
+    assert widened().await == 7
 }
 
 async fn main() {

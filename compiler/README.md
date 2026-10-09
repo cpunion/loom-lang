@@ -1685,6 +1685,9 @@ facts while preserving past scalar snapshots. Unknown Task targets provide only
 typed results. Guarantees do not apply to cancellation or faults, and general
 Task-returning helper/collection promise inference remains unsupported. See the
 [async contract example](examples/async_contracts/main.loom).
+An await context guides inference without converting its Task handle. Supported
+result weakening happens after extraction; `Task[Positive]` itself does not
+convert to `Task[Int]`.
 Bytes and List inputs can pass through these proofs, including generic nominal
 receivers. List lengths use the stateful contract rules below; an opaque method
 may change reachable lengths unless its postcondition establishes new facts.

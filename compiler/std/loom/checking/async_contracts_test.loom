@@ -50,6 +50,18 @@ test fn async_contracts_follow_saved_tasks_and_once_evaluated_arguments() {
             callback(value).await
         }
         """)
+    rejects("""
+        type Positive = Int where self > 0
+        async fn wrong(task Task[Positive]) {
+            let widened Task[Int] = task
+            discard widened.await
+        }
+        """)
+    rejects("""
+        async fn wrong(task Task[Int]) Bool {
+            task.await
+        }
+        """)
 }
 
 test fn async_declared_concept_guarantees_compose_without_witness_guesses() {
