@@ -35,6 +35,8 @@ fn protected_extent(identity Int, guarantee InputGuarantee, state State) State {
                 } else {
                     extent.invariant_type
                 }
+                frontier = extent.frontier
+                unreachable = extent.unreachable
                 contents = extent.contents
                 cells = extent.cells
             })

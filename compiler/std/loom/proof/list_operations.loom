@@ -116,6 +116,14 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, receiver_type 
         if !private_target {
             state = published_storage(state)
         }
+        match get(inputs.values, 0) {
+            Value.List(identity) => {
+                state = stored_graph(proof, identity, state)
+            }
+            _ => {
+                state = published_storage(state)
+            }
+        }
     }
     state = interference(proof, state)
     if proof.shared && list_mutation(name) && length(proof.preservation) != 0 {

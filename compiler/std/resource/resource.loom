@@ -2,15 +2,18 @@
 // Disposal is synchronous; external resources must not depend on GC cleanup.
 import std.option.Option
 import std.result.Result
+import std.list.length
 
 pub concept Dispose {
     fn dispose(self Self)
 }
 
-pub concept MustScope {}
+pub concept MustScope {
+}
 
 // Independent of disposal: values carrying this marker cannot cross suspension.
-pub concept NoSuspend {}
+pub concept NoSuspend {
+}
 
 // Structural containers drain their stored MustScope fields after these hooks.
 // Ordinary payloads need no Dispose conformance and retain shared semantics.
@@ -45,7 +48,8 @@ intrinsic fn list_append[T](values List[T], value T) List[T]
 // Factories run in increasing index order. Failure cleans every completed
 // element; successful construction transfers the whole List into its scope.
 pub fn generate[T Dispose + MustScope](count Int, factory fn(Int) T) List[T]
-    requires count >= 0
+requires count >= 0
+ensures length(result) == count
 {
     resource_generate(count, factory)
 }
@@ -54,7 +58,8 @@ pub fn generate[T Dispose + MustScope](count Int, factory fn(Int) T) List[T]
 // Finish consumes the final state before the completed List is transferred.
 // Resource state itself must remain in an enclosing scope, not in this cursor.
 pub fn generate[T, S](count Int, state S, next fn(Int, S) (T, S), finish fn(S)) List[T]
-    requires count >= 0
+requires count >= 0
+ensures length(result) == count
 {
     resource_generate_state(count, state, next, finish)
 }

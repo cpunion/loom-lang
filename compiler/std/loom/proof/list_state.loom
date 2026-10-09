@@ -39,6 +39,8 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
     var read_only = false
     var fixed_extent = false
     var invariant_type = -1
+    var frontier = identity + 1
+    var unreachable = new[Int]()
     var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
@@ -49,6 +51,8 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
             read_only = extent.read_only
             fixed_extent = extent.fixed_extent
             invariant_type = extent.invariant_type
+            frontier = extent.frontier
+            unreachable = extent.unreachable
         }
         index = index + 1
     }
@@ -60,6 +64,8 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
             read_only = read_only
             fixed_extent = fixed_extent
             invariant_type = invariant_type
+            frontier = frontier
+            unreachable = unreachable
             contents = -1
             cells = new[ListCell]()
         })
@@ -111,6 +117,8 @@ fn private_extent(extent ListExtent, private_storage Bool) ListExtent {
         read_only = extent.read_only
         fixed_extent = extent.fixed_extent
         invariant_type = extent.invariant_type
+        frontier = extent.frontier
+        unreachable = extent.unreachable
         contents = extent.contents
         cells = extent.cells
     }
@@ -132,9 +140,30 @@ fn published_storage(state State) State {
     }
 }
 
+fn published_storage(state State, identities List[Int]) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        push(extents, if storage_identity_member(identities, extent.identity) {
+                private_extent(extent, false)
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
+    }
+}
+
 fn mutable_value(value Value) Bool {
     match value {
         Value.List(_) => true
+        Value.Opaque(_, _) => true
         Value.Projected(_, _, _) => true
         Value.Record(fields) => {
             var index = 0
@@ -224,6 +253,9 @@ fn private_storage_lost(before State, after State) Bool {
 fn extent_overlap(left ListExtent, right ListExtent) Bool {
     if left.identity == right.identity {
         return true
+    }
+    if list_graph_frame(left, right) || list_graph_frame(right, left) {
+        return false
     }
     if left.allocated && (right.allocated || left.identity > right.identity) {
         return false

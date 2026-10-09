@@ -41,10 +41,11 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");
     let program = format!(
-        "{}\n{}\n{}\nfn main() {{\n    float_loop_exercise()\n    transfer_exercise()\n    transfer_content_exercise()\n}}\n",
+        "{}\n{}\n{}\n{}\nfn main() {{\n    float_loop_exercise()\n    transfer_exercise()\n    transfer_content_exercise()\n    opaque_exercise()\n}}\n",
         include_str!("../examples/loop_contracts/floats.loom"),
         include_str!("../examples/loop_contracts/transfers.loom"),
-        include_str!("../examples/loop_contracts/contents.loom")
+        include_str!("../examples/loop_contracts/contents.loom"),
+        include_str!("../examples/loop_contracts/opaque.loom")
     );
     let cache = package.path().join("cache");
     let check = || {
@@ -81,6 +82,8 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
             "output = append(output, value)\n                defer { discard take_last(output) }\n                continue",
         ),
         program.replace("current = current / 2.0", "current = -current"),
+        program.replace("effect(state)", "effect(state)\n    push(fresh, 8)"),
+        program.replace("let changed, value = next(current)", "let changed, value = next(current)\n        push(output, value)"),
         program.replace("current = current / 2.0", "current = 0.0 / 0.0"),
         r#"
 import std.list.length

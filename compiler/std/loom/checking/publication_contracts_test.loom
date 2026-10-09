@@ -72,7 +72,7 @@ test fn publication_walks_nested_cells_without_assuming_a_complete_heap_snapshot
             next(parent)
             get(child, 0)
         }
-        """, false, "postcondition")
+        """, true, "")
 }
 
 test fn enum_payloads_and_function_captures_participate_in_publication() {
@@ -153,4 +153,187 @@ test fn known_async_inputs_frame_only_unreachable_caller_storage() {
     task_metadata_contract(source, true, "")
     task_metadata_contract(std.text.join(std.text.split(source, "consume(shared).await"),
             "consume(values).await"), false, "postcondition")
+}
+
+test fn opaque_inputs_frame_later_allocations_without_value_assumptions() {
+    let source = """
+        import std.list.length
+        record Input[T] {
+            state T
+        }
+        fn independent[T](input Input[T], effect fn(Input[T])) Int
+        ensures result == 1 {
+            let fresh = [7]
+            effect(input)
+            length(fresh)
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(concat(source, """
+        fn guessed[T](state T, next fn(T) Int) Int
+        ensures result == 7 {
+            next(state)
+        }
+        """), false, "postcondition")
+}
+
+test fn opaque_loop_results_need_inductive_unreachability_not_entry_privacy() {
+    let source = """
+        import std.list.length
+        import std.list.push
+        fn generated[S, T](count Int, state S, next fn(S) (S, T)) List[T]
+        requires count >= 0 && count <= 100
+        ensures length(result) == count {
+            let output List[T] = []
+            var current = state
+            var index = 0
+            while index < count {
+                let changed, value = next(current)
+                current = changed
+                push(output, value)
+                index = index + 1
+            }
+            output
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(std.text.join(std.text.split(source,
+                "index = index + 1"), "index = index + 2"), false, "postcondition")
+}
+
+test fn opaque_inputs_never_recover_storage_published_directly_or_through_aliases() {
+    task_metadata_contract("""
+        import std.list.length
+        fn stale[T](state T, effect fn(T, List[Int])) Int
+        ensures result == 1 {
+            let fresh = [7]
+            effect(state, fresh)
+            length(fresh)
+        }
+        """, false, "postcondition")
+    task_metadata_contract("""
+        import std.list.get
+        import std.list.set
+        import std.list.length
+        fn stale[T](holder List[List[Int]], state T, effect fn(T)) Int
+        requires length(holder) > 0
+        ensures result == 7 {
+            let fresh = [7]
+            set(holder, 0, fresh)
+            effect(state)
+            get(fresh, 0)
+        }
+        """, false, "postcondition")
+}
+
+test fn changed_callback_captures_withdraw_loop_frames_and_early_returns() {
+    task_metadata_contract("""
+        import std.list.get
+        fn stale(original fn() Int, effect fn(fn() Int)) Int
+        ensures result == 7 {
+            let values = [7]
+            var current = original
+            var index = 0
+            while index < 2 {
+                effect(current)
+                if index == 1 {
+                    return get(values, 0)
+                }
+                current = fn() Int { get(values, 0) }
+                index = index + 1
+            }
+            get(values, 0)
+        }
+        """, false, "postcondition")
+    task_metadata_contract("""
+        import std.list.get
+        fn stale(original fn() Int) Int
+        ensures result == 7 {
+            let values = [7]
+            var current = original
+            var index = 0
+            while index < 2 {
+                discard current()
+                current = fn() Int { get(values, 0) }
+                index = index + 1
+            }
+            get(values, 0)
+        }
+        """, false, "postcondition")
+    task_metadata_contract("""
+        import std.list.length
+        fn stale(original List[Int], effect fn(List[Int])) Int
+        ensures result == 1 {
+            let output = [7]
+            var current = original
+            var index = 0
+            while index < 2 {
+                effect(current)
+                if index == 1 {
+                    return length(output)
+                }
+                current = output
+                index = index + 1
+            }
+            length(output)
+        }
+        """, false, "postcondition")
+}
+
+test fn publishing_one_loop_header_never_turns_another_frame_into_false_evidence() {
+    let source = """
+        import std.list.length
+        fn independent(original List[Int], effect fn(List[Int])) Int
+        ensures result == 1 {
+            let exposed = [7]
+            let separate = [8]
+            var current = original
+            var index = 0
+            while index < 2 {
+                effect(current)
+                current = exposed
+                index = index + 1
+            }
+            length(separate)
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(std.text.join(std.text.split(source,
+                "result == 1"), "result == 2"), false, "postcondition")
+}
+
+test fn private_edge_stores_widen_ancestor_graphs_even_after_cell_eviction() {
+    task_metadata_contract("""
+        import std.list.length
+        import std.list.push
+        fn stale(effect fn(List[List[List[Int]]])) Int
+        ensures result == 1 {
+            let children List[List[Int]] = []
+            let parent = [children]
+            let fresh = [7]
+            var index = 0
+            while index < 65 {
+                push(children, if index == 0 { fresh } else { [8] })
+                index = index + 1
+            }
+            effect(parent)
+            length(fresh)
+        }
+        """, false, "postcondition")
+    task_metadata_contract("""
+        import std.list.length
+        import std.list.push
+        fn stale(effect fn(List[List[Int]])) Int
+        ensures result == 1 {
+            let parent List[List[Int]] = []
+            let fresh = [7]
+            var index = 0
+            while index < 2 {
+                effect(parent)
+                push(parent, fresh)
+                index = index + 1
+            }
+            length(fresh)
+        }
+        """, false, "postcondition")
 }

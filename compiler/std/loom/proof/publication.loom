@@ -1,6 +1,11 @@
 // Publication follows evaluated inputs, not source names or different handle
-// IDs. Unknown graphs, missing element observations and exhausted traversal
-// discard all privacy. No persistent graph or runtime ownership is introduced.
+// IDs. Opaque graphs retain only established unreachable-allocation facts;
+// missing observations or exhausted traversal discard all privacy.
+record Publication {
+    identities List[Int]
+    opaque List[Value]
+}
+
 fn storage_identity_member(identities List[Int], identity Int) Bool {
     var index = 0
     while index < length(identities) {
@@ -13,7 +18,7 @@ fn storage_identity_member(identities List[Int], identity Int) Bool {
 }
 
 fn publication_captures(proof Verification, target Int, values List[Value], complete Bool,
-    state State, identities List[Int], budget List[Int], depth Int) Bool {
+    state State, graph Publication, budget List[Int], depth Int) Bool {
     if target < 0 || target >= length(proof.program.functions) {
         return false
     }
@@ -24,7 +29,7 @@ fn publication_captures(proof Verification, target Int, values List[Value], comp
     var index = 0
     while index < length(values) {
         if !publication_value(proof, get(params, index), get(values, index),
-            state, identities, budget, depth + 1) {
+            state, graph, budget, depth + 1) {
             return false
         }
         index = index + 1
@@ -33,7 +38,7 @@ fn publication_captures(proof Verification, target Int, values List[Value], comp
 }
 
 fn publication_value(proof Verification, ty Int, value Value, state State,
-    identities List[Int], budget List[Int], depth Int) Bool {
+    graph Publication, budget List[Int], depth Int) Bool {
     if immutable_storage_type(proof.program, ty, 0) || ty == 4 {
         return true
     }
@@ -41,18 +46,26 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
         return false
     }
     set(budget, 0, get(budget, 0) - 1)
+    match value {
+        Value.Opaque(_, _) => {
+            push(graph.opaque, value)
+            return true
+        }
+        _ => {
+        }
+    }
     let shape = get(proof.program.types, ty)
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         return publication_value(proof, get(shape.fields, 0).ty, value,
-            state, identities, budget, depth + 1)
+            state, graph, budget, depth + 1)
     }
     if shape.kind == TypeKind.List && length(shape.arguments) == 1 {
         return match value {
             Value.List(identity) => {
-                if storage_identity_member(identities, identity) {
+                if storage_identity_member(graph.identities, identity) {
                     return true
                 }
-                push(identities, identity)
+                push(graph.identities, identity)
                 let extent = match list_state(identity, state) {
                     Result.Ok(extent) => extent
                     Result.Err(_) => {
@@ -76,16 +89,20 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
                     let child = match known_element(identity, position, state) {
                         Result.Ok(child) => child
                         Result.Err(_) => {
-                            return false
+                            push(graph.opaque, Value.Opaque(extent.frontier, extent.unreachable))
+                            return true
                         }
                     }
                     if !publication_value(proof, element, child, state,
-                        identities, budget, depth + 1) {
+                        graph, budget, depth + 1) {
                         return false
                     }
                     index = index + 1
                 }
-                index_relation("==", extent.size, constant(integer(index)), state)
+                if !index_relation("==", extent.size, constant(integer(index)), state) {
+                    push(graph.opaque, Value.Opaque(extent.frontier, extent.unreachable))
+                }
+                true
             }
             _ => false
         }
@@ -99,7 +116,7 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
                 var index = 0
                 while index < length(fields) {
                     if !publication_value(proof, get(shape.fields, index).ty,
-                        get(fields, index), state, identities, budget, depth + 1) {
+                        get(fields, index), state, graph, budget, depth + 1) {
                         return false
                     }
                     index = index + 1
@@ -129,7 +146,7 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
                     var field = 0
                     while field < length(fields) {
                         if !publication_value(proof, get(types, field), get(fields, field),
-                            state, identities, budget, depth + 1) {
+                            state, graph, budget, depth + 1) {
                             return false
                         }
                         field = field + 1
@@ -144,16 +161,30 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
     if shape.kind == TypeKind.Function {
         return match value {
             Value.Function(target, captures) => publication_captures(proof, target, captures,
-                false, state, identities, budget, depth)
+                false, state, graph, budget, depth)
             _ => false
         }
     }
     if shape.kind == TypeKind.Task {
         return match value {
             Value.Task(target, values, _) => publication_captures(proof, target, values,
-                true, state, identities, budget, depth)
+                true, state, graph, budget, depth)
             _ => false
         }
+    }
+    false
+}
+
+fn publication_reaches(extent ListExtent, state State, graph Publication) Bool {
+    if extent_modified(extent, state, graph.identities) {
+        return true
+    }
+    var index = 0
+    while index < length(graph.opaque) {
+        if !opaque_frame(get(graph.opaque, index), extent) {
+            return true
+        }
+        index = index + 1
     }
     false
 }
@@ -171,24 +202,27 @@ fn published_inputs(proof Verification, types List[Int], values List[Value], fir
     if closed {
         return state
     }
-    let identities = new[Int]()
+    let graph = Publication {
+        identities = new[Int]()
+        opaque = new[Value]()
+    }
     let budget = [256]
     index = first
     while index < length(values) {
         if !publication_value(proof, get(types, index), get(values, index),
-            state, identities, budget, 0) {
+            state, graph, budget, 0) {
             return published_storage(state)
         }
         index = index + 1
     }
-    if length(identities) == 0 {
+    if length(graph.identities) == 0 && length(graph.opaque) == 0 {
         return state
     }
     let extents = new[ListExtent]()
     index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
-        push(extents, if extent.private_storage && extent_modified(extent, state, identities) {
+        push(extents, if extent.private_storage && publication_reaches(extent, state, graph) {
                 private_extent(extent, false)
             } else {
                 extent

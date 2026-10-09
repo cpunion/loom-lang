@@ -158,6 +158,7 @@ test fn generated_records_preserve_task_and_resource_obligations() {
         }
         """)
     push(files, source_file("std.reflect", input_file("../../reflect/reflect.loom"), true))
+    push(files, get(list_length_files(""), 1))
     push(files, source_file("std.resource", input_file("../../resource/resource.loom"), true))
     push(files, source_file("std.option", input_file("../../option/option.loom"), true))
     push(files, source_file("std.result", input_file("../../result/result.loom"), true))

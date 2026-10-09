@@ -28,6 +28,7 @@ fn publication_cell_coverage() Result[Bool, Text] {
         observations = []
     }
     state = with_extent(10, constant(integer(1)), true, state)
+    state = with_extent(15, constant(integer(1)), true, state)
     state = with_extent(20, constant(integer(1)), true, state)
     state = with_extent(30, constant(integer(1)), true, state)
     state = remember_element(20, constant(integer(0)), Value.List(10), state)?
@@ -35,6 +36,7 @@ fn publication_cell_coverage() Result[Bool, Text] {
     assert !list_state(10, published)?.private_storage
     assert !list_state(20, published)?.private_storage
     assert list_state(30, published)?.private_storage
+    assert list_state(15, published)?.private_storage
     // A later unknown handle may alias any earlier allocation. Different IDs
     // never authorize a frame, even when another exact graph was complete.
     let unknown = list_bounds(Value.List(40), state)
@@ -51,8 +53,19 @@ fn publication_cell_coverage() Result[Bool, Text] {
     }
     assert length(list_state(20, state)?.cells) == 64
     let incomplete = published_inputs(proof, [7], [Value.List(20)], 0, state)
-    assert !list_state(30, incomplete)?.private_storage
-    assert !publication_value(proof, 7, Value.List(20), state, [], [0], 0)
+    assert !list_state(15, incomplete)?.private_storage
+    assert list_state(30, incomplete)?.private_storage
+    // A later edge store widens possible ancestors; a missing observation
+    // cannot then conceal an earlier allocation connected by that store.
+    std.list.set(proof.fresh, 0, 100)
+    let widened = stored_graph(proof, 20, state)
+    let stored = published_inputs(proof, [7], [Value.List(20)], 0, widened)
+    assert !list_state(30, stored)?.private_storage
+    assert !publication_value(proof, 7, Value.List(20), state,
+        Publication {
+            identities = [],
+            opaque = []
+        }, [0], 0)
     Result.Ok(true)
 }
 
