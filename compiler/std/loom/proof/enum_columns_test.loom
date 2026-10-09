@@ -30,4 +30,22 @@ test fn enum_columns_separate_tags_variants_and_inline_fields_without_freezing_c
                 IntegerTerm.Select(10, [0, -1], index), IntegerTerm.Linear(constant(integer(1)))))
         _ => false
     }
+    // Erased selector totality must not bypass the selected-tag obligation.
+    let receiver = expression(ExprKind.Local, 6, "", 0, [])
+    let selected = expression(ExprKind.Intrinsic, 1, "proof_enum_payload", -1,
+        [receiver, literal("1"), literal("0")])
+    let obligations = proof_query(no_proof_backend())
+    assert match solver_defined(obligations, selected, State {
+            locals = [projected]
+            facts = []
+            extents = []
+            observations = []
+        }, 16) {
+        Result.Ok(valid) => valid
+        Result.Err(_) => false
+    }
+    assert length(obligations.obligations) == 1
+    assert same(get(obligations.obligations, 0).conclusion,
+        integer_predicate("==", IntegerTerm.Select(10, [0, -1], index),
+            IntegerTerm.Linear(constant(integer(1)))))
 }
