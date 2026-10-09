@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Infer normal completion facts from bounded known async source bodies through
+  the existing symbolic executor. Compose tuple `all` through its source policy
+  and checked registration/drain/fault boundaries, without a join axiom. Keep
+  declared abstractions, unknown callbacks and suspension heap invalidation.
+
 - Reuse List extent/content rules for transfer `append`, `take_last` and
   `replace`, including displaced values, shared-header updates and extracted
   Task promises. Optional case names/order follow the checked schema; writes,

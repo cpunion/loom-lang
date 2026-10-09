@@ -564,7 +564,15 @@ helpers, inline aggregates, known callbacks and supported loop/early-return path
 Factory effects and cleanup precede its return; suspension still invalidates
 unprotected heap facts. The
 [factory example](../../compiler/examples/async_contracts/factories.loom) and edited
-frontend-cache trial cover this boundary. Collection completion promises and
+frontend-cache trial cover this boundary. Known uncontracted async source bodies
+also reuse the bounded symbolic call frame at normal completion, with fresh entry
+and post-suspension storage. Optional inference queues obligations separately;
+unsupported bodies contribute only typed results. Declared contracts remain the
+abstraction boundary. Typed registration preserves a Task promise, drain forgets
+mutable heap observations, and faults have no normal continuation. These rules
+compose the source tuple `all` without a join-policy axiom; the
+[body example](../../compiler/examples/async_contracts/bodies.loom) includes real
+waits, loops and nested Tasks. General dynamic collection completion promises and
 unsupported source-helper bodies remain open.
 List transfer append/take/replace now reuse the ordinary extent/content theory,
 retaining displaced values and extracted known Task promises. Optional variants

@@ -40,6 +40,72 @@ fn unknown_completion(proof Verification, source Expr, state State) Outcome {
     }
 }
 
+fn task_operation(name Text) Bool {
+    name == "task_observe" || name == "task_drain" || name == "fault_text"
+}
+
+// These are checked runtime boundaries, not join-policy summaries. Registration
+// returns the same typed handle; draining may run arbitrary child cleanup;
+// fault_text has no normal continuation. Arguments still execute exactly once.
+fn execute_task_operation(proof Verification, call Expr, name Text, state State,
+    depth Int) Result[List[Outcome], Text] {
+    let arguments = call_arguments(proof, call, state, depth)?
+    let output = new[Outcome]()
+    var index = 0
+    while index < length(arguments) {
+        let current = get(arguments, index)
+        if name == "task_observe" && length(current.values) == 2 {
+            discard add_outcome(output, Outcome {
+                    state = interference(proof, current.state)
+                    value = get(current.values, 0)
+                })?
+        } else if name == "task_drain" && length(current.values) == 2 {
+            discard add_outcome(output, Outcome {
+                    state = forget_extents(proof, published_storage(current.state))
+                    value = Value.Empty
+                })?
+        } else if name != "fault_text" || length(current.values) != 1 {
+            return Result.Err("unsupported task proof operation")
+        }
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+
+// Body inference is optional evidence for a known normal completion. Isolate
+// queued obligations until every path succeeds; unsupported bodies contribute
+// only their result type. Fresh identities and work budgets are never rewound.
+fn completion_body_call(proof Verification, target Int, function Function, input CallArguments,
+    source Expr, depth Int) Result[List[Outcome], Text] {
+    let candidate = Verification {
+        function = proof.function
+        program = proof.program
+        fresh = proof.fresh
+        budget = proof.budget
+        loop_control = Option.None
+        query = proof_query(proof.query.backend)
+        shared = proof.shared
+        preservation = proof.preservation
+        body_calls = proof.body_calls
+        capture_returns = false
+        returns = new[Outcome]()
+    }
+    match source_body_call(candidate, target, function, input, true, depth) {
+        Result.Ok(completed) => {
+            var index = 0
+            while index < length(candidate.query.obligations) {
+                push(proof.query.obligations, get(candidate.query.obligations, index))
+                index = index + 1
+            }
+            Result.Ok(completed)
+        }
+        Result.Err(_) => {
+            let unknown = unknown_completion(proof, source, input.state)
+            Result.Ok(outcomes(unknown.state, unknown.value))
+        }
+    }
+}
+
 fn task_completion(proof Verification, expression Expr, state State, depth Int) Result[List[Outcome], Text] {
     let arguments = call_arguments(proof, expression, state, depth)?
     let output = new[Outcome]()
@@ -59,26 +125,26 @@ fn task_completion(proof Verification, expression Expr, state State, depth Int) 
                     if function.result != expression.ty || length(function.params) != length(values) {
                         return Result.Err("task proof has no matching completion signature")
                     }
-                    if length(function.postconditions) != 0 {
+                    let input = CallArguments {
+                        state = entry
+                        values = values
+                    }
+                    let completed = if length(function.postconditions) != 0 {
                         let call = proof_expr(expression, ExprKind.Call, expression.ty, "", target, new[Expr]())
-                        let completed = applied_call(proof, call, function, CallArguments {
-                                state = entry
-                                values = values
-                            }, depth)?
-                        var path = 0
-                        while path < length(completed) {
-                            let returned = get(completed, path)
-                            // A scalar result can carry its callee guarantee,
-                            // but another ready Task may change shared storage
-                            // before the awaiting caller observes that storage.
-                            discard add_outcome(output, Outcome {
-                                    state = suspension_state(proof, returned.state)
-                                    value = returned.value
-                                })?
-                            path = path + 1
-                        }
+                        applied_call(proof, call, function, input, depth)?
                     } else {
-                        discard add_outcome(output, unknown_completion(proof, expression, entry))?
+                        completion_body_call(proof, target, function, input, expression, depth)?
+                    }
+                    var path = 0
+                    while path < length(completed) {
+                        let returned = get(completed, path)
+                        // Another ready Task may change shared storage before
+                        // the caller observes it. Immutable results survive.
+                        discard add_outcome(output, Outcome {
+                                state = suspension_state(proof, returned.state)
+                                value = returned.value
+                            })?
+                        path = path + 1
                     }
                 } else {
                     discard add_outcome(output, unknown_completion(proof, expression, entry))?

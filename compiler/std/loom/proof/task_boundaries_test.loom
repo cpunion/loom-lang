@@ -1,0 +1,48 @@
+test fn task_boundaries_preserve_handles_not_cleanup_heap_facts() {
+    let proof = verification(fixture(literal("0"), [], literal("true")), empty_proof_program())
+    let before = with_extent(42, constant(integer(3)), false, State {
+            locals = [Value.Task(7, [Value.Number(constant(integer(8)))]),
+                Value.List(42), Value.Number(constant(integer(3)))]
+            facts = []
+            extents = []
+            observations = []
+        })
+    let observe = expression(ExprKind.Intrinsic, 6, "task_observe", -1, [local(0), literal("0")])
+    let registered = match execute(proof, observe, before, 256) {
+        Result.Ok(paths) => paths
+        Result.Err(_) => {
+            assert false
+            new[Outcome]()
+        }
+    }
+    assert length(registered) == 1
+    assert match get(registered, 0).value {
+        Value.Task(target, values) => target == 7 && length(values) == 1
+        _ => false
+    }
+    let no = expression(ExprKind.Bool, 2, "false", -1, [])
+    let drain = expression(ExprKind.Intrinsic, 0, "task_drain", -1, [local(0), no])
+    let drained = match execute(proof, drain, before, 256) {
+        Result.Ok(paths) => paths
+        Result.Err(_) => {
+            assert false
+            new[Outcome]()
+        }
+    }
+    assert length(drained) == 1
+    let after = get(drained, 0).state
+    assert match list_extent(42, after) {
+        Result.Ok(size) => !index_relation("==", size, constant(integer(3)), after)
+        _ => false
+    }
+    assert match get(after.locals, 2) {
+        Value.Number(saved) => index_relation("==", saved, constant(integer(3)), after)
+        _ => false
+    }
+    let message = expression(ExprKind.Text, 3, "failed", -1, [])
+    let fault = expression(ExprKind.Intrinsic, 0, "fault_text", -1, [message])
+    assert match execute(proof, fault, before, 256) {
+        Result.Ok(paths) => length(paths) == 0
+        _ => false
+    }
+}

@@ -512,7 +512,7 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         // Expansion has not executed effects or committed state. Reuse the
         // ordinary symbolic executor with the already evaluated arguments.
         Result.Err(_) => {
-            return source_body_call(proof, call.index, function, arguments, depth)
+            return source_body_call(proof, call.index, function, arguments, false, depth)
         }
     }
     if !bounded_contract(value) {
@@ -550,6 +550,9 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
         return Result.Err("body proof call has no checked helper instance")
     }
     let function = get(proof.program.functions, call.index)
+    if task_operation(function.runtime_name) {
+        return execute_task_operation(proof, call, function.runtime_name, state, depth)
+    }
     let operation = intrinsic_operation(function.runtime_name, function.result, length(call.children))
     if operation.arity >= 0 && !operation.heap {
         return execute_immutable_operation(proof, call, function.runtime_name, state, depth)
@@ -569,7 +572,7 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     while index < length(arguments) {
         let input = get(arguments, index)
         discard append(output, if length(proof.preservation) != 0 {
-                source_body_call(proof, call.index, function, input, depth)?
+                source_body_call(proof, call.index, function, input, false, depth)?
             } else {
                 applied_call(proof, call, function, input, depth)?
             })?

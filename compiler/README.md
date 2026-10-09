@@ -1710,12 +1710,21 @@ typed results. Guarantees do not apply to cancellation or faults. Finite checked
 synchronous source helpers also preserve returned Task promises, including
 inline aggregates and known callbacks. Their eager effects and lexical cleanup
 run once before returning the Task; completion still has its own entry state.
-Unsupported helper operations or exhausted budgets supply no evidence, and
-collection completion promises remain unsupported. See the
+Known async source bodies without declared postconditions reuse this same bounded
+symbolic frame at normal completion. Optional inference commits its queued
+obligations only after the complete body succeeds; unsupported operations or
+exhausted budgets contribute only typed completion values. Declared contracts
+still supply only their advertised guarantees, never extra witness/body facts.
+Task registration preserves the typed promise, drain invalidates mutable storage,
+and faults have no normal continuation. The source tuple `all` therefore composes
+ordinary producer guarantees without a special join rule; dynamic List-wide
+completion promises remain unsupported. See the
 [async contract example](examples/async_contracts/main.loom).
 The [factory example](examples/async_contracts/factories.loom) covers arguments
 rebound after evaluation, both loop/early-return paths, callbacks, opaque inputs
 and cleanup before a real wait.
+The [body example](examples/async_contracts/bodies.loom) covers uncontracted generic
+producers, tuple joins, loop suspension and nested Task results.
 The [typed method example](examples/async_contracts/typed.loom) uses the same
 return-type guarantees through synchronous, async, aggregate and pack calls.
 An await context guides inference without converting its Task handle. Supported

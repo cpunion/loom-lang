@@ -70,7 +70,21 @@ test fn suspension_requires_async_and_cannot_run_inside_cleanup() {
 test fn async_contracts_keep_mandatory_logical_result_proofs() {
     discard accepted("async fn twice(value Int) Int requires value >= 0 ensures result == value + value { value + value }\nasync fn main() { assert twice(2).await == 4 }")
     rejects("async fn wrong(value Int) Int ensures result == value + 1 { value }")
-    rejects("async fn item() Int { 1 }\nasync fn uncertain() Int ensures result == 1 { item().await }")
+    discard accepted("""
+        async fn item() Int {
+            1
+        }
+        async fn known() Int
+        ensures result == 1 {
+            item().await
+        }
+        """)
+    rejects("""
+        async fn uncertain(task Task[Int]) Int
+        ensures result == 1 {
+            task.await
+        }
+        """)
 }
 
 fn task_rejected(text Text, message Text) {

@@ -1,0 +1,194 @@
+test fn known_async_source_bodies_compose_without_declared_postconditions() {
+    let definitions = """
+        async fn pause() {}
+        async fn keep[T](value T, ignored Int) T {
+            discard ignored
+            pause().await
+            value
+        }
+        async fn choose(flag Bool, value Int) Int {
+            pause().await
+            if flag {
+                return value
+            }
+            value
+        }
+        enum Work {
+            Pending(Task[Int])
+            Ready(Int)
+        }
+        async fn bundle(value Int) Work {
+            pause().await
+            Work.Pending(keep(value, 0))
+        }
+        async fn forward(value Int) Int
+        ensures result == value {
+            var input = value
+            let callback = keep[Int]
+            let pending = callback(input, {
+                input = 0
+                1
+            })
+            input = 3
+            pending.await
+        }
+        async fn selected(flag Bool, value Int) Int
+        ensures result == value {
+            choose(flag, value).await
+        }
+        async fn nested(value Int) Int
+        ensures result == value {
+            match bundle(value).await {
+                Work.Pending(task) => task.await
+                Work.Ready(number) => number
+            }
+        }
+        """
+    discard accepted(definitions)
+    rejects("""
+        async fn shifted(value Int) Int {
+            value + 1
+        }
+        async fn wrong(value Int) Int
+        ensures result == value {
+            shifted(value).await
+        }
+        """)
+}
+
+test fn async_source_inference_keeps_declared_abstractions_and_unknown_targets() {
+    rejects("""
+        async fn loose(value Int) Int
+        requires value >= 0
+        ensures result >= 0 {
+            value
+        }
+        async fn wrong(value Int) Int
+        requires value >= 0
+        ensures result == value {
+            loose(value).await
+        }
+        """)
+    rejects("""
+        concept Read {
+            async fn read(self Self, value Int) Int
+        }
+        impl Read for Bool {
+            async fn read(self Bool, value Int) Int {
+                value
+            }
+        }
+        async fn wrong(source dyn Read, value Int) Int
+        ensures result == value {
+            source.read(value).await
+        }
+        """)
+    rejects("""
+        async fn forward(callback fn(Int) Task[Int], value Int) Int {
+            callback(value).await
+        }
+        async fn wrong(callback fn(Int) Task[Int], value Int) Int
+        ensures result == value {
+            forward(callback, value).await
+        }
+        """)
+    rejects("""
+        async fn recursive(value Int) Int {
+            recursive(value).await
+        }
+        async fn wrong(value Int) Int
+        ensures result == value {
+            recursive(value).await
+        }
+        """)
+}
+
+test fn observed_tasks_keep_promises_but_faults_have_no_normal_result() {
+    let files = source_files("""
+        import std.task.observed
+        async fn keep(value Int) Int {
+            value
+        }
+        async fn forward(value Int) Int
+        ensures result == value {
+            observed(keep(value), false).await
+        }
+        """)
+    push(files, source_file("std.task", """
+        record Fault {
+            message Text
+        }
+        enum Terminal {
+            Completed
+            Faulted(Fault)
+            Cancelled
+        }
+        intrinsic fn task_observe[T](task Task[T], index Int) Task[T]
+        async intrinsic fn task_next_terminal() Terminal
+        intrinsic fn task_drain[T](task Task[T], suppress Bool)
+        intrinsic fn fault_text(message Text)
+        pub async fn observed[T](task Task[T], fail Bool) T {
+            let pending = task_observe(task, 0)
+            match task_next_terminal().await {
+                Terminal.Completed => {}
+                Terminal.Faulted(error) => fault_text(error.message)
+                Terminal.Cancelled => fault_text("cancelled")
+            }
+            if fail {
+                task_drain(pending, false)
+                fault_text("failed")
+            }
+            pending.await
+        }
+        """, true))
+    match checked(files) {
+        Result.Ok(_) => {
+        }
+        Result.Err(failed) => {
+            show_failure(fixture_project(files), failed)
+            assert false
+        }
+    }
+}
+
+test fn inferred_async_completions_do_not_preserve_caller_heap_observations() {
+    let header = """
+        import std.list.length
+        import std.list.push
+        async fn pause() {}
+        async fn measure(values List[Int]) Int {
+            length(values)
+        }
+        async fn keep(values List[Int], value Int) Int {
+            push(values, 1)
+            pause().await
+            value
+        }
+
+        """
+    list_length_contract(concat(header, """
+        async fn forward(values List[Int], value Int) Int
+        ensures result == value {
+            keep(values, value).await
+        }
+        async fn bounded(values List[Int]) Int
+        ensures result >= 0 {
+            measure(values).await
+        }
+        """), true)
+    list_length_contract(concat(header, """
+        async fn stale_entry(values List[Int]) Int
+        ensures result == old(length(values)) {
+            let task = measure(values)
+            push(values, 2)
+            task.await
+        }
+        """), false)
+    list_length_contract(concat(header, """
+        async fn stale_current(values List[Int], value Int) Int
+        ensures result == old(length(values)) {
+            discard keep(values, value).await
+            length(values)
+        }
+        """), false)
+}
