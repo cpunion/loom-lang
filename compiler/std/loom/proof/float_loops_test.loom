@@ -1,0 +1,22 @@
+test fn float_loop_solver_failures_do_not_establish_inductive_facts() {
+    let value = FloatValue.Variable(0)
+    let zero = FloatValue.Literal("0")
+    let positive = Predicate.FloatCompare("<=", zero, value)
+    let state = State {
+        locals = [Value.Float(value)]
+        facts = [positive]
+        extents = []
+        observations = []
+    }
+    let function = fixture(local(0), [], operation("==", local(1), local(0)))
+    let proof = verification(function, proof_program_with_types([]), ProofBackend {
+            enabled = true
+            context = ""
+            solve = failed_solver
+        })
+    let halved = Predicate.FloatCompare("<=", zero,
+        FloatValue.Apply("/", [value, FloatValue.Literal("2")]))
+    assert loop_entails(proof, positive, state)
+    assert !loop_entails(proof, halved, state)
+    assert !loop_entails(verification(function, proof_program_with_types([])), halved, state)
+}

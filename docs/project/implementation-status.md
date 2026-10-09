@@ -135,8 +135,13 @@ intrinsic or application-specific proof rule.
 The [remainder example](../../compiler/examples/smt_contracts/float_remainders.loom)
 proves range/refinement composition, dynamic divisor alternatives, signed-zero
 preservation, exceptional inputs, subnormals and nested remainders.
-General Float loop-invariant inference and exhausted/unknown solver obligations
-remain unsupported.
+Float scalar/inline-field loops now propose established entry order bounds and
+reuse the ordinary inductive fixed point. Supported unresolved backedge steps
+use this same IEEE solver; removed candidates trigger rechecking. The
+[loop example](../../compiler/examples/loop_contracts/floats.loom) proves bounded
+decay and capping without sampled iterations or runtime invariant checks.
+General Float arithmetic invariant synthesis and exhausted/unknown solver
+obligations remain unsupported.
 
 Concepts require explicit conformances. Static/default/generic methods,
 associated bounds/defaults/families and exact dyn bindings are implemented.
@@ -715,7 +720,7 @@ once-only effects, generic/dyn guarantees and structural packs. Generation remai
 bounded, guard-anchored and pairwise, not general affine invariant synthesis.
 
 Unrestricted content mutation, strengthening existing mutable alias graphs,
-general loop/recursive proofs, arbitrary `old` snapshots and general Float induction
+general loop/recursive proofs, arbitrary `old` snapshots and general Float arithmetic invariant synthesis
 remain open. The bounded sorting/permutation story above does not close these
 broader gates. Exact supported rules and examples are in the
 [contract reference](../../compiler/README.md#contract-boundary).

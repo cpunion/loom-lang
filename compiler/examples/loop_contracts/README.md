@@ -35,7 +35,13 @@ opaque. The native example checks once-only argument effects and their order;
 optional expansion does not replace executable calls, requirements or faults.
 Every proposed relation still needs the same entry/backedge proof.
 
-The current subset includes Int/Bool local assignments, branches, early returns
+The [Float example](floats.loom) reuses the same entry/backedge checks for IEEE
+order bounds on scalars and inline fields. Supported unresolved induction steps
+use the existing binary64 SMT theory, not real arithmetic. NaN, subnormal
+underflow, signed-zero distinctions and failed/unknown solvers supply no invented
+evidence; numeric equality never substitutes computation identity.
+
+The current subset includes Int/Bool/Float local assignments, branches, early returns
 and nested loops. `break` preserves the state at its exit; `continue` must
 preserve the invariant at its backedge. Both target the nearest loop, including
 during each inference recheck. Scalar lexical cleanup executes in its checked

@@ -2978,7 +2978,13 @@ have different reciprocals. No unguarded cancellation, reassociation or real-num
 arithmetic is inferred. See the [range/clamp example](examples/floats/order.loom).
 Float locals and literals may participate in proved loops, including variadic
 induction; assigned values are freshened at loop heads, not assumed to retain
-entry comparisons. No general Float arithmetic invariant is inferred.
+entry comparisons. Established Float entry bounds also propose scalar and inline
+field invariants. Every candidate needs an entry proof and every symbolic
+backedge proof; supported unresolved Float comparisons use the same IEEE SMT
+backend. Removed candidates trigger rechecking, including early exits. Unknown
+or failed solver work establishes nothing. See the
+[Float loop example](examples/loop_contracts/floats.loom). This is bounded order
+inference, not general Float arithmetic invariant synthesis.
 Unresolved supported Float obligations use SMT-LIB's binary64 FloatingPoint
 theory, with `fp.eq`/ordered comparisons, negation and RNE-rounded `+`, `-`, `*`
 and `/` in source order. Literal conversion preserves subnormals, infinities,
