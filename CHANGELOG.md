@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose Task outcome and terminal extraction guarantees through the checked
+  terminal schema. Only completed values inherit producer facts; faults and
+  cancellation retain independent paths. Source tuple `settled` reuses these
+  rules, including edited-producer cache invalidation.
+
 - Infer normal completion facts from bounded known async source bodies through
   the existing symbolic executor. Compose tuple `all` through its source policy
   and checked registration/drain/fault boundaries, without a join axiom. Keep

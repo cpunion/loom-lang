@@ -1725,6 +1725,11 @@ rebound after evaluation, both loop/early-return paths, callbacks, opaque inputs
 and cleanup before a real wait.
 The [body example](examples/async_contracts/bodies.loom) covers uncontracted generic
 producers, tuple joins, loop suspension and nested Task results.
+Outcome, cancellation and ready-result extraction reuse normal producer facts
+only for completed values. Fault/cancellation alternatives do not inherit producer
+preconditions or postconditions. Source tuple `settled` therefore composes through
+the checked terminal schema without a join axiom; see the
+[outcome example](examples/async_contracts/outcomes.loom).
 The [typed method example](examples/async_contracts/typed.loom) uses the same
 return-type guarantees through synchronous, async, aggregate and pack calls.
 An await context guides inference without converting its Task handle. Supported

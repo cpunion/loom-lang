@@ -69,6 +69,8 @@ fn cached_async_body_inference_rechecks_uncontracted_producers() {
     let original = r#"
 import std.time.sleep_ms
 import std.task.all
+import std.task.settled
+import std.task.Outcome
 async fn keep(value Int) Int {
     sleep_ms(1).await
     value
@@ -83,9 +85,19 @@ ensures result == value {
     assert second == value
     first
 }
+async fn collected(value Int) Int
+ensures result == value {
+    let first, second = settled((keep(value), keep(value))).await
+    discard second
+    match first {
+        Outcome.Completed(number) => number
+        _ => value
+    }
+}
 async fn main() {
     assert forward(42).await == 42
     assert combined(43).await == 43
+    assert collected(44).await == 44
 }
 "#;
     fs::write(&source, original).unwrap();
