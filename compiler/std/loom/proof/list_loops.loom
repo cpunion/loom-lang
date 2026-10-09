@@ -28,7 +28,8 @@ fn loop_storage_writes(proof Verification, value Expr, entry State, modified Lis
         // Task ran or an unknown callback changed a reachable alias.
         push(modified, -1)
     }
-    if primitive == "list_retain_range" || primitive == "task_drain" {
+    if primitive == "list_retain_range" || primitive == "task_drain" ||
+    primitive == "task_cancel" || primitive == "task_ready_result" || primitive == "task_ready_outcome" {
         push(modified, -1)
     }
     if (primitive == "list_push" || primitive == "list_append" || primitive == "list_take" ||

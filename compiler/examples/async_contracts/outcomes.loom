@@ -1,0 +1,46 @@
+import std.task.settled
+import std.task.outcome
+import std.task.Outcome
+import std.time.sleep_ms
+
+async fn outcome_keep[T](value T) T {
+    sleep_ms(1).await
+    value
+}
+
+async fn settled_pair(value Int, text Text) (Int, Text)
+ensures result.0 == value && result.1 == text {
+    let first, second = settled((outcome_keep(value), outcome_keep(text))).await
+    let number = match first {
+        Outcome.Completed(item) => item
+        _ => value
+    }
+    let message = match second {
+        Outcome.Completed(item) => item
+        _ => text
+    }
+    (number, message)
+}
+
+async fn guarded_outcome(value Int) Int
+requires value > 0 {
+    sleep_ms(1).await
+    value
+}
+
+async fn recovered_outcome(value Int) Int
+ensures result >= 0 {
+    match outcome(guarded_outcome(value)).await {
+        Outcome.Completed(number) => number
+        Outcome.Faulted(_) => 0
+        Outcome.Cancelled => 0
+    }
+}
+
+async fn exercise_outcome_guarantees() {
+    let first, second = settled_pair(42, "ready").await
+    assert first == 42
+    assert second == "ready"
+    assert recovered_outcome(7).await == 7
+    assert recovered_outcome(0).await == 0
+}

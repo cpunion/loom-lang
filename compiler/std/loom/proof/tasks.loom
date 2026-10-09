@@ -41,7 +41,8 @@ fn unknown_completion(proof Verification, source Expr, state State) Outcome {
 }
 
 fn task_operation(name Text) Bool {
-    name == "task_observe" || name == "task_drain" || name == "fault_text"
+    name == "task_observe" || name == "task_drain" || name == "fault_text" ||
+    name == "task_ready_result" || name == "task_ready_outcome" || name == "task_cancel"
 }
 
 // These are checked runtime boundaries, not join-policy summaries. Registration
@@ -64,6 +65,23 @@ fn execute_task_operation(proof Verification, call Expr, name Text, state State,
                     state = forget_extents(proof, published_storage(current.state))
                     value = Value.Empty
                 })?
+        } else if (name == "task_ready_result" || name == "task_ready_outcome" ||
+            name == "task_cancel") && length(current.values) == 1 {
+            let entry = suspension_state(proof, current.state)
+            let completed = if name == "task_ready_result" {
+                promise_completion(proof, call, get(current.values, 0), entry, depth)?
+            } else {
+                outcome_completion(proof, call, get(current.values, 0), entry, depth)?
+            }
+            var path = 0
+            while path < length(completed) {
+                let returned = get(completed, path)
+                discard add_outcome(output, Outcome {
+                        state = suspension_state(proof, returned.state)
+                        value = returned.value
+                    })?
+                path = path + 1
+            }
         } else if name != "fault_text" || length(current.values) != 1 {
             return Result.Err("unsupported task proof operation")
         }
@@ -106,6 +124,33 @@ fn completion_body_call(proof Verification, target Int, function Function, input
     }
 }
 
+fn promise_completion(proof Verification, source Expr, promise Value, entry State,
+    depth Int) Result[List[Outcome], Text] {
+    match promise {
+        Value.Task(target, values) => {
+            if target >= 0 && target < length(proof.program.functions) {
+                let function = get(proof.program.functions, target)
+                if function.result != source.ty || length(function.params) != length(values) {
+                    return Result.Err("task proof has no matching completion signature")
+                }
+                let input = CallArguments {
+                    state = entry
+                    values = values
+                }
+                if length(function.postconditions) != 0 {
+                    let call = proof_expr(source, ExprKind.Call, source.ty, "", target, new[Expr]())
+                    return applied_call(proof, call, function, input, depth)
+                }
+                return completion_body_call(proof, target, function, input, source, depth)
+            }
+        }
+        _ => {
+        }
+    }
+    let unknown = unknown_completion(proof, source, entry)
+    Result.Ok(outcomes(unknown.state, unknown.value))
+}
+
 fn task_completion(proof Verification, expression Expr, state State, depth Int) Result[List[Outcome], Text] {
     let arguments = call_arguments(proof, expression, state, depth)?
     let output = new[Outcome]()
@@ -118,41 +163,22 @@ fn task_completion(proof Verification, expression Expr, state State, depth Int) 
         } else {
             Value.Empty
         }
-        match promise {
-            Value.Task(target, values) => {
-                if target >= 0 && target < length(proof.program.functions) {
-                    let function = get(proof.program.functions, target)
-                    if function.result != expression.ty || length(function.params) != length(values) {
-                        return Result.Err("task proof has no matching completion signature")
-                    }
-                    let input = CallArguments {
-                        state = entry
-                        values = values
-                    }
-                    let completed = if length(function.postconditions) != 0 {
-                        let call = proof_expr(expression, ExprKind.Call, expression.ty, "", target, new[Expr]())
-                        applied_call(proof, call, function, input, depth)?
-                    } else {
-                        completion_body_call(proof, target, function, input, expression, depth)?
-                    }
-                    var path = 0
-                    while path < length(completed) {
-                        let returned = get(completed, path)
-                        // Another ready Task may change shared storage before
-                        // the caller observes it. Immutable results survive.
-                        discard add_outcome(output, Outcome {
-                                state = suspension_state(proof, returned.state)
-                                value = returned.value
-                            })?
-                        path = path + 1
-                    }
-                } else {
-                    discard add_outcome(output, unknown_completion(proof, expression, entry))?
-                }
-            }
-            _ => {
-                discard add_outcome(output, unknown_completion(proof, expression, entry))?
-            }
+        let completed = if expression.kind == ExprKind.Suspend && expression.text == "task_outcome" &&
+        length(current.values) == 1 {
+            outcome_completion(proof, expression, get(current.values, 0), entry, depth)?
+        } else {
+            promise_completion(proof, expression, promise, entry, depth)?
+        }
+        var path = 0
+        while path < length(completed) {
+            let returned = get(completed, path)
+            // Another ready Task may change shared storage before the caller
+            // observes it. Immutable results and terminal alternatives survive.
+            discard add_outcome(output, Outcome {
+                    state = suspension_state(proof, returned.state)
+                    value = returned.value
+                })?
+            path = path + 1
         }
         index = index + 1
     }

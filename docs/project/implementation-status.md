@@ -572,7 +572,12 @@ abstraction boundary. Typed registration preserves a Task promise, drain forgets
 mutable heap observations, and faults have no normal continuation. These rules
 compose the source tuple `all` without a join-policy axiom; the
 [body example](../../compiler/examples/async_contracts/bodies.loom) includes real
-waits, loops and nested Tasks. General dynamic collection completion promises and
+waits, loops and nested Tasks. Typed outcome/cancel/ready boundaries also retain
+producer guarantees only on completed values. Fault and cancellation alternatives
+have independent entry facts, including when a producer's precondition fails.
+The source tuple `settled` composes through these same rules; see the
+[outcome example](../../compiler/examples/async_contracts/outcomes.loom).
+General dynamic collection completion promises and
 unsupported source-helper bodies remain open.
 List transfer append/take/replace now reuse the ordinary extent/content theory,
 retaining displaced values and extracted known Task promises. Optional variants

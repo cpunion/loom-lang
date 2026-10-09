@@ -1,0 +1,129 @@
+fn task_completion_contract(text Text, valid Bool) {
+    let files = source_files(concat("""
+        import std.task.Delivery
+        import std.task.outcome
+        import std.task.cancel
+        import std.task.ready
+        import std.task.ready_outcome
+
+        """, text))
+    push(files, source_file("std.task", """
+        record Failure {
+            message Text
+        }
+        pub enum Delivery[T] {
+            Value(T)
+            Failed(Failure)
+            Stopped
+        }
+        async intrinsic fn task_outcome[T](task Task[T]) Delivery[T]
+        intrinsic fn task_cancel[T](task Task[T]) Delivery[T]
+        intrinsic fn task_ready_result[T](task Task[T]) T
+        intrinsic fn task_ready_outcome[T](task Task[T]) Delivery[T]
+        pub async fn outcome[T](task Task[T]) Delivery[T] {
+            task_outcome(task).await
+        }
+        pub fn cancel[T](task Task[T]) Delivery[T] {
+            task_cancel(task)
+        }
+        pub fn ready[T](task Task[T]) T {
+            task_ready_result(task)
+        }
+        pub fn ready_outcome[T](task Task[T]) Delivery[T] {
+            task_ready_outcome(task)
+        }
+        """, true))
+    match checked(files) {
+        Result.Ok(_) => {
+            assert valid
+        }
+        Result.Err(failed) => {
+            if valid {
+                show_failure(fixture_project(files), failed)
+            } else {
+                assert std.text.find(failed.diagnostic.message, "postcondition") >= 0
+            }
+            assert !valid
+        }
+    }
+}
+
+test fn completed_outcomes_compose_known_promises_through_the_checked_schema() {
+    task_completion_contract("""
+        async fn keep(value Int) Int {
+            value
+        }
+        async fn forward(value Int) Int
+        ensures result == value {
+            match outcome(keep(value)).await {
+                Delivery.Value(number) => number
+                _ => value
+            }
+        }
+        async fn cancelled(value Int) Int
+        ensures result == value {
+            match cancel(keep(value)) {
+                Delivery.Value(number) => number
+                _ => value
+            }
+        }
+        async fn extracted(value Int) Int
+        ensures result == value {
+            ready(keep(value))
+        }
+        async fn terminal(value Int) Int
+        ensures result == value {
+            match ready_outcome(keep(value)) {
+                Delivery.Value(number) => number
+                _ => value
+            }
+        }
+        """, true)
+    task_completion_contract("""
+        async fn keep(value Int) Int {
+            value
+        }
+        async fn wrong(value Int) Int
+        ensures result == value {
+            match outcome(keep(value)).await {
+                Delivery.Value(number) => number + 1
+                _ => value
+            }
+        }
+        """, false)
+}
+
+test fn failed_or_unknown_task_outcomes_supply_no_producer_guarantees() {
+    task_completion_contract("""
+        async fn guarded(value Int) Int
+        requires value > 0 {
+            value
+        }
+        async fn wrong(value Int) Int
+        ensures result > 0 {
+            match outcome(guarded(value)).await {
+                Delivery.Value(number) => number
+                _ => value
+            }
+        }
+        """, false)
+    task_completion_contract("""
+        async fn wrong(task Task[Int], value Int) Int
+        ensures result == value {
+            match outcome(task).await {
+                Delivery.Value(number) => number
+                _ => value
+            }
+        }
+        """, false)
+    task_completion_contract("""
+        type Positive = Int where self > 0
+        async fn typed(task Task[Positive]) Int
+        ensures result > 0 {
+            match outcome(task).await {
+                Delivery.Value(number) => number
+                _ => 1
+            }
+        }
+        """, true)
+}

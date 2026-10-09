@@ -1,0 +1,47 @@
+import std.loom.typed.task_outcome_result
+
+// Terminal outcomes are alternatives, not an assertion that a known producer
+// completed. Only the successful alternative may use its normal-return facts.
+fn outcome_completion(proof Verification, source Expr, promise Value, entry State,
+    depth Int) Result[List[Outcome], Text] {
+    if length(source.children) != 1 {
+        return Result.Err("task outcome proof needs its checked input")
+    }
+    let receiver = get(source.children, 0).ty
+    if receiver < 0 || receiver >= length(proof.program.types) {
+        return Result.Err("task outcome proof needs a checked Task type")
+    }
+    let shape = get(proof.program.types, receiver)
+    if shape.kind != TypeKind.Task || length(shape.arguments) != 1 ||
+    source.ty < 0 || source.ty >= length(proof.program.types) {
+        return Result.Err("task outcome proof needs its checked result shape")
+    }
+    let element = get(shape.arguments, 0)
+    if !task_outcome_result(proof.program.types, source.ty, element) {
+        return Result.Err("task outcome proof needs its checked terminal schema")
+    }
+    let value = proof_expr(source, ExprKind.Await, element, "", -1, new[Expr]())
+    let completed = promise_completion(proof, value, promise, entry, depth)?
+    let output = new[Outcome]()
+    var index = 0
+    while index < length(completed) {
+        let returned = get(completed, index)
+        discard add_outcome(output, Outcome {
+                state = returned.state
+                value = variant_value(source.ty, 0, 3, [returned.value])
+            })?
+        index = index + 1
+    }
+    let outcome = get(proof.program.types, source.ty)
+    let fault_type = get(get(outcome.variants, 1).fields, 0)
+    let fault = record_parameter_value(proof, fault_type, 0)
+    discard add_outcome(output, Outcome {
+            state = typed_value_state(proof, fault_type, fault, entry)
+            value = variant_value(source.ty, 1, 3, [fault])
+        })?
+    discard add_outcome(output, Outcome {
+            state = entry
+            value = variant_value(source.ty, 2, 3, new[Value]())
+        })?
+    Result.Ok(output)
+}
