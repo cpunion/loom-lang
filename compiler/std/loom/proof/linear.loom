@@ -387,10 +387,15 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
         _ => {
         }
     }
+    let direct = match predicate {
+        Predicate.Constant(_) => false
+        _ => true
+    }
+    var negated = false
     var index = 0
     while index < length(facts) {
         let fact = get(facts, index)
-        if same(predicate, fact) {
+        if direct && same(predicate, fact) {
             return true
         }
         match fact {
@@ -426,13 +431,32 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
             _ => {
             }
         }
-        var other = 0
-        let opposite = not(fact)
-        while other < index {
-            if same(get(facts, other), opposite) {
-                return true
+        let structural = match fact {
+            // range already includes every same/opposite linear term. An
+            // exact inverse comparison therefore fails the fact above without
+            // another quadratic structural search, including non-unit terms.
+            Predicate.Compare(_, _) => false
+            Predicate.Constant(_) => false
+            Predicate.IntegerCompare(_, _, _) => true
+            Predicate.And(_) => true
+            Predicate.Or(_) => true
+            Predicate.Not(_) => {
+                negated = true
+                true
             }
-            other = other + 1
+            // Other complements are wrapped in Not. If that wrapper appears
+            // later, its own search sees this fact; no prior Not means no pair.
+            _ => negated
+        }
+        if structural {
+            var other = 0
+            let opposite = not(fact)
+            while other < index {
+                if same(get(facts, other), opposite) {
+                    return true
+                }
+                other = other + 1
+            }
         }
         index = index + 1
     }

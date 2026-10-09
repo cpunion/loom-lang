@@ -1,0 +1,19 @@
+test fn contradiction_search_preserves_numeric_and_structural_pairs_in_both_orders() {
+    let term = add(scale(variable(10), integer(3)), scale(variable(11), integer(-2)))
+    let facts = [Predicate.Compare("<", term),
+        Predicate.Compare("!=", term),
+        Predicate.Variable(10),
+        Predicate.And([Predicate.Variable(10), Predicate.Variable(11)]),
+        Predicate.IntegerCompare("==", IntegerTerm.Select(7, [], variable(10)),
+            IntegerTerm.Linear(constant(integer(3))))]
+    var index = 0
+    while index < length(facts) {
+        let fact = get(facts, index)
+        assert holds(Predicate.Constant(false), [fact, not(fact)])
+        assert holds(Predicate.Constant(false), [not(fact), fact])
+        assert !holds(Predicate.Constant(false), [fact])
+        index = index + 1
+    }
+    assert !holds(Predicate.Constant(false), [Predicate.Variable(10), not(Predicate.Variable(11))])
+    assert holds(Predicate.Variable(12), [Predicate.Constant(false)])
+}
