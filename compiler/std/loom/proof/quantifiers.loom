@@ -78,8 +78,11 @@ fn quantified_views(proof Verification, expr Expr, state State, inside Bool, dep
                     return Result.Err("quantified List observation is not proved interference-safe")
                 }
                 current = array_contents(proof, identity, current)?
+                let extent = list_state(identity, current)?
+                current = quantified_type_invariants(proof, expr.ty, extent.contents, extent.size, current)
             }
-            Value.EntryList(_, _) => {
+            Value.EntryList(size, contents) => {
+                current = quantified_type_invariants(proof, expr.ty, contents, size, current)
             }
             _ => {
                 return Result.Err("quantified read requires tracked List storage")

@@ -22,6 +22,78 @@ fn async_guarantees_compose_through_saved_native_tasks() {
 }
 
 #[test]
+fn logical_element_types_compose_through_task_lists_without_assuming_bounds_or_children() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.loom");
+    let original = format!(
+        "{}\n{}",
+        include_str!("../examples/async_contracts/typed_contents.loom"),
+        r#"
+import std.list.length
+import std.list.push
+import std.time.sleep_ms
+async fn main() {
+    exercise_typed_contents().await
+}
+"#
+    );
+    fs::write(&source, &original).unwrap();
+    let package = directory.path().to_str().unwrap();
+    let executable = common::executable(directory.path(), "typed-contents");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package, "--output", executable.to_str().unwrap()])
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+    }
+    let cache = directory.path().join("cache");
+    let check = || {
+        loom(&[
+            "check",
+            package,
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    success(&check());
+    success(&check());
+    for (before, after) in [
+        (
+            "ContentPositive = Int where self > 0",
+            "ContentPositive = Int where self >= 0",
+        ),
+        (
+            "ContentAmount = Float where self >= 0.0",
+            "ContentAmount = Float where self <= 0.0",
+        ),
+        ("&& self.enabled", "&& (self.enabled || !self.enabled)"),
+        (
+            "while index < length(values)",
+            "while index <= length(values)",
+        ),
+        ("value.interval.low <= 0", "value.interval.low <= 1"),
+        (
+            "std.text.length(value.label) == 0",
+            "length(value.shared) == 0",
+        ),
+    ] {
+        let changed = original.replace(before, after);
+        assert_ne!(changed, original);
+        fs::write(&source, changed).unwrap();
+        let rejected = check();
+        assert!(
+            !rejected.status.success(),
+            "unexpected proof after replacing {before} with {after}"
+        );
+        fs::write(&source, &original).unwrap();
+        success(&check());
+    }
+}
+
+#[test]
 fn reachable_publication_frames_private_storage_and_rechecks_changed_arguments() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("main.loom");

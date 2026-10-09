@@ -1,0 +1,100 @@
+import std.list.get
+import std.list.transfer.append
+import std.task.all
+import std.text.length
+
+type ContentPositive = Int where self > 0
+
+type ContentLabel = Text where std.text.length(self) > 0
+
+type ContentAmount = Float where self >= 0.0
+
+record ContentBounds {
+    low Int
+    high Int
+    enabled Bool
+}
+
+type ContentInterval = ContentBounds where self.low > 0 && self.high >= self.low && self.enabled
+
+record ContentRow {
+    interval ContentInterval
+    label ContentLabel
+    amount ContentAmount
+    shared List[Int]
+}
+
+fn positive_contents(values List[ContentPositive]) Bool {
+    var index = 0
+    while index < length(values) {
+        if get(values, index) <= 0 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn valid_contents(values List[ContentRow]) Bool {
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        if value.interval.low <= 0 || value.interval.high < value.interval.low {
+            return false
+        }
+        if std.text.length(value.label) == 0 || !(value.amount >= 0.0) || !value.interval.enabled {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+async fn typed_content_item[T](value T) T {
+    sleep_ms(1).await
+    value
+}
+
+async fn joined_positive_contents(tasks List[Task[ContentPositive]]) List[ContentPositive]
+ensures length(result) == old(length(tasks)) && positive_contents(result) {
+    all(tasks).await
+}
+
+async fn joined_record_contents(tasks List[Task[ContentRow]]) List[ContentRow]
+ensures length(result) == old(length(tasks)) && valid_contents(result) {
+    all(tasks).await
+}
+
+// This contract observes immutable entry columns, not the current shared
+// child. No whole-row equality or freezing follows from the element's type.
+fn entry_positive_contents(values List[ContentPositive])
+ensures positive_contents(old(values)) {
+}
+
+async fn exercise_typed_contents() {
+    var tasks List[Task[ContentPositive]] = []
+    var index = 0
+    while index < 4 {
+        tasks = append(tasks, typed_content_item(ContentPositive(7)))
+        index = index + 1
+    }
+    let positives = joined_positive_contents(tasks).await
+    assert length(positives) == 4 && positive_contents(positives)
+    assert length(joined_positive_contents([]).await) == 0
+    let row = ContentRow {
+        interval = ContentInterval(ContentBounds {
+                low = 3
+                high = 5
+                enabled = true
+            })
+        label = ContentLabel("ready")
+        amount = ContentAmount(0.0)
+        shared = [0]
+    }
+    let rows = joined_record_contents([typed_content_item(row)]).await
+    assert length(rows) == 1 && valid_contents(rows)
+    // Only the immutable fields were observed; the child remains shared.
+    push(row.shared, 9)
+    assert length(rows[0].shared) == 2
+    entry_positive_contents([ContentPositive(1)])
+}

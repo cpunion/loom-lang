@@ -82,6 +82,7 @@ ensures result > 0 {
 }
 
 async fn exercise() {
+    exercise_typed_contents().await
     exercise_publication().await
     exercise_task_entries().await
     exercise_private_storage().await
