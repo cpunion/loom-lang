@@ -1,0 +1,172 @@
+fn proof_enum_type(program Program, ty Int, depth Int) Int {
+    if depth >= 16 || ty < 0 || ty >= length(program.types) {
+        return -1
+    }
+    let shape = get(program.types, ty)
+    if shape.kind == TypeKind.Enum {
+        return ty
+    }
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        return proof_enum_type(program, get(shape.fields, 0).ty, depth + 1)
+    }
+    -1
+}
+
+fn enum_parameter_value(proof Verification, ty Int, depth Int) Value {
+    let shape = get(proof.program.types, ty)
+    let payloads = new[List[Value]]()
+    var variant = 0
+    while variant < length(shape.variants) {
+        if get(proof.budget, 0) <= 0 {
+            return Value.Empty
+        }
+        std.list.set(proof.budget, 0, get(proof.budget, 0) - 1)
+        let fields = new[Value]()
+        let types = get(shape.variants, variant).fields
+        var field = 0
+        while field < length(types) {
+            if get(proof.budget, 0) <= 0 {
+                return Value.Empty
+            }
+            std.list.set(proof.budget, 0, get(proof.budget, 0) - 1)
+            push(fields, record_parameter_value(proof, get(types, field), depth + 1))
+            field = field + 1
+        }
+        push(payloads, fields)
+        variant = variant + 1
+    }
+    let identity = get(proof.fresh, 0)
+    std.list.set(proof.fresh, 0, identity + 1)
+    Value.Sum(ty, variable(identity), payloads)
+}
+
+fn variant_outcomes(proof Verification, source Expr, state State, depth Int) Result[List[Outcome], Text] {
+    let ty = proof_enum_type(proof.program, source.ty, 0)
+    if ty < 0 {
+        return Result.Err("variant proof needs a checked enum type")
+    }
+    let shape = get(proof.program.types, ty)
+    if source.index < 0 || source.index >= length(shape.variants) ||
+    length(get(shape.variants, source.index).fields) != length(source.children) {
+        return Result.Err("variant proof has an invalid payload shape")
+    }
+    let arguments = call_arguments(proof, source, state, depth)?
+    let output = new[Outcome]()
+    var path = 0
+    while path < length(arguments) {
+        let input = get(arguments, path)
+        let payloads = new[List[Value]]()
+        var variant = 0
+        while variant < length(shape.variants) {
+            push(payloads, if variant == source.index {
+                    input.values
+                } else {
+                    new[Value]()
+                })
+            variant = variant + 1
+        }
+        discard add_outcome(output, Outcome {
+                state = input.state
+                value = Value.Sum(ty, constant(integer(source.index)), payloads)
+            })?
+        path = path + 1
+    }
+    Result.Ok(output)
+}
+
+fn match_outcomes(proof Verification, source Expr, state State, depth Int) Result[List[Outcome], Text] {
+    if length(source.children) != 1 {
+        return Result.Err("match proof needs one checked receiver")
+    }
+    let ty = proof_enum_type(proof.program, get(source.children, 0).ty, 0)
+    let receivers = execute(proof, get(source.children, 0), state, depth - 1)?
+    let output = new[Outcome]()
+    var path = 0
+    while path < length(receivers) {
+        let receiver = get(receivers, path)
+        match receiver.value {
+            Value.Sum(owner, tag, payloads) => {
+                if owner != ty || ty < 0 {
+                    return Result.Err("match proof needs its nominal enum value")
+                }
+                let shape = get(proof.program.types, ty)
+                if length(payloads) != length(shape.variants) {
+                    return Result.Err("match proof has an invalid variant set")
+                }
+                var remaining = bounded(receiver.value, receiver.state)
+                let covered = new[Bool]()
+                var variant = 0
+                while variant < length(payloads) {
+                    push(covered, false)
+                    variant = variant + 1
+                }
+                var fallback = false
+                var index = 0
+                while index < length(source.arms) {
+                    discard loop_step(proof)?
+                    let arm = get(source.arms, index)
+                    if arm.variant < -1 || arm.variant >= length(payloads) {
+                        return Result.Err("match proof has an invalid arm")
+                    }
+                    if arm.variant < 0 {
+                        fallback = true
+                    } else {
+                        std.list.set(covered, arm.variant, true)
+                    }
+                    let selected = if arm.variant < 0 {
+                        Predicate.Constant(true)
+                    } else {
+                        Predicate.Compare("==", add(tag, constant(integer(-arm.variant))))
+                    }
+                    var branch = assume(remaining, selected)
+                    remaining = assume(remaining, not(selected))
+                    if !holds(Predicate.Constant(false), branch.facts) {
+                        let fields = if arm.variant < 0 {
+                            new[Value]()
+                        } else {
+                            get(payloads, arm.variant)
+                        }
+                        if length(arm.bindings) != length(fields) {
+                            return Result.Err("match proof has an invalid binding shape")
+                        }
+                        var field = 0
+                        while field < length(fields) {
+                            let local = get(arm.bindings, field)
+                            let value = get(fields, field)
+                            // Selecting a variant validates every payload's
+                            // type, even when its source pattern discards it.
+                            branch = typed_value_state(proof, get(get(shape.variants, arm.variant).fields, field),
+                                value, branch)
+                            if local >= 0 {
+                                branch = assigned(branch, local, value)
+                            }
+                            field = field + 1
+                        }
+                        if arm.whole >= 0 {
+                            branch = assigned(branch, arm.whole, receiver.value)
+                        }
+                        let body = proof_expr(source, ExprKind.Block, source.ty, "", -1, arm.body)
+                        discard append(output, execute(proof, body, branch, depth - 1)?)?
+                    }
+                    index = index + 1
+                }
+                // Coverage is finite nominal tag algebra, independent of arm
+                // order or the interval solver's ability to eliminate holes.
+                variant = 0
+                while variant < length(covered) {
+                    if !fallback && !get(covered, variant) &&
+                    !holds(Predicate.Constant(false), assume(remaining,
+                            Predicate.Compare("==", add(tag, constant(integer(-variant))))).facts) {
+                        return Result.Err("match proof cannot establish exhaustive coverage")
+                    }
+                    variant = variant + 1
+                }
+            }
+            _ => {
+                return Result.Err("match proof needs a modeled enum receiver")
+            }
+        }
+        path = path + 1
+    }
+    Result.Ok(output)
+}

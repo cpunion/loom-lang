@@ -168,3 +168,64 @@ async fn main() {
     fs::write(&source, original).unwrap();
     success(&check());
 }
+
+#[test]
+fn cached_enum_factory_proofs_recheck_selected_payloads() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.loom");
+    let original = r#"
+async fn keep(value Int) Int
+ensures result == value {
+    value
+}
+enum Work {
+    Pending(Task[Int])
+    Ready(Int)
+}
+fn make(flag Bool, value Int) Work {
+    if flag {
+        Work.Pending(keep(value))
+    } else {
+        Work.Ready(value)
+    }
+}
+async fn forward(flag Bool, value Int) Int
+ensures result == value {
+    match make(flag, value) {
+        Work.Pending(task) => task.await
+        Work.Ready(number) => number
+    }
+}
+async fn main() {
+    assert forward(true, 42).await == 42
+    assert forward(false, 43).await == 43
+}
+"#;
+    fs::write(&source, original).unwrap();
+    let package = directory.path().to_str().unwrap();
+    let cache = directory.path().join("cache");
+    let check = || {
+        loom(&[
+            "check",
+            package,
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    for _ in 0..2 {
+        success(&check());
+    }
+    // Both arms must be rechecked. A known async target supplies no guarantee
+    // for a changed input, and a Ready payload cannot inherit that target.
+    for (from, to) in [
+        ("keep(value)", "keep(value + 1)"),
+        ("Work.Ready(value)", "Work.Ready(value + 1)"),
+    ] {
+        fs::write(&source, original.replacen(from, to, 1)).unwrap();
+        let rejected = check();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+        fs::write(&source, original).unwrap();
+        success(&check());
+    }
+}

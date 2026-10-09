@@ -76,6 +76,9 @@ enum Value {
     Nonlinear(IntegerTerm)
     Boolean(Predicate)
     Record(List[Value])
+    // Nominal sum identity, immutable tag and variant-indexed payload snapshots.
+    // Only the selected payload's type invariants may become branch facts.
+    Sum(Int, Linear, List[List[Value]])
     Empty
     Text(TextValue)
     Float(FloatValue)

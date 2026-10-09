@@ -1,0 +1,124 @@
+enum Work {
+    Pending(Task[Int])
+    Ready(Int)
+}
+
+fn make_work(flag Bool, value Int) Work {
+    if flag {
+        Work.Pending(keep(value, 0))
+    } else {
+        Work.Ready(value)
+    }
+}
+
+async fn enum_finished(flag Bool, value Int) Int
+ensures result == value {
+    match make_work(flag, value) {
+        Work.Pending(task) => task.await
+        Work.Ready(number) => number
+    }
+}
+
+enum Choice[T] {
+    Value(T)
+    Missing
+}
+
+fn enum_unwrap[T](value Choice[T], fallback T) T {
+    match value {
+        Choice.Value(item) => item
+        Choice.Missing => fallback
+    }
+}
+
+fn enum_positive(value Choice[Positive]) Int
+ensures result > 0 {
+    enum_unwrap(value, Positive(1))
+}
+
+fn enum_rebound(value Choice[Positive]) Int
+ensures result > 0 {
+    var current = value
+    var index = 0
+    while index < 3 {
+        current = Choice.Value(Positive(2))
+        index = index + 1
+    }
+    enum_unwrap(current, Positive(1))
+}
+
+async fn enum_dynamic(value Choice[Int], source dyn TypedSource) Int
+ensures result > 0 {
+    match value {
+        Choice.Value(_) => source.number_async().await
+        Choice.Missing => source.number()
+    }
+}
+
+fn enum_nested(value Choice[Choice[Positive]]) Int
+ensures result > 0 {
+    match value {
+        Choice.Value(Choice.Value(number)) if number > 1 => number
+        Choice.Value(inner) => enum_unwrap(inner, Positive(1))
+        rest => match rest {
+            Choice.Value(inner) => enum_unwrap(inner, Positive(2))
+            Choice.Missing => 3
+        }
+    }
+}
+
+enum Pair {
+    Items(Int, Int)
+    Missing
+}
+
+fn enum_ordered() Int
+ensures result == 8 {
+    var input = 7
+    let pair = Pair.Items(input, {
+            input = 0
+            1
+        })
+    match {
+        input = input + 1
+        pair
+    } {
+        Pair.Items(first, second) => first + second + input - 1
+        Pair.Missing => 0
+    }
+}
+
+fn enum_walk() Int
+ensures result == 3 {
+    var index = 0
+    while index < 3 {
+        let pair = Pair.Items(index, 1)
+        match pair {
+            Pair.Items(current, step) => {
+                index = current + step
+            }
+            Pair.Missing => {
+                index = index + 1
+            }
+        }
+    }
+    index
+}
+
+async fn exercise_enum_guarantees() {
+    assert enum_positive(Choice.Value(Positive(7))) == 7
+    assert enum_positive(Choice.Missing()) == 1
+    assert enum_rebound(Choice.Value(Positive(7))) == 2
+    assert enum_rebound(Choice.Missing()) == 2
+    assert enum_nested(Choice.Value(Choice.Value(Positive(8)))) == 8
+    assert enum_nested(Choice.Value(Choice.Value(Positive(1)))) == 1
+    assert enum_nested(Choice.Value(Choice.Missing())) == 1
+    assert enum_nested(Choice.Missing()) == 3
+    assert enum_ordered() == 8
+    assert enum_walk() == 3
+    assert enum_finished(true, 42).await == 42
+    assert enum_finished(false, 43).await == 43
+    let source dyn TypedSource = true
+    assert enum_dynamic(Choice.Value(1), source).await == 5
+    assert enum_dynamic(Choice.Missing(), source).await == 3
+}

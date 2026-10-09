@@ -114,6 +114,9 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
     if shape.kind == TypeKind.Task {
         return Value.Task(-1, new[Value]())
     }
+    if shape.kind == TypeKind.Enum {
+        return enum_parameter_value(proof, ty, depth)
+    }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
         // Keep one identity for the nominal scalar and its representation.
         // Entry invariants are added separately after all parameters exist.
@@ -157,7 +160,7 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
         return Result.Err("required proof currently needs scalar parameters")
     }
     let shape = get(proof.program.types, ty)
-    if shape.kind == TypeKind.List || (shape.kind == TypeKind.Refined &&
+    if proof_enum_type(proof.program, ty, 0) >= 0 || shape.kind == TypeKind.List || (shape.kind == TypeKind.Refined &&
         length(shape.fields) == 1 && proof_list_type(proof.program, get(shape.fields, 0).ty)) {
         return Result.Ok(record_parameter_value(proof, ty, 0))
     }
@@ -458,6 +461,12 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
     }
     if expr.kind == ExprKind.If {
         return conditional(proof, expr, state, depth)
+    }
+    if expr.kind == ExprKind.Variant {
+        return variant_outcomes(proof, expr, state, depth)
+    }
+    if expr.kind == ExprKind.Match {
+        return match_outcomes(proof, expr, state, depth)
     }
     if expr.kind == ExprKind.While {
         return loop_outcomes(proof, expr, state, depth)
