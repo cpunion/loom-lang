@@ -714,6 +714,12 @@ workers require private or validated read-only storage for a coherent whole entr
 value. This is not an alias, runtime copy or arbitrary graph snapshot. See the
 [snapshot example](../../compiler/examples/smt_contracts/snapshots.loom) and
 [typed entry columns](../../compiler/examples/list_contracts/snapshots.loom).
+Checked element refinements now supply invariant facts over a logical version's
+valid indices, including nested inline scalar fields. Pure helper expansion
+retains representation conversions, so dynamic Task joins and entry scans reuse
+the same columns and type predicates. Bounds and coherent-observation checks
+remain independent; mutable children supply no invented facts. See the
+[typed contents example](../../compiler/examples/async_contracts/typed_contents.loom).
 Ordinary bounded pure Boolean scans derive scoped universal predicates and
 their existential duals from uniform constant early returns. Multiple/nested
 conditions and per-iteration local rebinding retain their source guards; mixed

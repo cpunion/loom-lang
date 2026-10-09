@@ -2902,6 +2902,14 @@ mutable element graphs and whole aggregates containing shared storage remain
 unsupported observations. See the [entry List example](examples/smt_contracts/snapshots.loom)
 and [typed entry columns](examples/list_contracts/snapshots.loom).
 
+Logical columns also retain checked element refinements, including nested inline
+record/tuple constraints over Int, Bool, Text and Float. Ordinary pure scans can
+reuse these invariants over the version's valid indices; type facts do not prove
+an access in bounds or make shared observations coherent. The
+[typed Task contents example](examples/async_contracts/typed_contents.loom)
+composes dynamic joins and entry scans without inspecting mutable child graphs
+or introducing join-specific proof rules.
+
 Bounded pure scans can express List predicates over modeled integer elements or
 inline field paths without special
 helper names or a new source quantifier syntax. The current fragment recognizes

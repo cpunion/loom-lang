@@ -327,7 +327,10 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
     }
     if value.kind == ExprKind.Coerce {
-        return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
+        let input = expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?
+        // A logical nominal element still needs its checked representation
+        // when projected into a scalar column. Erasing this boundary loses it.
+        return Result.Ok(proof_expr(value, value.kind, value.ty, value.text, value.index, [input]))
     }
     if value.kind == ExprKind.Field {
         let receiver = expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?

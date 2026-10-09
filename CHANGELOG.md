@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose logical List reads with checked scalar and inline element refinements.
+  Preserve representation conversions in pure helper expansion and import type
+  invariants only over each version's valid indices. Dynamic Task joins and
+  entry-value scans reuse these rules; bounds remain separate obligations and
+  mutable child graphs stay opaque.
+
 - Frame unreachable private List storage across known async inputs and unknown
   callback arguments. Follow evaluated inline values, selected enum payloads
   and completely observed nested Lists; possible aliases still publish together.

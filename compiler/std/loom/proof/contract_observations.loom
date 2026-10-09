@@ -48,6 +48,9 @@ fn contract_observations(proof Verification, value Expr, guard Expr, state State
         let independent = proof.shared && !stable_storage(list_state(identity, current)?)
         let unknown = if list_read_expression(expression) {
             match pure(expression, current) {
+                // The array version is known, but this nominal/inline value
+                // has not yet been materialized with its typed invariants.
+                Result.Ok(Value.Projected(_, _, _)) => true
                 Result.Ok(_) => false
                 Result.Err(_) => true
             }

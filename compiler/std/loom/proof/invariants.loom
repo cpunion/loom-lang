@@ -96,3 +96,46 @@ fn guarded_value_invariants(proof Verification, ty Int, value Value, valid Predi
     }
     current
 }
+
+// Refinements share their representation; inline fields select distinct array
+// columns. Shared children stay opaque and supply no hypothetical heap facts.
+fn projected_type_value(types List[Type], ty Int, contents Int, path List[Int], index Linear, depth Int) Value {
+    if ty < 6 || depth >= 16 || ty >= length(types) {
+        return projected_value(contents, path, index, ty)
+    }
+    let shape = get(types, ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        return projected_type_value(types, get(shape.fields, 0).ty, contents, path, index, depth + 1)
+    }
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        let fields = new[Value]()
+        var field = 0
+        while field < length(shape.fields) {
+            push(fields, projected_type_value(types, get(shape.fields, field).ty, contents,
+                    projection_field(path, field), index, depth + 1))
+            field = field + 1
+        }
+        return Value.Record(fields)
+    }
+    Value.Projected(contents, path, index)
+}
+
+// Checked element types hold only on the logical version's valid indices.
+// The version's fresh positive ID also names its binder, distinct from source
+// scan binders and scalar symbols. Repeated views then reuse the same formula.
+// Export only invariant facts, never the scan's own bounds or result.
+fn quantified_type_invariants(proof Verification, ty Int, contents Int, size Linear, state State) State {
+    if ty < 6 || contents < 0 {
+        return state
+    }
+    let value = projected_type_value(proof.program.types, ty, contents, new[Int](), variable(contents), 0)
+    let known = invariant_facts(proof.program.types, ty, value, state, 0)
+    var current = state
+    var index = length(state.facts)
+    while index < length(known.facts) {
+        current = assume(current, Predicate.Forall(contents, constant(integer(0)), size,
+                predicates(get(known.facts, index))))
+        index = index + 1
+    }
+    current
+}
