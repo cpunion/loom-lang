@@ -36,7 +36,14 @@ fn pack_forwarded_shape(parameter Node) Node {
 // could widen; failure to establish a shape keeps the contender, never drops it.
 fn pack_call_overlap_schema(env Environment, schema Node, depth Int) Node {
     let unknown = pack_node(schema, NodeKind.Type, "$parameter", new[Node]())
-    if depth >= 64 || schema.value == "$parameter" ||
+    if depth >= 64 {
+        return if schema.kind == NodeKind.Spread {
+            pack_node(schema, NodeKind.Spread, "", source_nodes(unknown))
+        } else {
+            unknown
+        }
+    }
+    if schema.value == "$parameter" ||
     std.text.starts_with(schema.value, "$parameter#") || std.text.starts_with(schema.value, "dyn#") {
         return unknown
     }

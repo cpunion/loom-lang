@@ -1,5 +1,31 @@
 import std.text.find
 
+test fn exhausted_pack_shape_normalization_keeps_an_unknown_word_not_one_element() {
+    let files = source_files("fn anchor() {}")
+    let bound = match bind(fixture_project(files), false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let env = match prepare(bound) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let source = child(get(files, 0).tree, 0)
+    let unknown = pack_node(source, NodeKind.Type, "$parameter", new[Node]())
+    let word = pack_node(source, NodeKind.Spread, "", source_nodes(unknown))
+    let normalized = pack_call_overlap_schema(env, word, 64)
+    assert normalized.kind == NodeKind.Spread
+    let shape = pack_node(source, NodeKind.TupleType, "tuple", source_nodes(normalized))
+    assert impl_schemas_overlap(shape, pack_node(source, NodeKind.TupleType, "tuple", new[Node]()))
+    assert impl_schemas_overlap(shape, pack_node(source, NodeKind.TupleType, "tuple", [unknown, unknown]))
+}
+
 test fn pack_forwarding_selects_uniformly_disjoint_overloads_without_sampling_widths() {
     discard accepted("""
         record Frame[Ts...] {
