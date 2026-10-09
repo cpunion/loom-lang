@@ -40,20 +40,24 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
         return state
     }
     let shape = get(types, ty)
+    let observed = match value {
+        Value.Projected(contents, path, index) => projected_type_value(types, ty, contents, path, index, depth)
+        _ => value
+    }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
-        var known = invariant_facts(types, get(shape.fields, 0).ty, value, state, depth + 1)
+        var known = invariant_facts(types, get(shape.fields, 0).ty, observed, state, depth + 1)
         var index = 0
         while index < length(shape.constraint) {
             let predicate = get(shape.constraint, index)
             if bounded_contract(predicate) {
-                known = invariant_predicate(predicate, value, known)
+                known = invariant_predicate(predicate, observed, known)
             }
             index = index + 1
         }
         return known
     }
     if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
-        match value {
+        match observed {
             Value.Record(fields) => {
                 var known = state
                 var index = 0
@@ -67,6 +71,46 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
             _ => {
             }
         }
+    }
+    if shape.kind == TypeKind.Enum {
+        let tag = match enum_projection("proof_enum_tag", 1, [observed]) {
+            Result.Ok(value) => match integer_term(value) {
+                Result.Ok(term) => term
+                Result.Err(_) => {
+                    return state
+                }
+            }
+            Result.Err(_) => {
+                return state
+            }
+        }
+        var known = assume(assume(state, integer_limit(">=", tag, 0)),
+            integer_limit("<", tag, length(shape.variants)))
+        var variant = 0
+        while variant < length(shape.variants) {
+            let selected = integer_predicate("==", tag, IntegerTerm.Linear(constant(integer(variant))))
+            let fields = get(shape.variants, variant).fields
+            var field = 0
+            while field < length(fields) {
+                let field_ty = get(fields, field)
+                match enum_projection("proof_enum_payload", field_ty,
+                    [observed, Value.Number(constant(integer(variant))), Value.Number(constant(integer(field)))]) {
+                    Result.Ok(payload) => {
+                        let represented = match payload {
+                            Value.Projected(contents, path, index) =>
+                            projected_type_value(types, field_ty, contents, path, index, depth + 1)
+                            _ => payload
+                        }
+                        known = guarded_type_invariants(types, field_ty, represented, selected, known, depth + 1)
+                    }
+                    Result.Err(_) => {
+                    }
+                }
+                field = field + 1
+            }
+            variant = variant + 1
+        }
+        return known
     }
     // Content type invariants do not supply indexed observations here.
     // A length predicate is an entry fact;
@@ -84,7 +128,12 @@ fn typed_value_state(proof Verification, ty Int, value Value, state State) State
 // Hypothetical entry reads establish a typed value only where the access is
 // valid. Export those new facts with their premise, never the temporary guard.
 fn guarded_value_invariants(proof Verification, ty Int, value Value, valid Predicate, state State) State {
-    let known = invariant_facts(proof.program.types, ty, value, state, 0)
+    guarded_type_invariants(proof.program.types, ty, value, valid, state, 0)
+}
+
+fn guarded_type_invariants(types List[Type], ty Int, value Value,
+    valid Predicate, state State, depth Int) State {
+    let known = invariant_facts(types, ty, value, integer_input_bounds(value, state), depth)
     if loop_holds(valid, state) {
         return known
     }

@@ -1,0 +1,33 @@
+test fn enum_columns_separate_tags_variants_and_inline_fields_without_freezing_children() {
+    let index = variable(1)
+    let tag = variable(2)
+    let value = Value.Sum(6, tag, [[Value.Number(variable(3))], [Value.Text(TextValue.Variable(4))]])
+    let state = array_observation(10, index, value, Predicate.Variable(5), State {
+            locals = []
+            facts = []
+            extents = []
+            observations = []
+        })
+    let query = encoding([Obligation {
+                facts = state.facts
+                conclusion = Predicate.Constant(false)
+            }])
+    assert std.text.contains(query, "a10_f-1 (Array Int Int)")
+    assert std.text.contains(query, "a10_f-2_f0_f0 (Array Int Int)")
+    assert std.text.contains(query, "a10_f-2_f1_f0_text (Array Int (Seq (_ BitVec 8)))")
+    assert std.text.contains(query, "(=> (and b5 (= (+ 0 (* 1 n2)) 0))")
+    assert immutable_snapshot(value)
+    assert !immutable_snapshot(Value.Sum(6, tag, [[Value.List(20)], []]))
+    let projected = Value.Projected(10, [0], index)
+    let inputs = [projected, Value.Number(constant(integer(1))), Value.Number(constant(integer(0)))]
+    assert match enum_projection("proof_enum_payload", 3, inputs) {
+        Result.Ok(Value.Text(TextValue.Select(contents, path, selected))) =>
+        same_selection(10, [0, -2, 1, 0], index, contents, path, selected)
+        _ => false
+    }
+    assert match enum_projection_guard(inputs) {
+        Result.Ok(guard) => same(guard, integer_predicate("==",
+                IntegerTerm.Select(10, [0, -1], index), IntegerTerm.Linear(constant(integer(1)))))
+        _ => false
+    }
+}

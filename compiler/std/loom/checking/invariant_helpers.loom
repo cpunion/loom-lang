@@ -35,6 +35,19 @@ fn value_invariant_types(env Environment, ty Int, seen List[Int], selected List[
             }
         }
     } else {
+        if shape.kind == TypeKind.Enum {
+            var variant = 0
+            while variant < length(shape.variants) {
+                let fields = get(shape.variants, variant).fields
+                index = 0
+                while index < length(fields) {
+                    value_invariant_types(env, get(fields, index), seen, selected, depth + 1)
+                    index = index + 1
+                }
+                variant = variant + 1
+            }
+            return
+        }
         if shape.kind == TypeKind.List {
             index = 0
             while index < length(shape.arguments) {

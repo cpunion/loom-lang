@@ -165,6 +165,105 @@ fn enum_predicates_compose_without_runtime_projections_and_recheck_edits() {
 }
 
 #[test]
+fn enum_list_columns_compose_native_snapshots_and_reject_false_cached_edits() {
+    let package = "compiler/examples/enum_contents";
+    for command in ["check", "test", "run"] {
+        success(&common::loom(&[command, package]));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = common::executable(directory.path(), "enum-contents");
+    let ir = directory.path().join("contents.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package])
+                .arg("--output")
+                .arg(&artifact)
+                .arg("--emit-ir")
+                .arg(&ir)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&artifact));
+        assert!(!fs::read_to_string(&ir).unwrap().contains("proof_enum_"));
+    }
+    let original = include_str!("../examples/enum_contents/main.loom");
+    let source = directory.path().join("main.loom");
+    fs::write(&source, original).unwrap();
+    let cache = directory.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            directory.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    success(&check());
+    success(&check());
+    for (before, after) in [
+        ("values[changed] = saved", "discard saved"),
+        (" && observed != changed", ""),
+        ("Choice.Missing => true", "Choice.Missing => false"),
+        (
+            "type Positive = Int where self > 0",
+            "type Positive = Int where self >= 0",
+        ),
+        (
+            "type Label = Text where std.text.length(self) > 0",
+            "type Label = Text where std.text.length(self) >= 0",
+        ),
+    ] {
+        let changed = original.replace(before, after);
+        assert_ne!(changed, original);
+        fs::write(&source, changed).unwrap();
+        let rejected = check();
+        assert!(!rejected.status.success());
+        let diagnostic = String::from_utf8_lossy(&rejected.stderr);
+        assert!(
+            diagnostic.contains("postcondition")
+                || diagnostic.contains("required proof was not established"),
+            "edit {before}: {diagnostic}"
+        );
+        fs::write(&source, original).unwrap();
+        success(&check());
+    }
+    fs::write(
+        &source,
+        format!(
+            "{original}\n{}",
+            r#"
+type Impossible = Int where self > 0 && self < 0
+fn occupied(value Choice[Impossible]) Bool {
+    match value {
+        Choice.Value(_) => true
+        Choice.Missing => false
+    }
+}
+fn all_occupied(values List[Choice[Impossible]]) Bool {
+    var index = 0
+    while index < length(values) {
+        if !occupied(values[index]) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+fn wrong(values List[Choice[Impossible]]) List[Choice[Impossible]]
+ensures all_occupied(result) {
+    values
+}
+"#
+        ),
+    )
+    .unwrap();
+    let rejected = check();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+}
+
+#[test]
 fn proved_body_calls_keep_native_calls_argument_order_and_overflow_faults() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(

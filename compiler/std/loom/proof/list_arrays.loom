@@ -50,6 +50,24 @@ fn array_projection_read(contents Int, path List[Int], index Linear, value Value
             }
             return current
         }
+        Value.Sum(_, tag, payloads) => {
+            var current = array_projection_read(contents, enum_tag_path(path), index,
+                Value.Number(tag), valid, state)
+            var variant = 0
+            while variant < length(payloads) {
+                let selected = Predicate.And(predicates(valid,
+                        Predicate.Compare("==", add(tag, constant(integer(-variant))))))
+                let fields = get(payloads, variant)
+                var field = 0
+                while field < length(fields) {
+                    current = array_projection_read(contents, enum_payload_path(path, variant, field), index,
+                        get(fields, field), selected, current)
+                    field = field + 1
+                }
+                variant = variant + 1
+            }
+            return current
+        }
         _ => {
         }
     }
@@ -95,29 +113,58 @@ fn array_write(proof Verification, previous ListExtent, index Linear, value Valu
     }
     let contents = array_identity(proof)
     let current = with_contents(previous.identity, contents, state)
-    Result.Ok(array_projection_write(previous.contents, contents, new[Int](), index, value, current))
+    array_projection_write(proof, previous.contents, contents, new[Int](), index, value, current, 0)
 }
 
-fn array_projection_write(before Int, after Int, path List[Int], index Linear,
-    value Value, state State) State {
+fn array_projection_write(proof Verification, before Int, after Int, path List[Int], index Linear,
+    value Value, state State, depth Int) Result[State, Text] {
+    discard loop_step(proof)?
+    if depth >= 16 {
+        return Result.Err("array projection depth exhausted")
+    }
     match value {
         Value.Record(fields) => {
             var current = state
             var field = 0
             while field < length(fields) {
-                current = array_projection_write(before, after, projection_field(path, field),
-                    index, get(fields, field), current)
+                current = array_projection_write(proof, before, after, projection_field(path, field),
+                    index, get(fields, field), current, depth + 1)?
                 field = field + 1
             }
-            return current
+            return Result.Ok(current)
+        }
+        Value.Sum(owner, tag, payloads) => {
+            var current = array_projection_write(proof, before, after, enum_tag_path(path), index,
+                Value.Number(tag), state, depth + 1)?
+            let variants = get(proof.program.types, owner).variants
+            var variant = 0
+            while variant < length(variants) {
+                let types = get(variants, variant).fields
+                var field = 0
+                while field < length(types) {
+                    // Inactive columns are unobservable at this index, but a
+                    // store must still preserve them at every other index.
+                    // Fresh arbitrary symbols supply no type assumptions.
+                    let payload = if variant < length(payloads) && field < length(get(payloads, variant)) {
+                        get(get(payloads, variant), field)
+                    } else {
+                        record_parameter_value(proof, get(types, field), depth + 1)
+                    }
+                    current = array_projection_write(proof, before, after, enum_payload_path(path, variant, field),
+                        index, payload, current, depth + 1)?
+                    field = field + 1
+                }
+                variant = variant + 1
+            }
+            return Result.Ok(current)
         }
         _ => {
         }
     }
     match array_scalar(value) {
-        Result.Ok(term) => assume(state, Predicate.ArrayWrite(before, after, path, index, term))
+        Result.Ok(term) => Result.Ok(assume(state, Predicate.ArrayWrite(before, after, path, index, term)))
         // Shared payloads remain opaque; no scalar interpretation is inferred.
-        Result.Err(_) => state
+        Result.Err(_) => Result.Ok(state)
     }
 }
 
