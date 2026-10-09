@@ -2,7 +2,7 @@ import std.loom.proof.verify_contract_group
 
 // Build one finite typed helper closure, then check all its source guarantees
 // together. Calling checked_function here would recursively open another queue.
-fn prepared_contract_group(stage Context) Result[std.loom.typed.Program, Failure] {
+fn prepared_contract_group(stage Context, root Function, body_calls Bool) Result[std.loom.typed.Program, Failure] {
     let functions = new[Function]()
     let members = new[Bool]()
     let contexts = new[Context]()
@@ -20,7 +20,7 @@ fn prepared_contract_group(stage Context) Result[std.loom.typed.Program, Failure
                 push(dynamic, new[Function]())
             } else {
                 let built = function_body(stage.env, instance.signature,
-                    instance.arguments, instance.constants, true)?
+                    instance.arguments, instance.constants, true, false)?
                 let node = symbol(stage.env, built.context.signature.symbol).node
                 let completed = completed_contract(built.context, instance.signature, built.function)
                 let clauses = if length(completed) != 0 {
@@ -29,8 +29,7 @@ fn prepared_contract_group(stage Context) Result[std.loom.typed.Program, Failure
                     add_contracts(contracts(built.context, node, NodeKind.Ensures)?,
                         inherited_contracts(built.context, NodeKind.Ensures)?)
                 }
-                let function = close_function(built.context,
-                    with_contracts(built.function, built.function.preconditions, clauses))
+                let function = with_contracts(built.function, built.function.preconditions, clauses)
                 let summaries = new[Function]()
                 if length(completed) == 0 && length(clauses) != 0 {
                     // Contract helpers may schedule more source instances;
@@ -45,6 +44,15 @@ fn prepared_contract_group(stage Context) Result[std.loom.typed.Program, Failure
             index = index + 1
         }
         more = activate_witnesses(stage.env, false)?
+    }
+    discard contract_task_flow(stage, root, body_calls, functions, contexts)?
+    index = 0
+    while index < length(functions) {
+        let instance = get(stage.env.pending, index)
+        if !abstract_method_instance(stage.env, instance.signature, instance.arguments) {
+            set(functions, index, close_function(get(contexts, index), get(functions, index)))
+        }
+        index = index + 1
     }
     discard resource_functions(stage.env, functions)?
     discard list_constraint_functions(stage.env, functions)?

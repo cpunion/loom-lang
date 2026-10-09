@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Allow erased postconditions to observe Task-bearing List metadata through
+  pure source helpers, including `old` and nested fields. Keep executable
+  helpers, preconditions, cleanup and dynamic slots under ordinary one-shot
+  Task checks; logical-only instances never enter native reachability.
+
 - Keep independent immutable Task outcomes as tagged proof values with guarded
   producer facts, rather than eagerly enumerating the terminal-status product.
   Wide source `settled` tuples now retain normal guarantees within the same

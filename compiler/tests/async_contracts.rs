@@ -71,6 +71,14 @@ import std.time.sleep_ms
 import std.task.all
 import std.task.settled
 import std.task.Outcome
+import std.list.length
+fn task_count[T](values List[T]) Int {
+    length(values)
+}
+fn forwarded(tasks List[Task[Int]]) List[Task[Int]]
+ensures length(result) == old(task_count(tasks)) {
+    tasks
+}
 async fn keep(value Int) Int {
     sleep_ms(1).await
     value
@@ -98,6 +106,8 @@ async fn main() {
     assert forward(42).await == 42
     assert combined(43).await == 43
     assert collected(44).await == 44
+    let values = all(forwarded([keep(45), keep(46)])).await
+    assert length(values) == 2
 }
 "#;
     fs::write(&source, original).unwrap();
@@ -115,6 +125,15 @@ async fn main() {
         success(&check());
     }
     let changed = original.replacen("    value\n}", "    value + 1\n}", 1);
+    fs::write(&source, changed).unwrap();
+    let rejected = check();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+    fs::write(&source, original).unwrap();
+    success(&check());
+
+    let changed = original.replacen("    length(values)\n}", "    length(values) + 1\n}", 1);
+    assert_ne!(changed, original);
     fs::write(&source, changed).unwrap();
     let rejected = check();
     assert!(!rejected.status.success());

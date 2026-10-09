@@ -1,0 +1,18 @@
+import std.list.length
+import std.task.all
+
+fn task_count[T](values List[T]) Int {
+    length(values)
+}
+
+fn metadata_forward(tasks List[Task[Int]]) List[Task[Int]]
+ensures task_count(result) == old(task_count(tasks)) {
+    tasks
+}
+
+async fn exercise_task_metadata() {
+    let tasks = metadata_forward([keep(21, 0), keep(22, 0)])
+    let results = all(tasks).await
+    assert length(results) == 2
+    assert results[0] == 21 && results[1] == 22
+}
