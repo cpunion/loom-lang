@@ -65,9 +65,17 @@ async fn main() {
     success(&check());
     success(&check());
     let changed = original.replace(
-        "all(retained_batch(tasks).await).await",
-        "all(append(retained_batch(tasks).await, entry_item(99))).await",
+        "dynamic_all(retained_batch(tasks).await).await",
+        "dynamic_all(append(retained_batch(tasks).await, entry_item(99))).await",
     );
+    assert_ne!(changed, original);
+    fs::write(&source, changed).unwrap();
+    let rejected = check();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+    fs::write(&source, &original).unwrap();
+    success(&check());
+    let changed = original.replace("    [7]\n}", "    source\n}");
     assert_ne!(changed, original);
     fs::write(&source, changed).unwrap();
     let rejected = check();

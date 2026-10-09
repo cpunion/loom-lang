@@ -1,0 +1,90 @@
+// Only storage provenance crosses this optional body inspection. Declared
+// contracts remain the value abstraction: no inferred length/content facts
+// or allocation identities become available to callers of an abstraction.
+fn private_return_storage(value Value, state State) Bool {
+    match value {
+        Value.List(identity) => match list_state(identity, state) {
+            Result.Ok(extent) => extent.private_storage
+            Result.Err(_) => false
+        }
+        Value.Record(fields) => {
+            var index = 0
+            while index < length(fields) {
+                if !private_return_storage(get(fields, index), state) {
+                    return false
+                }
+                index = index + 1
+            }
+            true
+        }
+        Value.Empty => false
+        Value.Projected(_, _, _) => false
+        _ => true
+    }
+}
+
+fn private_completion_result(proof Verification, target Int, function Function,
+    input CallArguments, depth Int) Bool {
+    if immutable_storage_type(proof.program, function.result, 0) {
+        return false
+    }
+    // This optional projection must finish without unresolved obligations.
+    // It does not commit body facts or give the caller a fresh proof budget.
+    let candidate = inference_frame(proof, proof_query(no_proof_backend()))
+    let paths = match source_body_call(candidate, target, function, input, true, depth) {
+        Result.Ok(paths) => paths
+        Result.Err(_) => {
+            return false
+        }
+    }
+    var returned = false
+    var index = 0
+    while index < length(paths) {
+        let path = get(paths, index)
+        if !holds(Predicate.Constant(false), path.state.facts) {
+            if storage_leaves(path.value) == 0 || !private_return_storage(path.value, path.state) {
+                return false
+            }
+            returned = true
+        }
+        index = index + 1
+    }
+    returned
+}
+
+fn returned_storage_member(value Value, identity Int) Bool {
+    match value {
+        Value.List(current) => current == identity
+        Value.Record(fields) => {
+            var index = 0
+            while index < length(fields) {
+                if returned_storage_member(get(fields, index), identity) {
+                    return true
+                }
+                index = index + 1
+            }
+            false
+        }
+        _ => false
+    }
+}
+
+fn framed_completion_storage(value Value, state State) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        push(extents, if returned_storage_member(value, extent.identity) {
+                private_extent(extent, true)
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
+    }
+}

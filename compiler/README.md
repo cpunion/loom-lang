@@ -1740,8 +1740,13 @@ the caller state without restoring a snapshot. Inline fields and enum payloads
 reuse the same transfer rule; ordinary shared siblings and captured child graphs
 gain no frame. The [entry example](examples/async_contracts/task_entries.loom)
 proves dynamic source `all`/`settled` result lengths through real waits, with no
-join axiom, runtime copy or freeze. Collection content induction and framing
-ordinary shared results of declared abstractions remain separate work. See the
+join axiom, runtime copy or freeze. Contracted async abstractions can also retain
+private returned headers when bounded inspection of every reachable normal
+return establishes that storage origin. Only provenance is projected: body
+lengths/contents, allocation identities and alias separation are not exposed.
+The optional inspection must finish without unresolved obligations; failure
+retains the original conservative summary. Shared, published and unknown origins
+gain no frame. Collection content induction remains separate work. See the
 [async contract example](examples/async_contracts/main.loom).
 The [factory example](examples/async_contracts/factories.loom) covers arguments
 rebound after evaluation, both loop/early-return paths, callbacks, opaque inputs

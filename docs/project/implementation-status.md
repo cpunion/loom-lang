@@ -603,9 +603,13 @@ graphs remain unprotected. The
 [entry example](../../compiler/examples/async_contracts/task_entries.loom) proves
 source dynamic `all`/`settled` result lengths and transfers through a real wait.
 O0/O2 native moving-GC and worker builds cover input order, empty groups and
-changed-transfer frontend-cache rejection. Collection content guarantees,
-framing ordinary shared results of declared abstractions and unsupported
-source-helper bodies remain open.
+changed-transfer frontend-cache rejection. Contracted async wrappers now retain
+proved private result headers through optional bounded body inspection of every
+reachable normal return. This projects only storage provenance, not body value
+facts or disjoint allocation identities; multiple returned leaves may alias.
+Unresolved obligations and shared/published/unknown origins retain conservative
+summaries. Changed producer origins invalidate warmed cache proofs. Collection
+content guarantees and unsupported source-helper bodies remain open.
 Erased postconditions now observe Task-bearing List lengths through logical-only
 generic helper instances and nested fields, including entry observations. The private helper
 closure distinguishes these logical reads from executable body, precondition,

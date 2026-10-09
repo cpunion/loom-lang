@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Retain proved private result headers through contracted async abstractions.
+  Optional bounded body inspection projects only storage provenance: declared
+  contracts still supply all value/content facts, and returned fields gain no
+  alias separation. Shared, published or unknown origins remain unframed;
+  changed producer origins invalidate warmed frontend-cache proofs.
+
 - Preserve the sole transferred Task-bearing List header's child-entry state
   through known async completion, including inline fields and enum payloads.
   Release caller heap facts at hot Task creation; unknown completion cannot

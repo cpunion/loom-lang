@@ -115,8 +115,21 @@ fn promise_completion(proof Verification, source Expr, promise Value, entry Stat
                     values = values
                 }
                 if length(function.postconditions) != 0 {
+                    let private_result = private_completion_result(proof, target, function, input, depth)
                     let call = proof_expr(source, ExprKind.Call, source.ty, "", target, new[Expr]())
-                    return applied_call(proof, call, function, input, depth)
+                    let completed = applied_call(proof, call, function, input, depth)?
+                    if private_result {
+                        var index = 0
+                        while index < length(completed) {
+                            let path = get(completed, index)
+                            set(completed, index, Outcome {
+                                    state = framed_completion_storage(path.value, path.state)
+                                    value = path.value
+                                })
+                            index = index + 1
+                        }
+                    }
+                    return Result.Ok(completed)
                 }
                 return completion_body_call(proof, target, function, input, source, entry, depth)
             }
