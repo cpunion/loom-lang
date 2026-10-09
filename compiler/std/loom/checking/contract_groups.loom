@@ -1,5 +1,20 @@
 import std.loom.proof.verify_contract_group
 
+fn retain_group_contracts(stage Context, functions List[Function], contexts List[Context],
+    conditions List[List[Expr]]) {
+    var index = 0
+    while index < length(contexts) {
+        let instance = get(stage.env.pending, index)
+        let function = get(functions, index)
+        let clauses = get(conditions, index)
+        if length(clauses) != 0 {
+            retain_contract(get(contexts, index), instance.signature,
+                with_contracts(function, function.preconditions, clauses))
+        }
+        index = index + 1
+    }
+}
+
 // Build one finite typed helper closure, then check all its source guarantees
 // together. Calling checked_function here would recursively open another queue.
 fn prepared_contract_group(stage Context, root Function, body_calls Bool) Result[std.loom.typed.Program, Failure] {
@@ -85,15 +100,19 @@ fn prepared_contract_group(stage Context, root Function, body_calls Bool) Result
         witnesses = stage.env.witnesses
     }
     match verify_contract_group(program, members, get(stage.env.inputs, 0).build.proof_backend) {
-        Result.Ok(checked) => Result.Ok(checked)
+        Result.Ok(conditions) => {
+            retain_group_contracts(stage, functions, contexts, conditions)
+            Result.Ok(program)
+        }
         Result.Err(failed) => {
             // Retain the existing pure-helper invariant fallback, with one
             // coherent private type snapshot for every member of the group.
             match expanded_invariant_types(stage.env, functions) {
                 Result.Ok(types) => match verify_contract_group(proof_types(program, types), members,
                     get(stage.env.inputs, 0).build.proof_backend) {
-                    Result.Ok(checked) => {
-                        return Result.Ok(checked)
+                    Result.Ok(conditions) => {
+                        retain_group_contracts(stage, functions, contexts, conditions)
+                        return Result.Ok(proof_types(program, types))
                     }
                     Result.Err(_) => {
                     }

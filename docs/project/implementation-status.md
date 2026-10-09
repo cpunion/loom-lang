@@ -759,7 +759,9 @@ returns a read-only constrained sorted copy directly; unknown ordering keeps
 the checked `Result` boundary. CTFE ignores statically proved `ensures` metadata
 while retaining executable preconditions, bodies and faults.
 Completed sequential proofs are shared across private queues in the same checked
-snapshot, not across edits or via pending promises. Shared verification
+snapshot, including every verified helper after its whole contract group passes,
+not across edits or via pending promises. Call-free clauses are retained without
+rewriting the closure's source summaries. Shared verification
 remains separate.
 Recursive body calls now use a closed typed group: every source member must prove
 its declared normal-return guarantees before any group result escapes. False

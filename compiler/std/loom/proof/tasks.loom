@@ -115,10 +115,20 @@ fn promise_completion(proof Verification, source Expr, promise Value, entry Stat
                     values = values
                 }
                 if length(function.postconditions) != 0 {
-                    let private_result = private_completion_result(proof, target, function, input, depth)
                     let call = proof_expr(source, ExprKind.Call, source.ty, "", target, new[Expr]())
                     let completed = applied_call(proof, call, function, input, depth)?
-                    if private_result {
+                    var needs_origin = false
+                    var index = 0
+                    while index < length(completed) {
+                        let path = get(completed, index)
+                        needs_origin = needs_origin || (storage_leaves(path.value) != 0 &&
+                            !private_return_storage(path.value, path.state))
+                        index = index + 1
+                    }
+                    // Typed one-shot containers already establish their outer
+                    // header privacy. Inspect the body only for missing origin
+                    // evidence, never to replace the declared value contract.
+                    if needs_origin && private_completion_result(proof, target, function, input, depth) {
                         var index = 0
                         while index < length(completed) {
                             let path = get(completed, index)

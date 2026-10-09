@@ -1,0 +1,81 @@
+fn certificate_environment(text Text) Result[Environment, Failure] {
+    prepare(bind(fixture_project(source_files(text)), false)?)
+}
+
+fn certificate_signature(env Environment, name Text) Int {
+    var index = 0
+    while index < length(env.signatures) {
+        if symbol(env, get(env.signatures, index).symbol).name == name {
+            return index
+        }
+        index = index + 1
+    }
+    assert false
+    -1
+}
+
+test fn completed_groups_retain_helper_clauses_only_after_every_member_passes() {
+    let env = match certificate_environment("""
+        fn leaf(value Int) Int {
+            value
+        }
+        fn helper(value Int) Int
+        ensures result == value {
+            leaf(value)
+        }
+        pub fn root(value Int) Int
+        ensures result == value {
+            helper(value)
+        }
+        """) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    let root = certificate_signature(env, "root")
+    let helper = certificate_signature(env, "helper")
+    assert match function(env, root, [], [], true) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    let cache = get(env.inputs, 0).contracts
+    assert length(get(cache, root)) == 1
+    assert length(get(cache, helper)) == 1
+    let clauses = get(get(cache, helper), 0).postconditions
+    assert length(clauses) != 0
+    assert !proof_body_calls(get(clauses, 0))
+    assert match function(env, helper, [], [], true) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert length(get(cache, helper)) == 1
+
+    let failed = match certificate_environment("""
+        fn valid(value Int) Int
+        ensures result == value {
+            value
+        }
+        fn invalid(value Int) Int
+        ensures result == value {
+            0
+        }
+        pub fn root(value Int) Int
+        ensures result == value {
+            discard valid(value)
+            invalid(value)
+        }
+        """) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    assert match function(failed, certificate_signature(failed, "root"), [], [], true) {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert length(get(failed.inputs, 0).contracts) == 0
+}
