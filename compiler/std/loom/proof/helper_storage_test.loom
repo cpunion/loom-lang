@@ -1,4 +1,7 @@
 test fn private_summary_fields_do_not_imply_distinct_allocations() {
+    assert mutable_value(Value.Function(0, [Value.List(10)]))
+    assert mutable_value(Value.Task(0, [Value.Function(0, [Value.List(10)])]))
+    assert !mutable_value(Value.Function(0, [Value.Number(constant(integer(1)))]))
     let entry = State {
         locals = new[Value]()
         facts = new[Predicate]()

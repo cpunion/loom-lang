@@ -551,8 +551,15 @@ aggregates, known callbacks and declared generic/dyn method contracts. A private
 promise retains checked identity and once-evaluated inputs until successful
 await; it adds no runtime frame or persistent IR metadata. Callee entry heap
 observations are fresh, not borrowed from Task creation or the caller's entry.
-Suspension invalidates unprotected current storage while retaining immutable
-scalar snapshots and validated invariants. Unknown targets contribute only
+Suspension invalidates unprotected published storage while retaining immutable
+scalar snapshots, validated invariants and proved unpublished storage. Task
+inputs carrying mutable graphs, shared stores, dyn boxing and unknown callbacks
+revoke privacy in ordinary as well as worker builds. Closed scalar/immutable
+inline inputs frame unpublished caller storage without promising purity or
+framing shared aliases. The
+[private storage example](../../compiler/examples/async_contracts/private_storage.loom)
+proves a fresh-output construction loop across real waits, with changed-argument
+cache rejection and worker-build evidence. Unknown targets contribute only
 typed completion values; faults and cancellation supply no normal-return
 guarantee. Variadic families also compose declared async callee and concept-method
 postconditions without choosing concrete widths. Iteration-local Tasks are

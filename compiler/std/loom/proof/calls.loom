@@ -354,18 +354,22 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
     }
     discard summary_conditions(entry, function, function.preconditions, bindings)?
     let paths = established_checks(proof, entry.checks, state, depth)?
-    let local_storage = !proof.shared || storage_local(proof.program, function.body)
+    let closed = closed_storage_inputs(proof.program, function.params)
+    let local_storage = closed || storage_local(proof.program, function.body)
     let private_result = private_factory(proof.program, function)
-    let stable = local_storage && (length(state.extents) == 0 || extent_preserving(proof.program, function.body))
+    let kept_extent = length(state.extents) == 0 || extent_preserving(proof.program, function.body)
+    let stable = closed || (local_storage && kept_extent)
+    let concurrent = proof.shared || (closed && (function.is_async || !kept_extent))
     let output = new[Outcome]()
     var index = 0
     while index < length(paths) {
         var before = get(paths, index).state
-        let stable_contents = stable && length(before.extents) != 0 && elements_preserving(proof.program, function.body)
+        let stable_contents = stable && length(before.extents) != 0 &&
+        (closed || elements_preserving(proof.program, function.body))
         // Preconditions describe entry. Keep their scalar snapshots, never
         // re-evaluate them as facts about storage after an opaque call.
         var after = if stable {
-            interference(proof, before)
+            interference(proof, before, concurrent)
         } else {
             if local_storage {
                 let modified = new[Int]()
@@ -441,11 +445,11 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         }
         let captured = capture_entry(proof, value, before, after)?
         let current = if stable_contents {
-            preserved_elements(captured.entry, captured.state, proof.shared)
+            preserved_elements(captured.entry, captured.state, concurrent)
         } else {
             if stable && length(state.extents) != 0 {
                 preserved_call_elements(proof.program, function, boundary,
-                    captured.entry, captured.state, proof.shared)
+                    captured.entry, captured.state, concurrent)
             } else {
                 captured.state
             }

@@ -13,7 +13,12 @@ fn task_reference(proof Verification, call Expr, state State, depth Int) Result[
     while index < length(arguments) {
         let current = get(arguments, index)
         discard add_outcome(output, Outcome {
-                state = current.state
+                state = if call.kind == ExprKind.TaskCall &&
+                !closed_storage_inputs(proof.program, get(proof.program.functions, call.index).params) {
+                    published_storage(current.state)
+                } else {
+                    current.state
+                }
                 value = if call.kind == ExprKind.FunctionRef {
                     Value.Function(call.index, current.values)
                 } else {
@@ -26,10 +31,10 @@ fn task_reference(proof Verification, call Expr, state State, depth Int) Result[
 }
 
 fn suspension_state(proof Verification, state State) State {
-    // Other ready Tasks can reach aliases while this one is suspended. Past
-    // scalar reads remain snapshots; only validated storage invariants frame
+    // Other ready Tasks can reach published aliases during suspension. Past
+    // scalar reads, unpublished storage and validated invariants frame
     // current observations. Caller heap state is not an async callee's entry.
-    interference(proof, published_storage(state), true)
+    interference(proof, state, true)
 }
 
 fn unknown_completion(proof Verification, source Expr, state State) Outcome {
@@ -211,7 +216,11 @@ fn indirect_body_call(proof Verification, call Expr, state State, depth Int) Res
                 }
                 if function.is_async {
                     discard add_outcome(output, Outcome {
-                            state = current.state
+                            state = if closed_storage_inputs(proof.program, function.params) {
+                                current.state
+                            } else {
+                                published_storage(current.state)
+                            }
                             value = Value.Task(target, inputs)
                         })?
                 } else {
@@ -226,7 +235,7 @@ fn indirect_body_call(proof Verification, call Expr, state State, depth Int) Res
                 // An unknown callback contributes only its checked output
                 // type, not a guessed target or a hidden contract.
                 discard add_outcome(output, unknown_completion(proof, call,
-                        suspension_state(proof, current.state)))?
+                        suspension_state(proof, published_storage(current.state))))?
             }
         }
         index = index + 1

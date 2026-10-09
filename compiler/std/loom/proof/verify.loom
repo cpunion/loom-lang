@@ -561,11 +561,7 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
         var index = 0
         while index < length(values) {
             discard add_outcome(output, Outcome {
-                    state = if proof.shared {
-                        published_storage(get(values, index).state)
-                    } else {
-                        get(values, index).state
-                    }
+                    state = published_storage(get(values, index).state)
                     value = Value.Empty
                 })?
             index = index + 1

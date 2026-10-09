@@ -22,6 +22,60 @@ fn async_guarantees_compose_through_saved_native_tasks() {
 }
 
 #[test]
+fn unpublished_storage_survives_waits_but_changed_task_arguments_invalidate_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.loom");
+    let original = format!(
+        "{}\n{}",
+        include_str!("../examples/async_contracts/private_storage.loom"),
+        r#"
+import std.task.worker.run
+async fn main() {
+    let worker = run(fn() Int {
+        7
+    })
+    assert worker.await == 7
+    exercise_private_storage().await
+}
+"#
+    );
+    fs::write(&source, &original).unwrap();
+    let package = directory.path().to_str().unwrap();
+    let executable = common::executable(directory.path(), "private-storage");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package, "--output", executable.to_str().unwrap()])
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+    }
+    let cache = directory.path().join("cache");
+    let check = || {
+        loom(&[
+            "check",
+            package,
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    success(&check());
+    success(&check());
+    let changed = original.replace(
+        "retained_item(index).await",
+        "retained_mutate(output, index).await",
+    );
+    assert_ne!(changed, original);
+    fs::write(&source, changed).unwrap();
+    let output = check();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("postcondition"));
+    fs::write(&source, original).unwrap();
+    success(&check());
+}
+
+#[test]
 fn cached_async_guarantees_recheck_changed_producer_bodies() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("main.loom");
