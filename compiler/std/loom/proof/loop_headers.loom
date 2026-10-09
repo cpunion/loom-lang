@@ -4,12 +4,13 @@ fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local In
     if length(candidates) >= 64 {
         return Result.Ok(true)
     }
-    discard loop_step(proof)?
     match value {
         Value.List(identity) => {
+            discard loop_step(proof)?
             discard add_loop_candidate(candidates, LoopCandidate.Header(local, path, identity), entry)?
         }
         Value.Record(fields) => {
+            discard loop_step(proof)?
             var field = 0
             while field < length(fields) && length(candidates) < 64 {
                 let nested = std.list.clone(path)
@@ -25,7 +26,8 @@ fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local In
     Result.Ok(true)
 }
 
-fn loop_header_candidates(proof Verification, candidates List[LoopCandidate], writes List[Bool], entry State) Result[Bool, Text] {
+fn loop_header_candidates(proof Verification, candidates List[LoopCandidate], writes List[Bool], entry State) Result[Int, Text] {
+    let before = length(candidates)
     var local = 0
     while local < length(writes) && length(candidates) < 64 {
         if get(writes, local) {
@@ -34,7 +36,7 @@ fn loop_header_candidates(proof Verification, candidates List[LoopCandidate], wr
         }
         local = local + 1
     }
-    Result.Ok(true)
+    Result.Ok(length(candidates) - before)
 }
 
 fn loop_header_count(candidates List[LoopCandidate]) Int {
@@ -72,6 +74,15 @@ fn loop_header_at(value Value, path List[Int], identity Int, depth Int) Result[V
 }
 
 fn loop_header_value(local Int, initial Value, candidates List[LoopCandidate]) Result[Value, Text] {
+    match initial {
+        Value.List(_) => {
+        }
+        Value.Record(_) => {
+        }
+        _ => {
+            return Result.Ok(initial)
+        }
+    }
     var value = initial
     var index = 0
     while index < length(candidates) {

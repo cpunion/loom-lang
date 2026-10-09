@@ -468,7 +468,7 @@ fn loop_bounds(value Value, entry State) State {
     state
 }
 
-fn loop_head(proof Verification, writes List[Bool], entry State, candidates List[LoopCandidate]) Result[State, Text] {
+fn loop_head(proof Verification, writes List[Bool], entry State, candidates List[LoopCandidate], headers Int) Result[State, Text] {
     var state = entry
     var index = 0
     while index < length(writes) {
@@ -479,8 +479,12 @@ fn loop_head(proof Verification, writes List[Bool], entry State, candidates List
                 Value.Empty => {
                 }
                 _ => {
-                    let value = loop_header_value(index,
-                        record_parameter_value(proof, get(proof.function.locals, index).ty, 0), candidates)?
+                    let initial = record_parameter_value(proof, get(proof.function.locals, index).ty, 0)
+                    let value = if headers == 0 {
+                        initial
+                    } else {
+                        loop_header_value(index, initial, candidates)?
+                    }
                     let ty = get(proof.function.locals, index).ty
                     state = invariant_facts(proof.program.types, ty, value,
                         loop_bounds(value, assigned(state, index, value)), 0)
@@ -531,8 +535,8 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     // proposals when the shared candidate budget is nearly full.
     discard loop_affine_candidates(proof, guard, body, candidates, writes, observed)?
     discard loop_transfer_candidates(proof, candidates, writes, resized, observed)?
-    discard loop_header_candidates(proof, candidates, writes, observed)?
-    var head = loop_head(proof, writes, storage, candidates)?
+    var headers = loop_header_candidates(proof, candidates, writes, observed)?
+    var head = loop_head(proof, writes, storage, candidates, headers)?
     head = loop_query_views(proof, clauses, head)
     candidates = available_loop_candidates(candidates, head)
     while true {
@@ -613,12 +617,18 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
         }
         // Recheck every survivor after a removal: a candidate may have relied
         // on the rejected one. The final pass also rechecks early returns.
-        let changed_headers = loop_header_count(candidates) != loop_header_count(survivors)
+        let remaining_headers = if headers == 0 {
+            0
+        } else {
+            loop_header_count(survivors)
+        }
+        let changed_headers = headers != remaining_headers
+        headers = remaining_headers
         candidates = survivors
         if changed_headers {
             // Removing an identity hypothesis changes the abstract head itself.
             // Rebuild it and recheck dependents, exits and captured returns.
-            head = loop_query_views(proof, clauses, loop_head(proof, writes, storage, candidates)?)
+            head = loop_query_views(proof, clauses, loop_head(proof, writes, storage, candidates, headers)?)
             candidates = available_loop_candidates(candidates, head)
         }
     }
