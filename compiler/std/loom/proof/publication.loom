@@ -1,0 +1,204 @@
+// Publication follows evaluated inputs, not source names or different handle
+// IDs. Unknown graphs, missing element observations and exhausted traversal
+// discard all privacy. No persistent graph or runtime ownership is introduced.
+fn storage_identity_member(identities List[Int], identity Int) Bool {
+    var index = 0
+    while index < length(identities) {
+        if get(identities, index) == identity {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn publication_captures(proof Verification, target Int, values List[Value], complete Bool,
+    state State, identities List[Int], budget List[Int], depth Int) Bool {
+    if target < 0 || target >= length(proof.program.functions) {
+        return false
+    }
+    let params = get(proof.program.functions, target).params
+    if length(values) > length(params) || (complete && length(values) != length(params)) {
+        return false
+    }
+    var index = 0
+    while index < length(values) {
+        if !publication_value(proof, get(params, index), get(values, index),
+            state, identities, budget, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn publication_value(proof Verification, ty Int, value Value, state State,
+    identities List[Int], budget List[Int], depth Int) Bool {
+    if immutable_storage_type(proof.program, ty, 0) || ty == 4 {
+        return true
+    }
+    if depth >= 32 || get(budget, 0) <= 0 || ty < 6 || ty >= length(proof.program.types) {
+        return false
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    let shape = get(proof.program.types, ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        return publication_value(proof, get(shape.fields, 0).ty, value,
+            state, identities, budget, depth + 1)
+    }
+    if shape.kind == TypeKind.List && length(shape.arguments) == 1 {
+        return match value {
+            Value.List(identity) => {
+                if storage_identity_member(identities, identity) {
+                    return true
+                }
+                push(identities, identity)
+                let extent = match list_state(identity, state) {
+                    Result.Ok(extent) => extent
+                    Result.Err(_) => {
+                        return false
+                    }
+                }
+                let element = get(shape.arguments, 0)
+                if immutable_storage_type(proof.program, element, 0) || element == 4 {
+                    return true
+                }
+                // Cells are bounded observations, not a complete heap graph.
+                // Prove coverage of every current index before using them to
+                // exclude another reachable mutable child. Eviction loses
+                // precision; it never silently drops a publication edge.
+                var index = 0
+                while index < length(extent.cells) {
+                    let position = constant(integer(index))
+                    if index_relation("==", extent.size, position, state) {
+                        return true
+                    }
+                    let child = match known_element(identity, position, state) {
+                        Result.Ok(child) => child
+                        Result.Err(_) => {
+                            return false
+                        }
+                    }
+                    if !publication_value(proof, element, child, state,
+                        identities, budget, depth + 1) {
+                        return false
+                    }
+                    index = index + 1
+                }
+                index_relation("==", extent.size, constant(integer(index)), state)
+            }
+            _ => false
+        }
+    }
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        return match value {
+            Value.Record(fields) => {
+                if length(fields) != length(shape.fields) {
+                    return false
+                }
+                var index = 0
+                while index < length(fields) {
+                    if !publication_value(proof, get(shape.fields, index).ty,
+                        get(fields, index), state, identities, budget, depth + 1) {
+                        return false
+                    }
+                    index = index + 1
+                }
+                true
+            }
+            _ => false
+        }
+    }
+    if shape.kind == TypeKind.Enum {
+        return match value {
+            Value.Sum(owner, tag, payloads) => {
+                if owner != ty || length(payloads) != length(shape.variants) {
+                    return false
+                }
+                var variant = 0
+                while variant < length(payloads) {
+                    if index_relation("!=", tag, constant(integer(variant)), state) {
+                        variant = variant + 1
+                        continue
+                    }
+                    let fields = get(payloads, variant)
+                    let types = get(shape.variants, variant).fields
+                    if length(fields) != length(types) {
+                        return false
+                    }
+                    var field = 0
+                    while field < length(fields) {
+                        if !publication_value(proof, get(types, field), get(fields, field),
+                            state, identities, budget, depth + 1) {
+                            return false
+                        }
+                        field = field + 1
+                    }
+                    variant = variant + 1
+                }
+                true
+            }
+            _ => false
+        }
+    }
+    if shape.kind == TypeKind.Function {
+        return match value {
+            Value.Function(target, captures) => publication_captures(proof, target, captures,
+                false, state, identities, budget, depth)
+            _ => false
+        }
+    }
+    if shape.kind == TypeKind.Task {
+        return match value {
+            Value.Task(target, values, _) => publication_captures(proof, target, values,
+                true, state, identities, budget, depth)
+            _ => false
+        }
+    }
+    false
+}
+
+fn published_inputs(proof Verification, types List[Int], values List[Value], first Int, state State) State {
+    if length(types) != length(values) {
+        return published_storage(state)
+    }
+    var closed = true
+    var index = first
+    while index < length(types) {
+        closed = closed && immutable_storage_type(proof.program, get(types, index), 0)
+        index = index + 1
+    }
+    if closed {
+        return state
+    }
+    let identities = new[Int]()
+    let budget = [256]
+    index = first
+    while index < length(values) {
+        if !publication_value(proof, get(types, index), get(values, index),
+            state, identities, budget, 0) {
+            return published_storage(state)
+        }
+        index = index + 1
+    }
+    if length(identities) == 0 {
+        return state
+    }
+    let extents = new[ListExtent]()
+    index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        push(extents, if extent.private_storage && extent_modified(extent, state, identities) {
+                private_extent(extent, false)
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
+    }
+}

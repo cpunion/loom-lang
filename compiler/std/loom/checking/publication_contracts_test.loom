@@ -1,0 +1,156 @@
+test fn unknown_scalar_callbacks_frame_unpublished_storage_not_their_results() {
+    let source = """
+        import std.list.length
+        import std.list.get
+        import std.list.push
+        fn retained(next fn(Int) Int) Int
+        ensures result == 7 {
+            let values = [7]
+            discard next(0)
+            get(values, 0)
+        }
+        fn generated(count Int, next fn(Int) Int) List[Int]
+        requires count >= 0 && count <= 100
+        ensures length(result) == count {
+            let values List[Int] = []
+            var index = 0
+            while index < count {
+                push(values, next(index))
+                index = index + 1
+            }
+            values
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(concat(source, """
+        fn guessed(next fn(Int) Int) Int
+        ensures result == 7 {
+            next(0)
+        }
+        """), false, "postcondition")
+}
+
+test fn mutable_arguments_publish_reachable_headers_not_unrelated_allocations() {
+    let source = """
+        import std.list.get
+        record Input {
+            values List[Int]
+        }
+        fn retained(next fn(Input), shared List[Int]) Int
+        ensures result == 7 {
+            let values = [7]
+            next(Input { values = shared })
+            get(values, 0)
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(std.text.join(std.text.split(source, "values = shared"),
+            "values = values"), false, "postcondition")
+}
+
+test fn publication_walks_nested_cells_without_assuming_a_complete_heap_snapshot() {
+    let source = """
+        import std.list.get
+        fn retained(next fn(List[List[Int]])) Int
+        ensures result == 8 {
+            let child = [7]
+            let parent = [child]
+            let separate = [8]
+            next(parent)
+            get(separate, 0)
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(std.text.join(std.text.split(
+                std.text.join(std.text.split(source, "result == 8"), "result == 7"),
+                "get(separate, 0)"), "get(child, 0)"), false, "postcondition")
+    task_metadata_contract("""
+        import std.list.get
+        fn opaque(next fn(List[List[Int]]), parent List[List[Int]]) Int
+        ensures result == 7 {
+            let child = [7]
+            next(parent)
+            get(child, 0)
+        }
+        """, false, "postcondition")
+}
+
+test fn enum_payloads_and_function_captures_participate_in_publication() {
+    task_metadata_contract("""
+        import std.list.get
+        enum Input {
+            Values(List[Int])
+            Other(List[List[Int]])
+        }
+        fn retained(next fn(Input)) Int
+        ensures result == 8 {
+            let values = [7]
+            let separate = [8]
+            next(Input.Values(values))
+            get(separate, 0)
+        }
+        """, true, "")
+    task_metadata_contract("""
+        import std.list.get
+        enum Input {
+            Values(List[Int])
+            Empty
+        }
+        fn stale(next fn(Input)) Int
+        ensures result == 7 {
+            let values = [7]
+            next(Input.Values(values))
+            get(values, 0)
+        }
+        """, false, "postcondition")
+    let source = """
+        import std.list.get
+        fn stale(next fn(fn() Int)) Int
+        ensures result == 7 {
+            let values = [7]
+            let callback = fn() Int {
+                get(values, 0)
+            }
+            next(callback)
+            get(values, 0)
+        }
+        """
+    task_metadata_contract(source, false, "postcondition")
+    task_metadata_contract(std.text.join(std.text.split(source,
+                "next(callback)"), "next(fn() Int { 0 })"), true, "")
+}
+
+test fn a_scalar_callback_does_not_restore_previously_published_storage() {
+    task_metadata_contract("""
+        import std.list.get
+        import std.list.set
+        import std.list.length
+        fn stale(holder List[List[Int]], next fn(Int)) Int
+        requires length(holder) > 0
+        ensures result == 7 {
+            let values = [7]
+            set(holder, 0, values)
+            next(0)
+            get(values, 0)
+        }
+        """, false, "postcondition")
+}
+
+test fn known_async_inputs_frame_only_unreachable_caller_storage() {
+    let source = """
+        import std.list.length
+        import std.list.get
+        async fn consume(values List[Int]) {
+            discard length(values)
+        }
+        async fn retained(shared List[Int]) Int
+        ensures result == 7 {
+            let values = [7]
+            consume(shared).await
+            get(values, 0)
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(std.text.join(std.text.split(source, "consume(shared).await"),
+            "consume(values).await"), false, "postcondition")
+}

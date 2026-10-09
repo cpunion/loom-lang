@@ -1706,14 +1706,23 @@ declarations. Private proof promises retain evaluated arguments, not expressions
 to replay at completion. Ordinary shared callee entry observations are independent
 of the caller's creation-time heap; suspension discards unprotected published storage
 facts while preserving past scalar snapshots and proved unpublished storage.
-Task inputs carrying mutable graphs, stores into shared containers, dyn boxing
-and unknown callbacks revoke privacy conservatively in both ordinary and worker
-builds. Closed scalar/immutable-inline inputs cannot reach unpublished caller
-storage; checked call summaries retain that frame without assuming purity or
-that other ready Tasks cannot change shared aliases. Loop backedges must preserve
+Known Task inputs and unknown callback arguments publish the tracked storage
+they may reach, including inline fields, selected enum payloads and known
+Function/Task inputs. Nested Lists need established values at every current
+index; bounded cells are not a complete heap graph after eviction or forgotten
+observations. Opaque captures, unknown graphs and exhausted traversal revoke all
+privacy conservatively. Possible aliases publish together; different handle IDs
+do not imply separation. Shared stores and dyn boxing also revoke privacy in
+both ordinary and worker builds. Unreachable private storage retains its frame
+without assuming call purity or that other ready Tasks cannot change shared
+aliases. Loop backedges must preserve
 the frame, including after publication. The
 [private storage example](examples/async_contracts/private_storage.loom) proves
 List construction across real waits; edited Task arguments invalidate its proof.
+The [publication example](examples/async_contracts/publication.loom) composes a
+source stateful generator's length contract through unknown callbacks and keeps
+unrelated fresh output across mutable async inputs. Callback results supply only
+their checked types, and previously published storage cannot regain privacy.
 No-result source helpers also use finite checked body frames, including actual
 List updates and lexical cleanup; unsupported optional inference falls back to
 conservative summaries, not partial effects. Task drain uses the same suspension

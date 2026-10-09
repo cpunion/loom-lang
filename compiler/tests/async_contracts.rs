@@ -22,6 +22,72 @@ fn async_guarantees_compose_through_saved_native_tasks() {
 }
 
 #[test]
+fn reachable_publication_frames_private_storage_and_rechecks_changed_arguments() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.loom");
+    let original = format!(
+        "{}\n{}",
+        include_str!("../examples/async_contracts/publication.loom"),
+        r#"
+import std.list.get
+import std.list.push
+import std.list.length
+import std.time.sleep_ms
+import std.task.worker.run
+async fn main() {
+    let worker = run(fn() Int {
+        7
+    })
+    assert worker.await == 7
+    exercise_publication().await
+}
+"#
+    );
+    fs::write(&source, &original).unwrap();
+    let package = directory.path().to_str().unwrap();
+    let executable = common::executable(directory.path(), "publication");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package, "--output", executable.to_str().unwrap()])
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+    }
+    let cache = directory.path().join("cache");
+    let check = || {
+        loom(&[
+            "check",
+            package,
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    success(&check());
+    success(&check());
+    let changed = original.replace(
+        "publication_touch(shared).await",
+        "publication_touch(values).await",
+    );
+    assert_ne!(changed, original);
+    fs::write(&source, changed).unwrap();
+    let rejected = check();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+    fs::write(&source, &original).unwrap();
+    success(&check());
+    let changed = original.replace("get(separate, 0)", "get(child, 0)");
+    assert_ne!(changed, original);
+    fs::write(&source, changed).unwrap();
+    let rejected = check();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+    fs::write(&source, original).unwrap();
+    success(&check());
+}
+
+#[test]
 fn dynamic_task_headers_compose_and_recheck_changed_transfers() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("main.loom");

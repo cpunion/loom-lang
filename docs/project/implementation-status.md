@@ -556,11 +556,16 @@ await; it adds no runtime frame or persistent IR metadata. Ordinary shared
 callee entry heap observations are fresh, not borrowed from Task creation or
 the caller's entry.
 Suspension invalidates unprotected published storage while retaining immutable
-scalar snapshots, validated invariants and proved unpublished storage. Task
-inputs carrying mutable graphs, shared stores, dyn boxing and unknown callbacks
-revoke privacy in ordinary as well as worker builds. Closed scalar/immutable
-inline inputs frame unpublished caller storage without promising purity or
-framing shared aliases. The
+scalar snapshots, validated invariants and proved unpublished storage. Known
+Task inputs and unknown callback arguments now follow evaluated inline values,
+selected enum payloads and completely observed nested Lists to publish reachable
+storage. Possible aliases publish together. Missing/evicted cells, opaque graphs
+and exhausted traversal still discard all privacy; shared stores and dyn boxing
+remain conservative. Unreachable private allocations retain their frame in
+ordinary and worker builds, without promising purity or framing shared aliases.
+The [publication example](../../compiler/examples/async_contracts/publication.loom)
+proves source stateful generation length contracts through unknown callbacks and
+unrelated mutable async inputs. The
 [private storage example](../../compiler/examples/async_contracts/private_storage.loom)
 proves a fresh-output construction loop across real waits, with changed-argument
 cache rejection and worker-build evidence. Unknown targets contribute only
