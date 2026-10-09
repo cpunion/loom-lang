@@ -624,9 +624,9 @@ List joins, backed by verified registration/collection batch contracts. Generic
 callers reuse those contracts, including resource and no-result payloads;
 dynamic content relationships remain separate work.
 O0/O2 native moving-GC and worker builds cover input order, empty groups and
-changed-transfer frontend-cache rejection. Contracted async wrappers now retain
-proved private result headers through optional bounded body inspection of every
-reachable normal return. This projects only storage provenance, not body value
+changed-transfer frontend-cache rejection. Contracted synchronous helpers and
+async wrappers retain proved private result headers through the same optional
+bounded body inspection of every reachable normal return. This projects only storage provenance, not body value
 facts or disjoint allocation identities; multiple returned leaves may alias.
 Unresolved obligations and shared/published/unknown origins retain conservative
 summaries. Changed producer origins invalidate warmed cache proofs. Collection

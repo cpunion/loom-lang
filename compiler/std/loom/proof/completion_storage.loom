@@ -24,15 +24,15 @@ fn private_return_storage(value Value, state State) Bool {
     }
 }
 
-fn private_completion_result(proof Verification, target Int, function Function,
-    input CallArguments, depth Int) Bool {
+fn private_body_result(proof Verification, target Int, function Function,
+    input CallArguments, completion Bool, depth Int) Bool {
     if immutable_storage_type(proof.program, function.result, 0) {
         return false
     }
     // This optional projection must finish without unresolved obligations.
     // It does not commit body facts or give the caller a fresh proof budget.
     let candidate = inference_frame(proof, proof_query(no_proof_backend()))
-    let paths = match source_body_call(candidate, target, function, input, true, depth) {
+    let paths = match source_body_call(candidate, target, function, input, completion, depth) {
         Result.Ok(paths) => paths
         Result.Err(_) => {
             return false
@@ -54,6 +54,34 @@ fn private_completion_result(proof Verification, target Int, function Function,
         index = index + 1
     }
     returned
+}
+
+fn body_result_origins(proof Verification, target Int, function Function, input CallArguments,
+    completed List[Outcome], completion Bool, depth Int) List[Outcome] {
+    var needs_origin = false
+    var index = 0
+    while index < length(completed) {
+        let path = get(completed, index)
+        needs_origin = needs_origin || (storage_leaves(path.value) != 0 &&
+            !private_return_storage(path.value, path.state))
+        index = index + 1
+    }
+    // Inspect only missing origin evidence. Declared contracts still supply
+    // every value fact; complete typed one-shot headers need no body replay.
+    if needs_origin && private_body_result(proof, target, function, input, completion, depth) {
+        let values = new[Outcome]()
+        index = 0
+        while index < length(completed) {
+            let path = get(completed, index)
+            push(values, Outcome {
+                    state = framed_completion_storage(path.value, path.state)
+                    value = path.value
+                })
+            index = index + 1
+        }
+        return values
+    }
+    completed
 }
 
 fn returned_storage_member(value Value, identity Int) Bool {

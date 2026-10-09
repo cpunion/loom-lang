@@ -11,7 +11,9 @@ implementation, not a compatibility ledger for previous prototypes.
   checks withdraw failed frames and recheck dependent returns; publication
   revokes only affected headers and never creates a false loop hypothesis.
   Verify both source `std.resource.generate` length contracts without a factory
-  axiom, ownership syntax, or runtime proof metadata.
+  axiom, ownership syntax, or runtime proof metadata. Contracted synchronous
+  and async helpers share optional private-return origin inspection without
+  leaking body value facts through their declared abstraction.
 
 - Allow pure postcondition helpers to observe synchronous MustScope results
   through their logical borrowed binding. Ordinary executable calls still

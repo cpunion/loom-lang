@@ -112,3 +112,35 @@ test fn shared_or_published_async_results_gain_no_private_frame() {
         }
         """, false, "postcondition")
 }
+
+test fn synchronous_contracted_factories_project_origins_not_hidden_values() {
+    let source = """
+        import std.list.length
+        import std.list.get
+        import std.list.push
+        fn generated[T](state T, effect fn(T)) List[Int]
+        ensures length(result) == 1 {
+            let values = [7]
+            effect(state)
+            values
+        }
+        async fn forwarded[T](state T, effect fn(T)) List[Int]
+        ensures length(result) == 1 {
+            generated(state, effect)
+        }
+        async fn composed[T](state T, effect fn(T)) List[Int]
+        ensures length(result) == 1 {
+            forwarded(state, effect).await
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(concat(source, """
+        async fn hidden[T](state T, effect fn(T)) Int
+        ensures result == 7 {
+            let values = forwarded(state, effect).await
+            get(values, 0)
+        }
+        """), false, "postcondition")
+    task_metadata_contract(std.text.join(std.text.split(source,
+                "let values = [7]"), "let values = [7, 8]"), false, "postcondition")
+}

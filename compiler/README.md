@@ -2734,6 +2734,11 @@ still need valid executable Task flow. See the
 [metadata example](examples/async_contracts/metadata.loom). Dynamic List joins
 now compose the [entry example's](examples/async_contracts/task_entries.loom)
 length guarantees; general completion/content proofs remain separate work.
+Contracted synchronous helpers and async wrappers can also retain private result
+headers through optional bounded source-body inspection. Every reachable normal
+return must establish the origin without unresolved obligations. Only storage
+provenance crosses this boundary: callers still need declared contracts for
+length/content facts, and returned fields gain no disjoint allocation identities.
 
 Direct calls in a body requiring proof use the callee's verified postconditions
 as a summary for `Int`/`Bool`/`Text` values and leaves of inline records/tuples.
