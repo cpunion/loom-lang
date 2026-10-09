@@ -1,0 +1,101 @@
+test fn method_signatures_supply_invariants_without_repeated_postconditions() {
+    let declarations = """
+        type Positive = Int where self > 0
+        concept Source {
+            fn read(self Self) Positive
+            fn pair(self Self) (Positive, Bool) {
+                (Positive(1), true)
+            }
+            async fn wait(self Self) Positive
+        }
+        impl Source for Bool {
+            fn read(self Bool) Positive {
+                Positive(1)
+            }
+            async fn wait(self Bool) Positive {
+                Positive(2)
+            }
+        }
+        """
+    let callers = """
+        fn generic[T Source](source T) Int
+        ensures result > 0 {
+            source.read()
+        }
+        fn pair[T Source](source T) Int
+        ensures result > 0 {
+            source.pair().0
+        }
+        async fn dynamic(source dyn Source) Int
+        ensures result > 0 {
+            let saved = source.wait()
+            saved.await
+        }
+        fn total[Ts... Source](sources Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for source in sources {
+                sum = sum + source.read()
+            }
+            sum
+        }
+        async fn async_total[Ts... Source](sources Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for source in sources {
+                sum = sum + source.wait().await
+            }
+            sum
+        }
+        """
+    // Uncalled generic and pack bodies use signatures, not selected witnesses.
+    discard accepted(concat(declarations, callers))
+    let program = accepted(concat(declarations, concat(callers, """
+        async fn main() {
+            assert generic(true) == 1 && pair(false) == 1
+            let source dyn Source = false
+            assert dynamic(source).await == 2
+            assert total() == 0 && total(true, false) == 2
+            assert async_total().await == 0
+            assert async_total(true, false).await == 4
+        }
+        """)))
+    var index = 0
+    while index < length(program.functions) {
+        assert dynamic_count(get(program.functions, index).body, ExprKind.Deferred) == 0
+        index = index + 1
+    }
+    rejects(concat(declarations, """
+        fn guessed[T Source](source T) Int
+        ensures result == 1 {
+            source.pair().0
+        }
+        """))
+    rejects(concat(declarations, """
+        async fn guessed(source dyn Source) Int
+        ensures result == 2 {
+            source.wait().await
+        }
+        """))
+    rejects("""
+        concept Source {
+            fn read(self Self) Int {
+                1
+            }
+        }
+        fn wrong[T Source](source T) Int
+        ensures result > 0 {
+            source.read()
+        }
+        """)
+    rejects(concat(declarations, """
+        impl Source for Int {
+            fn read(self Int) Positive {
+                0
+            }
+            async fn wait(self Int) Positive {
+                Positive(2)
+            }
+        }
+        """))
+}

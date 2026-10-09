@@ -61,3 +61,65 @@ async fn main() {
     fs::write(&source, original).unwrap();
     success(&check());
 }
+
+#[test]
+fn cached_method_guarantees_recheck_weakened_result_types() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.loom");
+    let original = r#"
+type Positive = Int where self > 0
+type AsyncPositive = Int where self > 0
+concept Source {
+    fn read(self Self) Positive
+    async fn wait(self Self) AsyncPositive
+}
+impl Source for Bool {
+    fn read(self Bool) Positive {
+        Positive(7)
+    }
+    async fn wait(self Bool) AsyncPositive {
+        AsyncPositive(7)
+    }
+}
+fn generic[T Source](source T) Int
+ensures result > 0 {
+    source.read()
+}
+async fn dynamic(source dyn Source) Int
+ensures result > 0 {
+    source.wait().await
+}
+async fn main() {
+    assert generic(true) == 7
+    let source dyn Source = false
+    assert dynamic(source).await == 7
+}
+"#;
+    fs::write(&source, original).unwrap();
+    let package = directory.path().to_str().unwrap();
+    let cache = directory.path().join("cache");
+    let check = || {
+        loom(&[
+            "check",
+            package,
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    for _ in 0..2 {
+        success(&check());
+    }
+    // Both implementations still return 7. A private summary must nevertheless
+    // forget the stronger type invariant, rather than guessing those witnesses.
+    for name in ["Positive", "AsyncPositive"] {
+        let from = format!("type {name} = Int where self > 0");
+        let to = format!("type {name} = Int where self >= 0");
+        let weakened = original.replacen(&from, &to, 1);
+        fs::write(&source, weakened).unwrap();
+        let rejected = check();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+        fs::write(&source, original).unwrap();
+        success(&check());
+    }
+}

@@ -531,8 +531,11 @@ defined, treating alternatives as conjunctions or carrying stale heap facts acro
 mutation. Ordinary interval and equality queries remain the first paths; this is
 not complete integer feasibility or unrestricted theory combination.
 Synchronous scalar
-and inline aggregate concept calls use declared contracts through generic/associated or dyn receivers,
-not a guessed implementation or hidden receiver knowledge. Private abstract
+and inline aggregate concept calls use declared signatures and contracts through generic/associated or dyn receivers,
+not a guessed implementation or hidden receiver knowledge. Supported return-type
+invariants need no repeated method postcondition, including refined inline leaves
+and async/pack observations. See the
+[typed method example](../../compiler/examples/async_contracts/typed.loom). Private abstract
 summaries are neither executable CTFE bodies nor native functions. Unspecified
 leaves remain independent; shared siblings supply no content or alias facts.
 Async normal-return guarantees also compose through saved Task locals, inline

@@ -1207,7 +1207,7 @@ and [aggregate parameter example](examples/comptime_parameters/aggregates.loom).
 Unselected arities have not had their bodies verified, except for required
 postconditions in the dependency-erasure and induction fragments above. Direct
 `Ts... C` and `(Ts...)` element receivers may call synchronous or async concept methods
-with explicitly declared postconditions and omitted returns or supported
+using their declared return-type invariants and postconditions, with omitted returns or supported
 scalar/inline aggregate results. Synchronous methods with omitted returns also compose declared heap
 guarantees through the same call and loop rules. Loops propose the existing
 entry-length comparisons for possibly resized storage even when its handle is
@@ -1671,9 +1671,11 @@ under their declared generic requirements, including known implementations in
 unused functions with generic nominal receivers. An override does not instantiate
 the default body it replaces. The [method example](examples/comptime_parameters/methods.loom)
 combines defaults, recursive static callbacks, Text/Bool options and dynamic calls.
-Bounded synchronous scalar concept method contracts are proved for each
-implementation; required proofs may use the same declared postconditions through
-abstract generic/associated receivers or `dyn`. Private summaries support Int,
+Concept method signatures and bounded postconditions supply the same guarantees
+through abstract generic/associated receivers or `dyn`; each implementation must
+meet them. A declared constrained result such as `Positive` supplies its own
+invariant without repeating it in `ensures`. Neither a default body nor a known
+witness supplies additional facts. Private summaries support Int,
 Bool, IEEE Float, Text and inline record/tuple value facts, including scalar
 refinements. Float uses the same bounded IEEE rules as ordinary calls, not
 real-number algebra. Float equality remains a fact on the returned snapshot,
@@ -1693,6 +1695,8 @@ facts while preserving past scalar snapshots. Unknown Task targets provide only
 typed results. Guarantees do not apply to cancellation or faults, and general
 Task-returning helper/collection promise inference remains unsupported. See the
 [async contract example](examples/async_contracts/main.loom).
+The [typed method example](examples/async_contracts/typed.loom) uses the same
+return-type guarantees through synchronous, async, aggregate and pack calls.
 An await context guides inference without converting its Task handle. Supported
 result weakening happens after extraction; `Task[Positive]` itself does not
 convert to `Task[Int]`.
