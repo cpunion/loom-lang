@@ -1,12 +1,13 @@
 test fn task_boundaries_preserve_handles_not_cleanup_heap_facts() {
     let proof = verification(fixture(literal("0"), [], literal("true")), empty_proof_program())
-    let before = with_extent(42, constant(integer(3)), false, State {
-            locals = [Value.Task(7, [Value.Number(constant(integer(8)))]),
-                Value.List(42), Value.Number(constant(integer(3)))]
-            facts = []
-            extents = []
-            observations = []
-        })
+    let before = with_extent(43, constant(integer(5)), true,
+        with_extent(42, constant(integer(3)), false, State {
+                locals = [Value.Task(7, [Value.Number(constant(integer(8)))]),
+                    Value.List(42), Value.Number(constant(integer(3)))]
+                facts = []
+                extents = []
+                observations = []
+            }))
     let observe = expression(ExprKind.Intrinsic, 6, "task_observe", -1, [local(0), literal("0")])
     let registered = match execute(proof, observe, before, 256) {
         Result.Ok(paths) => paths
@@ -33,6 +34,10 @@ test fn task_boundaries_preserve_handles_not_cleanup_heap_facts() {
     let after = get(drained, 0).state
     assert match list_extent(42, after) {
         Result.Ok(size) => !index_relation("==", size, constant(integer(3)), after)
+        _ => false
+    }
+    assert match list_extent(43, after) {
+        Result.Ok(size) => index_relation("==", size, constant(integer(5)), after)
         _ => false
     }
     assert match get(after.locals, 2) {

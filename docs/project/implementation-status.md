@@ -496,7 +496,10 @@ support local reassignment, conditional expression operands and
 short-circuit writes while retaining prior value snapshots and evaluation
 obligations, including overwritten calculations. Ordinary uncontracted body calls
 can also use the existing symbolic executor when pure expansion is insufficient,
-sharing scoped invocation/return handling with continuing invariants. Supported
+sharing scoped invocation/return handling with continuing invariants. No-result
+helpers also infer their actual updates and lexical cleanup through these frames;
+failed optional inference retains conservative summaries without committing
+partial state or obligations. Supported
 effects, cleanup and loops execute once; opaque inputs supply no facts, and
 unknown operations or exhausted execution reject. Predicates remain pure.
 This adds no runtime proof state and does not treat shared-storage mutation as pure.
@@ -561,7 +564,8 @@ framing shared aliases. The
 proves a fresh-output construction loop across real waits, with changed-argument
 cache rejection and worker-build evidence. Unknown targets contribute only
 typed completion values; faults and cancellation supply no normal-return
-guarantee. Variadic families also compose declared async callee and concept-method
+guarantee. Task drain likewise invalidates published aliases while retaining
+proved unpublished storage. Variadic families also compose declared async callee and concept-method
 postconditions without choosing concrete widths. Iteration-local Tasks are
 evaluated anew; loop heads discard unprotected pre-suspension storage facts. See
 the [native example](../../compiler/examples/async_contracts/main.loom) and

@@ -22,7 +22,7 @@ fn async_guarantees_compose_through_saved_native_tasks() {
 }
 
 #[test]
-fn unpublished_storage_survives_waits_but_changed_task_arguments_invalidate_it() {
+fn unpublished_storage_survives_waits_and_rechecks_changed_effects() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("main.loom");
     let original = format!(
@@ -66,6 +66,14 @@ async fn main() {
         "retained_item(index).await",
         "retained_mutate(output, index).await",
     );
+    assert_ne!(changed, original);
+    fs::write(&source, changed).unwrap();
+    let output = check();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("postcondition"));
+    fs::write(&source, &original).unwrap();
+    success(&check());
+    let changed = original.replace("set(values, 0, value)", "set(values, 0, get(values, 0))");
     assert_ne!(changed, original);
     fs::write(&source, changed).unwrap();
     let output = check();

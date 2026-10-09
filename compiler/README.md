@@ -1714,7 +1714,11 @@ that other ready Tasks cannot change shared aliases. Loop backedges must preserv
 the frame, including after publication. The
 [private storage example](examples/async_contracts/private_storage.loom) proves
 List construction across real waits; edited Task arguments invalidate its proof.
-Unknown Task targets provide only
+No-result source helpers also use finite checked body frames, including actual
+List updates and lexical cleanup; unsupported optional inference falls back to
+conservative summaries, not partial effects. Task drain uses the same suspension
+frame: arbitrary child cleanup may change published aliases, not unpublished
+caller storage. Unknown Task targets provide only
 typed results. Guarantees do not apply to cancellation or faults. Finite checked
 synchronous source helpers also preserve returned Task promises, including
 inline aggregates and known callbacks. Their eager effects and lexical cleanup

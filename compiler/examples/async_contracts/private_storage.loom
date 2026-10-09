@@ -1,7 +1,22 @@
 import std.list.transfer.append
 import std.list.push
 import std.list.length
+import std.list.get
+import std.list.set
 import std.time.sleep_ms
+
+fn retained_set[T](values List[T], value T) {
+    defer {
+        set(values, 0, value)
+    }
+}
+
+fn retained_replaced(value Int) Int
+ensures result == value {
+    let values = [0]
+    retained_set(values, value)
+    get(values, 0)
+}
 
 async fn retained_item(value Int) Int
 ensures result == value {
@@ -29,6 +44,7 @@ ensures length(result) == count {
 }
 
 async fn exercise_private_storage() {
+    assert retained_replaced(44) == 44
     let values = generated_values(3).await
     assert length(values) == 3 && values[0] == 0 && values[2] == 2
     let empty = generated_values(0).await
