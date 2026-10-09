@@ -1,6 +1,6 @@
 // These equations observe a local's current extent, not its original header.
 // A transferred/replaced List gets no invented identity or alias separation.
-fn loop_local_extent(value Value, path List[Int], state State) Result[Linear, Text] {
+fn loop_local_value(value Value, path List[Int]) Result[Value, Text] {
     var current = value
     var index = 0
     while index < length(path) {
@@ -12,7 +12,11 @@ fn loop_local_extent(value Value, path List[Int], state State) Result[Linear, Te
         }
         index = index + 1
     }
-    match current {
+    Result.Ok(current)
+}
+
+fn loop_local_extent(value Value, path List[Int], state State) Result[Linear, Text] {
+    match loop_local_value(value, path)? {
         Value.List(identity) => list_extent(identity, state)
         _ => Result.Err("loop extent relation needs a tracked List")
     }

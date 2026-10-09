@@ -1,5 +1,36 @@
 import std.list.length
 import std.task.all
+import std.list.transfer.append
+import std.list.transfer.take_last
+import std.option.Option
+
+record TaskBatch {
+    tasks List[Task[Int]]
+    count Int
+}
+
+fn reverse_tasks(tasks List[Task[Int]]) TaskBatch
+ensures result.count == old(length(tasks)) && length(result.tasks) == result.count {
+    var pending = tasks
+    var output List[Task[Int]] = []
+    var count = 0
+    while true {
+        match take_last(pending) {
+            Option.Some(pair) => {
+                let task, rest = pair
+                pending = rest
+                output = append(output, task)
+                count = count + 1
+            }
+            Option.None => {
+                return TaskBatch {
+                    tasks = output
+                    count = count
+                }
+            }
+        }
+    }
+}
 
 fn task_count[T](values List[T]) Int {
     length(values)
@@ -15,4 +46,11 @@ async fn exercise_task_metadata() {
     let results = all(tasks).await
     assert length(results) == 2
     assert results[0] == 21 && results[1] == 22
+    let batch = reverse_tasks([keep(23, 0), keep(24, 0), keep(25, 0)])
+    let reversed = all(batch.tasks).await
+    assert batch.count == 3 && length(reversed) == 3
+    assert reversed[0] == 25 && reversed[2] == 23
+    let empty = reverse_tasks([])
+    let empty_results = all(empty.tasks).await
+    assert empty.count == 0 && length(empty_results) == 0
 }

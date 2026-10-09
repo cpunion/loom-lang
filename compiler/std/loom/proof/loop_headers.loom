@@ -1,0 +1,101 @@
+// Header identity is an internal alias fact, not observable pointer equality.
+// It is true at entry and must survive every actual backedge before publication.
+fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local Int, path List[Int], value Value, entry State) Result[Bool, Text] {
+    if length(candidates) >= 64 {
+        return Result.Ok(true)
+    }
+    match value {
+        Value.List(identity) => {
+            discard loop_step(proof)?
+            discard add_loop_candidate(candidates, LoopCandidate.Header(local, path, identity), entry)?
+        }
+        Value.Record(fields) => {
+            discard loop_step(proof)?
+            var field = 0
+            while field < length(fields) && length(candidates) < 64 {
+                let nested = std.list.clone(path)
+                push(nested, field)
+                discard loop_header_leaf(proof, candidates, local, nested,
+                    get(fields, field), entry)?
+                field = field + 1
+            }
+        }
+        _ => {
+        }
+    }
+    Result.Ok(true)
+}
+
+fn loop_header_candidates(proof Verification, candidates List[LoopCandidate], writes List[Bool], entry State) Result[Int, Text] {
+    let before = length(candidates)
+    var local = 0
+    while local < length(writes) && length(candidates) < 64 {
+        if get(writes, local) {
+            discard loop_header_leaf(proof, candidates, local, new[Int](),
+                get(entry.locals, local), entry)?
+        }
+        local = local + 1
+    }
+    Result.Ok(length(candidates) - before)
+}
+
+fn loop_header_count(candidates List[LoopCandidate]) Int {
+    var count = 0
+    var index = 0
+    while index < length(candidates) {
+        match get(candidates, index) {
+            LoopCandidate.Header(_, _, _) => {
+                count = count + 1
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    count
+}
+
+fn loop_header_at(value Value, path List[Int], identity Int, depth Int) Result[Value, Text] {
+    if depth == length(path) {
+        return match value {
+            Value.List(_) => Result.Ok(Value.List(identity))
+            _ => Result.Err("loop header hypothesis needs a supported List value")
+        }
+    }
+    match value {
+        Value.Record(fields) => {
+            let selected = get(path, depth)
+            let values = std.list.clone(fields)
+            set(values, selected, loop_header_at(get(fields, selected), path, identity, depth + 1)?)
+            Result.Ok(Value.Record(values))
+        }
+        _ => Result.Err("loop header hypothesis needs a supported inline projection")
+    }
+}
+
+fn loop_header_value(local Int, initial Value, candidates List[LoopCandidate]) Result[Value, Text] {
+    match initial {
+        Value.List(_) => {
+        }
+        Value.Record(_) => {
+        }
+        _ => {
+            return Result.Ok(initial)
+        }
+    }
+    var value = initial
+    var index = 0
+    while index < length(candidates) {
+        match get(candidates, index) {
+            LoopCandidate.Header(target, path, identity) => {
+                if target == local {
+                    value = loop_header_at(value, path, identity, 0)?
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(value)
+}
