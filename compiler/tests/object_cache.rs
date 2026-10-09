@@ -103,9 +103,9 @@ fn cache_reuses_objects_across_outputs_but_not_source_optimization_or_test_modes
     );
     success(&Command::new(&output).output().unwrap());
     fs::remove_file(&output).unwrap();
-    // `run` selects a different output and must recreate/relink it from the object.
+    // `run` must relink a private output from the object and remove it on exit.
     cached_success(&cached("run", &scalar, &cache).output().unwrap(), true);
-    assert!(common::executable(&scalar.join("target"), "main").is_file());
+    assert_eq!(fs::read_dir(scalar.join("target")).unwrap().count(), 0);
     for hit in [false, true] {
         let output = cached("test", &scalar, &cache).output().unwrap();
         cached_success(&output, hit);
@@ -113,6 +113,7 @@ fn cache_reuses_objects_across_outputs_but_not_source_optimization_or_test_modes
             String::from_utf8(output.stdout).unwrap().trim(),
             "1 tests passed"
         );
+        assert_eq!(fs::read_dir(scalar.join("target")).unwrap().count(), 0);
     }
     cached_success(
         &cached("build", &scalar, &cache)

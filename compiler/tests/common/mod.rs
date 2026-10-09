@@ -77,20 +77,24 @@ pub fn run_task_command(command: &mut Command) -> Output {
 // Stress only the emitted program, not every allocation in the compiler itself.
 pub fn managed(args: &[&str], directory: &Path) -> Output {
     let temporary = tempfile::tempdir().unwrap();
-    let artifact = if args[0] == "test" {
-        success(&loom(args));
-        executable(&Path::new(args[1]).join("target"), "tests")
+    let artifact = executable(temporary.path(), "app");
+    if args[0] == "test" {
+        success(
+            &command(args)
+                .args(["--no-run", "--output"])
+                .arg(&artifact)
+                .output()
+                .unwrap(),
+        );
     } else {
         assert_eq!(args[0], "run");
-        let artifact = executable(temporary.path(), "app");
         success(&loom(&[
             "build",
             args[1],
             "--output",
             artifact.to_str().unwrap(),
         ]));
-        artifact
-    };
+    }
     Command::new(artifact)
         .env("LOOM_GC_STRESS", "1")
         .current_dir(directory)

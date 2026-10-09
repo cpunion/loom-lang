@@ -1,6 +1,98 @@
-use std::{fs, process::Command};
+use std::{
+    fs,
+    process::{Command, Stdio},
+};
 mod common;
 use common::{loom, success};
+
+#[test]
+fn automatic_execution_is_private_and_preserves_retained_outputs() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(
+        package.path().join("main.loom"),
+        r#"import std.build.option
+import std.io.write_text
+import std.process.exit_code
+
+fn emit() {
+    discard write_text(option("case", "default"))
+}
+
+fn main() {
+    if option("case", "default") == "failure" {
+        exit_code(7)
+    }
+    emit()
+}
+
+test fn emits() {
+    if option("case", "default") == "failure" {
+        assert false
+    }
+    emit()
+}
+"#,
+    )
+    .unwrap();
+    let target = package.path().join("target");
+    fs::create_dir(&target).unwrap();
+    // Existing build outputs and abandoned/foreign entries are not ours.
+    let main = common::executable(&target, "main");
+    let tests = common::executable(&target, "tests");
+    fs::write(&main, b"retained main").unwrap();
+    fs::write(&tests, b"retained tests").unwrap();
+    fs::create_dir(target.join("execute-0")).unwrap();
+    fs::write(target.join("execute-0/keep"), b"keep").unwrap();
+    fs::write(target.join("execute-1"), b"not a directory").unwrap();
+    for mode in ["run", "test"] {
+        let children: Vec<_> = [("first", "0"), ("second", "2")]
+            .into_iter()
+            .map(|(value, level)| {
+                let child = common::command(&[mode])
+                    .arg(package.path())
+                    .args(["--build-option", &format!("case={value}")])
+                    .env("LOOM_OPT_LEVEL", level)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                (value, child)
+            })
+            .collect();
+        for (value, child) in children {
+            let output = child.wait_with_output().unwrap();
+            success(&output);
+            let expected = if mode == "test" {
+                format!("{value}1 tests passed\n")
+            } else {
+                value.to_owned()
+            };
+            assert_eq!(output.stdout, expected.as_bytes());
+        }
+    }
+    for (mode, code) in [("run", 7), ("test", 1)] {
+        let failed = common::command(&[mode])
+            .arg(package.path())
+            .args(["--build-option", "case=failure"])
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(code));
+    }
+    let failed = common::command(&["run"])
+        .arg(package.path())
+        .env("LOOM_OPT_LEVEL", "invalid")
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert_eq!(fs::read(&main).unwrap(), b"retained main");
+    assert_eq!(fs::read(&tests).unwrap(), b"retained tests");
+    assert_eq!(fs::read(target.join("execute-0/keep")).unwrap(), b"keep");
+    assert_eq!(
+        fs::read(target.join("execute-1")).unwrap(),
+        b"not a directory"
+    );
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 4);
+}
 
 #[test]
 fn test_no_run_builds_a_real_test_binary_without_executing_tests() {

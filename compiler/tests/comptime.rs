@@ -7,9 +7,18 @@ fn compile_time_work_runs_natively_and_does_not_enter_runtime_reachability() {
     let example = common::root().join("compiler/examples/comptime");
     success(&loom(&["check", example.to_str().unwrap()]));
     success(&loom(&["run", example.to_str().unwrap()]));
-    success(&loom(&["test", example.to_str().unwrap()]));
+    let tests = tempfile::tempdir().unwrap();
+    let executable = common::executable(tests.path(), "comptime-tests");
+    success(&loom(&[
+        "test",
+        example.to_str().unwrap(),
+        "--no-run",
+        "--output",
+        executable.to_str().unwrap(),
+    ]));
+    success(&Command::new(&executable).output().unwrap());
     success(
-        &Command::new(common::executable(&example.join("target"), "tests"))
+        &Command::new(&executable)
             .env("LOOM_GC_STRESS", "1")
             .output()
             .unwrap(),

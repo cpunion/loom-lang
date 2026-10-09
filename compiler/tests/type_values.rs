@@ -5,16 +5,21 @@ use common::{loom, success};
 #[test]
 fn first_class_types_select_native_types_without_runtime_type_tags() {
     let example = common::root().join("compiler/examples/type_values");
+    let tests = tempfile::tempdir().unwrap();
+    let executable = common::executable(tests.path(), "type-tests");
     success(&loom(&["check", example.to_str().unwrap()]));
     for level in ["0", "2"] {
         success(
             &common::command(&["test", example.to_str().unwrap()])
+                .args(["--no-run", "--output"])
+                .arg(&executable)
                 .env("LOOM_OPT_LEVEL", level)
                 .output()
                 .unwrap(),
         );
+        success(&Command::new(&executable).output().unwrap());
         success(
-            &Command::new(common::executable(&example.join("target"), "tests"))
+            &Command::new(&executable)
                 .env("LOOM_GC_STRESS", "1")
                 .output()
                 .unwrap(),

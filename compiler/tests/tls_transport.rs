@@ -90,12 +90,17 @@ fn tls_roundtrip_verifies_peers_and_survives_moving_gc() {
     let directory = tempfile::tempdir().unwrap();
     certificates(directory.path());
     let executable = common::executable(directory.path(), "tls");
+    let tests = common::executable(directory.path(), "tls-tests");
     success(&common::loom(&["check", PACKAGE]));
-    success(&common::loom(&["test", "compiler/std/net/tls"]));
-    success(&common::run_tasks(&common::executable(
-        &common::root().join("compiler/std/net/tls/target"),
-        "tests",
-    )));
+    success(&common::loom(&[
+        "test",
+        "compiler/std/net/tls",
+        "--no-run",
+        "--output",
+        tests.to_str().unwrap(),
+    ]));
+    success(&Command::new(&tests).output().unwrap());
+    success(&common::run_tasks(&tests));
     for level in ["0", "2"] {
         success(
             &common::command(&["build", PACKAGE, "--output", executable.to_str().unwrap()])

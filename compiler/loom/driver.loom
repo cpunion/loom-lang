@@ -391,13 +391,24 @@ fn execute_package(selected Options) Result[Text, Text] {
             }
         }
     }
+    discard input_preflight(selected.ir, prepared.inputs)?
+    if selected.command == "run" || (selected.command == "test" && !selected.no_run) {
+        let status = compile_and_run(selected, prepared, filename)?
+        if selected.command == "run" && status >= 0 && status <= 255 {
+            exit_code(status)
+            return Result.Ok("")
+        }
+        if status != 0 {
+            return Result.Err(concat("native program failed (exit code ", concat(to_text(status), ")")))
+        }
+        return Result.Ok(concat(to_text(prepared.tests), " tests passed\n"))
+    }
     let output = if selected.output != "" {
         selected.output
     } else {
         join_path(join_path(selected.path, "target"), filename)
     }
     discard input_preflight(output, prepared.inputs)?
-    discard input_preflight(selected.ir, prepared.inputs)?
     if selected.receipt != "" {
         discard receipt_preflight(selected.receipt, output, prepared.project, prepared.inputs)?
     }
@@ -428,26 +439,5 @@ fn execute_package(selected Options) Result[Text, Text] {
         }
         return Result.Ok(concat("built ", concat(output, "\n")))
     }
-    if selected.no_run {
-        return Result.Ok(concat("compiled ", concat(to_text(prepared.tests), concat(" tests to ", concat(output, "\n")))))
-    }
-    let arguments = new[Text]()
-    push(arguments, output)
-    var index = 0
-    while index < length(selected.program_args) {
-        push(arguments, get(selected.program_args, index))
-        index = index + 1
-    }
-    let status = child_status(arguments)?
-    if selected.command == "run" && status >= 0 && status <= 255 {
-        exit_code(status)
-        return Result.Ok("")
-    }
-    if status != 0 {
-        return Result.Err(concat("native program failed (exit code ", concat(to_text(status), ")")))
-    }
-    if selected.command == "test" {
-        return Result.Ok(concat(to_text(prepared.tests), " tests passed\n"))
-    }
-    Result.Ok("")
+    Result.Ok(concat("compiled ", concat(to_text(prepared.tests), concat(" tests to ", concat(output, "\n")))))
 }

@@ -41,6 +41,10 @@ package failure. It skips nested modules, hidden/build directories and directory
 symlinks. Dependencies are still loaded without tests. `--no-run` emits separate
 package executables. The compiler's integration gate discovers `std` packages
 through this command instead of a hand-maintained list.
+Automatic `run`/`test` execution uses exclusive per-invocation output directories
+and removes its binary after the child exits, including nonzero exits. Persistent
+artifacts belong to `build` or `test --no-run`; concurrent automatic execution
+does not overwrite those outputs.
 Test-only dependencies, including implicit Task helpers used by embedded tests,
 extend the completed production package rather than introducing production cycles.
 

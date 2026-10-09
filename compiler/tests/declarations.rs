@@ -5,17 +5,22 @@ use common::{loom, success};
 #[test]
 fn generated_declarations_use_the_native_package_and_test_pipeline() {
     let example = common::root().join("compiler/examples/declaration_generation");
+    let tests = tempfile::tempdir().unwrap();
+    let executable = common::executable(tests.path(), "declaration-tests");
     let original = fs::read(example.join("main.loom")).unwrap();
     success(&loom(&["check", example.to_str().unwrap()]));
     for level in ["0", "2"] {
         let output = common::command(&["test", example.to_str().unwrap()])
+            .args(["--no-run", "--output"])
+            .arg(&executable)
             .env("LOOM_OPT_LEVEL", level)
             .output()
             .unwrap();
         success(&output);
-        assert!(String::from_utf8_lossy(&output.stdout).contains("3 tests passed"));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("compiled 3 tests"));
+        success(&Command::new(&executable).output().unwrap());
         success(
-            &Command::new(common::executable(&example.join("target"), "tests"))
+            &Command::new(&executable)
                 .env("LOOM_GC_STRESS", "1")
                 .output()
                 .unwrap(),
