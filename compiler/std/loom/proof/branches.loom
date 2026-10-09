@@ -250,6 +250,23 @@ fn proof_choice(condition Expr, yes Expr, no Expr) Expr {
     proof_expr(condition, ExprKind.If, yes.ty, "", -1, children)
 }
 
+// Result alternatives are consumed under the enclosing evaluation guard.
+// Keep it on every check, but do not repeat it inside each returned value.
+// Only an exact conjunctive prefix may be removed; this is not implication.
+fn relative_path(path Expr, enclosing Expr, depth Int) Expr {
+    if is_bool(enclosing, true) || depth >= 64 {
+        return path
+    }
+    if exact_expression(path, enclosing) {
+        return proof_bool(path, true)
+    }
+    if path.kind == ExprKind.Binary && path.text == "&&" {
+        return proof_and(relative_path(get(path.children, 0), enclosing, depth + 1),
+            get(path.children, 1))
+    }
+    path
+}
+
 fn expanded_branches(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int, returns Bool) Result[Expr, Text] {
     let start = HelperPath {
         guard = guard
@@ -292,7 +309,7 @@ fn expanded_branches(context Expansion, value Expr, guard Expr, bindings List[Ex
                 false_paths = false_paths + 1
             }
         } else {
-            output = binding_choice(path.guard, path.value, output)
+            output = binding_choice(relative_path(path.guard, guard, 0), path.value, output)
         }
     }
     if output.ty == 2 && !uniform {
@@ -308,11 +325,11 @@ fn expanded_branches(context Expansion, value Expr, guard Expr, bindings List[Ex
             if !is_bool(path.guard, false) {
                 if disjunction {
                     if !is_bool(path.value, false) {
-                        let term = proof_and(path.guard, path.value)
+                        let term = proof_and(relative_path(path.guard, guard, 0), path.value)
                         output = proof_not(proof_and(proof_not(output), proof_not(term)))
                     }
                 } else {
-                    output = proof_and(output, guarded_value(path.guard, path.value))
+                    output = proof_and(output, guarded_value(relative_path(path.guard, guard, 0), path.value))
                 }
             }
             index = index + 1

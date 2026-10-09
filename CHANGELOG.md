@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Keep nested pure helper results relative to their enclosing evaluation path,
+  while retaining complete guards on every partial-operation check. Total
+  parents no longer repeat their children's fault obligations. Nested enum
+  transfer contracts compose within the existing proof budgets; eager argument
+  faults, selected payload safety and loop induction remain checked.
+
 - Propose enum tag and guarded immutable-payload prefix relations through the
   existing entry/all-backedge loop checks. Consume-and-build loops can prove
   reversed enum contents, including inline payload fields beside NaN and shared

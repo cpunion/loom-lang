@@ -877,6 +877,10 @@ original postconditions still check every reachable return. The same candidates
 now cover enum tags and payload columns guarded by both selected tags. The
 [enum transfer example](../../compiler/examples/loop_contracts/enums.loom) proves
 reversal with Int/Text fields, shared children, NaN, early returns and CTFE.
+The [nested enum example](../../compiler/examples/loop_contracts/nested_enums.loom)
+also composes inner helpers and three outer variants. Result alternatives use
+relative guards; checks retain complete evaluation paths. Total parent operations
+do not duplicate their children's fault obligations. Proof budgets are unchanged.
 General transfer content induction and Task List join content guarantees remain open.
 Written Int guard cursors propose mathematical entry-difference and weighted
 pair relations after existing storage/quantifier candidates. Constant affine

@@ -134,3 +134,54 @@ test fn boolean_choice_identities_stay_compact_without_hiding_scalar_choices() {
         left = left + 1
     }
 }
+
+test fn nested_result_paths_do_not_duplicate_enclosing_evaluation_guards() {
+    let enclosing = expression(ExprKind.Local, 2, "", 0, [])
+    let first = expression(ExprKind.Local, 2, "", 1, [])
+    let second = expression(ExprKind.Local, 2, "", 2, [])
+    let relative = proof_and(first, second)
+    let absolute = proof_and(proof_and(enclosing, first), second)
+    assert exact_expression(relative_path(absolute, enclosing, 0), relative)
+    assert is_bool(relative_path(enclosing, enclosing, 0), true)
+    // Neither a disjunction nor a negation authorizes extracting a premise.
+    let alternative = operation("||", enclosing, first)
+    assert exact_expression(relative_path(alternative, enclosing, 0), alternative)
+    assert exact_expression(relative_path(proof_not(enclosing), enclosing, 0), proof_not(enclosing))
+    let branch = proof_choice(first, operation("+", local(2), literal("1")),
+        operation("-", local(2), literal("1")))
+    let function = contract_fixture([2, 2, 1], 1, branch, [], [])
+    let context = Expansion {
+        program = proof_helpers([function])
+        list_lengths = false
+        budget = [4096]
+        active = []
+        checks = []
+        observations = []
+        origins = []
+        binders = [0]
+    }
+    let bindings = [ExpansionBinding {
+            local = 0,
+            value = enclosing
+        },
+        ExpansionBinding {
+            local = 1,
+            value = first
+        },
+        ExpansionBinding {
+            local = 2,
+            value = local(2)
+        }]
+    let expanded_value = match expanded(context, branch, enclosing, bindings, function.locals, false, 0, 0) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            branch
+        }
+    }
+    assert expanded_value.kind == ExprKind.If
+    assert exact_expression(get(expanded_value.children, 0), first)
+    assert length(context.checks) == 2
+    assert exact_expression(get(context.checks, 0).guard, proof_and(enclosing, first))
+    assert exact_expression(get(context.checks, 1).guard, proof_and(enclosing, proof_not(first)))
+}
