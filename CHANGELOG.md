@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Reuse List extent/content rules for transfer `append`, `take_last` and
+  `replace`, including displaced values, shared-header updates and extracted
+  Task promises. Optional case names/order follow the checked schema; writes,
+  suspension and unknown task targets supply no stale content guarantees.
+
 - Compose required function guarantees through checked enum construction and
   matching, including generic/nested patterns, guards, dynamic calls and Task
   payloads. Reuse ordinary branch and loop rules, preserving input effects and

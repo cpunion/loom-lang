@@ -1,6 +1,21 @@
 fn list_operation(name Text) Bool {
     name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" ||
-    name == "list_set" || name == "list_push" || name == "list_retain_range"
+    name == "list_set" || name == "list_push" || name == "list_retain_range" ||
+    name == "list_append" || name == "list_take" || name == "list_replace"
+}
+
+fn list_stored_index(name Text) Int {
+    if name == "list_push" || name == "list_append" {
+        1
+    } else if name == "list_set" || name == "list_replace" {
+        2
+    } else {
+        -1
+    }
+}
+
+fn list_mutation(name Text) Bool {
+    list_stored_index(name) >= 0 || name == "list_take"
 }
 
 // Recognize an ordinary forwarding body by checked structure, never its source
@@ -58,7 +73,7 @@ pub fn single_list_write(functions List[Function], value Expr) Int {
     }
 }
 
-fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArguments) Result[List[Outcome], Text] {
+fn list_operation_outcomes(proof Verification, name Text, ty Int, receiver_type Int, inputs CallArguments) Result[List[Outcome], Text] {
     var state = inputs.state
     if name == "list_retain_range" && length(inputs.values) == 4 {
         let start = list_value_index(get(inputs.values, 2))?
@@ -89,15 +104,7 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
             }
         }
     }
-    let stored = if name == "list_push" {
-        1
-    } else {
-        if name == "list_set" {
-            2
-        } else {
-            -1
-        }
-    }
+    let stored = list_stored_index(name)
     if proof.shared && stored >= 0 && stored < length(inputs.values) && mutable_value(get(inputs.values, stored)) {
         let private_target = match get(inputs.values, 0) {
             Value.List(identity) => match list_state(identity, state) {
@@ -111,7 +118,7 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
         }
     }
     state = interference(proof, state)
-    if proof.shared && stored >= 0 && length(proof.preservation) != 0 {
+    if proof.shared && list_mutation(name) && length(proof.preservation) != 0 {
         // The continuing invariant is true immediately before this atomic
         // store. Argument values remain earlier snapshots: they do not recover
         // equality with cells another worker may have changed in the meantime.
@@ -120,7 +127,7 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
         let output = new[Outcome]()
         var path = 0
         while path < length(entries) {
-            discard append(output, list_operation_outcomes(atomic, name, ty, CallArguments {
+            discard append(output, list_operation_outcomes(atomic, name, ty, receiver_type, CallArguments {
                         state = get(entries, path).state
                         values = inputs.values
                     })?)?
@@ -146,14 +153,20 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
             return Result.Err("List operation proof requires a tracked handle")
         }
     }
-    if name == "list_push" || name == "list_set" {
+    if stored >= 0 {
         state = array_contents(proof, identity, state)?
     }
     let size = list_extent(identity, state)?
     if name == "list_len" && length(inputs.values) == 1 {
         return Result.Ok(outcomes(state, Value.Number(size)))
     }
-    if name == "list_push" && length(inputs.values) == 2 {
+    if name == "list_take" && length(inputs.values) == 1 {
+        return list_take_outcomes(proof, ty, receiver_type, identity, state)
+    }
+    if name == "list_replace" && length(inputs.values) == 3 {
+        return list_replace_outcomes(proof, ty, receiver_type, identity, inputs.values, state)
+    }
+    if (name == "list_push" || name == "list_append") && length(inputs.values) == 2 {
         // Other handles may alias this receiver. Only exact handle copies keep
         // the precise update; every possibly overlapping extent is forgotten.
         let modified = new[Int]()
@@ -163,7 +176,12 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
         let grown = with_extent(identity, add(size, constant(integer(1))), previous.allocated, after)
         let written = remember_element(identity, size, get(inputs.values, 1),
             with_cells(identity, previous.cells, grown))?
-        return Result.Ok(outcomes(array_write(proof, previous, size, get(inputs.values, 1), written)?, Value.Empty))
+        return Result.Ok(outcomes(array_write(proof, previous, size, get(inputs.values, 1), written)?,
+                if name == "list_append" {
+                    Value.List(identity)
+                } else {
+                    Value.Empty
+                }))
     }
     if (name == "list_get" && length(inputs.values) == 2) ||
     (name == "list_set" && length(inputs.values) == 3) {
@@ -190,13 +208,26 @@ fn execute_list_operation(proof Verification, expr Expr, name Text, state State,
     let output = new[Outcome]()
     var index = 0
     while index < length(inputs) {
-        let written = list_operation_outcomes(proof, name, expr.ty, get(inputs, index))?
-        if length(proof.preservation) != 0 && (name == "list_set" || name == "list_push") {
+        let receiver_type = if length(expr.children) > 0 {
+            get(expr.children, 0).ty
+        } else {
+            -1
+        }
+        let written = list_operation_outcomes(proof, name, expr.ty, receiver_type, get(inputs, index))?
+        if length(proof.preservation) != 0 && list_mutation(name) {
             let atomic = preservation_snapshot(proof)
             var path = 0
             while path < length(written) {
                 let state = required_conditions(atomic, proof.preservation, get(written, path).state)?
-                discard append(output, established_conditions(atomic, proof.preservation, state)?)?
+                let established = established_conditions(atomic, proof.preservation, state)?
+                var branch = 0
+                while branch < length(established) {
+                    discard add_outcome(output, Outcome {
+                            state = get(established, branch).state
+                            value = get(written, path).value
+                        })?
+                    branch = branch + 1
+                }
                 path = path + 1
             }
         } else {

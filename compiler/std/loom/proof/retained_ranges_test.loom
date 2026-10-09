@@ -11,7 +11,7 @@ test fn retaining_ranges_drops_storage_privacy_and_loop_frames() {
             }))
     let start = variable(20)
     let end = variable(21)
-    let paths = match list_operation_outcomes(proof, "list_retain_range", 0, CallArguments {
+    let paths = match list_operation_outcomes(proof, "list_retain_range", 0, -1, CallArguments {
             state = before
             values = [Value.List(10), Value.List(11), Value.Number(start), Value.Number(end)]
         }) {

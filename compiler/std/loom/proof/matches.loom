@@ -40,6 +40,20 @@ fn enum_parameter_value(proof Verification, ty Int, depth Int) Value {
     Value.Sum(ty, variable(identity), payloads)
 }
 
+fn variant_value(ty Int, variant Int, count Int, fields List[Value]) Value {
+    let payloads = new[List[Value]]()
+    var index = 0
+    while index < count {
+        push(payloads, if index == variant {
+                fields
+            } else {
+                new[Value]()
+            })
+        index = index + 1
+    }
+    Value.Sum(ty, constant(integer(variant)), payloads)
+}
+
 fn variant_outcomes(proof Verification, source Expr, state State, depth Int) Result[List[Outcome], Text] {
     let ty = proof_enum_type(proof.program, source.ty, 0)
     if ty < 0 {
@@ -55,19 +69,9 @@ fn variant_outcomes(proof Verification, source Expr, state State, depth Int) Res
     var path = 0
     while path < length(arguments) {
         let input = get(arguments, path)
-        let payloads = new[List[Value]]()
-        var variant = 0
-        while variant < length(shape.variants) {
-            push(payloads, if variant == source.index {
-                    input.values
-                } else {
-                    new[Value]()
-                })
-            variant = variant + 1
-        }
         discard add_outcome(output, Outcome {
                 state = input.state
-                value = Value.Sum(ty, constant(integer(source.index)), payloads)
+                value = variant_value(ty, source.index, length(shape.variants), input.values)
             })?
         path = path + 1
     }

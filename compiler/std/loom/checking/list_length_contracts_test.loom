@@ -1,4 +1,4 @@
-fn list_length_contract(text Text, valid Bool) {
+fn list_length_files(text Text) List[TestFile] {
     let files = source_files(text)
     push(files, source_file("std.list", """
         intrinsic fn list_len[T](values List[T]) Int
@@ -30,6 +30,11 @@ fn list_length_contract(text Text, valid Bool) {
             list_retain_range(source, removed, start, end)
         }
         """, true))
+    files
+}
+
+fn list_length_contract(text Text, valid Bool) {
+    let files = list_length_files(text)
     match checked(files) {
         Result.Ok(_) => {
             assert valid

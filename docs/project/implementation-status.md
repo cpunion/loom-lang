@@ -566,6 +566,12 @@ unprotected heap facts. The
 [factory example](../../compiler/examples/async_contracts/factories.loom) and edited
 frontend-cache trial cover this boundary. Collection completion promises and
 unsupported source-helper bodies remain open.
+List transfer append/take/replace now reuse the ordinary extent/content theory,
+retaining displaced values and extracted known Task promises. Optional variants
+follow the checked shape rather than library spelling. The
+[transfer example](../../compiler/examples/async_contracts/list_transfers.loom)
+covers input effects, shared headers and a later real wait. General dynamic
+collection completion guarantees and transfer-loop content induction remain open.
 Checked enum constructors and match trees now preserve nominal tag/payload
 identity through generic helpers, nested/guarded patterns and declared dynamic
 calls. Selected payloads supply type invariants and known Task promises; branch

@@ -1,0 +1,98 @@
+import std.loom.typed.list_take_result
+import std.loom.typed.list_replace_result
+
+// These are the ordinary List mutation laws plus a typed displaced value.
+// Optional case spelling/order comes from the checked result schema, not Option.
+fn transfer_element_type(proof Verification, ty Int, receiver_type Int, take Bool) Result[Int, Text] {
+    if !proof_list_type(proof.program, receiver_type) {
+        return Result.Err("List transfer proof requires a checked List receiver")
+    }
+    let element = get(get(proof.program.types, receiver_type).arguments, 0)
+    if ty < 0 || ty >= length(proof.program.types) || !(if take {
+            list_take_result(proof.program.types, ty, element, receiver_type)
+        } else {
+            list_replace_result(proof.program.types, ty, element, receiver_type)
+        }) {
+        return Result.Err("List transfer proof requires its checked result shape")
+    }
+    Result.Ok(element)
+}
+
+fn transfer_pair(value Value, identity Int) Value {
+    let fields = new[Value]()
+    push(fields, value)
+    push(fields, Value.List(identity))
+    Value.Record(fields)
+}
+
+fn list_replace_outcomes(proof Verification, ty Int, receiver_type Int, identity Int, inputs List[Value], state State) Result[List[Outcome], Text] {
+    let element = transfer_element_type(proof, ty, receiver_type, false)?
+    let index = list_value_index(get(inputs, 1))?
+    let size = list_extent(identity, state)?
+    let valid = assume(assume(state, Predicate.Compare(">=", index)),
+        Predicate.Compare("<", add(index, scale(size, integer(-1)))))
+    let previous = read_element_outcomes(proof, element, identity, index, valid)?
+    let output = new[Outcome]()
+    var path = 0
+    while path < length(previous) {
+        let displaced = get(previous, path)
+        discard add_outcome(output, Outcome {
+                state = written_element(proof, identity, index, get(inputs, 2), displaced.state)?
+                value = transfer_pair(displaced.value, identity)
+            })?
+        path = path + 1
+    }
+    Result.Ok(output)
+}
+
+fn list_take_outcomes(proof Verification, ty Int, receiver_type Int, identity Int, state State) Result[List[Outcome], Text] {
+    let element = transfer_element_type(proof, ty, receiver_type, true)?
+    let shape = get(proof.program.types, ty)
+    let empty = if length(get(shape.variants, 0).fields) == 0 {
+        0
+    } else {
+        1
+    }
+    let size = list_extent(identity, state)?
+    let output = new[Outcome]()
+    discard add_outcome(output, Outcome {
+            state = assume(state, Predicate.Compare("==", size))
+            value = variant_value(ty, empty, 2, new[Value]())
+        })?
+    let nonempty = assume(state, Predicate.Compare(">", size))
+    if holds(Predicate.Constant(false), nonempty.facts) {
+        return Result.Ok(output)
+    }
+    let index = add(size, constant(integer(-1)))
+    let values = read_element_outcomes(proof, element, identity, index, nonempty)?
+    var path = 0
+    while path < length(values) {
+        let removed = get(values, path)
+        let previous = list_state(identity, removed.state)?
+        let modified = new[Int]()
+        push(modified, identity)
+        let resized = with_extent(identity, index, previous.allocated,
+            forget_modified_extents(proof, removed.state, modified))
+        let cells = new[ListCell]()
+        var cell = 0
+        while cell < length(previous.cells) {
+            let observed = get(previous.cells, cell)
+            push(cells, ListCell {
+                    index = observed.index
+                    value = observed.value
+                    valid = Predicate.And(predicates(observed.valid,
+                            Predicate.Compare("<", add(observed.index, scale(index, integer(-1))))))
+                })
+            cell = cell + 1
+        }
+        let retained = with_contents(identity, previous.contents, with_cells(identity, cells, resized))
+        let payload = new[Value]()
+        push(payload, transfer_pair(removed.value, identity))
+        discard add_outcome(output, Outcome {
+                state = retained
+                value = variant_value(ty, 1 - empty, 2, payload)
+            })?
+        path = path + 1
+    }
+    Result.Ok(output)
+}

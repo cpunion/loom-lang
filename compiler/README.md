@@ -4166,6 +4166,16 @@ Normal Lists still share mutations, including at compile time. See the
 recursive payloads. `replace(values, index, replacement)` returns the displaced
 element and the same updated header, with bounds checks and compile-time support.
 
+Required proofs reuse ordinary List mutation rules for these transfers: append
+retains its input value, replacement snapshots the displaced element after all
+arguments run, and taking the last element preserves the remaining prefix.
+Aliases observe the same header; uncertain overlap invalidates their observations.
+Extracted known Tasks retain their immutable completion promises across later
+waits, not storage facts from before suspension. See the
+[transfer contract example](examples/async_contracts/list_transfers.loom).
+Dynamic collection-wide completion guarantees and general transfer-loop content
+induction remain open.
+
 Private completion primitives now register each child once and deliver terminal
 indices through the same typed suspension path, preserving actual completion
 order and one-shot result extraction. They retain IDs, not managed pointers;
