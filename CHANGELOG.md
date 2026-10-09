@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Avoid repeated quadratic structural contradiction searches already covered by
+  integer ranges, and skip wrapped-complement searches before any negated fact.
+  Retain nonlinear, compound and explicit-negation checks without adding proof
+  assumptions, persistent state or solver queries.
+
 - Infer retained immutable List columns against captured entry versions through
   the existing quantified loop fixed point. Consume-and-build loops can prove
   reversed contents without auxiliary source contracts or counters, including
