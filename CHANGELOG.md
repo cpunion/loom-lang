@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Keep independent immutable Task outcomes as tagged proof values with guarded
+  producer facts, rather than eagerly enumerating the terminal-status product.
+  Wide source `settled` tuples now retain normal guarantees within the same
+  bounded verifier; mutable and multi-return results remain conservative.
+
 - Compose Task outcome and terminal extraction guarantees through the checked
   terminal schema. Only completed values inherit producer facts; faults and
   cancellation retain independent paths. Source tuple `settled` reuses these

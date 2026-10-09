@@ -577,6 +577,11 @@ producer guarantees only on completed values. Fault and cancellation alternative
 have independent entry facts, including when a producer's precondition fails.
 The source tuple `settled` composes through these same rules; see the
 [outcome example](../../compiler/examples/async_contracts/outcomes.loom).
+Independent outcomes with one immutable normal snapshot retain a symbolic tag
+and guarded producer facts. Their terminal-status product is not enumerated
+until source control flow actually selects alternatives; wide `settled` tuples
+therefore keep unrelated statuses independent. Mutable and multiple-return
+snapshots retain the bounded path model.
 General dynamic collection completion promises and
 unsupported source-helper bodies remain open.
 List transfer append/take/replace now reuse the ordinary extent/content theory,

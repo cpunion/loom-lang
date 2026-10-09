@@ -1,5 +1,30 @@
 import std.loom.typed.task_outcome_result
 
+// Keep independent terminal alternatives as one tagged value when the normal
+// result is an immutable snapshot. Guard every additional normal-path fact;
+// neither the inactive payload nor a failed producer establishes it globally.
+fn guarded_outcome(proof Verification, ty Int, fault_type Int, completed Outcome, entry State) Outcome {
+    let identity = get(proof.fresh, 0)
+    std.list.set(proof.fresh, 0, identity + 1)
+    let tag = variable(identity)
+    let valid = Predicate.Compare("==", tag)
+    var state = entry
+    var index = 0
+    while index < length(completed.state.facts) {
+        let fact = get(completed.state.facts, index)
+        if index >= length(entry.facts) || !same(fact, get(entry.facts, index)) {
+            state = assume(state, Predicate.Or(predicates(not(valid), fact)))
+        }
+        index = index + 1
+    }
+    let fault = record_parameter_value(proof, fault_type, 0)
+    let value = Value.Sum(ty, tag, [[completed.value], [fault], new[Value]()])
+    Outcome {
+        state = bounded(value, state)
+        value = value
+    }
+}
+
 // Terminal outcomes are alternatives, not an assertion that a known producer
 // completed. Only the successful alternative may use its normal-return facts.
 fn outcome_completion(proof Verification, source Expr, promise Value, entry State,
@@ -22,6 +47,12 @@ fn outcome_completion(proof Verification, source Expr, promise Value, entry Stat
     }
     let value = proof_expr(source, ExprKind.Await, element, "", -1, new[Expr]())
     let completed = promise_completion(proof, value, promise, entry, depth)?
+    let outcome = get(proof.program.types, source.ty)
+    let fault_type = get(get(outcome.variants, 1).fields, 0)
+    if length(completed) == 1 && immutable_snapshot(get(completed, 0).value) {
+        let joined = guarded_outcome(proof, source.ty, fault_type, get(completed, 0), entry)
+        return Result.Ok(outcomes(joined.state, joined.value))
+    }
     let output = new[Outcome]()
     var index = 0
     while index < length(completed) {
@@ -32,8 +63,6 @@ fn outcome_completion(proof Verification, source Expr, promise Value, entry Stat
             })?
         index = index + 1
     }
-    let outcome = get(proof.program.types, source.ty)
-    let fault_type = get(get(outcome.variants, 1).fields, 0)
     let fault = record_parameter_value(proof, fault_type, 0)
     discard add_outcome(output, Outcome {
             state = typed_value_state(proof, fault_type, fault, entry)
