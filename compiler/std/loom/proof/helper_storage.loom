@@ -2,18 +2,10 @@
 // No names, unverified purity annotations or external implementation guesses
 // confer locality. Unknown calls, captures and untracked payload stores fail shut.
 fn local_storage_operation(program Program, name Text, arguments List[Expr]) Bool {
-    if name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" {
+    if name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" || name == "list_take" {
         return true
     }
-    let stored = if name == "list_set" {
-        2
-    } else {
-        if name == "list_push" {
-            1
-        } else {
-            -1
-        }
-    }
+    let stored = list_stored_index(name)
     stored >= 0 && stored < length(arguments) && immutable_storage_type(program, get(arguments, stored).ty, 0)
 }
 

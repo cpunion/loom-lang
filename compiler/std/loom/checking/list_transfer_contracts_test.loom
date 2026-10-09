@@ -1,0 +1,208 @@
+fn list_transfer_contract(text Text, valid Bool) {
+    let files = list_length_files(concat("""
+        import std.transfer.Taken
+        import std.transfer.append
+        import std.transfer.take
+        import std.transfer.replace
+
+        """, text))
+    push(files, source_file("std.transfer", """
+        pub enum Taken[T] {
+            Value((T, List[T]))
+            Empty
+        }
+        intrinsic fn list_append[T](values List[T], value T) List[T]
+        intrinsic fn list_take[T](values List[T]) Taken[T]
+        intrinsic fn list_replace[T](values List[T], index Int, value T) (T, List[T])
+        pub fn append[T](values List[T], value T) List[T] {
+            list_append(values, value)
+        }
+        pub fn take[T](values List[T]) Taken[T] {
+            list_take(values)
+        }
+        pub fn replace[T](values List[T], index Int, value T) (T, List[T]) {
+            list_replace(values, index, value)
+        }
+        """, true))
+    match checked(files) {
+        Result.Ok(_) => {
+            assert valid
+        }
+        Result.Err(failed) => {
+            if valid {
+                show_failure(fixture_project(files), failed)
+            } else {
+                assert std.text.find(failed.diagnostic.message, "postcondition") >= 0
+            }
+            assert !valid
+        }
+    }
+}
+
+test fn list_transfers_preserve_elements_and_same_header_results() {
+    list_transfer_contract("""
+        import std.list.length
+        import std.list.get
+        fn recovered(value Int) Int
+        ensures result == value {
+            let values = append[Int]([], value)
+            match take(values) {
+                Taken.Value(pair) => pair.0
+                Taken.Empty => 0
+            }
+        }
+        fn displaced(values List[Int], index Int, value Int) (Int, List[Int])
+        requires index >= 0 && index < length(values)
+        ensures result.0 == old(get(values, index)) &&
+            get(result.1, index) == value && length(result.1) == old(length(values)) {
+            replace(values, index, value)
+        }
+        fn shortened(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == old(length(values)) - 1 {
+            match take(values) {
+                Taken.Value(pair) => length(pair.1)
+                Taken.Empty => 0
+            }
+        }
+        """, true)
+    list_transfer_contract("""
+        import std.list.length
+        fn stale(values List[Int], other List[Int]) Int
+        ensures result == old(length(values)) {
+            discard take(other)
+            length(values)
+        }
+        """, false)
+    list_transfer_contract("""
+        import std.list.get
+        fn reused() Int
+        ensures result == 9 {
+            let values = [7, 8]
+            match take(values) {
+                Taken.Value(pair) => {
+                    let rest = append(pair.1, 9)
+                    assert get(rest, 0) == 7
+                    get(rest, 1)
+                }
+                Taken.Empty => 0
+            }
+        }
+        """, true)
+    list_transfer_contract("""
+        import std.list.get
+        fn stale() Int
+        ensures result == 8 {
+            match take([7, 8]) {
+                Taken.Value(pair) => get(append(pair.1, 9), 1)
+                Taken.Empty => 0
+            }
+        }
+        """, false)
+    let loop = """
+        import std.list.length
+        fn emptied(values List[Int]) Int
+        ensures result == old(length(values)) {
+            let before = length(values)
+            var pending = values
+            while length(pending) > 0 {
+                match take(pending) {
+                    Taken.Value(pair) => {
+                        pending = pair.1
+                    }
+                    Taken.Empty => {
+                        break
+                    }
+                }
+            }
+            before + 0
+        }
+        """
+    list_transfer_contract(loop, true)
+    list_transfer_contract(std.text.join(std.text.split(loop, "before + 0"),
+            "length(values)"), false)
+    list_transfer_contract("""
+        import std.list.length
+        import std.list.get
+        fn stale(values List[Int], other List[Int]) Int
+        requires length(values) > 0 && length(other) > 0
+        ensures result == old(get(values, 0)) {
+            var index = 0
+            while index < 2 {
+                discard replace(other, 0, 7)
+                index = index + 1
+            }
+            get(values, 0)
+        }
+        """, false)
+}
+
+test fn list_replacement_evaluates_all_inputs_before_displacement() {
+    let source = """
+        import std.list.set
+        fn ordered() Int
+        ensures result == 11 {
+            let values = [7]
+            let previous, rest = replace(values, 0, {
+                set(values, 0, 11)
+                13
+            })
+            discard rest
+            previous
+        }
+        """
+    list_transfer_contract(source, true)
+    list_transfer_contract(std.text.join(std.text.split(source, "result == 11"), "result == 7"), false)
+}
+
+test fn extracted_list_tasks_retain_promises_not_pre_suspension_heap() {
+    let header = """
+        async fn keep(value Int) Int
+        ensures result == value {
+            value
+        }
+        async fn drain(tasks List[Task[Int]]) {
+            var pending = tasks
+            while true {
+                match take(pending) {
+                    Taken.Value(pair) => {
+                        let task, rest = pair
+                        pending = rest
+                        discard task.await
+                    }
+                    Taken.Empty => {
+                        break
+                    }
+                }
+            }
+        }
+
+        """
+    list_transfer_contract(concat(header, """
+        async fn extracted(value Int) Int
+        ensures result == value {
+            let tasks = append[Task[Int]]([], keep(value))
+            match take(tasks) {
+                Taken.Value(pair) => {
+                    let task, rest = pair
+                    drain(rest).await
+                    task.await
+                }
+                Taken.Empty => value
+            }
+        }
+        """), true)
+    list_transfer_contract(concat(header, """
+        async fn unknown(tasks List[Task[Int]], value Int) Int
+        ensures result == value {
+            match take(tasks) {
+                Taken.Value(pair) => {
+                    let task, rest = pair
+                    drain(rest).await
+                    task.await
+                }
+                Taken.Empty => value
+            }
+        }
+        """), false)
+}

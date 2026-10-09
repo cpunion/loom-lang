@@ -31,7 +31,8 @@ fn loop_storage_writes(proof Verification, value Expr, entry State, modified Lis
     if primitive == "list_retain_range" {
         push(modified, -1)
     }
-    if (primitive == "list_push" || (contents && primitive == "list_set")) && length(value.children) > 0 {
+    if (primitive == "list_push" || primitive == "list_append" || primitive == "list_take" ||
+        (contents && (primitive == "list_set" || primitive == "list_replace"))) && length(value.children) > 0 {
         let identity = match pure(get(value.children, 0), entry) {
             Result.Ok(receiver) => match receiver {
                 Value.List(identity) => identity

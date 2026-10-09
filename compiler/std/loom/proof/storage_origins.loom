@@ -103,15 +103,7 @@ fn storage_origin(program Program, function Function, value Expr, locals List[Bo
 
 fn storage_operation_origin(program Program, name Text, value Expr, inputs List[Bool],
     closed Bool, effects List[Bool]) Bool {
-    let stored = if name == "list_set" {
-        2
-    } else {
-        if name == "list_push" {
-            1
-        } else {
-            -1
-        }
-    }
+    let stored = list_stored_index(name)
     let private_target = stored >= 0 && stored < length(inputs) && (closed || get(inputs, 0))
     if !private_target && !storage_operation(program, name, value.ty, value.children, StorageRequirement.Local) {
         set(effects, 0, false)

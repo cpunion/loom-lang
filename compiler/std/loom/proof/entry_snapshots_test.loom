@@ -83,7 +83,7 @@ test fn entry_lists_keep_their_length_and_content_version_without_a_current_head
         _ => false
     }
     assert match list_operation_outcomes(verification(fixture(local(0), [], literal("true")),
-            empty_proof_program()), "list_set", 0,
+            empty_proof_program()), "list_set", 0, -1,
         CallArguments {
             state = state
             values = [get(state.locals, 0), get(state.locals, 1), get(state.locals, 1)]

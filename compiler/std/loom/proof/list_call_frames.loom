@@ -47,7 +47,7 @@ fn frame_function(program Program, function Function, inputs List[Value], entry 
         return false
     }
     if function.runtime_name != "" {
-        if function.runtime_name == "list_set" && length(inputs) == 3 {
+        if (function.runtime_name == "list_set" || function.runtime_name == "list_replace") && length(inputs) == 3 {
             return frame_write(inputs, writes)
         }
         return function.runtime_name == "list_new" || function.runtime_name == "list_new_capacity" ||
@@ -99,7 +99,7 @@ fn frame_expression(program Program, function Function, value Expr, locals List[
         set(locals, value.index, frame_value(get(value.children, 0), locals, entry, budget))
     }
     if value.kind == ExprKind.Call ||
-    (value.kind == ExprKind.Intrinsic && value.text == "list_set") {
+    (value.kind == ExprKind.Intrinsic && (value.text == "list_set" || value.text == "list_replace")) {
         let inputs = new[Value]()
         index = 0
         while index < length(value.children) {

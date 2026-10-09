@@ -288,7 +288,7 @@ fn storage_operation(program Program, name Text, ty Int, arguments List[Expr], r
         return modeled || local_storage_operation(program, name, arguments)
     }
     modeled || name == "list_new" || name == "list_new_capacity" ||
-    (requirement == StorageRequirement.Extent && name == "list_set")
+    (requirement == StorageRequirement.Extent && (name == "list_set" || name == "list_replace"))
 }
 
 fn storage_expression(value Expr) Bool {

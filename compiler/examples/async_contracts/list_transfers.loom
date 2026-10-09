@@ -1,0 +1,66 @@
+import std.list.get
+import std.list.set
+import std.list.transfer.append
+import std.list.transfer.take_last
+import std.list.transfer.replace
+import std.option.Option
+import std.task.all
+
+fn transfer_recovered(value Int) Int
+ensures result == value {
+    let values = append[Int]([], value)
+    match take_last(values) {
+        Option.Some(pair) => pair.0
+        Option.None => 0
+    }
+}
+
+fn transfer_displaced(values List[Int], index Int, value Int) (Int, List[Int])
+requires index >= 0 && index < length(values)
+ensures result.0 == old(get(values, index)) && get(result.1, index) == value &&
+length(result.1) == old(length(values)) {
+    replace(values, index, value)
+}
+
+fn transfer_ordered() Int
+ensures result == 11 {
+    let values = [7]
+    let previous, rest = replace(values, 0, {
+            set(values, 0, 11)
+            13
+        })
+    assert get(rest, 0) == 13
+    previous
+}
+
+async fn transfer_extracted(value Int) Int
+ensures result == value {
+    let tasks = append[Task[Int]]([], keep(value, 0))
+    match take_last(tasks) {
+        Option.Some(pair) => {
+            let task, rest = pair
+            discard all(rest).await
+            task.await
+        }
+        Option.None => value
+    }
+}
+
+async fn exercise_list_transfers() {
+    assert transfer_recovered(42) == 42
+    let values = [7, 8]
+    let previous, rest = transfer_displaced(values, 1, 9)
+    assert previous == 8
+    assert get(rest, 0) == 7 && get(rest, 1) == 9
+    match take_last(rest) {
+        Option.Some(pair) => {
+            assert pair.0 == 9
+            assert length(pair.1) == 1 && length(values) == 1
+        }
+        Option.None => {
+            assert false
+        }
+    }
+    assert transfer_ordered() == 11
+    assert transfer_extracted(43).await == 43
+}

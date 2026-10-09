@@ -82,6 +82,7 @@ ensures result > 0 {
 }
 
 async fn exercise() {
+    exercise_list_transfers().await
     exercise_enum_guarantees().await
     exercise_factories().await
     exercise_type_guarantees().await
