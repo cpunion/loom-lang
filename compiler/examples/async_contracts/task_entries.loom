@@ -25,10 +25,24 @@ ensures length(result) == old(length(tasks)) {
 
 async fn waited_all(tasks List[Task[Int]]) List[Int]
 ensures length(result) == old(length(tasks)) {
-    all(retained_batch(tasks).await).await
+    dynamic_all(retained_batch(tasks).await).await
+}
+
+async fn private_result(source List[Int]) List[Int]
+requires length(source) == 1
+ensures length(result) == 1 {
+    [7]
+}
+
+async fn verified_result(source List[Int]) List[Int]
+requires length(source) == 1
+ensures length(result) == 1 {
+    private_result(source).await
 }
 
 async fn exercise_task_entries() {
+    let private_values = verified_result([0]).await
+    assert length(private_values) == 1 && private_values[0] == 7
     var tasks List[Task[Int]] = []
     var index = 0
     while index < 4 {

@@ -1,0 +1,114 @@
+test fn contracted_async_results_retain_proved_private_headers_not_body_values() {
+    let source = """
+        import std.list.length
+        import std.list.get
+        async fn fresh(value Int) List[Int]
+        ensures length(result) == 1 {
+            [value]
+        }
+        async fn forwarded(value Int) List[Int]
+        ensures length(result) == 1 {
+            fresh(value).await
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(concat(source, """
+        async fn hidden(value Int) Int
+        ensures result == value {
+            let values = fresh(value).await
+            get(values, 0)
+        }
+        """), false, "postcondition")
+}
+
+test fn private_completion_frames_cover_inline_results_without_alias_separation() {
+    task_metadata_contract("""
+        import std.list.length
+        import std.list.set
+        record Pair {
+            first List[Int]
+            second List[Int]
+        }
+        async fn fresh() Pair
+        ensures length(result.first) == 1 && length(result.second) == 1 {
+            let values = [7]
+            Pair {
+                first = values
+                second = values
+            }
+        }
+        async fn forwarded() Pair
+        ensures length(result.first) == 1 && length(result.second) == 1 {
+            fresh().await
+        }
+        """, true, "")
+    task_metadata_contract("""
+        import std.list.length
+        import std.list.push
+        record Pair {
+            first List[Int]
+            second List[Int]
+        }
+        async fn fresh() Pair
+        ensures length(result.first) == 1 && length(result.second) == 1 {
+            let values = [7]
+            Pair {
+                first = values
+                second = values
+            }
+        }
+        async fn stale() Int
+        ensures result == 1 {
+            let pair = fresh().await
+            push(pair.first, 8)
+            length(pair.second)
+        }
+        """, false, "postcondition")
+}
+
+test fn shared_or_published_async_results_gain_no_private_frame() {
+    task_metadata_contract("""
+        import std.list.length
+        async fn shared(values List[Int]) List[Int]
+        ensures length(result) == old(length(values)) {
+            values
+        }
+        async fn stale(values List[Int]) List[Int]
+        ensures length(result) == old(length(values)) {
+            shared(values).await
+        }
+        """, false, "postcondition")
+    task_metadata_contract("""
+        import std.list.length
+        import std.list.set
+        async fn published(holder List[List[Int]]) List[Int]
+        requires length(holder) > 0
+        ensures length(result) == 1 {
+            let values = [7]
+            set(holder, 0, values)
+            values
+        }
+        async fn stale(holder List[List[Int]]) List[Int]
+        requires length(holder) > 0
+        ensures length(result) == 1 {
+            published(holder).await
+        }
+        """, false, "postcondition")
+    task_metadata_contract("""
+        import std.list.length
+        async fn mixed(values List[Int], flag Bool) List[Int]
+        requires length(values) == 1
+        ensures length(result) == 1 {
+            if flag {
+                [7]
+            } else {
+                values
+            }
+        }
+        async fn stale(values List[Int], flag Bool) List[Int]
+        requires length(values) == 1
+        ensures length(result) == 1 {
+            mixed(values, flag).await
+        }
+        """, false, "postcondition")
+}
