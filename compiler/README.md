@@ -1703,8 +1703,8 @@ defaults and method-local packs through these same summaries.
 Async contracts also compose after successful `.await`, including saved Task
 locals, inline aggregate fields, known callbacks and generic/dynamic method
 declarations. Private proof promises retain evaluated arguments, not expressions
-to replay at completion. Callee entry observations are independent of the
-caller's creation-time heap; suspension discards unprotected published storage
+to replay at completion. Ordinary shared callee entry observations are independent
+of the caller's creation-time heap; suspension discards unprotected published storage
 facts while preserving past scalar snapshots and proved unpublished storage.
 Task inputs carrying mutable graphs, stores into shared containers, dyn boxing
 and unknown callbacks revoke privacy conservatively in both ordinary and worker
@@ -1730,8 +1730,18 @@ exhausted budgets contribute only typed completion values. Declared contracts
 still supply only their advertised guarantees, never extra witness/body facts.
 Task registration preserves the typed promise, drain invalidates mutable storage,
 and faults have no normal continuation. The source tuple `all` therefore composes
-ordinary producer guarantees without a special join rule; dynamic List-wide
-completion promises remain unsupported. See the
+ordinary producer guarantees without a special join rule.
+The existing one-shot check also excludes independent writable aliases of a
+transferred Task-bearing List header. Known async calls save that header's child
+entry separately and release caller heap facts immediately, since hot Tasks may
+already mutate it. Completion can use this entry to execute the checked child
+body or apply its declared contract; failed optional inference falls back to
+the caller state without restoring a snapshot. Inline fields and enum payloads
+reuse the same transfer rule; ordinary shared siblings and captured child graphs
+gain no frame. The [entry example](examples/async_contracts/task_entries.loom)
+proves dynamic source `all`/`settled` result lengths through real waits, with no
+join axiom, runtime copy or freeze. Collection content induction and framing
+ordinary shared results of declared abstractions remain separate work. See the
 [async contract example](examples/async_contracts/main.loom).
 The [factory example](examples/async_contracts/factories.loom) covers arguments
 rebound after evaluation, both loop/early-return paths, callbacks, opaque inputs
@@ -2696,8 +2706,9 @@ cleanup and dynamic slot targets still use ordinary one-shot Task checks, even
 when the same helper also occurs in an `ensures`. This adds neither runtime
 borrowing nor compile-time Task execution; concrete Task-bearing declarations
 still need valid executable Task flow. See the
-[metadata example](examples/async_contracts/metadata.loom). Dynamic List join
-completion/content proofs remain separate work.
+[metadata example](examples/async_contracts/metadata.loom). Dynamic List joins
+now compose the [entry example's](examples/async_contracts/task_entries.loom)
+length guarantees; general completion/content proofs remain separate work.
 
 Direct calls in a body requiring proof use the callee's verified postconditions
 as a summary for `Int`/`Bool`/`Text` values and leaves of inline records/tuples.
@@ -4230,8 +4241,9 @@ Aliases observe the same header; uncertain overlap invalidates their observation
 Extracted known Tasks retain their immutable completion promises across later
 waits, not storage facts from before suspension. See the
 [transfer contract example](examples/async_contracts/list_transfers.loom).
-Dynamic collection-wide completion guarantees and general transfer-loop content
-induction remain open.
+The [entry example](examples/async_contracts/task_entries.loom) composes dynamic
+join lengths. Collection-wide content guarantees and general transfer-loop
+content induction remain open.
 
 Private completion primitives now register each child once and deliver terminal
 indices through the same typed suspension path, preserving actual completion

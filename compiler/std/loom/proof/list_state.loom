@@ -102,22 +102,26 @@ fn forget_extents(proof Verification, state State) State {
 // Fresh handles are private until publication. Opaque calls or storing a
 // mutable graph into shared storage discard this evidence conservatively.
 // This is proof state, not a source ownership qualifier or a runtime monitor.
+fn private_extent(extent ListExtent, private_storage Bool) ListExtent {
+    ListExtent {
+        identity = extent.identity
+        size = extent.size
+        allocated = extent.allocated
+        private_storage = private_storage
+        read_only = extent.read_only
+        fixed_extent = extent.fixed_extent
+        invariant_type = extent.invariant_type
+        contents = extent.contents
+        cells = extent.cells
+    }
+}
+
 fn published_storage(state State) State {
     let extents = new[ListExtent]()
     var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
-        push(extents, ListExtent {
-                identity = extent.identity
-                size = extent.size
-                allocated = extent.allocated
-                private_storage = false
-                read_only = extent.read_only
-                fixed_extent = extent.fixed_extent
-                invariant_type = extent.invariant_type
-                contents = extent.contents
-                cells = extent.cells
-            })
+        push(extents, private_extent(extent, false))
         index = index + 1
     }
     State {
@@ -153,7 +157,7 @@ fn mutable_value(value Value) Bool {
             false
         }
         Value.Function(_, captures) => mutable_value(Value.Record(captures))
-        Value.Task(_, inputs) => mutable_value(Value.Record(inputs))
+        Value.Task(_, inputs, _) => mutable_value(Value.Record(inputs))
         _ => false
     }
 }

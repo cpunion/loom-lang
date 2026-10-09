@@ -12,18 +12,13 @@ fn task_reference(proof Verification, call Expr, state State, depth Int) Result[
     var index = 0
     while index < length(arguments) {
         let current = get(arguments, index)
-        discard add_outcome(output, Outcome {
-                state = if call.kind == ExprKind.TaskCall &&
-                !closed_storage_inputs(proof.program, get(proof.program.functions, call.index).params) {
-                    published_storage(current.state)
-                } else {
-                    current.state
+        discard add_outcome(output, if call.kind == ExprKind.FunctionRef {
+                Outcome {
+                    state = current.state
+                    value = Value.Function(call.index, current.values)
                 }
-                value = if call.kind == ExprKind.FunctionRef {
-                    Value.Function(call.index, current.values)
-                } else {
-                    Value.Task(call.index, current.values)
-                }
+            } else {
+                created_task(proof, call.index, current.values, current.state)
             })?
         index = index + 1
     }
@@ -96,11 +91,11 @@ fn execute_task_operation(proof Verification, call Expr, name Text, state State,
 }
 
 fn completion_body_call(proof Verification, target Int, function Function, input CallArguments,
-    source Expr, depth Int) Result[List[Outcome], Text] {
+    source Expr, fallback State, depth Int) Result[List[Outcome], Text] {
     match inferred_body_call(proof, target, function, input, true, depth) {
         Result.Ok(completed) => Result.Ok(completed)
         Result.Err(_) => {
-            let unknown = unknown_completion(proof, source, input.state)
+            let unknown = unknown_completion(proof, source, fallback)
             Result.Ok(outcomes(unknown.state, unknown.value))
         }
     }
@@ -109,21 +104,21 @@ fn completion_body_call(proof Verification, target Int, function Function, input
 fn promise_completion(proof Verification, source Expr, promise Value, entry State,
     depth Int) Result[List[Outcome], Text] {
     match promise {
-        Value.Task(target, values) => {
+        Value.Task(target, values, entries) => {
             if target >= 0 && target < length(proof.program.functions) {
                 let function = get(proof.program.functions, target)
                 if function.result != source.ty || length(function.params) != length(values) {
                     return Result.Err("task proof has no matching completion signature")
                 }
                 let input = CallArguments {
-                    state = entry
+                    state = restored_task_entry(entries, entry)
                     values = values
                 }
                 if length(function.postconditions) != 0 {
                     let call = proof_expr(source, ExprKind.Call, source.ty, "", target, new[Expr]())
                     return applied_call(proof, call, function, input, depth)
                 }
-                return completion_body_call(proof, target, function, input, source, depth)
+                return completion_body_call(proof, target, function, input, source, entry, depth)
             }
         }
         _ => {
@@ -192,14 +187,7 @@ fn indirect_body_call(proof Verification, call Expr, state State, depth Int) Res
                     return Result.Err("indirect proof call has no matching signature")
                 }
                 if function.is_async {
-                    discard add_outcome(output, Outcome {
-                            state = if closed_storage_inputs(proof.program, function.params) {
-                                current.state
-                            } else {
-                                published_storage(current.state)
-                            }
-                            value = Value.Task(target, inputs)
-                        })?
+                    discard add_outcome(output, created_task(proof, target, inputs, current.state))?
                 } else {
                     let direct = proof_expr(call, ExprKind.Call, call.ty, "", target, new[Expr]())
                     discard append(output, applied_call(proof, direct, function, CallArguments {

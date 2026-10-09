@@ -1,0 +1,181 @@
+import std.loom.typed.contains_tasks
+
+// The existing one-shot Task check excludes independent writable aliases of
+// Task-bearing containers. Only their outer headers are private to the current
+// consumer; ordinary shared siblings and Task-captured graphs are not framed.
+fn task_storage_member(identities List[Int], identity Int) Bool {
+    var index = 0
+    while index < length(identities) {
+        if get(identities, index) == identity {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn task_storage_leaves(proof Verification, ty Int, value Value, identities List[Int], depth Int) {
+    if depth >= 16 || ty < 6 || ty >= length(proof.program.types) {
+        return
+    }
+    let shape = get(proof.program.types, ty)
+    if shape.kind == TypeKind.List {
+        if contains_tasks(proof.program.types, ty, new[Int]()) {
+            match value {
+                Value.List(identity) => {
+                    if !task_storage_member(identities, identity) {
+                        push(identities, identity)
+                    }
+                }
+                _ => {
+                }
+            }
+        }
+        return
+    }
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        task_storage_leaves(proof, get(shape.fields, 0).ty, value, identities, depth + 1)
+        return
+    }
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        match value {
+            Value.Record(fields) => {
+                var index = 0
+                while index < length(fields) && index < length(shape.fields) {
+                    task_storage_leaves(proof, get(shape.fields, index).ty,
+                        get(fields, index), identities, depth + 1)
+                    index = index + 1
+                }
+            }
+            _ => {
+            }
+        }
+    }
+    if shape.kind == TypeKind.Enum {
+        match value {
+            Value.Sum(owner, _, payloads) => {
+                if owner != ty {
+                    return
+                }
+                var variant = 0
+                while variant < length(payloads) && variant < length(shape.variants) {
+                    let fields = get(payloads, variant)
+                    let types = get(shape.variants, variant).fields
+                    var field = 0
+                    while field < length(fields) && field < length(types) {
+                        task_storage_leaves(proof, get(types, field), get(fields, field), identities, depth + 1)
+                        field = field + 1
+                    }
+                    variant = variant + 1
+                }
+            }
+            _ => {
+            }
+        }
+    }
+}
+
+fn task_private_value(proof Verification, ty Int, value Value, state State) State {
+    if ty < 6 {
+        return state
+    }
+    let identities = new[Int]()
+    task_storage_leaves(proof, ty, value, identities, 0)
+    if length(identities) == 0 {
+        return state
+    }
+    var current = state
+    var index = 0
+    while index < length(identities) {
+        current = list_bounds(Value.List(get(identities, index)), current)
+        index = index + 1
+    }
+    let extents = new[ListExtent]()
+    index = 0
+    while index < length(current.extents) {
+        let extent = get(current.extents, index)
+        push(extents, if task_storage_member(identities, extent.identity) {
+                private_extent(extent, true)
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = current.locals
+        facts = current.facts
+        extents = extents
+        observations = current.observations
+    }
+}
+
+// Transfer snapshots belong to the child's entry, not the caller's current
+// heap. Release caller facts immediately: a hot child may already resize them.
+// This is proof-only data; no runtime container is copied or frozen.
+fn created_task(proof Verification, target Int, values List[Value], state State) Outcome {
+    let function = get(proof.program.functions, target)
+    let identities = new[Int]()
+    var index = 0
+    var current = state
+    while index < length(function.params) && index < length(values) {
+        let ty = get(function.params, index)
+        let value = get(values, index)
+        task_storage_leaves(proof, ty, value, identities, 0)
+        current = list_bounds(value, current)
+        index = index + 1
+    }
+    index = 0
+    while index < length(identities) {
+        current = list_bounds(Value.List(get(identities, index)), current)
+        index = index + 1
+    }
+    let entries = new[ListExtent]()
+    index = 0
+    while index < length(current.extents) {
+        let extent = get(current.extents, index)
+        if task_storage_member(identities, extent.identity) {
+            push(entries, private_extent(extent, true))
+        }
+        index = index + 1
+    }
+    let released = if closed_storage_inputs(proof.program, function.params) {
+        current
+    } else {
+        published_storage(current)
+    }
+    Outcome {
+        state = if length(identities) == 0 {
+            released
+        } else {
+            forget_modified_extents(proof, released, identities)
+        }
+        value = Value.Task(target, values, entries)
+    }
+}
+
+fn restored_task_entry(entries List[ListExtent], state State) State {
+    if length(entries) == 0 {
+        return state
+    }
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        var selected = extent
+        var entry = 0
+        while entry < length(entries) {
+            if get(entries, entry).identity == extent.identity {
+                selected = get(entries, entry)
+            }
+            entry = entry + 1
+        }
+        push(extents, selected)
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
+    }
+}
