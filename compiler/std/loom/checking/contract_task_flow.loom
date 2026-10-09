@@ -1,0 +1,79 @@
+// Postcondition helpers are mathematical observations, not runtime transfers.
+// Actual body/precondition/cleanup calls retain ordinary one-shot Task checking,
+// even when the same concrete helper also occurs in an erased contract.
+fn contract_runtime_target(target Int, runtime List[Bool], pending List[Int]) {
+    if target >= 0 && target < length(runtime) && !get(runtime, target) {
+        set(runtime, target, true)
+        push(pending, target)
+    }
+}
+
+fn contract_runtime_calls(value Expr, runtime List[Bool], pending List[Int]) {
+    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.FunctionRef {
+        contract_runtime_target(value.index, runtime, pending)
+    }
+    var index = 0
+    while index < length(value.children) {
+        contract_runtime_calls(get(value.children, index), runtime, pending)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            contract_runtime_calls(get(body, item), runtime, pending)
+            item = item + 1
+        }
+        index = index + 1
+    }
+}
+
+fn contract_runtime_clauses(values List[Expr], runtime List[Bool], pending List[Int]) {
+    var index = 0
+    while index < length(values) {
+        contract_runtime_calls(get(values, index), runtime, pending)
+        index = index + 1
+    }
+}
+
+fn contract_task_flow(stage Context, root Function, body_calls Bool, functions List[Function], contexts List[Context]) Result[Bool, Failure] {
+    let runtime = new[Bool]()
+    var index = 0
+    while index < length(functions) {
+        push(runtime, false)
+        index = index + 1
+    }
+    let pending = new[Int]()
+    if body_calls {
+        contract_runtime_calls(root.body, runtime, pending)
+        contract_runtime_clauses(root.result_cleanup, runtime, pending)
+    }
+    contract_runtime_clauses(root.preconditions, runtime, pending)
+    // Dynamic slot targets may execute through an opaque receiver. Their
+    // source bodies are never exempted merely because dispatch is indirect.
+    index = 0
+    while index < length(stage.env.witnesses) {
+        let methods = get(stage.env.witnesses, index).methods
+        var method = 0
+        while method < length(methods) {
+            contract_runtime_target(get(methods, method), runtime, pending)
+            method = method + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(pending) {
+        let target = get(pending, index)
+        let function = get(functions, target)
+        contract_runtime_calls(function.body, runtime, pending)
+        contract_runtime_clauses(function.preconditions, runtime, pending)
+        contract_runtime_clauses(function.result_cleanup, runtime, pending)
+        let instance = get(stage.env.pending, target)
+        if !abstract_method_instance(stage.env, instance.signature, instance.arguments) {
+            discard task_flow(get(contexts, target), function)?
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

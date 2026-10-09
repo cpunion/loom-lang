@@ -235,7 +235,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
         if body_calls {
             discard collect_dynamic_contracts(stage, proof.body, summaries)?
         }
-        let program = prepared_contract_group(stage)?
+        let program = prepared_contract_group(stage, proof, body_calls)?
         let first = length(program.functions)
         var index = 0
         while index < length(summaries) {

@@ -1,0 +1,79 @@
+fn task_metadata_contract(text Text, valid Bool, diagnostic Text) {
+    let files = list_length_files(text)
+    match checked(files) {
+        Result.Ok(_) => {
+            assert valid
+        }
+        Result.Err(failed) => {
+            if valid {
+                show_failure(fixture_project(files), failed)
+            } else {
+                assert std.text.find(failed.diagnostic.message, diagnostic) >= 0
+            }
+            assert !valid
+        }
+    }
+}
+
+test fn task_list_metadata_is_observed_without_runtime_transfer() {
+    task_metadata_contract("""
+        import std.list.length
+        fn count[T](values List[T]) Int {
+            let size = length(values)
+            size
+        }
+        fn forward(tasks List[Task[Int]]) List[Task[Int]]
+        ensures count(result) == old(count(tasks)) {
+            tasks
+        }
+        record Pending {
+            tasks List[Task[Int]]
+            marker Int
+        }
+        fn nested(value Pending) Pending
+        ensures length(result.tasks) == old(length(value.tasks)) {
+            value
+        }
+        """, true, "")
+    task_metadata_contract("""
+        import std.list.length
+        fn wrong(tasks List[Task[Int]]) List[Task[Int]]
+        ensures length(result) > old(length(tasks)) {
+            tasks
+        }
+        """, false, "postcondition")
+}
+
+test fn logical_task_observers_do_not_exempt_executable_helpers() {
+    task_metadata_contract("""
+        import std.list.length
+        fn count[T](values List[T]) Int {
+            length(values)
+        }
+        fn wrong(tasks List[Task[Int]]) Int
+        ensures result == old(count(tasks)) {
+            count(tasks)
+        }
+        """, false, "task")
+    task_metadata_contract("""
+        import std.list.length
+        fn positive_size[T](values List[T]) Bool {
+            length(values) > 0
+        }
+        fn wrong(tasks List[Task[Int]]) List[Task[Int]]
+        requires positive_size(tasks)
+        ensures length(result) == old(length(tasks)) {
+            tasks
+        }
+        """, false, "task")
+    task_metadata_contract("""
+        import std.list.length
+        async fn execute(tasks List[Task[Int]]) List[Task[Int]] {
+            tasks
+        }
+        fn wrong(tasks List[Task[Int]]) List[Task[Int]]
+        ensures length(execute(tasks).await) >= 0 {
+            tasks
+        }
+        """, false, "contracts require")
+}

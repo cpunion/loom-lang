@@ -856,6 +856,12 @@ fn function_scope(env Environment, declared Signature, arguments List[Int], cons
 // Construction and mandatory verification share one binder/body checker. A
 // private proof closure can construct its caller without verifying it recursively.
 fn function_body(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[CheckedBody, Failure] {
+    function_body(env, id, arguments, constants, emit, true)
+}
+
+// A private contract group defers Task flow until its executable helper closure
+// is known. Logical-only helpers are erased and expanded by the pure prover.
+fn function_body(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool, check_tasks Bool) Result[CheckedBody, Failure] {
     if id < 0 {
         return closure_body(env, -1 - id, new[Context](), emit)
     }
@@ -956,7 +962,9 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
         }
         span = item.node.span
     }
-    discard task_flow(context, checked_function)?
+    if check_tasks {
+        discard task_flow(context, checked_function)?
+    }
     Result.Ok(CheckedBody {
             context = context
             function = checked_function

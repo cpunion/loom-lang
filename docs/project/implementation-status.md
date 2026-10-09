@@ -584,6 +584,12 @@ therefore keep unrelated statuses independent. Mutable and multiple-return
 snapshots retain the bounded path model.
 General dynamic collection completion promises and
 unsupported source-helper bodies remain open.
+Erased postconditions now observe Task-bearing List lengths through pure source
+helpers and nested fields, including entry observations. The private helper
+closure distinguishes these logical reads from executable body, precondition,
+cleanup and dynamic-slot calls, which retain one-shot Task checks. No runtime
+borrow mode or Task evaluation is introduced; see the
+[metadata example](../../compiler/examples/async_contracts/metadata.loom).
 List transfer append/take/replace now reuse the ordinary extent/content theory,
 retaining displaced values and extracted known Task promises. Optional variants
 follow the checked shape rather than library spelling. The

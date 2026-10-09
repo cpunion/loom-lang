@@ -2676,6 +2676,15 @@ bodies and own contracts are still checked in their defining scope, including
 when the caller is unused. Verified postconditions retain call-free checked
 expressions for compile-time execution.
 
+Erased postconditions can observe Task-bearing List metadata through ordinary
+pure helpers, including `old(length(tasks))` and nested record fields. These are
+logical reads, not Task copies or transfers. Executable bodies, `requires`,
+cleanup and dynamic slot targets still use ordinary one-shot Task checks, even
+when the same helper also occurs in an `ensures`. This adds neither runtime
+borrowing nor compile-time Task execution. See the
+[metadata example](examples/async_contracts/metadata.loom). Dynamic List join
+completion/content proofs remain separate work.
+
 Direct calls in a body requiring proof use the callee's verified postconditions
 as a summary for `Int`/`Bool`/`Text` values and leaves of inline records/tuples.
 Synchronous `dyn` calls can use the exact concept
