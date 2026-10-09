@@ -165,10 +165,6 @@ fn dynamic_contract_summary(context Context, call Expr) Result[Function, Failure
         return Result.Err(error(context, node, "required proof has no checked dynamic method slot"))
     }
     let slot = get(slots, call.index)
-    let declaration = symbol(env, get(env.signatures, slot.signature).symbol).node
-    if !has(declaration, NodeKind.Ensures) {
-        return Result.Err(error(context, node, "required proof needs a declared dynamic method postcondition with a supported result"))
-    }
     let arguments = ints(receiver)
     var index = 0
     while index < length(slot.arguments) {
@@ -204,12 +200,13 @@ fn method_summary_type(env Environment, ty Int, depth Int) Bool {
 
 // This body is deliberately not executable: proof-only callers may use the
 // declaration, but CTFE and native emission must never treat it as a default.
+// The return type supplies its own invariants even without an ensures clause.
 fn declared_method_summary(env Environment, id Int, arguments List[Int], constants List[StaticValue]) Result[Function, Failure] {
     let declaration = symbol(env, get(env.signatures, id).symbol).node
     let current = signature(env, id, arguments, declaration)?
-    if !has(declaration, NodeKind.Ensures) || !method_summary_type(env, current.result, 0) {
+    if !method_summary_type(env, current.result, 0) {
         return Result.Err(failure(env, current.symbol, declaration,
-                "required proof needs a concept method with a declared postcondition and supported result"))
+                "required proof needs a concept method with a supported result"))
     }
     let scope = function_scope(env, current, arguments, constants, true)?
     let result_local = length(scope.context.locals)
@@ -228,9 +225,6 @@ fn declared_method_summary(env Environment, id Int, arguments List[Int], constan
             resource_payload = false
         })
     let postconditions = contracts(context_at(scope.context, binding), declaration, NodeKind.Ensures)?
-    if length(postconditions) == 0 {
-        return Result.Err(failure(env, current.symbol, declaration, "required proof has no declared method postcondition"))
-    }
     Result.Ok(Function {
             is_async = async_signature(env, current)
             symbol = current.symbol

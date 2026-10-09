@@ -485,9 +485,11 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         binders = proof.fresh
     }
     discard expansion_step(context, 0)?
-    // A checked fresh factory needs no invented value contract. Its result is
-    // arbitrary typed storage; the body footprint supplies only private origin.
-    if length(function.postconditions) != 0 || function.result == 0 || private_factory(proof.program, function) {
+    // A private abstract method supplies only its checked signature and declared
+    // guarantees, never a body to expand. Type invariants need no extra ensures.
+    // A fresh factory's body footprint supplies only private storage origin.
+    if length(function.postconditions) != 0 || function.body.kind == ExprKind.Deferred ||
+    function.result == 0 || private_factory(proof.program, function) {
         return applied_summary(proof, call, function, state, bindings, boundary, depth)
     }
     // Arguments already ran once. Only snapshot references and a finite pure
@@ -563,7 +565,7 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
         // Independently checked contracts may ignore any typed input. An
         // unmodeled value supplies no facts; operations and requirements on it
         // still need proof. Do not enumerate the permitted opaque type kinds.
-        let opaque = length(function.postconditions) != 0
+        let opaque = length(function.postconditions) != 0 || function.body.kind == ExprKind.Deferred
         if !helper_type(proof.program, ty, 0) && !opaque {
             return Result.Err("body proof helper parameters must be scalars or supported inline aggregates, apart from contracted opaque arguments")
         }

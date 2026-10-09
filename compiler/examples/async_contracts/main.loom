@@ -82,6 +82,7 @@ ensures result > 0 {
 }
 
 async fn exercise() {
+    exercise_type_guarantees().await
     assert saved(42).await == 42
     assert generic(true, "ready").await == "ready"
     let receiver dyn Echo = false

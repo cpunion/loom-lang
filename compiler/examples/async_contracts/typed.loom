@@ -1,0 +1,68 @@
+import std.time.sleep_ms
+
+concept TypedSource {
+    fn number(self Self) Positive
+    async fn number_async(self Self) Positive
+
+    fn pair(self Self) (Positive, Bool) {
+        (Positive(1), true)
+    }
+}
+
+impl TypedSource for Bool {
+    fn number(self Bool) Positive {
+        Positive(3)
+    }
+
+    async fn number_async(self Bool) Positive {
+        sleep_ms(1).await
+        Positive(5)
+    }
+}
+
+fn typed_generic[T TypedSource](source T) Int
+ensures result > 0 {
+    source.number()
+}
+
+fn typed_pair[T TypedSource](source T) Int
+ensures result > 0 {
+    source.pair().0
+}
+
+async fn typed_dynamic(source dyn TypedSource) Int
+ensures result > 0 {
+    let saved = source.number_async()
+    saved.await
+}
+
+fn typed_total[Ts...TypedSource](sources Ts...) Int
+ensures result >= 0 {
+    var sum = 0
+    comptime for source in sources {
+        sum = sum + source.number()
+    }
+    sum
+}
+
+async fn typed_async_total[Ts...TypedSource](sources Ts...) Int
+ensures result >= 0 {
+    var sum = 0
+    comptime for source in sources {
+        sum = sum + source.number_async().await
+    }
+    sum
+}
+
+async fn exercise_type_guarantees() {
+    assert typed_generic(true) == 3
+    assert comptime {
+        typed_generic(false)
+    } == 3
+    assert typed_pair(true) == 1
+    let source dyn TypedSource = false
+    assert typed_dynamic(source).await == 5
+    assert typed_total() == 0 && typed_total(true, false) == 6
+    assert typed_async_total().await == 0
+    assert typed_async_total(true, false).await == 10
+}
