@@ -1708,10 +1708,17 @@ of the caller's creation-time heap; suspension discards unprotected published st
 facts while preserving past scalar snapshots and proved unpublished storage.
 Known Task inputs and unknown callback arguments publish the tracked storage
 they may reach, including inline fields, selected enum payloads and known
-Function/Task inputs. Nested Lists need established values at every current
-index; bounded cells are not a complete heap graph after eviction or forgotten
-observations. Opaque captures, unknown graphs and exhausted traversal revoke all
-privacy conservatively. Possible aliases publish together; different handle IDs
+Function/Task inputs. Complete nested List observations give precise edges;
+bounded cells are not a complete heap graph after eviction or forgotten
+observations. Incomplete graphs use conservative creation/publication provenance.
+Opaque inputs can exclude later private allocations; unknown
+completions also exclude private storage still unreachable after publishing
+their arguments and captures. Mutable edge stores widen the receiver and possible
+ancestor graphs; returned fields and shared children gain no invented separation.
+Loop reassignment widens these facts and requires entry
+and every backedge to preserve each proposed frame; withdrawn frames recheck
+dependent exits and returns. Missing graph coverage and exhausted traversal
+revoke privacy conservatively. Possible aliases publish together; different handle IDs
 do not imply separation. Shared stores and dyn boxing also revoke privacy in
 both ordinary and worker builds. Unreachable private storage retains its frame
 without assuming call purity or that other ready Tasks cannot change shared
@@ -1723,6 +1730,10 @@ The [publication example](examples/async_contracts/publication.loom) composes a
 source stateful generator's length contract through unknown callbacks and keeps
 unrelated fresh output across mutable async inputs. Callback results supply only
 their checked types, and previously published storage cannot regain privacy.
+The [opaque state example](examples/loop_contracts/opaque.loom) combines generic
+state, shared List elements and compile-time execution. Both
+`std.resource.generate` overloads have verified normal-return length contracts;
+resource transfer and reverse lexical cleanup are unchanged.
 No-result source helpers also use finite checked body frames, including actual
 List updates and lexical cleanup; unsupported optional inference falls back to
 conservative summaries, not partial effects. Task drain uses the same suspension
@@ -2735,8 +2746,8 @@ are evaluated in order and their values captured before applying the summary;
 separate call results are not equated merely because they share a callee. The
 emitted function keeps its ordinary calls and original locals.
 Unused function-typed inputs may remain opaque, just like abstract receivers;
-they supply no callable-result or effect facts. Invoking an unknown callback
-still rejects a required proof.
+they supply no callable-result or effect facts. Unknown callbacks retain only
+typed completion values and checked storage frames, never hidden guarantees.
 
 Immutable Text identities, exact literals and established `==`/`!=` facts also
 participate in these proofs, including `old`, finite helpers, Text refinements

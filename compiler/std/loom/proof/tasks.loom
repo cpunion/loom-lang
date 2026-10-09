@@ -33,9 +33,9 @@ fn suspension_state(proof Verification, state State) State {
 }
 
 fn unknown_completion(proof Verification, source Expr, state State) Outcome {
-    let value = record_parameter_value(proof, source.ty, 0)
+    let value = opaque_completion(record_parameter_value(proof, source.ty, 0), state)
     Outcome {
-        state = typed_value_state(proof, source.ty, value, state)
+        state = completion_separation(value, typed_value_state(proof, source.ty, value, state))
         value = value
     }
 }
@@ -232,7 +232,7 @@ fn indirect_body_call(proof Verification, call Expr, state State, depth Int) Res
                 }
                 discard add_outcome(output, unknown_completion(proof, call,
                         suspension_state(proof, published_inputs(proof, types,
-                                current.values, 1, current.state))))?
+                                current.values, 0, current.state))))?
             }
         }
         index = index + 1

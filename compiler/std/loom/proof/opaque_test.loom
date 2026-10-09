@@ -1,0 +1,54 @@
+test fn opaque_frames_require_real_unpublished_allocations() {
+    let initial = State {
+        locals = []
+        facts = []
+        extents = []
+        observations = []
+    }
+    let state = with_extent(10, constant(integer(1)), true, initial)
+    let extent = match list_state(10, state) {
+        Result.Ok(extent) => extent
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert opaque_frame(Value.Opaque(10, []), extent)
+    assert !opaque_frame(Value.Opaque(11, []), extent)
+    assert opaque_frame(Value.Opaque(-1, [10]), extent)
+    assert !opaque_frame(Value.Opaque(-1, [10]), private_extent(extent, false))
+    let unknown = with_extent(10, constant(integer(1)), false, initial)
+    assert match list_state(10, unknown) {
+        Result.Ok(extent) => !opaque_frame(Value.Opaque(0, [10]), extent)
+        Result.Err(_) => false
+    }
+    // Widening a loop local must erase both entry-time and call-result facts.
+    assert !opaque_frame(loop_opaque_head(Value.Opaque(0, [10])), extent)
+    assert match loop_header_at(loop_opaque_head(Value.Opaque(0, [])), [], 10, true, 0) {
+        Result.Ok(value) => opaque_frame(value, extent)
+        Result.Err(_) => false
+    }
+    assert match opaque_completion(Value.Opaque(11, []), state) {
+        Value.Opaque(_, excluded) => storage_identity_member(excluded, 10)
+        _ => false
+    }
+    assert match opaque_completion(Value.Opaque(11, []), published_storage(state)) {
+        Value.Opaque(_, excluded) => length(excluded) == 0
+        _ => false
+    }
+    let returned = completion_separation(Value.List(20), list_bounds(Value.List(20), state))
+    assert match list_state(20, returned) {
+        Result.Ok(root) => !extent_overlap(root, extent)
+        Result.Err(_) => false
+    }
+    let later = list_bounds(Value.List(30), returned)
+    assert match list_state(30, later) {
+        Result.Ok(root) => extent_overlap(root, extent)
+        Result.Err(_) => false
+    }
+    // Losing privacy never reconstructs an exclusion from an old result.
+    assert match list_state(20, published_storage(returned)) {
+        Result.Ok(root) => extent_overlap(root, private_extent(extent, false))
+        Result.Err(_) => false
+    }
+}

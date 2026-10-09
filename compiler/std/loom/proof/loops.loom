@@ -12,6 +12,7 @@ enum LoopCandidate {
     Entry(Int, List[Int], Text, Value)
     Guard(Expr)
     Header(Int, List[Int], Int)
+    Unreachable(Int, List[Int], Int)
     EntryExtent(Int, List[Int], Text, Linear)
     Element(Int, Linear, Text, Value)
     Affine(List[LoopTerm], Value)
@@ -75,6 +76,10 @@ fn loop_local_type(proof Verification, ty Int, depth Int) Bool {
     }
     let shape = get(proof.program.types, ty)
     if shape.kind == TypeKind.List {
+        return true
+    }
+    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated ||
+    shape.kind == TypeKind.Function || shape.kind == TypeKind.Dyn || shape.kind == TypeKind.Task {
         return true
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
@@ -214,6 +219,8 @@ fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] 
             Value.List(current) => Result.Ok(Predicate.Constant(current == identity))
             _ => Result.Err("loop header invariant needs a tracked List")
         }
+        LoopCandidate.Unreachable(local, path, identity) => Result.Ok(Predicate.Constant(
+                storage_frame(loop_local_value(get(state.locals, local), path)?, list_state(identity, state)?, state)))
         LoopCandidate.EntryExtent(index, path, relation, initial) => {
             var value = get(state.locals, index)
             var field = 0
@@ -472,7 +479,8 @@ fn loop_head(proof Verification, writes List[Bool], entry State, candidates List
                 Value.Empty => {
                 }
                 _ => {
-                    let initial = record_parameter_value(proof, get(proof.function.locals, index).ty, 0)
+                    let initial = loop_opaque_head(record_parameter_value(proof,
+                            get(proof.function.locals, index).ty, 0))
                     let value = if headers == 0 {
                         initial
                     } else {
@@ -481,6 +489,7 @@ fn loop_head(proof Verification, writes List[Bool], entry State, candidates List
                     let ty = get(proof.function.locals, index).ty
                     state = invariant_facts(proof.program.types, ty, value,
                         loop_bounds(value, assigned(state, index, value)), 0)
+                    state = loop_separated_head(index, value, candidates, state)?
                 }
             }
         }
@@ -574,7 +583,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
                 })?
             index = index + 1
         }
-        let survivors = new[LoopCandidate]()
+        var survivors = new[LoopCandidate]()
         index = 0
         while index < length(candidates) {
             let candidate = get(candidates, index)
@@ -590,25 +599,35 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             }
             index = index + 1
         }
-        var published = false
-        index = 0
-        while index < length(backedges) {
-            if private_storage_lost(head, get(backedges, index).state) {
-                published = true
-            }
-            index = index + 1
-        }
-        if length(survivors) == length(candidates) && !published {
+        let published = loop_publications(head, backedges)
+        let graph_losses = loop_graph_losses(proof, head, backedges)?
+        if length(survivors) == length(candidates) && length(published) == 0 && length(graph_losses) == 0 {
             if proof.capture_returns {
                 discard append(proof.returns, iteration.returns)?
             }
             return Result.Ok(exits)
         }
-        if published {
+        if length(published) != 0 {
             // Privacy is an inductive fact too. A later iteration must not
             // recover the pre-loop exclusivity of an already published alias.
-            head = published_storage(head)
-            storage = published_storage(storage)
+            head = published_storage(head, published)
+            storage = published_storage(storage, published)
+            // A frame candidate whose allocation lost privacy is unavailable,
+            // not a false hypothesis that can make the next pass vacuous.
+            let retained = new[LoopCandidate]()
+            index = 0
+            while index < length(survivors) {
+                let candidate = get(survivors, index)
+                if !storage_identity_member(published, loop_frame_target(candidate)) {
+                    push(retained, candidate)
+                }
+                index = index + 1
+            }
+            survivors = retained
+        }
+        if length(graph_losses) != 0 {
+            head = unframed_graphs(head, graph_losses)
+            storage = unframed_graphs(storage, graph_losses)
         }
         // Recheck every survivor after a removal: a candidate may have relied
         // on the rejected one. The final pass also rechecks early returns.
@@ -617,7 +636,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
         } else {
             loop_header_count(survivors)
         }
-        let changed_headers = headers != remaining_headers
+        let changed_headers = headers != remaining_headers || length(graph_losses) != 0
         headers = remaining_headers
         candidates = survivors
         if changed_headers {

@@ -559,10 +559,22 @@ Suspension invalidates unprotected published storage while retaining immutable
 scalar snapshots, validated invariants and proved unpublished storage. Known
 Task inputs and unknown callback arguments now follow evaluated inline values,
 selected enum payloads and completely observed nested Lists to publish reachable
-storage. Possible aliases publish together. Missing/evicted cells, opaque graphs
-and exhausted traversal still discard all privacy; shared stores and dyn boxing
+storage. Possible aliases publish together. Opaque typed inputs retain a creation
+frontier; completions can exclude private allocations they could not reach after
+argument publication. Incomplete List graphs use this provenance rather than
+pretending bounded cells cover the heap. Mutable edge stores widen the receiver
+and every root not proved unable to reach it; no separation between returned
+fields or shared children is inferred. Loop reassignment widens these facts and retains
+only entry/all-backedge-checked candidates; losing one frame rechecks dependent
+returns without making other candidates false hypotheses. Unproved reachability
+and exhausted traversal still discard privacy; shared stores and dyn boxing
 remain conservative. Unreachable private allocations retain their frame in
 ordinary and worker builds, without promising purity or framing shared aliases.
+The [opaque state example](../../compiler/examples/loop_contracts/opaque.loom)
+checks generic stateful construction with shared elements and compile-time
+execution. Both source `std.resource.generate` overloads now prove their result
+lengths, including a stateful factory and its final callback. General nested
+graph publication and resource-drain content proofs remain open.
 The [publication example](../../compiler/examples/async_contracts/publication.loom)
 proves source stateful generation length contracts through unknown callbacks and
 unrelated mutable async inputs. The

@@ -5,6 +5,14 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Retain checked unreachable-allocation facts for opaque inputs and completions,
+  including incompletely observed List graphs. Mutable edge stores widen
+  possible ancestor graphs. Loop entry/backedge
+  checks withdraw failed frames and recheck dependent returns; publication
+  revokes only affected headers and never creates a false loop hypothesis.
+  Verify both source `std.resource.generate` length contracts without a factory
+  axiom, ownership syntax, or runtime proof metadata.
+
 - Allow pure postcondition helpers to observe synchronous MustScope results
   through their logical borrowed binding. Ordinary executable calls still
   require `scoped`; freshness, cleanup and required proofs are unchanged.

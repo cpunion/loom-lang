@@ -1,0 +1,204 @@
+// Publication can invalidate these exclusions, never recover privacy. Only
+// actual private allocations qualify: a later symbolic handle may alias any
+// earlier allocation, regardless of its logical ID.
+fn opaque_frame(value Value, extent ListExtent) Bool {
+    if !extent.allocated || !extent.private_storage {
+        return false
+    }
+    match value {
+        Value.Opaque(frontier, excluded) => (frontier >= 0 && extent.identity >= frontier) ||
+        storage_identity_member(excluded, extent.identity)
+        _ => false
+    }
+}
+
+fn list_graph_frame(root ListExtent, target ListExtent) Bool {
+    root.identity != target.identity && target.allocated && target.private_storage &&
+    ((root.frontier >= 0 && target.identity >= root.frontier) ||
+        storage_identity_member(root.unreachable, target.identity))
+}
+
+fn storage_frame(value Value, target ListExtent, state State) Bool {
+    match value {
+        Value.List(identity) => match list_state(identity, state) {
+            Result.Ok(root) => list_graph_frame(root, target)
+            Result.Err(_) => false
+        }
+        _ => opaque_frame(value, target)
+    }
+}
+
+// An opaque completion cannot return storage it could not reach. This runs
+// after argument publication and interference, not before evaluating inputs.
+fn opaque_completion(value Value, state State) Value {
+    match value {
+        Value.Opaque(frontier, _) => {
+            let excluded = new[Int]()
+            var index = 0
+            while index < length(state.extents) {
+                let extent = get(state.extents, index)
+                if extent.allocated && extent.private_storage {
+                    push(excluded, extent.identity)
+                }
+                index = index + 1
+            }
+            Value.Opaque(frontier, excluded)
+        }
+        Value.Record(fields) => {
+            let values = new[Value]()
+            var index = 0
+            while index < length(fields) {
+                push(values, opaque_completion(get(fields, index), state))
+                index = index + 1
+            }
+            Value.Record(values)
+        }
+        Value.Sum(owner, tag, payloads) => {
+            let variants = new[List[Value]]()
+            var variant = 0
+            while variant < length(payloads) {
+                let fields = new[Value]()
+                var field = 0
+                while field < length(get(payloads, variant)) {
+                    push(fields, opaque_completion(get(get(payloads, variant), field), state))
+                    field = field + 1
+                }
+                push(variants, fields)
+                variant = variant + 1
+            }
+            Value.Sum(owner, tag, variants)
+        }
+        _ => value
+    }
+}
+
+fn graph_extent(extent ListExtent, frontier Int, unreachable List[Int]) ListExtent {
+    ListExtent {
+        identity = extent.identity
+        size = extent.size
+        allocated = extent.allocated
+        private_storage = extent.private_storage
+        read_only = extent.read_only
+        fixed_extent = extent.fixed_extent
+        invariant_type = extent.invariant_type
+        frontier = frontier
+        unreachable = unreachable
+        contents = extent.contents
+        cells = extent.cells
+    }
+}
+
+fn separate_storage(identity Int, excluded List[Int], state State) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        var separate = extent.unreachable
+        if extent.identity == identity {
+            separate = std.list.clone(separate)
+            var item = 0
+            while item < length(excluded) {
+                let target = get(excluded, item)
+                if !storage_identity_member(separate, target) {
+                    push(separate, target)
+                }
+                item = item + 1
+            }
+        }
+        push(extents, graph_extent(extent, extent.frontier, separate))
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
+    }
+}
+
+// A completion graph cannot contain an allocation inaccessible to the call.
+// This is not separation between its fields or between any shared children.
+fn completion_separation(value Value, state State) State {
+    match value {
+        Value.List(identity) => {
+            let excluded = new[Int]()
+            var index = 0
+            while index < length(state.extents) {
+                let extent = get(state.extents, index)
+                if extent.allocated && extent.private_storage && extent.identity != identity {
+                    push(excluded, extent.identity)
+                }
+                index = index + 1
+            }
+            separate_storage(identity, excluded, state)
+        }
+        Value.Record(fields) => {
+            var current = state
+            var index = 0
+            while index < length(fields) {
+                current = completion_separation(get(fields, index), current)
+                index = index + 1
+            }
+            current
+        }
+        Value.Sum(_, _, payloads) => {
+            var current = state
+            var variant = 0
+            while variant < length(payloads) {
+                current = completion_separation(Value.Record(get(payloads, variant)), current)
+                variant = variant + 1
+            }
+            current
+        }
+        _ => state
+    }
+}
+
+// A store may connect a previously excluded child through any ancestor of its
+// receiver. Widen every root not proved unable to reach that receiver. Exact
+// cells can still provide a more precise publication walk afterwards.
+fn stored_graph(proof Verification, identity Int, state State) State {
+    let target = match list_state(identity, state) {
+        Result.Ok(target) => target
+        Result.Err(_) => {
+            return published_storage(state)
+        }
+    }
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        push(extents, if list_graph_frame(extent, target) {
+                extent
+            } else {
+                graph_extent(extent, get(proof.fresh, 0), new[Int]())
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
+    }
+}
+
+fn unframed_graphs(state State, identities List[Int]) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        push(extents, if storage_identity_member(identities, extent.identity) {
+                graph_extent(extent, -1, new[Int]())
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
+    }
+}

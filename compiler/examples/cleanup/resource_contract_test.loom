@@ -1,5 +1,6 @@
 import std.resource.MustScope
 import std.resource.Dispose
+import std.resource.generate
 import std.list.push
 import std.list.length
 
@@ -44,4 +45,36 @@ test fn synchronous_resource_contracts_preserve_transfer_and_scope_cleanup() {
         assert length(closed) == 0
     }
     assert length(closed) == 2 && closed[0] == 8 && closed[1] == 7
+}
+
+fn generated_contract_handles(count Int, closed List[Int]) List[ContractHandle]
+requires count >= 0
+ensures length(result) == count {
+    generate(count, fn(index Int) ContractHandle {
+            contract_handle(index, closed)
+        })
+}
+
+fn stateful_contract_handles(count Int, closed List[Int]) List[ContractHandle]
+requires count >= 0
+ensures length(result) == count {
+    generate(count, closed, fn(index Int, state List[Int]) (ContractHandle, List[Int]) {
+            (contract_handle(index, state), state)
+        }, fn(state List[Int]) {
+            discard state
+        })
+}
+
+test fn generated_resource_lengths_compose_without_losing_reverse_cleanup() {
+    let closed List[Int] = []
+    {
+        scoped handles = generated_contract_handles(3, closed)
+        assert length(handles) == 3 && length(closed) == 0
+    }
+    assert length(closed) == 3 && closed[0] == 2 && closed[2] == 0
+    {
+        scoped handles = stateful_contract_handles(2, closed)
+        assert length(handles) == 2 && length(closed) == 3
+    }
+    assert length(closed) == 5 && closed[3] == 1 && closed[4] == 0
 }

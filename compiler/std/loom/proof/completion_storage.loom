@@ -18,6 +18,7 @@ fn private_return_storage(value Value, state State) Bool {
             true
         }
         Value.Empty => false
+        Value.Opaque(_, _) => false
         Value.Projected(_, _, _) => false
         _ => true
     }

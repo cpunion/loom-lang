@@ -8,6 +8,28 @@ fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local In
         Value.List(identity) => {
             discard loop_step(proof)?
             discard add_loop_candidate(candidates, LoopCandidate.Header(local, path, identity), entry)?
+            var index = 0
+            while index < length(entry.extents) && length(candidates) < 64 {
+                let target = get(entry.extents, index)
+                if storage_frame(value, target, entry) {
+                    discard loop_step(proof)?
+                    discard add_loop_candidate(candidates,
+                        LoopCandidate.Unreachable(local, path, target.identity), entry)?
+                }
+                index = index + 1
+            }
+        }
+        Value.Opaque(_, _) => {
+            var index = 0
+            while index < length(entry.extents) && length(candidates) < 64 {
+                let extent = get(entry.extents, index)
+                if opaque_frame(value, extent) {
+                    discard loop_step(proof)?
+                    discard add_loop_candidate(candidates,
+                        LoopCandidate.Unreachable(local, path, extent.identity), entry)?
+                }
+                index = index + 1
+            }
         }
         Value.Record(fields) => {
             discard loop_step(proof)?
@@ -47,6 +69,9 @@ fn loop_header_count(candidates List[LoopCandidate]) Int {
             LoopCandidate.Header(_, _, _) => {
                 count = count + 1
             }
+            LoopCandidate.Unreachable(_, _, _) => {
+                count = count + 1
+            }
             _ => {
             }
         }
@@ -55,10 +80,122 @@ fn loop_header_count(candidates List[LoopCandidate]) Int {
     count
 }
 
-fn loop_header_at(value Value, path List[Int], identity Int, depth Int) Result[Value, Text] {
+fn loop_frame_target(candidate LoopCandidate) Int {
+    match candidate {
+        LoopCandidate.Unreachable(_, _, identity) => identity
+        _ => -1
+    }
+}
+
+fn loop_publications(head State, backedges List[Outcome]) List[Int] {
+    let published = new[Int]()
+    var index = 0
+    while index < length(head.extents) {
+        let extent = get(head.extents, index)
+        if extent.private_storage {
+            var edge = 0
+            while edge < length(backedges) {
+                let state = get(backedges, edge).state
+                if !loop_holds(Predicate.Constant(false), state) {
+                    let retained = match list_state(extent.identity, state) {
+                        Result.Ok(current) => current.private_storage
+                        Result.Err(_) => false
+                    }
+                    if !retained {
+                        push(published, extent.identity)
+                        break
+                    }
+                }
+                edge = edge + 1
+            }
+        }
+        index = index + 1
+    }
+    published
+}
+
+// Heap edges change even without rebinding a source local. Check retained
+// graph exclusions too, including ancestors widened by a descendant store.
+fn loop_graph_losses(proof Verification, head State, backedges List[Outcome]) Result[List[Int], Text] {
+    let lost = new[Int]()
+    var root = 0
+    while root < length(head.extents) {
+        let before = get(head.extents, root)
+        var failed = false
+        var edge = 0
+        while edge < length(backedges) && !failed {
+            let state = get(backedges, edge).state
+            if !loop_holds(Predicate.Constant(false), state) {
+                let current = list_state(before.identity, state)?
+                var target = 0
+                while target < length(head.extents) && !failed {
+                    let extent = get(head.extents, target)
+                    if list_graph_frame(before, extent) {
+                        discard loop_step(proof)?
+                        failed = !list_graph_frame(current, list_state(extent.identity, state)?)
+                    }
+                    target = target + 1
+                }
+            }
+            edge = edge + 1
+        }
+        if failed {
+            push(lost, before.identity)
+        }
+        root = root + 1
+    }
+    Result.Ok(lost)
+}
+
+// Reassignment cannot inherit an opaque input's entry frontier. Only checked
+// entry/all-backedge exclusions may be installed in the abstract loop head.
+fn loop_opaque_head(value Value) Value {
+    match value {
+        Value.Opaque(_, _) => Value.Opaque(-1, new[Int]())
+        Value.Record(fields) => {
+            let values = new[Value]()
+            var index = 0
+            while index < length(fields) {
+                push(values, loop_opaque_head(get(fields, index)))
+                index = index + 1
+            }
+            Value.Record(values)
+        }
+        Value.Sum(owner, tag, payloads) => {
+            let variants = new[List[Value]]()
+            var variant = 0
+            while variant < length(payloads) {
+                let fields = new[Value]()
+                var field = 0
+                while field < length(get(payloads, variant)) {
+                    push(fields, loop_opaque_head(get(get(payloads, variant), field)))
+                    field = field + 1
+                }
+                push(variants, fields)
+                variant = variant + 1
+            }
+            Value.Sum(owner, tag, variants)
+        }
+        _ => value
+    }
+}
+
+fn loop_header_at(value Value, path List[Int], identity Int, opaque Bool, depth Int) Result[Value, Text] {
     if depth == length(path) {
         return match value {
-            Value.List(_) => Result.Ok(Value.List(identity))
+            Value.List(_) => if !opaque {
+                Result.Ok(Value.List(identity))
+            } else {
+                Result.Ok(value)
+            }
+            Value.Opaque(frontier, excluded) => {
+                if !opaque {
+                    return Result.Err("loop header hypothesis needs a supported List value")
+                }
+                let identities = std.list.clone(excluded)
+                push(identities, identity)
+                Result.Ok(Value.Opaque(frontier, identities))
+            }
             _ => Result.Err("loop header hypothesis needs a supported List value")
         }
     }
@@ -66,7 +203,7 @@ fn loop_header_at(value Value, path List[Int], identity Int, depth Int) Result[V
         Value.Record(fields) => {
             let selected = get(path, depth)
             let values = std.list.clone(fields)
-            set(values, selected, loop_header_at(get(fields, selected), path, identity, depth + 1)?)
+            set(values, selected, loop_header_at(get(fields, selected), path, identity, opaque, depth + 1)?)
             Result.Ok(Value.Record(values))
         }
         _ => Result.Err("loop header hypothesis needs a supported inline projection")
@@ -79,6 +216,8 @@ fn loop_header_value(local Int, initial Value, candidates List[LoopCandidate]) R
         }
         Value.Record(_) => {
         }
+        Value.Opaque(_, _) => {
+        }
         _ => {
             return Result.Ok(initial)
         }
@@ -89,7 +228,12 @@ fn loop_header_value(local Int, initial Value, candidates List[LoopCandidate]) R
         match get(candidates, index) {
             LoopCandidate.Header(target, path, identity) => {
                 if target == local {
-                    value = loop_header_at(value, path, identity, 0)?
+                    value = loop_header_at(value, path, identity, false, 0)?
+                }
+            }
+            LoopCandidate.Unreachable(target, path, identity) => {
+                if target == local {
+                    value = loop_header_at(value, path, identity, true, 0)?
                 }
             }
             _ => {
@@ -98,4 +242,28 @@ fn loop_header_value(local Int, initial Value, candidates List[LoopCandidate]) R
         index = index + 1
     }
     Result.Ok(value)
+}
+
+fn loop_separated_head(local Int, value Value, candidates List[LoopCandidate], state State) Result[State, Text] {
+    var current = state
+    var index = 0
+    while index < length(candidates) {
+        match get(candidates, index) {
+            LoopCandidate.Unreachable(target, path, excluded) => {
+                if target == local {
+                    match loop_local_value(value, path)? {
+                        Value.List(identity) => {
+                            current = separate_storage(identity, [excluded], current)
+                        }
+                        _ => {
+                        }
+                    }
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(current)
 }

@@ -99,6 +99,9 @@ fn record_outcomes(proof Verification, expr Expr, state State, depth Int) Result
 }
 
 fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
+    if ty == 0 || ty == 4 {
+        return Value.Empty
+    }
     if ty == 1 || ty == 2 || ty == 3 || ty == 5 {
         return fresh_result(proof, ty)
     }
@@ -112,7 +115,7 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
         return Value.List(identity)
     }
     if shape.kind == TypeKind.Task {
-        return Value.Task(-1, new[Value](), new[ListExtent]())
+        return Value.Opaque(get(proof.fresh, 0), new[Int]())
     }
     if shape.kind == TypeKind.Enum {
         return enum_parameter_value(proof, ty, depth)
@@ -126,7 +129,7 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
         return record_parameter_value(proof, get(shape.fields, 0).ty, depth + 1)
     }
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
-        return Value.Empty
+        return Value.Opaque(get(proof.fresh, 0), new[Int]())
     }
     let fields = new[Value]()
     var index = 0
@@ -179,10 +182,9 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
         return Result.Ok(record_parameter_value(proof, get(shape.fields, 0).ty, 0))
     }
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
-        // Unmodeled typed inputs carry no evidence, just like unsupported
-        // leaves of record parameters. Reading them still fails closed; their
-        // mere presence must not block a proof about independent scalar data.
-        return Result.Ok(Value.Empty)
+        // No value facts are invented for unmodeled inputs. Their existing
+        // graph still precedes later private allocations.
+        return Result.Ok(record_parameter_value(proof, ty, 0))
     }
     Result.Ok(record_parameter_value(proof, ty, 0))
 }

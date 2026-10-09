@@ -80,6 +80,10 @@ enum Value {
     // Only the selected payload's type invariants may become branch facts.
     Sum(Int, Linear, List[List[Value]])
     Empty
+    // An existing, otherwise unmodeled graph. The frontier excludes later
+    // allocations; explicit exclusions are checked private call-frame facts.
+    // Neither supplies a value, type-conformance or equality assumption.
+    Opaque(Int, List[Int])
     Text(TextValue)
     Float(FloatValue)
     List(Int)
@@ -105,6 +109,9 @@ record ListExtent {
     read_only Bool
     fixed_extent Bool
     invariant_type Int
+    // Reachability provenance, widened by stores into possible descendants.
+    frontier Int
+    unreachable List[Int]
     contents Int
     cells List[ListCell]
 }

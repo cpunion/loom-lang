@@ -1,6 +1,7 @@
 fn resource_state_checked(body Text) Result[std.loom.typed.Program, Failure] {
     let files = resource_source_files(concat(resource_header(), concat("import std.resource.generate\n", body)))
     set(files, 1, source_file("std.resource", input_file("../../resource/resource.loom"), true))
+    set(files, 4, get(list_length_files(""), 1))
     push(files, source_file("std.task", """
         intrinsic fn task_drain[T](task Task[T], suppress Bool)
         pub fn finish(task Task[Int]) {
