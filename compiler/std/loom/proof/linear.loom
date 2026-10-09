@@ -3,7 +3,20 @@ import std.list.get
 import std.list.push
 import std.list.length
 
+// Published term lists are read-only; identity operations can reuse them.
 fn add(a Linear, b Linear) Linear {
+    if length(a.terms) == 0 {
+        return Linear {
+            constant = sum(a.constant, b.constant)
+            terms = b.terms
+        }
+    }
+    if length(b.terms) == 0 {
+        return Linear {
+            constant = sum(a.constant, b.constant)
+            terms = a.terms
+        }
+    }
     let terms = new[Term]()
     var left = 0
     var right = 0
@@ -46,6 +59,12 @@ fn add(a Linear, b Linear) Linear {
 }
 
 fn scale(value Linear, factor Number) Linear {
+    if length(factor.digits) == 0 {
+        return constant(factor)
+    }
+    if !factor.negative && unit(factor) {
+        return value
+    }
     let terms = new[Term]()
     var index = 0
     while index < length(value.terms) {
@@ -283,11 +302,12 @@ fn range(value Linear, facts List[Predicate]) Bounds {
                 Predicate.Compare(relation, term) => {
                     if length(term.terms) == 1 && get(term.terms, 0).id == coefficient.id {
                         let factor = get(term.terms, 0).factor
-                        if compare(factor, integer(1)) == 0 {
-                            bounds = tighten(bounds, relation, negate(term.constant))
-                        }
-                        if compare(factor, integer(-1)) == 0 {
-                            bounds = tighten(bounds, flip(relation), term.constant)
+                        if unit(factor) {
+                            bounds = if factor.negative {
+                                tighten(bounds, flip(relation), term.constant)
+                            } else {
+                                tighten(bounds, relation, negate(term.constant))
+                            }
                         }
                     }
                 }

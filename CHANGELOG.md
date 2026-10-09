@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Reduce temporary allocations in exact proof arithmetic. Reuse canonical
+  read-only digits and linear terms for normalization, zero and unit operations;
+  range checks recognize unit coefficients without constructing constants.
+  Arbitrary precision and all proof obligations are unchanged.
+
 - Declare and verify dynamic `std.task.all`/`settled` result lengths through
   ordinary source contracts, including resource payloads. Loop analysis follows
   tagged cleanup bodies instead of rejecting their metadata; disarmed cleanup
