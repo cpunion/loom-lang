@@ -741,6 +741,12 @@ retains representation conversions, so dynamic Task joins and entry scans reuse
 the same columns and type predicates. Bounds and coherent-observation checks
 remain independent; mutable children supply no invented facts. See the
 [typed contents example](../../compiler/examples/async_contracts/typed_contents.loom).
+Nominal enums now use separate tag and guarded payload columns, including nested
+enum/record refinements and pure constraint helpers. Payload-free replacement
+frames every untouched modeled column. Immutable enum entry elements support
+`old`; typed scans and Task result Lists reuse these same rules. Inactive payloads
+supply no unconditional facts, and mutable children remain shared. See the
+[enum contents example](../../compiler/examples/enum_contents/main.loom).
 Ordinary bounded pure Boolean scans derive scoped universal predicates and
 their existential duals from uniform constant early returns. Multiple/nested
 conditions and per-iteration local rebinding retain their source guards; mixed

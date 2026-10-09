@@ -142,7 +142,17 @@ fn projection_index(value Value) Result[Int, Text] {
     Result.Err("enum proof projection needs a constant field index")
 }
 
-fn enum_projection(name Text, inputs List[Value]) Result[Value, Text] {
+// Negative path components cannot collide with ordinary inline field indices.
+// These are proof columns, independent of the native enum representation.
+fn enum_tag_path(path List[Int]) List[Int] {
+    projection_field(path, -1)
+}
+
+fn enum_payload_path(path List[Int], variant Int, field Int) List[Int] {
+    projection_field(projection_field(projection_field(path, -2), variant), field)
+}
+
+fn enum_projection(name Text, ty Int, inputs List[Value]) Result[Value, Text] {
     match get(inputs, 0) {
         Value.Sum(_, tag, payloads) => {
             if name == "proof_enum_tag" {
@@ -158,6 +168,14 @@ fn enum_projection(name Text, inputs List[Value]) Result[Value, Text] {
             // guarded formula. Definedness separately requires the selected
             // tag; no type invariant is assumed for an inactive payload.
             return Result.Ok(get(get(payloads, variant), field))
+        }
+        Value.Projected(contents, path, index) => {
+            if name == "proof_enum_tag" {
+                return Result.Ok(projected_value(contents, enum_tag_path(path), index, 1))
+            }
+            let variant = projection_index(get(inputs, 1))?
+            let field = projection_index(get(inputs, 2))?
+            return Result.Ok(projected_value(contents, enum_payload_path(path, variant, field), index, ty))
         }
         _ => {
         }
@@ -189,6 +207,11 @@ fn enum_projection_guard(inputs List[Value]) Result[Predicate, Text] {
         Value.Sum(_, tag, _) => {
             let variant = projection_index(get(inputs, 1))?
             return Result.Ok(Predicate.Compare("==", add(tag, constant(integer(-variant)))))
+        }
+        Value.Projected(contents, path, index) => {
+            let variant = projection_index(get(inputs, 1))?
+            return Result.Ok(integer_predicate("==", IntegerTerm.Select(contents, enum_tag_path(path), index),
+                    IntegerTerm.Linear(constant(integer(variant)))))
         }
         _ => {
         }

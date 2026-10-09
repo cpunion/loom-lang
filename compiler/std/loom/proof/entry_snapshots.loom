@@ -160,6 +160,21 @@ fn immutable_snapshot(value Value) Bool {
             }
             true
         }
+        Value.Sum(_, _, payloads) => {
+            var variant = 0
+            while variant < length(payloads) {
+                let fields = get(payloads, variant)
+                var field = 0
+                while field < length(fields) {
+                    if !immutable_snapshot(get(fields, field)) {
+                        return false
+                    }
+                    field = field + 1
+                }
+                variant = variant + 1
+            }
+            true
+        }
         _ => false
     }
 }

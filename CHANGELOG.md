@@ -5,6 +5,13 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Extend logical List columns to nominal enum tags and guarded payloads,
+  including nested enum/record refinements and pure constraint helpers.
+  Reads, writes, immutable entry elements and typed Task results reuse the
+  existing array algebra; inactive payloads supply no unconditional facts and
+  mutable children are not frozen. Preserve untouched columns when storing a
+  payload-free variant, without runtime layout changes or a larger proof budget.
+
 - Compose pure enum match predicates in required contracts through checked
   nominal tags and guarded payload projections. Nested/guarded patterns,
   correlated conditional receivers,

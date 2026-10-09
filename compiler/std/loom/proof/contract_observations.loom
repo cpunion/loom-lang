@@ -3,13 +3,18 @@
 // The ordinary expression algebra then proves truth *and* definedness. Never
 // execute the predicate as a body assertion: that would assume its own success.
 fn contract_observations(proof Verification, value Expr, guard Expr, state State) Result[EntrySnapshot, Text] {
-    if enum_payload_expression(value) &&
-    loop_holds(Predicate.Constant(false), guarded_entry(guard, state)) {
-        return Result.Ok(EntrySnapshot {
-                expression = value
-                state = state
-                entry = state
-            })
+    if enum_payload_expression(value) {
+        let skipped = match pure(guard, state) {
+            Result.Ok(Value.Boolean(condition)) => loop_holds(not(condition), state)
+            _ => loop_holds(Predicate.Constant(false), guarded_entry(guard, state))
+        }
+        if skipped {
+            return Result.Ok(EntrySnapshot {
+                    expression = value
+                    state = state
+                    entry = state
+                })
+        }
     }
     if quantified_expression(value) {
         let current = quantified_views(proof, value, state, false, 256)?
@@ -43,12 +48,14 @@ fn contract_observations(proof Verification, value Expr, guard Expr, state State
             Result.Ok(Value.Boolean(condition)) => condition
             _ => Predicate.Constant(false)
         }
-        let valid = Predicate.And(predicates(evaluated, enum_payload_guard(expression, current)?))
+        let selected = enum_payload_guard(expression, current)?
+        let valid = Predicate.And(predicates(evaluated, selected))
         // A known constructor has no inactive fields to materialize. Symbolic
         // payload type facts are conditional on their own tag, never global.
         if !loop_holds(not(valid), current) {
-            let available = assume(current, valid)
-            let payload = pure(expression, available)?
+            // Keep the evaluated receiver. Re-reading under hypothetical
+            // facts can make a contradictory branch select an unrelated cell.
+            let payload = pure(expression, current)?
             current = guarded_value_invariants(proof, expression.ty, payload, valid, current)
         }
     }

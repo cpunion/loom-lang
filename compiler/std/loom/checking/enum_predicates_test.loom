@@ -187,3 +187,40 @@ test fn enum_payload_invariants_are_guarded_and_shared_storage_stays_shared() {
         }
         """, false, "postcondition")
 }
+
+test fn immutable_enum_entry_elements_reuse_the_existing_snapshot_rules() {
+    task_metadata_contract("""
+        import std.list.length
+        enum Choice[T] {
+            Value(T)
+            Missing
+        }
+        fn score(value Choice[Int]) Int {
+            match value {
+                Choice.Value(number) => number
+                Choice.Missing => 0
+            }
+        }
+        fn restore(values List[Choice[Int]], index Int)
+        requires index >= 0 && index < length(values)
+        ensures score(values[index]) == old(score(values[index])) {
+            let saved = values[index]
+            values[index] = Choice.Missing()
+            values[index] = saved
+        }
+        """, true, "")
+    task_metadata_contract("""
+        import std.list.length
+        enum Choice[T] {
+            Value(T)
+            Missing
+        }
+        fn unchanged(values List[Choice[List[Int]]])
+        requires length(values) > 0
+        ensures match old(values[0]) {
+            Choice.Value(items) => length(items) > 0
+            Choice.Missing => true
+        } {
+        }
+        """, false, "immutable")
+}

@@ -2931,6 +2931,15 @@ an access in bounds or make shared observations coherent. The
 composes dynamic joins and entry scans without inspecting mutable child graphs
 or introducing join-specific proof rules.
 
+Nominal enum columns retain a separate tag and each variant's inline payload
+paths, including nested enum/record refinements and pure constraint helpers.
+Only a selected tag supplies payload type facts. Stores frame untouched indices
+even when the new variant has no payload. Immutable enum entry elements also
+support `old`; shared children remain opaque, not copied or frozen. The
+[enum contents example](examples/enum_contents/main.loom) combines typed scans,
+arbitrary-index restoration, nested payloads and dynamic Task joins. This does
+not establish general relational payload or transfer-loop induction.
+
 Bounded pure scans can express List predicates over modeled integer elements or
 inline field paths without special
 helper names or a new source quantifier syntax. The current fragment recognizes

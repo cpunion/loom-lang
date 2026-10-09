@@ -2,7 +2,7 @@
 // eager evaluation belong to the composition layer, not to individual theories.
 fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Value, Text] {
     if name == "proof_enum_tag" || name == "proof_enum_payload" {
-        return enum_projection(name, inputs)
+        return enum_projection(name, ty, inputs)
     }
     if name == "text_len" {
         return match get(inputs, 0) {
@@ -79,7 +79,7 @@ fn intrinsic_defined(expr Expr, state State) Result[Bool, Text] {
             push(inputs, pure(get(expr.children, index), state)?)
             index = index + 1
         }
-        discard enum_projection(expr.text, inputs)?
+        discard enum_projection(expr.text, expr.ty, inputs)?
         return Result.Ok(true)
     }
     if count_expression(expr) {

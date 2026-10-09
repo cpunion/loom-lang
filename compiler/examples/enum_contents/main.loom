@@ -1,0 +1,146 @@
+import std.list.length
+import std.list.push
+import std.task.all
+import std.text.length
+import std.time.sleep_ms
+
+type Positive = Int where self > 0
+
+type Label = Text where std.text.length(self) > 0
+
+enum Choice[T] {
+    Value(T)
+    Missing
+}
+
+fn valid(value Choice[Positive]) Bool {
+    match value {
+        Choice.Value(number) => number > 0
+        Choice.Missing => true
+    }
+}
+
+fn all_valid(values List[Choice[Positive]]) Bool {
+    var index = 0
+    while index < length(values) {
+        if !valid(values[index]) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn forward(values List[Choice[Positive]]) List[Choice[Positive]]
+ensures all_valid(result) && all_valid(old(values)) {
+    values
+}
+
+fn score(value Choice[Int]) Int {
+    match value {
+        Choice.Value(number) => number
+        Choice.Missing => 0
+    }
+}
+
+fn present(value Choice[Int]) Bool {
+    match value {
+        Choice.Value(_) => true
+        Choice.Missing => false
+    }
+}
+
+fn restore(values List[Choice[Int]], observed Int, changed Int)
+requires observed >= 0 && observed < length(values)
+requires changed >= 0 && changed < length(values)
+ensures score(values[observed]) == old(score(values[observed]))
+ensures present(values[observed]) == old(present(values[observed])) {
+    let saved = values[changed]
+    values[changed] = Choice.Missing()
+    values[changed] = saved
+}
+
+fn clear_other(values List[Choice[Int]], observed Int, changed Int)
+requires observed >= 0 && observed < length(values)
+requires changed >= 0 && changed < length(values) && observed != changed
+ensures score(values[observed]) == old(score(values[observed]))
+ensures present(values[observed]) == old(present(values[observed])) {
+    values[changed] = Choice.Missing()
+}
+
+record Detail {
+    amount Positive
+    label Label
+    notes List[Int]
+}
+
+fn nested_valid(value Choice[Choice[Detail]]) Bool {
+    match value {
+        Choice.Value(Choice.Value(detail)) => detail.amount > 0 && std.text.length(detail.label) > 0
+        _ => true
+    }
+}
+
+fn all_nested(values List[Choice[Choice[Detail]]]) Bool {
+    var index = 0
+    while index < length(values) {
+        if !nested_valid(values[index]) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn forward_nested(values List[Choice[Choice[Detail]]]) List[Choice[Choice[Detail]]]
+ensures all_nested(result) && all_nested(old(values)) {
+    values
+}
+
+async fn item(value Choice[Positive]) Choice[Positive] {
+    sleep_ms(1).await
+    value
+}
+
+async fn joined(tasks List[Task[Choice[Positive]]]) List[Choice[Positive]]
+ensures length(result) == old(length(tasks)) && all_valid(result) {
+    all(tasks).await
+}
+
+async fn exercise() {
+    let values = forward([Choice.Value(Positive(7)), Choice.Missing()])
+    assert length(values) == 2 && all_valid(values)
+    let cells = [Choice.Value(3), Choice.Missing(), Choice.Value(5)]
+    restore(cells, 0, 0)
+    restore(cells, 0, 1)
+    clear_other(cells, 2, 0)
+    assert !present(cells[0]) && score(cells[2]) == 5
+    let notes = [1]
+    let detail = Detail {
+        amount = Positive(9)
+        label = Label("ready")
+        notes = notes
+    }
+    let nested = forward_nested([
+            Choice.Value(Choice.Value(detail)),
+            Choice.Value(Choice.Missing()),
+            Choice.Missing(),
+        ])
+    push(notes, 2)
+    assert all_nested(nested)
+    assert match nested[0] {
+        Choice.Value(Choice.Value(value)) => length(value.notes) == 2
+        _ => false
+    }
+    let results = joined([item(Choice.Value(Positive(11))), item(Choice.Missing())]).await
+    assert length(results) == 2 && all_valid(results)
+    assert length(joined([]).await) == 0
+}
+
+async fn main() {
+    exercise().await
+}
+
+test async fn enum_contents_compose_columns_snapshots_and_task_results() {
+    exercise().await
+}

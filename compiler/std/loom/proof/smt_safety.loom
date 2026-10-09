@@ -27,6 +27,13 @@ fn solver_defined(proof ProofQuery, expr Expr, state State, depth Int) Result[Bo
         discard solver_defined(proof, get(expr.children, index), branch, depth - 1)?
         index = index + 1
     }
+    if enum_payload_expression(expr) {
+        let selected = enum_payload_guard(expr, state)?
+        if !loop_holds(selected, state) {
+            solver_fact(proof, selected, state)
+        }
+        return Result.Ok(true)
+    }
     if shape.total {
         return Result.Ok(true)
     }
