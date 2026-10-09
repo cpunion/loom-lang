@@ -142,7 +142,7 @@ fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], gu
     kind == ExprKind.Await || kind == ExprKind.Suspend ||
     kind == ExprKind.FunctionRef || kind == ExprKind.IndirectCall
     if !scalar && !call &&
-    !(kind == ExprKind.Intrinsic && list_operation(expr.text)) {
+    !(kind == ExprKind.Intrinsic && (list_operation(expr.text) || task_operation(expr.text))) {
         if guard || (kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.Match && kind != ExprKind.While &&
             kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
             kind != ExprKind.Assert && kind != ExprKind.Discard &&

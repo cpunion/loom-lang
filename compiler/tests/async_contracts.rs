@@ -63,6 +63,55 @@ async fn main() {
 }
 
 #[test]
+fn cached_async_body_inference_rechecks_uncontracted_producers() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.loom");
+    let original = r#"
+import std.time.sleep_ms
+import std.task.all
+async fn keep(value Int) Int {
+    sleep_ms(1).await
+    value
+}
+async fn forward(value Int) Int
+ensures result == value {
+    keep(value).await
+}
+async fn combined(value Int) Int
+ensures result == value {
+    let first, second = all((keep(value), keep(value))).await
+    assert second == value
+    first
+}
+async fn main() {
+    assert forward(42).await == 42
+    assert combined(43).await == 43
+}
+"#;
+    fs::write(&source, original).unwrap();
+    let package = directory.path().to_str().unwrap();
+    let cache = directory.path().join("cache");
+    let check = || {
+        loom(&[
+            "check",
+            package,
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    for _ in 0..2 {
+        success(&check());
+    }
+    let changed = original.replacen("    value\n}", "    value + 1\n}", 1);
+    fs::write(&source, changed).unwrap();
+    let rejected = check();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+    fs::write(&source, original).unwrap();
+    success(&check());
+}
+
+#[test]
 fn cached_method_guarantees_recheck_weakened_result_types() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("main.loom");

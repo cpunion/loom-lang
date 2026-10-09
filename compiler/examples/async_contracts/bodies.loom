@@ -1,0 +1,44 @@
+import std.task.all
+import std.time.sleep_ms
+
+async fn source_keep[T](value T) T {
+    sleep_ms(1).await
+    value
+}
+
+async fn source_pair(value Int, text Text) (Int, Text)
+ensures result.0 == value && result.1 == text {
+    all((source_keep(value), source_keep(text))).await
+}
+
+async fn source_steps(value Int) Int {
+    var index = 0
+    while index < 2 {
+        sleep_ms(1).await
+        index = index + 1
+    }
+    value
+}
+
+async fn source_loop(value Int) Int
+ensures result == value {
+    source_steps(value).await
+}
+
+async fn source_pending(value Int) Task[Int] {
+    sleep_ms(1).await
+    source_keep(value)
+}
+
+async fn source_nested(value Int) Int
+ensures result == value {
+    source_pending(value).await.await
+}
+
+async fn exercise_source_bodies() {
+    let first, second = source_pair(42, "ready").await
+    assert first == 42
+    assert second == "ready"
+    assert source_loop(7).await == 7
+    assert source_nested(9).await == 9
+}

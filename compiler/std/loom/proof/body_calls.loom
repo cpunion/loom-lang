@@ -63,9 +63,10 @@ fn call_body_at(value Expr, offset Int, depth Int) Result[Expr, Text] {
 // Ordinary helper calls and continuing-invariant checks share one symbolic
 // call frame. Inputs already ran once. This executes checked source effects,
 // not runtime code or a new evaluator; budgets and unknown operations still fail.
-fn source_body_call(proof Verification, target Int, function Function, input CallArguments, depth Int) Result[List[Outcome], Text] {
+fn source_body_call(proof Verification, target Int, function Function, input CallArguments,
+    completion Bool, depth Int) Result[List[Outcome], Text] {
     discard loop_step(proof)?
-    if depth <= 0 || function.runtime_name != "" || function.is_async ||
+    if depth <= 0 || function.runtime_name != "" || function.is_async != completion ||
     function.body.kind == ExprKind.Deferred || length(function.params) != length(input.values) {
         return Result.Err("body proof needs a finite checked source body")
     }
@@ -115,7 +116,7 @@ fn source_body_call(proof Verification, target Int, function Function, input Cal
         index = index + 1
     }
     let scope = expanded_contracts(proof.program, Function {
-            is_async = false
+            is_async = function.is_async
             symbol = function.symbol
             arguments = function.arguments
             params = new[Int]()
@@ -142,7 +143,13 @@ fn source_body_call(proof Verification, target Int, function Function, input Cal
         capture_returns = true
         returns = new[Outcome]()
     }
-    let entries = established_entry(frame, call_scope(input.state, values))?
+    var state = call_scope(input.state, values)
+    index = 0
+    while index < length(function.params) {
+        state = typed_value_state(frame, get(function.params, index), get(input.values, index), state)
+        index = index + 1
+    }
+    let entries = established_entry(frame, state)?
     index = 0
     while index < length(entries) {
         discard append(frame.returns, execute(frame, scope.body, get(entries, index).state, depth - 1)?)?
