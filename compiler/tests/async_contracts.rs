@@ -123,3 +123,48 @@ async fn main() {
         success(&check());
     }
 }
+
+#[test]
+fn cached_task_factory_proofs_recheck_changed_bodies() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.loom");
+    let original = r#"
+async fn keep(value Int) Int
+ensures result == value {
+    value
+}
+fn make(value Int) Task[Int] {
+    keep(value)
+}
+async fn forward(value Int) Int
+ensures result == value {
+    make(value).await
+}
+async fn main() {
+    assert forward(42).await == 42
+}
+"#;
+    fs::write(&source, original).unwrap();
+    let package = directory.path().to_str().unwrap();
+    let cache = directory.path().join("cache");
+    let check = || {
+        loom(&[
+            "check",
+            package,
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    for _ in 0..2 {
+        success(&check());
+    }
+    // Only the uncontracted factory body changes. The async producer's proved
+    // contract is still true, but cannot validate the cached caller anymore.
+    let changed = original.replacen("    keep(value)\n", "    keep(value + 1)\n", 1);
+    fs::write(&source, changed).unwrap();
+    let rejected = check();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+    fs::write(&source, original).unwrap();
+    success(&check());
+}

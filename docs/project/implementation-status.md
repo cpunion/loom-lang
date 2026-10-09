@@ -490,8 +490,12 @@ integer difference relations, input-type invariants, inferred scalar/inline-aggr
 invariants, finite pure helpers and verified callee summaries. Finite helpers
 support local reassignment, conditional expression operands and
 short-circuit writes while retaining prior value snapshots and evaluation
-obligations, including overwritten calculations. This adds no runtime proof
-state and does not treat shared-storage mutation as pure.
+obligations, including overwritten calculations. Ordinary uncontracted body calls
+can also use the existing symbolic executor when pure expansion is insufficient,
+sharing scoped invocation/return handling with continuing invariants. Supported
+effects, cleanup and loops execute once; opaque inputs supply no facts, and
+unknown operations or exhausted execution reject. Predicates remain pure.
+This adds no runtime proof state and does not treat shared-storage mutation as pure.
 Constrained construction can combine stable immutable scalar flow facts with a
 pure helper predicate in a private proof queue. Actual binding identities stay
 distinct, and helper requirements and hypothetical arithmetic still need proof.
@@ -551,7 +555,13 @@ postconditions without choosing concrete widths. Iteration-local Tasks are
 evaluated anew; loop heads discard unprotected pre-suspension storage facts. See
 the [native example](../../compiler/examples/async_contracts/main.loom) and
 [async pack example](../../compiler/examples/variadics/async_contracts.loom).
-General Task-returning helper and collection promise inference remain open.
+Finite synchronous Task factories preserve checked promises through nested
+helpers, inline aggregates, known callbacks and supported loop/early-return paths.
+Factory effects and cleanup precede its return; suspension still invalidates
+unprotected heap facts. The
+[factory example](../../compiler/examples/async_contracts/factories.loom) and edited
+frontend-cache trial cover this boundary. Collection completion promises and
+unsupported source-helper bodies remain open.
 Immutable Text values, exact literals and established equality facts participate
 in required proofs, including Text leaves beside shared siblings. Distinct unknown
 values never imply unequal contents. Established equality chains and inequalities

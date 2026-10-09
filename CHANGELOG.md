@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Preserve verified async completion guarantees through finite synchronous Task
+  factories, saved results, branches and supported loops. Reuse the existing
+  symbolic call frame with once-evaluated inputs and lexical cleanup; bound call
+  depth and reject unsupported recursive bodies without overflowing the stack.
+
 - Compose required variadic contracts across checked synchronous family calls,
   retaining symbolic widths, declared element bounds and ordered type schemas.
   Forward named value/tuple sequences without sampling types or arities; keep
