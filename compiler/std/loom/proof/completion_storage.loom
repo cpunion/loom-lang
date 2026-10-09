@@ -37,6 +37,9 @@ fn private_completion_result(proof Verification, target Int, function Function,
             return false
         }
     }
+    if length(candidate.query.obligations) != 0 {
+        return false
+    }
     var returned = false
     var index = 0
     while index < length(paths) {
