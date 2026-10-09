@@ -186,3 +186,70 @@ test fn resource_borrows_cannot_consume_tasks_or_hide_the_callers_obligations() 
         }
         """))
 }
+
+test fn scoped_enum_metadata_matches_preserve_the_task_owner_through_loop_exits() {
+    resource_accept(concat(resource_task_scope_header(), """
+        async fn run(log List[Int]) {
+            scoped selected = MaybeJob.Some(job(log))
+            let label = match selected {
+                MaybeJob.Some(value) => value.label
+                MaybeJob.None => 0
+            }
+            assert label == 2
+            var attempts = 0
+            while true {
+                match selected {
+                    MaybeJob.Some(value) => {
+                        assert value.label == 2
+                        attempts = attempts + 1
+                        if attempts < 2 {
+                            continue
+                        }
+                        break
+                    }
+                    MaybeJob.None => {
+                        break
+                    }
+                }
+            }
+            while true {
+                match selected {
+                    MaybeJob.None => {
+                        break
+                    }
+                    MaybeJob.Some(value) => {
+                        assert value.pending.await == 7
+                        break
+                    }
+                }
+            }
+            assert match selected {
+                MaybeJob.Some(value) => value.label
+                MaybeJob.None => 0
+            } == 2
+        }
+        """))
+    resource_reject(concat(resource_task_scope_header(), """
+        async fn run(log List[Int]) {
+            scoped selected = MaybeJob.Some(job(log))
+            assert match selected {
+                MaybeJob.Some(value) => value.label
+                MaybeJob.None => 0
+            } == 2
+        }
+        """))
+    resource_reject(concat(resource_task_scope_header(), """
+        async fn run(log List[Int], flag Bool) {
+            scoped selected = MaybeJob.Some(job(log))
+            match selected {
+                MaybeJob.Some(value) => {
+                    if flag {
+                        discard value.pending.await
+                    }
+                }
+                MaybeJob.None => {
+                }
+            }
+        }
+        """))
+}

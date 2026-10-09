@@ -3605,6 +3605,9 @@ cannot await or transfer them. Task-free fields remain readable through ordinary
 helpers, including cleanup. Such a borrow does not grant a synchronous helper
 authority to create unrelated Tasks. Cleanup neither waits nor cancels implicitly;
 fault/cancellation drain child Tasks before disposing their enclosing resources.
+Read-only matches also retain the scoped enum's Task obligations, before or after
+Task consumption. A consuming match still checks every transfer and continuing
+path. Read-only payload bindings can leave their block through loop control.
 `NoSuspend` keeps its stronger rule. See the
 [mixed scope tests](examples/cleanup/resource_task_scope_test.loom).
 Resource Lists containing live Task elements and Dispose-only mixed aggregates

@@ -801,6 +801,8 @@ consumes those fields explicitly, while resource parameters and cleanup borrow
 without consuming Tasks or granting Task creation authority. Fault/cancellation
 drain existing children before disposal. Resource Lists with live Task elements
 and Dispose-only mixed aggregates remain conservative.
+Read-only enum matches preserve the original Task owner, including loop control
+and metadata reads after consumption; actual transfers retain one-shot checks.
 Fresh match payloads also reconstruct records, tuples, enums and Lists through
 the same guarded transfer. Existing resource locals enter protection before other
 constructor arguments execute; borrowing, duplicate/omitted transfers and delayed

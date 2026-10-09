@@ -145,3 +145,47 @@ test async fn mixed_scope_faults_and_cancellation_drain_children_before_resource
     }
     assert length(trace) == 8 && trace[5] == 80 && trace[6] == 90 && trace[7] == 1
 }
+
+test async fn metadata_matches_do_not_consume_scoped_enum_tasks_or_leak_trial_loop_exits() {
+    let trace List[Int] = []
+    {
+        scoped value = OptionalJob.Some(resource_job(trace, 0))
+        assert match value {
+            OptionalJob.Some(job) => job_id(job)
+            OptionalJob.None => 0
+        } == 1
+        var attempts = 0
+        while true {
+            match value {
+                OptionalJob.Some(job) => {
+                    assert job_id(job) == 1
+                    attempts = attempts + 1
+                    if attempts < 2 {
+                        continue
+                    }
+                    break
+                }
+                OptionalJob.None => {
+                    assert false
+                }
+            }
+        }
+        assert attempts == 2
+        while true {
+            match value {
+                OptionalJob.None => {
+                    break
+                }
+                OptionalJob.Some(job) => {
+                    assert job.pending.await == 7
+                    break
+                }
+            }
+        }
+        assert match value {
+            OptionalJob.Some(job) => job_id(job)
+            OptionalJob.None => 0
+        } == 1
+    }
+    assert length(trace) == 4 && trace[2] == 90 && trace[3] == 1
+}
