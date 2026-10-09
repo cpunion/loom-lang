@@ -281,8 +281,14 @@ or boxing and width-dependent overlap remain contenders. The
 covers native/compile-time calls, nominal inputs, fixed anchors, callbacks,
 inherited dyn methods and once-only argument effects. Neither declaration order
 nor sampled arities select a proof summary.
-Indirect callees, newly assembled
-sequences, unresolved associated callee patterns and unknown fixed layouts
+Argument words can also concatenate fixed values and named source expansions,
+sharing the same matcher and explicit-type bindings. Fixed argument positions
+remain distinct even when their types agree. Proof erasure retains packed extra
+values' source-ordered evaluation, effects, exits and resource checks; the
+[assembled forwarding example](../../compiler/examples/variadics/assembled_forwarding.loom)
+covers empty/mixed sources, independent words, snapshots, CTFE and shared List effects.
+Indirect callees, nested assembled tuple expressions, non-named expansions,
+unresolved associated callee patterns and unknown fixed layouts
 still reject in family proofs.
 Type-dependent induction, opaque element escape, pack-dependent results and
 iteration over non-tuple structural sources still reject. A

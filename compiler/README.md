@@ -977,9 +977,15 @@ tuple and nominal inputs, fixed fields and ordinary fixed-argument types, withou
 sampling widths. Unknown intersections and possible widening retain contenders;
 declaration order and successful sample specializations cannot select a summary.
 See the [overload example](examples/variadics/overloaded_forwarding.loom).
-Indirect callees, freshly assembled sequences, unresolved associated callee
-patterns and fixed types with unknown expanded layouts remain unsupported in
-family proofs.
+Calls can concatenate fixed values and named source expansions, for example
+`counted(1, values..., true)` or `counted(left..., "middle", right...)`.
+The same ordered-word match retains fixed argument positions and jointly checks
+explicit type words. Packed extra values still evaluate once in source order,
+including mutations, faults and early exits; erasure cannot discard resource
+obligations. See the [assembled forwarding example](examples/variadics/assembled_forwarding.loom).
+Indirect callees, nested assembled tuple expressions, non-named expansions,
+unresolved associated callee patterns and fixed types with unknown expanded
+layouts remain unsupported in family proofs.
 Normal selected calls retain their existing checks and static expansion.
 
 A structural parameter can supply arity without a direct value pack. This

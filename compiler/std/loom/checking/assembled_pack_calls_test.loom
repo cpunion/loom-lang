@@ -1,0 +1,159 @@
+test fn assembled_forwarding_matches_fixed_values_and_independent_source_words() {
+    discard accepted("""
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn padded[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count(1, values..., true)
+        }
+        fn explicit[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count[Int, Us..., Bool](1, values..., true)
+        }
+        fn combined[Us..., Vs...](left (Us...), right (Vs...)) Int
+        ensures result >= 0 {
+            count(1, left..., "middle", right..., true)
+        }
+        fn keep[Ts...](value Int, context Ts...) Int
+        ensures result == value {
+            value
+        }
+        fn snapshot[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            var current = value
+            keep(current, {
+                current = current + 1
+                0
+            }, values..., true)
+        }
+        fn contextual[Us...](values (Us...)) Int
+        ensures result == 42 {
+            empty([], 42, values..., true)
+        }
+        fn empty[Ts...](list List[Int], value Int, context Ts...) Int
+        ensures result == value {
+            value
+        }
+        fn tail[Ts...](context Ts..., value Int) Int
+        ensures result == value {
+            value
+        }
+        fn after[Us...](value Int, values (Us...)) Int
+        ensures result == value + 1 {
+            var current = value
+            tail({
+                current = current + 1
+                false
+            }, values..., current)
+        }
+        """)
+}
+
+test fn assembled_forwarding_rejects_false_summaries_mappings_and_fixed_arguments() {
+    let count = """
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            0
+        }
+        """
+    rejects(concat(count, """
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 2 {
+            count(1, values..., true)
+        }
+        """))
+    rejects(concat(count, """
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count({
+                return -1
+                0
+            }, values..., true)
+        }
+        """))
+    rejects(concat(count, """
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count[Bool, Us..., Int](1, values..., true)
+        }
+        """))
+    rejects("""
+        fn split[As..., Bs...](left As..., middle Int, right Bs...) Int
+        ensures result >= 0 {
+            0
+        }
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            split(1, values..., 2)
+        }
+        """)
+    rejects("""
+        fn keep[Ts...](value Int, context Ts...) Int
+        ensures result == value {
+            value
+        }
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            keep(true, "extra", values...)
+        }
+        """)
+    rejects("""
+        concept Value {
+            fn value(self Self) Int
+            ensures result >= 0
+        }
+        impl Value for Bool {
+            fn value(self Bool) Int {
+                0
+            }
+        }
+        fn bounded[Ts... Value](values Ts...) Int
+        ensures result >= 0 {
+            0
+        }
+        fn wrong[Us... Value](values (Us...)) Int
+        ensures result >= 0 {
+            bounded(true, values...)
+        }
+        """)
+}
+
+test fn assembled_forwarding_retains_packed_effects_and_resource_checks() {
+    let effects = """
+        import std.list.push
+        import std.list.length
+        fn keep[Ts...](value Int, context Ts...) Int
+        ensures result == value {
+            value
+        }
+        fn forward[Us...](log List[Int], values (Us...)) Int
+        ensures length(log) == old(length(log)) + 2 {
+            keep({
+                push(log, 1)
+                42
+            }, {
+                push(log, 2)
+                true
+            }, values...)
+        }
+        """
+    list_length_contract(effects, true)
+    list_length_contract(std.text.join(std.text.split(effects, "+ 2"), "+ 1"), false)
+    resource_reject_reason(concat(resource_header(), """
+        fn keep[Ts...](value Int, context Ts...) Int
+        ensures result == value {
+            value
+        }
+        fn wrong[Us...](log List[Int], values (Us...)) Int
+        ensures result == 42 {
+            keep(42, make(log), values...)
+        }
+        """), "MustScope values require scoped, not an ordinary binding or discard")
+}

@@ -29,6 +29,14 @@ fn pack_schema_parameter(node Node) Int {
     }
 }
 
+fn pack_forward_schema(node Node) Node {
+    if node.kind == NodeKind.Arguments && length(node.children) == 1 {
+        child(node, 0)
+    } else {
+        node
+    }
+}
+
 fn pack_schema_sequence_equal(left List[Node], right List[Node]) Bool {
     if length(left) != length(right) {
         return false
@@ -81,7 +89,20 @@ fn pack_forward_search(parameters List[Node], sources List[Node], work List[Pack
     let rest = pack_forward_range(work, 0, length(work) - 1)
     let parameter = pack_schema_parameter(pair.pattern)
     if parameter >= 0 {
-        var value = pair.actual
+        if get(parameters, parameter).kind == NodeKind.Parameter {
+            // Fixed value slots keep operand identity, not just its type. An
+            // erased source word cannot supply a concrete argument snapshot.
+            if pair.actual.kind != NodeKind.Arguments || !std.text.starts_with(pair.actual.value, "$value#") {
+                return
+            }
+            match pack_forward_bind(bindings, parameter, source_nodes(pair.actual)) {
+                Option.Some(next) => pack_forward_search(parameters, sources, rest, next, solutions, budget, depth + 1)
+                Option.None => {
+                }
+            }
+            return
+        }
+        var value = pack_forward_schema(pair.actual)
         if get(parameters, parameter).kind == NodeKind.TypePack {
             let source = pack_schema_parameter(value)
             if !pair.element || source < 0 || get(sources, source).kind != NodeKind.TypePack {
@@ -96,10 +117,11 @@ fn pack_forward_search(parameters List[Node], sources List[Node], work List[Pack
         }
         return
     }
-    if pair.pattern.kind != pair.actual.kind || pair.pattern.value != pair.actual.value {
+    let actual = pack_forward_schema(pair.actual)
+    if pair.pattern.kind != actual.kind || pair.pattern.value != actual.value {
         return
     }
-    pack_forward_sequence(parameters, sources, pair.pattern.children, pair.actual.children, 0, 0,
+    pack_forward_sequence(parameters, sources, pair.pattern.children, actual.children, 0, 0,
         pair.element || pair.pattern.kind == NodeKind.Spread, rest, bindings, solutions, budget, depth + 1)
 }
 
@@ -128,7 +150,13 @@ fn pack_forward_sequence(parameters List[Node], sources List[Node], pattern List
     if parameter >= 0 && get(parameters, parameter).kind == NodeKind.TypePack {
         var end = right
         while end <= length(actual) && length(solutions) < 2 && get(budget, 0) > 0 {
-            match pack_forward_bind(bindings, parameter, pack_forward_range(actual, right, end)) {
+            let sequence = new[Node]()
+            var index = right
+            while index < end {
+                push(sequence, pack_forward_schema(get(actual, index)))
+                index = index + 1
+            }
+            match pack_forward_bind(bindings, parameter, sequence) {
                 Option.Some(next) => pack_forward_sequence(parameters, sources, pattern, actual, left + 1, end,
                     element, work, next, solutions, budget, depth + 1)
                 Option.None => {
@@ -158,12 +186,18 @@ fn pack_forward_sequence(parameters List[Node], sources List[Node], pattern List
 }
 
 fn pack_forward_shapes(context Context, caller Node, callee Node, work List[PackForwardShape]) Result[PackForwardMatch, Failure] {
-    let parameters = group(callee, NodeKind.TypeParameters)
+    let parameters = std.list.clone(group(callee, NodeKind.TypeParameters))
+    let values = group(callee, NodeKind.Parameters)
+    var index = 0
+    while index < length(values) {
+        push(parameters, get(values, index))
+        index = index + 1
+    }
     let bindings = PackForwardMatch {
         values = new[List[Node]]()
         known = new[Bool]()
     }
-    var index = 0
+    index = 0
     while index < length(parameters) {
         push(bindings.values, new[Node]())
         push(bindings.known, false)

@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose universal variadic contracts across argument words containing fixed
+  values and named source expansions. Reuse bounded ordered-word matching for
+  inferred and explicit types, retaining fixed operand identity, once-only
+  source-ordered effects and resource checks. Ambiguous mappings and unsupported
+  mixed element requirements still reject; native representations are unchanged.
+
 - Keep nested pure helper results relative to their enclosing evaluation path,
   while retaining complete guards on every partial-operation check. Total
   parents no longer repeat their children's fault obligations. Nested enum
