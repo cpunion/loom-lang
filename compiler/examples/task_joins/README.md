@@ -39,6 +39,10 @@ skipped, and the chosen lease closes only when the caller's block ends.
 | `first_ok(tasks)` | `Result[T, List[E]]` | First Ok; otherwise input-ordered errors. |
 
 `all` and `settled` accept empty Lists; `any` and `race` fault on empty input.
+List `all` and `settled` declare and prove
+`length(result) == old(length(tasks))` in Loom source. Generic callers can reuse
+this normal-return guarantee, including for resource payloads; it grants no
+content equality or facts about fault/cancellation outcomes.
 An ordinary `Result.Err` is successful completion. No-result Tasks work too:
 `all([sleep_ms(1), sleep_ms(2)]).await` produces a List whose logical length is 2,
 and `any(...).await` has no value result. No source Unit spelling is needed.

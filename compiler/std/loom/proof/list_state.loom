@@ -295,9 +295,6 @@ fn storage_operation(program Program, name Text, ty Int, arguments List[Expr], r
 
 fn storage_expression(value Expr) Bool {
     let kind = value.kind
-    if (kind == ExprKind.Defer || kind == ExprKind.Cleanup) && value.text != "" {
-        return false
-    }
     proof_operation(value).arity >= 0 || kind == ExprKind.Bytes || kind == ExprKind.List ||
     kind == ExprKind.Block || kind == ExprKind.If || kind == ExprKind.Match || kind == ExprKind.Variant || kind == ExprKind.While ||
     kind == ExprKind.Let || kind == ExprKind.Assign || kind == ExprKind.Return ||
@@ -311,9 +308,6 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], requireme
         return false
     }
     let kind = value.kind
-    if (kind == ExprKind.Defer || kind == ExprKind.Cleanup) && value.text != "" {
-        return false
-    }
     if kind == ExprKind.Call {
         if value.index < 0 || value.index >= length(program.functions) {
             return false

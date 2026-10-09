@@ -38,3 +38,22 @@ test fn recursive_groups_check_every_base_and_do_not_publish_partial_proofs() {
         _ => false
     }
 }
+
+test fn completed_groups_return_call_free_clauses_without_rewriting_call_summaries() {
+    let positive = operation(">=", local(0), literal("0"))
+    let predicate = contract_fixture([1], 2, positive, [], [])
+    let guarantee = helper_call(0, 2, [local(1)])
+    let root = contract_fixture([1], 1, local(0), [positive], [guarantee])
+    let program = proof_helpers([predicate, root])
+    match verify_contract_group(program, [false, true], no_proof_backend()) {
+        Result.Ok(conditions) => {
+            assert length(conditions) == 2 && length(get(conditions, 0)) == 0
+            assert length(get(conditions, 1)) != 0
+            assert loop_call_free(get(get(conditions, 1), 0))
+            assert get(get(program.functions, 1).postconditions, 0).kind == ExprKind.Call
+        }
+        _ => {
+            assert false
+        }
+    }
+}

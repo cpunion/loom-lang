@@ -9,7 +9,7 @@ pub record ContractGroupFailure {
 // still expand actual finite pure bodies; recursion supplies no predicate axiom
 // or termination promise. Non-members are independently checked host evidence.
 pub fn verify_contract_group(program Program, members List[Bool], backend ProofBackend)
-Result[Program, ContractGroupFailure] {
+Result[List[List[Expr]], ContractGroupFailure] {
     if length(members) != length(program.functions) {
         return Result.Err(ContractGroupFailure {
                 function = -1
@@ -19,6 +19,7 @@ Result[Program, ContractGroupFailure] {
     // Normalize each member's own obligations, but retain source-form summaries
     // in the closure. Calls expand them at their invocation boundary; normalizing
     // the entire closure first would expand safety clauses a second time.
+    let conditions = new[List[Expr]]()
     var index = 0
     while index < length(program.functions) {
         if get(members, index) {
@@ -43,8 +44,13 @@ Result[Program, ContractGroupFailure] {
                     }
                 }
             }
+            push(conditions, proof.function.postconditions)
+        } else {
+            push(conditions, new[Expr]())
         }
         index = index + 1
     }
-    Result.Ok(program)
+    // Publish only after every member passes. Callers keep source summaries in
+    // their closure and may retain these call-free clauses for this snapshot.
+    Result.Ok(conditions)
 }

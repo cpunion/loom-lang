@@ -147,12 +147,16 @@ fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], gu
             kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
             kind != ExprKind.Assert && kind != ExprKind.Discard &&
             kind != ExprKind.Break && kind != ExprKind.Continue &&
-            kind != ExprKind.Defer && kind != ExprKind.Cleanup) {
+            kind != ExprKind.Defer && kind != ExprKind.Cleanup && kind != ExprKind.ResourceDrain) {
             return Result.Err("unsupported effect or control flow in required loop proof")
         }
     }
-    if (kind == ExprKind.Defer || kind == ExprKind.Cleanup) && expr.text != "" {
-        return Result.Err("required loop proof needs ordinary scalar cleanup")
+    // Cleanup tags describe checked resource transfers, not extra effects.
+    // Inspect the actual callback body, including opaque resource drains.
+    // Reachable unsupported drains still reject in the symbolic executor;
+    // a disarmed callback must not reject an otherwise ordinary backedge.
+    if kind == ExprKind.ResourceDrain {
+        discard loop_local_write(proof, expr.index, entry, writes)?
     }
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         discard loop_local_write(proof, expr.index, entry, writes)?

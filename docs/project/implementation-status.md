@@ -607,6 +607,10 @@ does not restore the child snapshot. Ordinary shared siblings and Task-captured
 graphs remain unprotected. The
 [entry example](../../compiler/examples/async_contracts/task_entries.loom) proves
 source dynamic `all`/`settled` result lengths and transfers through a real wait.
+The source library now declares these normal-return length guarantees on both
+List joins, backed by verified registration/collection batch contracts. Generic
+callers reuse those contracts, including resource and no-result payloads;
+dynamic content relationships remain separate work.
 O0/O2 native moving-GC and worker builds cover input order, empty groups and
 changed-transfer frontend-cache rejection. Contracted async wrappers now retain
 proved private result headers through optional bounded body inspection of every
@@ -755,7 +759,9 @@ returns a read-only constrained sorted copy directly; unknown ordering keeps
 the checked `Result` boundary. CTFE ignores statically proved `ensures` metadata
 while retaining executable preconditions, bodies and faults.
 Completed sequential proofs are shared across private queues in the same checked
-snapshot, not across edits or via pending promises. Shared verification
+snapshot, including every verified helper after its whole contract group passes,
+not across edits or via pending promises. Call-free clauses are retained without
+rewriting the closure's source summaries. Shared verification
 remains separate.
 Recursive body calls now use a closed typed group: every source member must prove
 its declared normal-return guarantees before any group result escapes. False
@@ -820,7 +826,10 @@ branches, nested loops, break/continue paths and existing
 direct-call proof rules. List extent-changing loops freshen affected lengths before
 checking inductiveness. Scalar lexical cleanup retains its checked order and
 return snapshots. Guard calls use fresh checked results, not stable syntactic
-invariant terms. Resource cleanup and general heap-content proofs remain unsupported. See the
+invariant terms. Tagged cleanup follows its checked body through the same
+loop/effect analysis. Disarmed branches need no drain semantics; reachable
+unsupported resource drains still reject. General resource-drain and
+heap-content proofs remain open. See the
 [native loop example](../../compiler/examples/loop_contracts).
 Scalar/inline values and List extents share one affine loop observation model.
 Affected List leaves propose checked current-length sum/difference relations with
