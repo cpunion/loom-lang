@@ -112,7 +112,7 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
         return Value.List(identity)
     }
     if shape.kind == TypeKind.Task {
-        return Value.Task(-1, new[Value]())
+        return Value.Task(-1, new[Value](), new[ListExtent]())
     }
     if shape.kind == TypeKind.Enum {
         return enum_parameter_value(proof, ty, depth)
@@ -657,6 +657,7 @@ fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, 
     while index < length(function.params) {
         let ty = get(function.params, index)
         if ty >= 6 {
+            state = task_private_value(proof, ty, get(state.locals, index), state)
             if length(protected) != 0 {
                 state = protected_input(proof.program.types, protected, ty, get(state.locals, index), state, 0)
             }

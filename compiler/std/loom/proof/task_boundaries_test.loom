@@ -2,7 +2,7 @@ test fn task_boundaries_preserve_handles_not_cleanup_heap_facts() {
     let proof = verification(fixture(literal("0"), [], literal("true")), empty_proof_program())
     let before = with_extent(43, constant(integer(5)), true,
         with_extent(42, constant(integer(3)), false, State {
-                locals = [Value.Task(7, [Value.Number(constant(integer(8)))]),
+                locals = [Value.Task(7, [Value.Number(constant(integer(8)))], []),
                     Value.List(42), Value.Number(constant(integer(3)))]
                 facts = []
                 extents = []
@@ -18,7 +18,7 @@ test fn task_boundaries_preserve_handles_not_cleanup_heap_facts() {
     }
     assert length(registered) == 1
     assert match get(registered, 0).value {
-        Value.Task(target, values) => target == 7 && length(values) == 1
+        Value.Task(target, values, _) => target == 7 && length(values) == 1
         _ => false
     }
     let no = expression(ExprKind.Bool, 2, "false", -1, [])

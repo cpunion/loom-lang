@@ -552,8 +552,9 @@ leaves remain independent; shared siblings supply no content or alias facts.
 Async normal-return guarantees also compose through saved Task locals, inline
 aggregates, known callbacks and declared generic/dyn method contracts. A private
 promise retains checked identity and once-evaluated inputs until successful
-await; it adds no runtime frame or persistent IR metadata. Callee entry heap
-observations are fresh, not borrowed from Task creation or the caller's entry.
+await; it adds no runtime frame or persistent IR metadata. Ordinary shared
+callee entry heap observations are fresh, not borrowed from Task creation or
+the caller's entry.
 Suspension invalidates unprotected published storage while retaining immutable
 scalar snapshots, validated invariants and proved unpublished storage. Task
 inputs carrying mutable graphs, shared stores, dyn boxing and unknown callbacks
@@ -593,8 +594,18 @@ and guarded producer facts. Their terminal-status product is not enumerated
 until source control flow actually selects alternatives; wide `settled` tuples
 therefore keep unrelated statuses independent. Mutable and multiple-return
 snapshots retain the bounded path model.
-General dynamic collection completion promises and
-unsupported source-helper bodies remain open.
+Known calls also preserve child-entry snapshots of solely transferred
+Task-bearing List headers. The ordinary one-shot checker excludes independent
+writable aliases; inline fields and enum payloads reuse this rule. Hot creation
+immediately releases caller heap facts, and failed optional completion inference
+does not restore the child snapshot. Ordinary shared siblings and Task-captured
+graphs remain unprotected. The
+[entry example](../../compiler/examples/async_contracts/task_entries.loom) proves
+source dynamic `all`/`settled` result lengths and transfers through a real wait.
+O0/O2 native moving-GC and worker builds cover input order, empty groups and
+changed-transfer frontend-cache rejection. Collection content guarantees,
+framing ordinary shared results of declared abstractions and unsupported
+source-helper bodies remain open.
 Erased postconditions now observe Task-bearing List lengths through logical-only
 generic helper instances and nested fields, including entry observations. The private helper
 closure distinguishes these logical reads from executable body, precondition,
@@ -606,7 +617,7 @@ retaining displaced values and extracted known Task promises. Optional variants
 follow the checked shape rather than library spelling. The
 [transfer example](../../compiler/examples/async_contracts/list_transfers.loom)
 covers input effects, shared headers and a later real wait. General dynamic
-collection completion guarantees and transfer-loop content induction remain open.
+collection content guarantees and transfer-loop content induction remain open.
 Checked enum constructors and match trees now preserve nominal tag/payload
 identity through generic helpers, nested/guarded patterns and declared dynamic
 calls. Selected payloads supply type invariants and known Task promises; branch
@@ -804,7 +815,7 @@ alias separation. Checked stable headers retain only existing allocation
 provenance; the [Task metadata example](../../compiler/examples/async_contracts/metadata.loom)
 also transfers a dynamic Task batch with a verified count/length contract.
 Every actual backedge must preserve the equation;
-general transfer content induction and Task List join guarantees remain open.
+general transfer content induction and Task List join content guarantees remain open.
 Written Int guard cursors propose mathematical entry-difference and weighted
 pair relations after existing storage/quantifier candidates. Constant affine
 translations supply coefficients, never proof: every relation needs entry and

@@ -1,0 +1,56 @@
+import std.task.all
+import std.task.settled
+import std.task.Outcome
+import std.list.transfer.append
+
+async fn entry_item[T](value T) T {
+    sleep_ms(1).await
+    value
+}
+
+async fn retained_batch[T](tasks List[Task[T]]) List[Task[T]] {
+    sleep_ms(1).await
+    tasks
+}
+
+async fn dynamic_all[T](tasks List[Task[T]]) List[T]
+ensures length(result) == old(length(tasks)) {
+    all(tasks).await
+}
+
+async fn dynamic_settled[T](tasks List[Task[T]]) List[Outcome[T]]
+ensures length(result) == old(length(tasks)) {
+    settled(tasks).await
+}
+
+async fn waited_all(tasks List[Task[Int]]) List[Int]
+ensures length(result) == old(length(tasks)) {
+    all(retained_batch(tasks).await).await
+}
+
+async fn exercise_task_entries() {
+    var tasks List[Task[Int]] = []
+    var index = 0
+    while index < 4 {
+        tasks = append(tasks, entry_item(index))
+        index = index + 1
+    }
+    let values = waited_all(tasks).await
+    assert length(values) == 4 && values[0] == 0 && values[3] == 3
+    let empty = dynamic_all[Int]([]).await
+    assert length(empty) == 0
+    let texts = dynamic_all([entry_item("first"), entry_item("last")]).await
+    assert length(texts) == 2 && texts[0] == "first" && texts[1] == "last"
+    let outcomes = dynamic_settled([entry_item(7), entry_item(8)]).await
+    assert length(outcomes) == 2
+    match outcomes[1] {
+        Outcome.Completed(value) => {
+            assert value == 8
+        }
+        _ => {
+            assert false
+        }
+    }
+    let no_outcomes = dynamic_settled[Text]([]).await
+    assert length(no_outcomes) == 0
+}

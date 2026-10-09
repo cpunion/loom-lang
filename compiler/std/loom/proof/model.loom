@@ -87,7 +87,7 @@ enum Value {
     Projected(Int, List[Int], Linear)
     // Checked targets and evaluated inputs, not executable coroutine frames.
     // Guarantees become available only on successful completion.
-    Task(Int, List[Value])
+    Task(Int, List[Value], List[ListExtent])
     Function(Int, List[Value])
 }
 

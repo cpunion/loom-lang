@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Preserve the sole transferred Task-bearing List header's child-entry state
+  through known async completion, including inline fields and enum payloads.
+  Release caller heap facts at hot Task creation; unknown completion cannot
+  restore those snapshots. Source dynamic `all`/`settled` length proofs reuse
+  ordinary calls and loops, without a join axiom or runtime copying.
+
 - Infer finite no-result source helper effects through the same checked body
   frames as async completion, including List updates and lexical cleanup.
   Unsupported optional inference retains conservative summaries. Task drain

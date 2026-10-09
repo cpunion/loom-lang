@@ -1,0 +1,106 @@
+test fn transferred_task_headers_retain_their_entry_through_known_completion() {
+    task_metadata_contract("""
+        import std.list.length
+        async fn pause() {}
+        async fn keep[T](tasks List[Task[T]]) List[Task[T]] {
+            pause().await
+            tasks
+        }
+        async fn forward(tasks List[Task[Int]]) List[Task[Int]]
+        ensures length(result) == old(length(tasks)) {
+            keep(tasks).await
+        }
+        async fn callback(tasks List[Task[Text]]) List[Task[Text]]
+        ensures length(result) == old(length(tasks)) {
+            let next = keep[Text]
+            next(tasks).await
+        }
+        """, true, "")
+}
+
+test fn transferred_headers_do_not_frame_ordinary_shared_siblings() {
+    let source = """
+        import std.list.length
+        record Pending {
+            tasks List[Task[Int]]
+            shared List[Int]
+        }
+        async fn pause() {}
+        async fn keep(value Pending) Pending {
+            pause().await
+            value
+        }
+        async fn forward(value Pending) Pending
+        ensures length(result.tasks) == old(length(value.tasks)) {
+            keep(value).await
+        }
+        """
+    task_metadata_contract(source, true, "")
+    task_metadata_contract(std.text.join(std.text.split(source,
+                "length(result.tasks) == old(length(value.tasks))"),
+            "length(result.shared) == old(length(value.shared))"), false, "postcondition")
+}
+
+test fn transferred_enum_payloads_retain_only_their_task_headers() {
+    task_metadata_contract("""
+        import std.list.length
+        enum Pending {
+            Batch(List[Task[Int]])
+            Empty
+        }
+        async fn pause() {}
+        async fn keep(value Pending) Pending {
+            pause().await
+            value
+        }
+        async fn forward(tasks List[Task[Int]]) List[Task[Int]]
+        ensures length(result) == old(length(tasks)) {
+            match keep(Pending.Batch(tasks)).await {
+                Pending.Batch(rest) => rest
+                Pending.Empty => []
+            }
+        }
+        """, true, "")
+}
+
+test fn hot_task_creation_releases_the_callers_current_header() {
+    let source = """
+        import std.list.length
+        async fn item() Int {
+            7
+        }
+        async fn extend(tasks List[Task[Int]]) List[Task[Int]] {
+            append(tasks, item())
+        }
+        fn start(tasks List[Task[Int]]) Task[List[Task[Int]]]
+        ensures length(tasks) == old(length(tasks)) {
+            extend(tasks)
+        }
+        """
+    list_transfer_contract(source, false)
+    list_transfer_contract(std.text.join(std.text.split(source, """
+        fn start(tasks List[Task[Int]]) Task[List[Task[Int]]]
+        ensures length(tasks) == old(length(tasks)) {
+            extend(tasks)
+        }
+        """), """
+        async fn completed(tasks List[Task[Int]]) List[Task[Int]]
+        ensures length(result) == old(length(tasks)) + 1 {
+            extend(tasks).await
+        }
+        """), true)
+}
+
+test fn unknown_completion_cannot_recover_a_transferred_entry_snapshot() {
+    let source = """
+        import std.list.length
+        async fn opaque(tasks List[Task[Int]], next fn(List[Task[Int]]) Task[List[Task[Int]]]) List[Task[Int]] {
+            next(tasks).await
+        }
+        async fn forward(tasks List[Task[Int]], next fn(List[Task[Int]]) Task[List[Task[Int]]]) List[Task[Int]]
+        ensures length(result) == old(length(tasks)) {
+            opaque(tasks, next).await
+        }
+        """
+    task_metadata_contract(source, false, "postcondition")
+}
