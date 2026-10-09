@@ -127,3 +127,28 @@ test fn failed_or_unknown_task_outcomes_supply_no_producer_guarantees() {
         }
         """, true)
 }
+
+test fn independent_terminal_values_do_not_enumerate_their_status_product() {
+    var source = """
+        async fn keep(value Int) Int {
+            value
+        }
+        async fn wide(value Int) Int
+        ensures result == value {
+            let first = outcome(keep(value)).await
+
+        """
+    var index = 0
+    while index < 8 {
+        source = concat(source, "    discard outcome(keep(value)).await\n")
+        index = index + 1
+    }
+    source = concat(source, """
+            match first {
+                Delivery.Value(number) => number
+                _ => value
+            }
+        }
+        """)
+    task_completion_contract(source, true)
+}

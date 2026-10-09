@@ -37,10 +37,32 @@ ensures result >= 0 {
     }
 }
 
+async fn wide_settled(value Int) Int
+ensures result == value {
+    let first, second, third, fourth, fifth, sixth, seventh, eighth, ninth = settled((
+            outcome_keep(value), outcome_keep(value), outcome_keep(value),
+            outcome_keep(value), outcome_keep(value), outcome_keep(value),
+            outcome_keep(value), outcome_keep(value), outcome_keep(value)
+        )).await
+    discard second
+    discard third
+    discard fourth
+    discard fifth
+    discard sixth
+    discard seventh
+    discard eighth
+    discard ninth
+    match first {
+        Outcome.Completed(number) => number
+        _ => value
+    }
+}
+
 async fn exercise_outcome_guarantees() {
     let first, second = settled_pair(42, "ready").await
     assert first == 42
     assert second == "ready"
     assert recovered_outcome(7).await == 7
     assert recovered_outcome(0).await == 0
+    assert wide_settled(9).await == 9
 }

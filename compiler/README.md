@@ -1730,6 +1730,10 @@ only for completed values. Fault/cancellation alternatives do not inherit produc
 preconditions or postconditions. Source tuple `settled` therefore composes through
 the checked terminal schema without a join axiom; see the
 [outcome example](examples/async_contracts/outcomes.loom).
+Independent outcomes with a single immutable normal snapshot keep a symbolic tag
+and guard their producer facts, without eagerly enumerating every status
+combination. Actual matches still check each selected source arm. Mutable and
+multiple-return results retain the existing bounded path model.
 The [typed method example](examples/async_contracts/typed.loom) uses the same
 return-type guarantees through synchronous, async, aggregate and pack calls.
 An await context guides inference without converting its Task handle. Supported
