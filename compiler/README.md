@@ -2995,7 +2995,7 @@ bounded amount between two elements while conserving their sum. Ordinary block
 cleanup runs before `continue`/`break` checks and preserves return snapshots.
 
 These observations refer to fixed entry indices, not an entire array. Extent-
-changing loops forget affected contents; opaque effects forget all possibly
+changing loops freshen affected contents before induction; opaque effects forget all possibly
 reachable contents. Mutable element handles
 are not snapshotted; a possibly overlapping write removes evidence. The existing
 64-candidate budget bounds inference, and no loop termination claim is inferred.
@@ -3016,8 +3016,20 @@ existing allocation provenance, enabling consume-and-build length conservation
 in the same example. Rejected identity candidates rebuild the hypothetical head
 and recheck dependent facts, exits and early returns. Publication cannot restore
 private storage on a later inference pass. Incorrect counts, fresh replacement
-headers and possible alias interference reject; general transfer-loop content
-induction remains open.
+headers and possible alias interference reject.
+
+Already captured List entry versions also propose retained-prefix equality for
+modeled immutable scalar columns, including fields of inline records/tuples.
+The current extent must stay within the entry extent; entry and every backedge
+must prove each proposal. Mutable children remain opaque, and Float equality
+retains IEEE NaN behavior rather than becoming storage identity. The
+[content example](examples/loop_contracts/contents.loom) proves consume-and-build
+reversal without auxiliary contracts or counters, including inline headers,
+early returns, shared children and compile-time execution. Actual return access
+paths can propose result-shaped candidates; every real return still checks the
+original postconditions. Proved unreachable fallthrough has no result to observe.
+Unknown effects and changed contents cannot retain an unproved prefix. General
+transfer-loop content induction remains open beyond these bounded proposals.
 
 Required postconditions reuse the integer difference propagation used at
 refinement boundaries: `requires value > lower && lower >= 0` can establish

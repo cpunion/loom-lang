@@ -1,0 +1,113 @@
+import std.list.length
+import std.list.get
+import std.list.transfer.append
+import std.list.transfer.take_last
+import std.option.Option
+
+fn reverse_elements(output List[Int], before List[Int]) Bool {
+    var index = 0
+    while index < length(output) {
+        if get(output, index) != get(before, length(before) - index - 1) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn reversed_contents(output List[Int], before List[Int]) Bool {
+    length(output) == length(before) && reverse_elements(output, before)
+}
+
+fn reverse_contents(values List[Int]) List[Int]
+ensures reversed_contents(result, old(values))
+ensures length(values) == 0 {
+    var rest = values
+    var output List[Int] = []
+    while length(rest) > 0 {
+        match take_last(rest) {
+            Option.Some(pair) => {
+                let item, remaining = pair
+                rest = remaining
+                output = append(output, item)
+                continue
+            }
+            Option.None => {
+            }
+        }
+    }
+    output
+}
+
+record TransferItem {
+    amount Int
+    label Text
+    sample Float
+    notes List[Int]
+}
+
+fn reversed_item_columns(output List[TransferItem], before List[TransferItem]) Bool {
+    var index = 0
+    while index < length(output) {
+        let current = get(output, index)
+        let previous = get(before, length(before) - index - 1)
+        if current.amount != previous.amount || current.label != previous.label {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn reverse_item_contents(values List[TransferItem]) List[TransferItem]
+ensures length(result) == old(length(values))
+ensures reversed_item_columns(result, old(values))
+ensures length(values) == 0 {
+    var state = TransferState {
+        pending = values
+        output = []
+    }
+    while true {
+        match take_last(state.pending) {
+            Option.Some(pair) => {
+                let item, remaining = pair
+                state = TransferState {
+                    pending = remaining
+                    output = append(state.output, item)
+                }
+            }
+            Option.None => {
+                return state.output
+            }
+        }
+    }
+}
+
+fn transfer_content_exercise() {
+    let reversed = reverse_contents([3, -1, 2, -1])
+    assert reversed_contents(reversed, [3, -1, 2, -1])
+    assert length(reverse_contents([])) == 0
+    let notes = [7]
+    let first = TransferItem {
+        amount = 3
+        label = "first"
+        sample = 0.0 / 0.0
+        notes = notes
+    }
+    let second = TransferItem {
+        amount = -1
+        label = "second"
+        sample = -0.0
+        notes = notes
+    }
+    let items = reverse_item_contents([first, second])
+    assert reversed_item_columns(items, [first, second])
+    assert get(items, 1).sample != get(items, 1).sample
+    discard append(notes, 8)
+    assert length(get(items, 0).notes) == 2
+    assert length(reverse_item_contents([])) == 0
+    let evaluated = comptime {
+        reverse_contents([1, 2, 3])
+    }
+    assert reversed_contents(evaluated, [1, 2, 3])
+}

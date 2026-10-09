@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Infer retained immutable List columns against captured entry versions through
+  the existing quantified loop fixed point. Consume-and-build loops can prove
+  reversed contents without auxiliary source contracts or counters, including
+  inline fields and early returns. Shared children stay opaque, Float equality
+  keeps IEEE semantics, and every proposal needs entry/backedge verification.
+
 - Unify loop affine observations over scalar/inline values and List extents.
   Prove consume-and-build length conservation without an auxiliary counter,
   including rebound inline fields and unchanged local handles. Every equation

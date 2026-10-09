@@ -39,8 +39,15 @@ The [transfer example](transfers.loom) uses the same affine observation model fo
 scalar leaves and current List extents. It proves consume-and-build lengths
 without an auxiliary counter, including inline record fields, stable local
 handles, empty inputs, `continue`, early returns and compile-time execution.
-Rebinding follows the current header; no alias separation is inferred. Content
-correspondence for general transfer loops remains open.
+Rebinding follows the current header; no alias separation is inferred.
+
+The [content example](contents.loom) proves reversed contents without an auxiliary
+counter or a retained-prefix contract. Captured entry versions propose equality
+of surviving immutable columns, checked initially and on every backedge. It
+includes inline headers, early returns and Int/Text fields beside NaN and shared
+List children; those children are not frozen. Return paths only propose invariants,
+never replace the actual return checks. General transfer/content induction
+remains open beyond this bounded candidate generator.
 
 The [Float example](floats.loom) reuses the same entry/backedge checks for IEEE
 order bounds on scalars and inline fields. Supported unresolved induction steps

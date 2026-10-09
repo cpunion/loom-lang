@@ -41,25 +41,74 @@ fn loop_replace_result(value Expr, result_local Int, replacement Expr) Expr {
     proof_expr(value, value.kind, value.ty, value.text, value.index, children)
 }
 
-fn loop_postconditions(function Function) List[Expr] {
-    if function.result == 0 {
-        return function.postconditions
-    }
-    match loop_result_path(function.body, function.result_local, 256) {
+fn loop_add_result_path(paths List[Expr], value Expr, result_local Int) {
+    match loop_result_path(value, result_local, 256) {
         Option.Some(path) => {
-            let clauses = new[Expr]()
             var index = 0
-            while index < length(function.postconditions) {
-                let value = get(function.postconditions, index)
-                push(clauses, if scan_mentions(value, function.result_local) {
-                        loop_replace_result(value, function.result_local, path)
-                    } else {
-                        value
-                    })
+            while index < length(paths) {
+                if exact_expression(get(paths, index), path) {
+                    return
+                }
                 index = index + 1
             }
-            clauses
+            if length(paths) < 16 {
+                push(paths, path)
+            }
         }
-        Option.None => function.postconditions
+        Option.None => {
+        }
     }
+}
+
+fn loop_return_paths(value Expr, result_local Int, paths List[Expr], depth Int) {
+    if depth <= 0 || length(paths) >= 16 {
+        return
+    }
+    if value.kind == ExprKind.Return {
+        loop_add_result_path(paths, value, result_local)
+        return
+    }
+    var index = 0
+    while index < length(value.children) {
+        loop_return_paths(get(value.children, index), result_local, paths, depth - 1)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            loop_return_paths(get(body, item), result_local, paths, depth - 1)
+            item = item + 1
+        }
+        index = index + 1
+    }
+}
+
+fn loop_postconditions(function Function) List[Expr] {
+    if function.result == 0 || length(function.postconditions) == 0 {
+        return function.postconditions
+    }
+    let paths = new[Expr]()
+    loop_add_result_path(paths, function.body, function.result_local)
+    loop_return_paths(function.body, function.result_local, paths, 256)
+    if length(paths) == 0 {
+        return function.postconditions
+    }
+    let clauses = new[Expr]()
+    var index = 0
+    while index < length(function.postconditions) {
+        let value = get(function.postconditions, index)
+        if scan_mentions(value, function.result_local) {
+            var path = 0
+            while path < length(paths) {
+                push(clauses, loop_replace_result(value, function.result_local, get(paths, path)))
+                path = path + 1
+            }
+        } else {
+            push(clauses, value)
+        }
+        index = index + 1
+    }
+    clauses
 }
