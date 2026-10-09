@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Allow pure postcondition helpers to observe synchronous MustScope results
+  through their logical borrowed binding. Ordinary executable calls still
+  require `scoped`; freshness, cleanup and required proofs are unchanged.
+  Nested proof helper frames also remap resource-drain locals, independently
+  of cleanup registration IDs.
+
 - Reduce temporary allocations in exact proof arithmetic. Reuse canonical
   read-only digits and linear terms for normalization, zero and unit operations;
   range checks recognize unit coefficients without constructing constants.

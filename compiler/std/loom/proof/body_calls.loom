@@ -43,7 +43,8 @@ fn call_body_at(value Expr, offset Int, depth Int) Result[Expr, Text] {
             })
         index = index + 1
     }
-    let local = value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign
+    let local = value.kind == ExprKind.Local || value.kind == ExprKind.Let ||
+    value.kind == ExprKind.Assign || value.kind == ExprKind.ResourceDrain
     Result.Ok(Expr {
             kind = value.kind
             ty = value.ty
