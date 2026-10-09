@@ -649,8 +649,13 @@ calls. Selected payloads supply type invariants and known Task promises; branch
 writes join ordinary loop and heap analysis. The
 [enum example](../../compiler/examples/async_contracts/enums.loom) exercises real
 waits. Reassigned enum loop locals retain type guarantees, not old tag/payload
-facts. Relational payload induction and match-based contract predicates remain
-open; shared payloads do not preserve stale facts across suspension.
+facts. Pure enum match helpers now compose as contract predicates through
+nominal tag algebra and guarded payload projections, including nested/guarded
+patterns, helper preconditions and eager argument faults. Only selected payloads
+supply type invariants; selectors erase before native code. The
+[predicate example](../../compiler/examples/enum_predicates/main.loom) covers
+normal calls, CTFE, Task completion and runtime entry checks. Relational payload
+induction remains open; shared payloads do not preserve stale facts across suspension.
 Immutable Text values, exact literals and established equality facts participate
 in required proofs, including Text leaves beside shared siblings. Distinct unknown
 values never imply unequal contents. Established equality chains and inequalities

@@ -272,6 +272,17 @@ fn pure(expr Expr, state State) Result[Value, Text] {
         }
         return Result.Ok(Value.Record(fields))
     }
+    if expr.kind == ExprKind.Variant && expr.index >= 0 {
+        let fields = new[Value]()
+        var index = 0
+        while index < length(expr.children) {
+            push(fields, pure(get(expr.children, index), state)?)
+            index = index + 1
+        }
+        // A known constructor needs only its selected payload. Parameter and
+        // body values retain the complete checked nominal variant set.
+        return Result.Ok(variant_value(expr.ty, expr.index, expr.index + 1, fields))
+    }
     let shape = proof_operation(expr)
     if shape.arity < 0 || shape.flow == OperandFlow.Choice {
         return Result.Err("unsupported expression in required proof")

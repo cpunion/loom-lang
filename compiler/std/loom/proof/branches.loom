@@ -21,6 +21,18 @@ fn helper_writes(value Expr) Bool {
         }
         index = index + 1
     }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if helper_writes(get(body, item)) {
+                return true
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
     false
 }
 
@@ -97,6 +109,9 @@ fn helper_paths(value HelperPath) List[HelperPath] {
 
 fn helper_branch(context Expansion, value Expr, path HelperPath, locals List[Local], self Bool, calls Int, depth Int, returns Bool) Result[List[HelperPath], Text] {
     discard expansion_step(context, depth)?
+    if value.kind == ExprKind.Match {
+        return helper_match(context, value, path, locals, self, calls, depth + 1, returns)
+    }
     if value.kind == ExprKind.Block {
         var paths = helper_paths(path)
         var index = 0

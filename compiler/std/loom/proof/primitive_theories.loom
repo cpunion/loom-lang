@@ -1,6 +1,9 @@
 // Interpret already evaluated operands. Structural traversal, branch guards and
 // eager evaluation belong to the composition layer, not to individual theories.
 fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Value, Text] {
+    if name == "proof_enum_tag" || name == "proof_enum_payload" {
+        return enum_projection(name, inputs)
+    }
     if name == "text_len" {
         return match get(inputs, 0) {
             Value.Text(text) => Result.Ok(integer_value(text_length(text)))
@@ -66,6 +69,19 @@ fn projected_value(contents Int, path List[Int], index Linear, ty Int) Value {
 // Check this operation only; composition has checked each operand under the
 // right guard. A hypothetical expression never establishes its own safety fact.
 fn intrinsic_defined(expr Expr, state State) Result[Bool, Text] {
+    if expr.text == "proof_enum_tag" || expr.text == "proof_enum_payload" {
+        if enum_payload_expression(expr) && !loop_holds(enum_payload_guard(expr, state)?, state) {
+            return Result.Err("enum proof payload requires its selected nominal tag")
+        }
+        let inputs = new[Value]()
+        var index = 0
+        while index < length(expr.children) {
+            push(inputs, pure(get(expr.children, index), state)?)
+            index = index + 1
+        }
+        discard enum_projection(expr.text, inputs)?
+        return Result.Ok(true)
+    }
     if count_expression(expr) {
         return Result.Ok(true)
     }
@@ -124,8 +140,15 @@ fn execute_immutable_operation(proof Verification, expr Expr, name Text, state S
         }
         // Successful execution, unlike a hypothetical contract expression, may
         // establish result bounds. No equation permits reordering arguments.
+        if enum_payload_expression(expr) && !loop_holds(enum_projection_guard(arguments.values)?, current) {
+            return Result.Err("enum proof payload requires its selected nominal tag")
+        }
         discard add_outcome(output, Outcome {
-                state = bounded(value, current)
+                state = if enum_payload_expression(expr) {
+                    typed_value_state(proof, expr.ty, value, current)
+                } else {
+                    bounded(value, current)
+                }
                 value = value
             })?
         index = index + 1

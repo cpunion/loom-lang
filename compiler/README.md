@@ -1438,8 +1438,13 @@ payload supplies its type invariants. Constructor inputs and receivers run once.
 Branch writes participate in loop induction and heap invalidation. Task payloads
 retain known completion guarantees, not pre-suspension shared-storage facts; see
 the [enum contract example](examples/async_contracts/enums.loom).
+Pure match helpers also work as contract predicates, including nested/guarded
+patterns and known enum constructors. Checked nominal tags guard payload reads
+and their type invariants; helper requirements and eager arithmetic still need
+proof. These erased selectors add no runtime reflection or native projection
+ABI. See the [enum predicate example](examples/enum_predicates/main.loom).
 Reassigned enum loop locals retain typed payloads, not old tags or contents.
-Relational payload induction and match-based contract predicates remain open.
+Relational payload induction remains open.
 
 Expansion has a bounded decision budget; normal flat matches
 retain their direct path. No runtime pattern engine or checked-artifact change is

@@ -25,9 +25,17 @@ fn has_choice(value Expr) Bool {
 fn lifted_choice(condition Expr, yes Expr, no Expr, budget List[Int], depth Int) Result[Expr, Text] {
     discard choice_step(budget, depth)?
     if condition.kind == ExprKind.If {
-        let left = lifted_choice(get(condition.children, 1), yes, no, budget, depth + 1)?
-        let right = lifted_choice(get(condition.children, 2), yes, no, budget, depth + 1)?
-        return Result.Ok(proof_choice(get(condition.children, 0), left, right))
+        let guard = get(condition.children, 0)
+        // The condition and result may share one earlier choice. Retain that
+        // correlation when lifting the condition, rather than visiting an
+        // impossible result arm (including an inactive enum payload).
+        let left = lifted_choice(get(condition.children, 1),
+            selected_choice(yes, guard, true, budget, depth + 1)?,
+            selected_choice(no, guard, true, budget, depth + 1)?, budget, depth + 1)?
+        let right = lifted_choice(get(condition.children, 2),
+            selected_choice(yes, guard, false, budget, depth + 1)?,
+            selected_choice(no, guard, false, budget, depth + 1)?, budget, depth + 1)?
+        return Result.Ok(proof_choice(guard, left, right))
     }
     Result.Ok(proof_choice(condition, yes, no))
 }
