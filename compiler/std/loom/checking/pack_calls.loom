@@ -189,8 +189,8 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
     let callee = symbol(context.env, target)
     let declaration = callee.node
     if callee.owner >= 0 || declaration.kind != NodeKind.Function || pack_parameter(declaration) < 0 ||
-    !has(declaration, NodeKind.Ensures) || has(declaration, NodeKind.Async) {
-        return Result.Err(error(context, node, "variadic forwarding proof needs a synchronous family with declared postconditions"))
+    !has(declaration, NodeKind.Ensures) {
+        return Result.Err(error(context, node, "variadic forwarding proof needs a family with declared postconditions"))
     }
     let parameters = group(declaration, NodeKind.Parameters)
     if length(parameters) != length(inputs) {

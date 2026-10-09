@@ -93,7 +93,7 @@ fn loop_local_type(proof Verification, ty Int, depth Int) Bool {
 
 // Enumerate all writes, including declarations and nested loops. Unknown effects
 // cannot keep stale facts about a local, an alias, or a captured mutable cell.
-fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, depth Int) Result[Bool, Text] {
+fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], guard Bool, depth Int) Result[Bool, Text] {
     discard loop_step(proof)?
     if depth <= 0 {
         return Result.Err("loop proof depth budget exhausted")
@@ -101,8 +101,12 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
     let kind = expr.kind
     let scalar = kind == ExprKind.Integer || kind == ExprKind.Float || kind == ExprKind.Bool || kind == ExprKind.Text || kind == ExprKind.Local ||
     kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce ||
-    kind == ExprKind.Field || kind == ExprKind.Record || kind == ExprKind.List
-    if !scalar && kind != ExprKind.Call &&
+    kind == ExprKind.Field || kind == ExprKind.Record || kind == ExprKind.List ||
+    kind == ExprKind.FrameNew || kind == ExprKind.DynBox
+    let call = kind == ExprKind.Call || kind == ExprKind.TaskCall ||
+    kind == ExprKind.Await || kind == ExprKind.Suspend ||
+    kind == ExprKind.FunctionRef || kind == ExprKind.IndirectCall
+    if !scalar && !call &&
     !(kind == ExprKind.Intrinsic && list_operation(expr.text)) {
         if guard || (kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.While &&
             kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
@@ -117,17 +121,24 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
     }
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         let ty = get(proof.function.locals, expr.index).ty
-        if !loop_local_type(proof, ty, 0) {
+        // Only existing logical values need loop-head reconstruction. A
+        // declaration starts opaque and is evaluated anew on each iteration;
+        // do not impose a loop-carried type restriction on body-local values.
+        let initialized = match get(entry.locals, expr.index) {
+            Value.Empty => false
+            _ => true
+        }
+        if initialized && !loop_local_type(proof, ty, 0) {
             return Result.Err("required loop proof needs scalar, List or supported inline aggregate local assignments")
         }
         set(writes, expr.index, true)
     }
-    // Direct calls reuse body_call's checked scalar/aggregate summaries
-    // or finite pure expansion. List primitives have explicit extent effects;
-    // opaque summaries freshen heap facts. Captured/indirect calls still reject.
+    // Calls reuse checked summaries or finite pure expansion. Task completion
+    // uses the same guarantees; unknown callbacks and suspension freshen heap
+    // facts. Body-local values never become backedge assumptions.
     var index = 0
     while index < length(expr.children) {
-        discard loop_writes(proof, get(expr.children, index), writes,
+        discard loop_writes(proof, get(expr.children, index), entry, writes,
             guard || (kind == ExprKind.While && index == 0), depth - 1)?
         index = index + 1
     }
@@ -194,7 +205,8 @@ fn add_loop_candidate(candidates List[LoopCandidate], candidate LoopCandidate, e
 }
 
 fn loop_call_free(expr Expr) Bool {
-    if expr.kind == ExprKind.Call {
+    if expr.kind == ExprKind.Call || expr.kind == ExprKind.TaskCall ||
+    expr.kind == ExprKind.Await || expr.kind == ExprKind.Suspend || expr.kind == ExprKind.IndirectCall {
         return false
     }
     var index = 0
@@ -547,7 +559,7 @@ fn loop_outcomes(proof Verification, expr Expr, state State, depth Int) Result[L
         push(writes, false)
         index = index + 1
     }
-    discard loop_writes(proof, expr, writes, false, depth)?
+    discard loop_writes(proof, expr, state, writes, false, depth)?
     let output = new[Outcome]()
     let conditions = execute(proof, get(expr.children, 0), state, depth - 1)?
     index = 0

@@ -33,6 +33,16 @@ test fn async_contracts_follow_saved_tasks_and_once_evaluated_arguments() {
         ensures result > 0 {
             task.await
         }
+        async fn repeated(value Int) Int
+        ensures result == value {
+            var index = 0
+            while index < 3 {
+                let pending = keep(value, 0)
+                assert pending.await == value
+                index = index + 1
+            }
+            value
+        }
         """)
     rejects("""
         async fn keep(value Int) Int

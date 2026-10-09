@@ -206,8 +206,7 @@ fn pack_proof_observation(env Environment, owner Int, pack Int, node Node) Resul
                 // pack widths, static arguments and supported result shapes. The family
                 // guard only prevents the abstract receiver escaping into
                 // type selection or value-dependent contracts.
-                var supported = !has(method, NodeKind.Async) &&
-                has(method, NodeKind.Ensures) && length(returns) <= 1
+                var supported = has(method, NodeKind.Ensures) && length(returns) <= 1
                 if supported {
                     if length(returns) == 1 {
                         supported = !pack_proof_opaque_contract(get(returns, 0), "Self")
@@ -232,7 +231,7 @@ fn pack_proof_observation(env Environment, owner Int, pack Int, node Node) Resul
                 }
                 if !supported {
                     return Result.Err(failure(env, owner, node,
-                            "variadic element observations require a synchronous concept method with a declared postcondition and no receiver-dependent types, contracts or arguments"))
+                            "variadic element observations require a concept method with a declared postcondition and no receiver-dependent types, contracts or arguments"))
                 }
                 found = true
             }

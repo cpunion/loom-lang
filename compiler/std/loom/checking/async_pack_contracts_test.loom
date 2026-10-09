@@ -1,0 +1,127 @@
+fn async_pack_contract_source() Text {
+    """
+        async fn keep[Ts...](value Int, values Ts...) Int
+        ensures result == old(value) {
+            comptime for item in values {
+                discard item
+            }
+            value
+        }
+        async fn keep(value Bool) Int {
+            -1
+        }
+        async fn forward[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            let saved = keep(value, values...)
+            saved.await
+        }
+        async fn empty[R, Ts...](values Ts...) List[R]
+        ensures true {
+            comptime for item in values {
+                discard item
+            }
+            []
+        }
+        async fn contextual[Us...](values Us...) Int
+        ensures result == 0 {
+            let pending Task[List[Int]] = empty(values...)
+            discard pending.await
+            0
+        }
+        concept Sample {
+            async fn read(self Self) Int
+            ensures result >= 0
+        }
+        impl Sample for Bool {
+            async fn read(self Bool) Int {
+                if self { 1 } else { 0 }
+            }
+        }
+        impl Sample for Int {
+            async fn read(self Int) Int {
+                if self < 0 { 0 } else { self }
+            }
+        }
+        async fn total[Ts... Sample](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values {
+                let pending = item.read()
+                sum = sum + pending.await
+            }
+            sum
+        }
+        """
+}
+
+test fn async_pack_contracts_reuse_family_summaries_and_element_induction() {
+    let definitions = async_pack_contract_source()
+    // The accepted families are checked even without a concrete call/width.
+    discard accepted(definitions)
+    discard accepted(concat(definitions, """
+        fn tuple[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        async fn main() {
+            assert forward(42, tuple()).await == 42
+            assert forward(7, (true, "context")).await == 7
+            assert contextual().await == 0
+            assert contextual(true, "context").await == 0
+            assert total().await == 0
+            assert total(true, -7, false).await == 1
+        }
+        """))
+    rejects(std.text.join(std.text.split(definitions, "ensures result == value"),
+            "ensures result != value"))
+    rejects(std.text.join(std.text.split(definitions, "sum = sum + pending.await"),
+            "sum = sum - pending.await"))
+    rejects(std.text.join(std.text.split(definitions, "ensures result == old(value)"),
+            "ensures true"))
+    let clause = "ensures result >= 0"
+    let offset = std.text.find(definitions, clause)
+    assert offset >= 0
+    let weakened = concat(slice(definitions, 0, offset),
+        concat("ensures true", slice(definitions, offset + length(clause), length(definitions))))
+    rejects(weakened)
+}
+
+test fn async_pack_observations_do_not_reveal_opaque_receivers() {
+    rejects("""
+        concept Copy {
+            async fn copy(self Self) Self
+            ensures true {
+                self
+            }
+        }
+        async fn wrong[Ts... Copy](values Ts...) Bool
+        ensures result {
+            comptime for item in values {
+                let copied = item.copy().await
+                discard copied
+            }
+            true
+        }
+        """)
+    rejects("""
+        async fn keep[Ts...](values Ts...) Int
+        ensures result == 1 {
+            0
+        }
+        async fn forward[Us...](values (Us...)) Int
+        ensures result == 1 {
+            keep(values...).await
+        }
+        """)
+    list_length_contract("""
+        import std.list.length
+        async fn wait() {}
+        async fn wrong(values List[Int]) Int
+        requires length(values) > 0
+        ensures false {
+            while length(values) > 0 {
+                wait().await
+            }
+            0
+        }
+        """, false)
+}

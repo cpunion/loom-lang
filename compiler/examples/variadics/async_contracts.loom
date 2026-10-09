@@ -1,0 +1,93 @@
+import std.time.sleep_ms
+
+async fn async_keep[Ts...](value Int, values Ts...) Int
+ensures result == old(value) {
+    sleep_ms(1).await
+    comptime for item in values {
+        discard item
+    }
+    value
+}
+
+async fn async_keep(value Bool) Int {
+    -1
+}
+
+async fn async_forward[Us...](value Int, values (Us...)) Int
+ensures result == value {
+    let saved = async_keep(value, values...)
+    saved.await
+}
+
+async fn async_empty[R, Ts...](values Ts...) List[R]
+ensures true {
+    comptime for item in values {
+        discard item
+    }
+    []
+}
+
+async fn async_contextual[Us...](values Us...) Int
+ensures result == 0 {
+    let pending Task[List[Int]] = async_empty(values...)
+    discard pending.await
+    0
+}
+
+concept AsyncSample {
+    async fn sample(self Self) Int
+    ensures result >= 0
+}
+
+impl AsyncSample for Bool {
+    async fn sample(self Bool) Int {
+        sleep_ms(1).await
+        if self {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+impl AsyncSample for Int {
+    async fn sample(self Int) Int {
+        sleep_ms(1).await
+        if self < 0 {
+            0
+        } else {
+            self
+        }
+    }
+}
+
+async fn async_total[Ts...AsyncSample](values Ts...) Int
+ensures result >= 0 {
+    var sum = 0
+    comptime for item in values {
+        let pending = item.sample()
+        sum = sum + pending.await
+    }
+    sum
+}
+
+concept AsyncSamples {
+    async fn total[Ts...AsyncSample](self Self, values Ts...) Int
+    ensures result >= 0 {
+        async_total(values...).await
+    }
+}
+
+impl AsyncSamples for Text {
+}
+
+async fn exercise_async_contracts() {
+    assert async_forward(42, pack()).await == 42
+    assert async_forward(7, (true, "context")).await == 7
+    assert async_contextual().await == 0
+    assert async_contextual(true, "context").await == 0
+    assert async_total().await == 0
+    assert async_total(true, -7, false).await == 1
+    let receiver dyn AsyncSamples = "samples"
+    assert receiver.total(true, 3, false).await == 4
+}

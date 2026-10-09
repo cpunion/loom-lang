@@ -23,6 +23,11 @@ fn loop_storage_writes(proof Verification, value Expr, entry State, modified Lis
             }
         }
     }
+    if value.kind == ExprKind.Await || value.kind == ExprKind.Suspend || value.kind == ExprKind.IndirectCall {
+        // The next iteration cannot inherit observations from before another
+        // Task ran or an unknown callback changed a reachable alias.
+        push(modified, -1)
+    }
     if primitive == "list_retain_range" {
         push(modified, -1)
     }

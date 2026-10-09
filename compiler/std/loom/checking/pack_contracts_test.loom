@@ -633,7 +633,7 @@ test fn variadic_observations_do_not_reveal_receiver_types_through_results() {
         """
     assert match checked(source_files(source)) {
         Result.Err(failed) => failed.diagnostic.message ==
-        "variadic element observations require a synchronous concept method with a declared postcondition and no receiver-dependent types, contracts or arguments"
+        "variadic element observations require a concept method with a declared postcondition and no receiver-dependent types, contracts or arguments"
         Result.Ok(_) => false
     }
     rejects("""
