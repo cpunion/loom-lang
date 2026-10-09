@@ -14,3 +14,37 @@ test fn return_paths_only_propose_clauses_and_preserve_real_result_bindings() {
         [expression(ExprKind.Bool, 2, "true", -1, []), local(0), literal("1")])
     assert exact_expression(get(loop_postconditions(fixture(choice, [], goal)), 0), goal)
 }
+
+test fn nested_returns_propose_distinct_paths_without_rewriting_real_contracts() {
+    let goal = operation("==", local(1), local(0))
+    let field = expression(ExprKind.Field, 1, "", 0, [local(0)])
+    let returning = expression(ExprKind.Return, 0, "", -1, [field])
+    let branches = Expr {
+        kind = ExprKind.Match
+        ty = 0
+        span = local(0).span
+        text = ""
+        index = -1
+        children = [local(0)]
+        arms = [Arm {
+                variant = 0
+                bindings = []
+                whole = -1
+                body = [returning]
+            }, Arm {
+                variant = 1
+                bindings = []
+                whole = -1
+                body = [returning, expression(ExprKind.Return, 0, "", -1, [local(0)])]
+            }]
+        falls = true
+    }
+    let body = expression(ExprKind.While, 0, "", -1,
+        [expression(ExprKind.Bool, 2, "true", -1, []), branches])
+    let function = fixture(body, [], goal)
+    let clauses = loop_postconditions(function)
+    assert length(clauses) == 2
+    assert exact_expression(get(clauses, 0), operation("==", field, local(0)))
+    assert exact_expression(get(clauses, 1), operation("==", local(0), local(0)))
+    assert exact_expression(get(function.postconditions, 0), goal)
+}

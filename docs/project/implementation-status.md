@@ -831,8 +831,16 @@ including inline fields, stable local handles and CTFE, without inventing alias
 separation. Checked stable headers retain only existing allocation
 provenance; the [Task metadata example](../../compiler/examples/async_contracts/metadata.loom)
 also transfers a dynamic Task batch with a verified count/length contract.
-Every actual backedge must preserve the equation;
-general transfer content induction and Task List join content guarantees remain open.
+Every actual backedge must preserve the equation.
+Captured entry versions also propose retained immutable-column prefix equality
+through the same quantified fixed point. The
+[content example](../../compiler/examples/loop_contracts/contents.loom) proves
+reversal without source counters or auxiliary prefix contracts, including
+inline headers, early returns, shared children and CTFE. Each column needs
+entry/all-backedge proof; shared children remain opaque and Float comparisons
+retain IEEE semantics. Actual return paths only suggest invariant shapes;
+original postconditions still check every reachable return. General transfer
+content induction and Task List join content guarantees remain open.
 Written Int guard cursors propose mathematical entry-difference and weighted
 pair relations after existing storage/quantifier candidates. Constant affine
 translations supply coefficients, never proof: every relation needs entry and

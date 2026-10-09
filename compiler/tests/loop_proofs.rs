@@ -41,9 +41,10 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");
     let program = format!(
-        "{}\n{}\nfn main() {{\n    float_loop_exercise()\n    transfer_exercise()\n}}\n",
+        "{}\n{}\n{}\nfn main() {{\n    float_loop_exercise()\n    transfer_exercise()\n    transfer_content_exercise()\n}}\n",
         include_str!("../examples/loop_contracts/floats.loom"),
-        include_str!("../examples/loop_contracts/transfers.loom")
+        include_str!("../examples/loop_contracts/transfers.loom"),
+        include_str!("../examples/loop_contracts/contents.loom")
     );
     let cache = package.path().join("cache");
     let check = || {
@@ -59,6 +60,14 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
     success(&check());
     for changed in [
         program.replace("processed = processed + 1", "processed = processed + 2"),
+        program.replace("output = append(output, item)", "output = append(output, 0)"),
+        format!(
+            "import std.list.set\n{}",
+            program.replace(
+                "rest = remaining\n                output = append(output, item)",
+                "rest = remaining\n                if length(rest) > 0 { set(rest, 0, 0) }\n                output = append(output, item)",
+            )
+        ),
         program.replace(
             "output = append(output, value)",
             "output = append[T]([], value)",

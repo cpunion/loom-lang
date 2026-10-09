@@ -1,0 +1,144 @@
+// Propose retained immutable columns against an already captured entry version.
+// These are ordinary quantified candidates, checked at entry and every backedge;
+// matching storage at entry neither freezes children nor promises future identity.
+fn loop_prefix_columns(proof Verification, candidates List[LoopCandidate], current Expr,
+    before Expr, start Expr, end Expr, bound Int, limit Expr, entry State, depth Int) {
+    if depth <= 0 || length(candidates) >= 64 || current.ty < 0 ||
+    current.ty >= length(proof.program.types) {
+        return
+    }
+    let ty = current.ty
+    if ty == 1 || ty == 2 || ty == 3 || ty == 5 {
+        let equal = proof_expr(current, ExprKind.Binary, 2, "==", -1, proof_children(current, before))
+        let prefix = proof_and(limit, quantified_value(current, bound, start, end, equal))
+        let observed = loop_query_views(proof, [prefix], entry)
+        propose_quantified(proof, candidates, prefix, observed)
+        return
+    }
+    let shape = get(proof.program.types, ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        let base = get(shape.fields, 0).ty
+        loop_prefix_columns(proof, candidates,
+            proof_expr(current, ExprKind.Coerce, base, "", -1, snapshot_child(current)),
+            proof_expr(before, ExprKind.Coerce, base, "", -1, snapshot_child(before)),
+            start, end, bound, limit, entry, depth - 1)
+        return
+    }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        return
+    }
+    var field = 0
+    while field < length(shape.fields) && length(candidates) < 64 {
+        let member = get(shape.fields, field)
+        loop_prefix_columns(proof, candidates,
+            proof_expr(current, ExprKind.Field, member.ty, member.name, field, snapshot_child(current)),
+            proof_expr(before, ExprKind.Field, member.ty, member.name, field, snapshot_child(before)),
+            start, end, bound, limit, entry, depth - 1)
+        field = field + 1
+    }
+}
+
+fn loop_prefix_leaves(proof Verification, candidates List[LoopCandidate], receiver Expr,
+    initial Value, written Bool, resized List[Int], entry State, depth Int) {
+    if depth <= 0 || length(candidates) >= 64 || receiver.ty < 0 ||
+    receiver.ty >= length(proof.program.types) {
+        return
+    }
+    let shape = get(proof.program.types, receiver.ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        loop_prefix_leaves(proof, candidates,
+            proof_expr(receiver, ExprKind.Coerce, get(shape.fields, 0).ty, "", -1, snapshot_child(receiver)),
+            initial, written, resized, entry, depth - 1)
+        return
+    }
+    match initial {
+        Value.List(identity) => {
+            if shape.kind != TypeKind.List || length(shape.arguments) != 1 {
+                return
+            }
+            let extent = match list_state(identity, entry) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return
+                }
+            }
+            if extent.contents < 0 || (!written && !extent_modified(extent, entry, resized)) {
+                return
+            }
+            var local = 0
+            while local < length(entry.locals) {
+                match get(entry.locals, local) {
+                    Value.EntryList(_, contents) => {
+                        if contents == extent.contents {
+                            let before = proof_expr(receiver, ExprKind.Local, receiver.ty, "", local, new[Expr]())
+                            let end = proof_expr(receiver, ExprKind.Intrinsic, 1, "list_len", -1, snapshot_child(receiver))
+                            let size = proof_expr(before, ExprKind.Intrinsic, 1, "list_len", -1, snapshot_child(before))
+                            let limit = proof_expr(receiver, ExprKind.Binary, 2, "<=", -1, proof_children(end, size))
+                            let bound = -1 - array_identity(proof)
+                            let index = proof_expr(receiver, ExprKind.Intrinsic, 1, "proof_bound", bound, new[Expr]())
+                            let ty = get(shape.arguments, 0)
+                            loop_prefix_columns(proof, candidates,
+                                proof_expr(receiver, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(receiver, index)),
+                                proof_expr(before, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(before, index)),
+                                proof_expr(receiver, ExprKind.Integer, 1, "0", -1, new[Expr]()),
+                                end, bound, limit, entry, depth - 1)
+                            return
+                        }
+                    }
+                    _ => {
+                    }
+                }
+                local = local + 1
+            }
+        }
+        Value.Record(fields) => {
+            if (shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple) ||
+            length(shape.fields) != length(fields) {
+                return
+            }
+            var field = 0
+            while field < length(fields) && length(candidates) < 64 {
+                let member = get(shape.fields, field)
+                loop_prefix_leaves(proof, candidates,
+                    proof_expr(receiver, ExprKind.Field, member.ty, member.name, field, snapshot_child(receiver)),
+                    get(fields, field), written, resized, entry, depth - 1)
+                field = field + 1
+            }
+        }
+        _ => {
+        }
+    }
+}
+
+fn loop_prefix_candidates(proof Verification, expr Expr, candidates List[LoopCandidate],
+    writes List[Bool], resized List[Int], entry State) {
+    if !proof.query.backend.enabled || length(resized) == 0 {
+        return
+    }
+    var local = 0
+    while local < length(proof.function.locals) && local < length(entry.locals) && length(candidates) < 64 {
+        if get(writes, local) || scan_mentions(expr, local) {
+            let receiver = proof_expr(expr, ExprKind.Local, get(proof.function.locals, local).ty,
+                "", local, new[Expr]())
+            loop_prefix_leaves(proof, candidates, receiver, get(entry.locals, local),
+                get(writes, local), resized, entry, 16)
+        }
+        local = local + 1
+    }
+}
+
+fn loop_candidate_views(proof Verification, candidates List[LoopCandidate], state State) State {
+    var current = state
+    var index = 0
+    while index < length(candidates) {
+        match get(candidates, index) {
+            LoopCandidate.Guard(value) => {
+                current = loop_query_views(proof, [value], current)
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    current
+}

@@ -523,10 +523,12 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     // Reserve identity proposals before optional affine pairs. Length relations
     // cannot displace the headers needed to retain checked storage provenance.
     var headers = loop_header_candidates(proof, candidates, writes, observed)?
+    loop_prefix_candidates(proof, expr, candidates, writes, resized, observed)
     discard loop_affine_candidates(proof, guard, body, candidates, writes, observed)?
     discard loop_observation_candidates(proof, expr, candidates, writes, resized, observed)?
     var head = loop_head(proof, writes, storage, candidates, headers)?
     head = loop_query_views(proof, clauses, head)
+    head = loop_candidate_views(proof, candidates, head)
     candidates = available_loop_candidates(candidates, head)
     while true {
         discard loop_step(proof)?
@@ -618,6 +620,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             // Removing an identity hypothesis changes the abstract head itself.
             // Rebuild it and recheck dependents, exits and captured returns.
             head = loop_query_views(proof, clauses, loop_head(proof, writes, storage, candidates, headers)?)
+            head = loop_candidate_views(proof, candidates, head)
             candidates = available_loop_candidates(candidates, head)
         }
     }

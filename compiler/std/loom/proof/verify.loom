@@ -237,6 +237,11 @@ fn required_condition(condition Expr, state State) Result[Bool, Text] {
 }
 
 fn returned(proof Verification, state State, value Value) Result[Bool, Text] {
+    // As in execute, a proved unreachable path has no value to observe. In
+    // particular, a while-true fallthrough must not read an Empty List result.
+    if holds(Predicate.Constant(false), state.facts) {
+        return Result.Ok(true)
+    }
     if proof.capture_returns {
         return add_outcome(proof.returns, Outcome {
                 state = state
