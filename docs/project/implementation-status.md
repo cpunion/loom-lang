@@ -584,8 +584,8 @@ therefore keep unrelated statuses independent. Mutable and multiple-return
 snapshots retain the bounded path model.
 General dynamic collection completion promises and
 unsupported source-helper bodies remain open.
-Erased postconditions now observe Task-bearing List lengths through pure source
-helpers and nested fields, including entry observations. The private helper
+Erased postconditions now observe Task-bearing List lengths through logical-only
+generic helper instances and nested fields, including entry observations. The private helper
 closure distinguishes these logical reads from executable body, precondition,
 cleanup and dynamic-slot calls, which retain one-shot Task checks. No runtime
 borrow mode or Task evaluation is introduced; see the
