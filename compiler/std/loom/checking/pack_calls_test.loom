@@ -24,6 +24,8 @@ test fn exhausted_pack_shape_normalization_keeps_an_unknown_word_not_one_element
     let shape = pack_node(source, NodeKind.TupleType, "tuple", source_nodes(normalized))
     assert impl_schemas_overlap(shape, pack_node(source, NodeKind.TupleType, "tuple", new[Node]()))
     assert impl_schemas_overlap(shape, pack_node(source, NodeKind.TupleType, "tuple", [unknown, unknown]))
+    let unresolved = pack_node(source, NodeKind.Type, "$unresolved", new[Node]())
+    assert pack_call_overlap_schema(env, unresolved, 0).value == "$parameter"
 }
 
 test fn pack_forwarding_selects_uniformly_disjoint_overloads_without_sampling_widths() {

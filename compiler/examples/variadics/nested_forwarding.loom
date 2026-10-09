@@ -1,0 +1,65 @@
+fn assembled_frame[Us...](values (Us...)) Int
+ensures result >= 2 {
+    framed_callee((1, values..., true))
+}
+
+fn nested_frame[Us..., Vs...](left (Us...), right (Vs...)) Int
+ensures result >= 2 {
+    framed_callee((1, (left..., true), right..., false))
+}
+
+record ForwardBox[T] {
+    value T
+}
+
+fn boxed_frame[T, Ts...](values (ForwardBox[T], Ts..., Bool)) Int
+ensures result == 42 {
+    42
+}
+
+fn inferred_frame[Us...](values (Us...)) Int
+ensures result == 42 {
+    boxed_frame((ForwardBox {
+                value = ("text", 1)
+            }, values..., true))
+}
+
+fn boxed_frame(value Bool) Int {
+    -1
+}
+
+fn marked_frame[Us...](log List[Int], values (Us...)) Int
+ensures length(log) == old(length(log)) + 2 {
+    framed_callee((mark(log, 1), values..., {
+                discard mark(log, 2)
+                true
+            }))
+}
+
+async fn nested_async_context[Us...](value Int, context (Us...)) Int
+ensures result == value {
+    var current = value
+    async_keep(current, ({
+                current = current + 1
+                false
+            }, context..., true)).await
+}
+
+fn exercise_nested_forwarding() {
+    assert assembled_frame(pack()) == 2
+    assert assembled_frame((true, "text")) == 4
+    assert nested_frame(pack(), pack()) == 3
+    assert nested_frame((1, true), ("text", false)) == 5
+    assert inferred_frame(pack()) == 42
+    assert inferred_frame((true, "context")) == 42
+    assert comptime {
+        nested_frame((1,), (true, "compiled"))
+    } == 5
+    let callback fn((Text, Bool)) Int = assembled_frame
+    assert callback(("callback", true)) == 4
+    let log List[Int] = []
+    assert marked_frame(log, pack()) == 2
+    assert marked_frame(log, (true, "context")) == 4
+    assert length(log) == 4
+    assert log[0] == 1 && log[1] == 2 && log[2] == 1 && log[3] == 2
+}
