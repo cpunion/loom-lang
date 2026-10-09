@@ -46,6 +46,16 @@ fn loop_storage_writes(proof Verification, value Expr, entry State, modified Lis
         discard loop_storage_writes(proof, get(value.children, index), entry, modified, contents, depth - 1)?
         index = index + 1
     }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            discard loop_storage_writes(proof, get(body, item), entry, modified, contents, depth - 1)?
+            item = item + 1
+        }
+        index = index + 1
+    }
     Result.Ok(true)
 }
 
@@ -87,6 +97,18 @@ fn loop_list_type(proof Verification, ty Int, depth Int) Bool {
     while index < length(shape.fields) {
         if loop_list_type(proof, get(shape.fields, index).ty, depth + 1) {
             return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if loop_list_type(proof, get(fields, field), depth + 1) {
+                return true
+            }
+            field = field + 1
         }
         index = index + 1
     }

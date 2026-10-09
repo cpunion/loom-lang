@@ -146,6 +146,16 @@ fn mutable_value(value Value) Bool {
             }
             false
         }
+        Value.Sum(_, _, payloads) => {
+            var variant = 0
+            while variant < length(payloads) {
+                if mutable_value(Value.Record(get(payloads, variant))) {
+                    return true
+                }
+                variant = variant + 1
+            }
+            false
+        }
         _ => false
     }
 }
@@ -283,12 +293,11 @@ fn storage_operation(program Program, name Text, ty Int, arguments List[Expr], r
 
 fn storage_expression(value Expr) Bool {
     let kind = value.kind
-    if length(value.arms) != 0 ||
-    ((kind == ExprKind.Defer || kind == ExprKind.Cleanup) && value.text != "") {
+    if (kind == ExprKind.Defer || kind == ExprKind.Cleanup) && value.text != "" {
         return false
     }
     proof_operation(value).arity >= 0 || kind == ExprKind.Bytes || kind == ExprKind.List ||
-    kind == ExprKind.Block || kind == ExprKind.If || kind == ExprKind.While ||
+    kind == ExprKind.Block || kind == ExprKind.If || kind == ExprKind.Match || kind == ExprKind.Variant || kind == ExprKind.While ||
     kind == ExprKind.Let || kind == ExprKind.Assign || kind == ExprKind.Return ||
     kind == ExprKind.Assert || kind == ExprKind.Discard ||
     kind == ExprKind.Defer || kind == ExprKind.Cleanup ||
@@ -326,13 +335,22 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], requireme
             return false
         }
     }
-    if length(value.arms) != 0 {
-        return false
-    }
     var index = 0
     while index < length(value.children) {
         if !preserves_list_state(program, get(value.children, index), budget, requirement, depth + 1) {
             return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if !preserves_list_state(program, get(body, item), budget, requirement, depth + 1) {
+                return false
+            }
+            item = item + 1
         }
         index = index + 1
     }

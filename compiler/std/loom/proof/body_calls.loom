@@ -4,13 +4,43 @@ fn call_body_at(value Expr, offset Int, depth Int) Result[Expr, Text] {
     if depth <= 0 {
         return Result.Err("source helper proof body depth exhausted")
     }
-    if length(value.arms) != 0 {
-        return Result.Err("unsupported match in source helper proof")
-    }
     let children = new[Expr]()
     var index = 0
     while index < length(value.children) {
         push(children, call_body_at(get(value.children, index), offset, depth - 1)?)
+        index = index + 1
+    }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let bindings = new[Int]()
+        var field = 0
+        while field < length(arm.bindings) {
+            let local = get(arm.bindings, field)
+            push(bindings, if local < 0 {
+                    -1
+                } else {
+                    local + offset
+                })
+            field = field + 1
+        }
+        let body = new[Expr]()
+        field = 0
+        while field < length(arm.body) {
+            push(body, call_body_at(get(arm.body, field), offset, depth - 1)?)
+            field = field + 1
+        }
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = bindings
+                whole = if arm.whole < 0 {
+                    -1
+                } else {
+                    arm.whole + offset
+                }
+                body = body
+            })
         index = index + 1
     }
     let local = value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign
@@ -25,7 +55,7 @@ fn call_body_at(value Expr, offset Int, depth Int) Result[Expr, Text] {
                 value.index
             }
             children = children
-            arms = value.arms
+            arms = arms
             falls = value.falls
         })
 }

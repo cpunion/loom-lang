@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose required function guarantees through checked enum construction and
+  matching, including generic/nested patterns, guards, dynamic calls and Task
+  payloads. Reuse ordinary branch and loop rules, preserving input effects and
+  invalidating shared storage across writes or suspension.
+
 - Isolate automatic `run`/`test` binaries in exclusive per-invocation directories
   and clean them after child exit or compilation failure. Concurrent commands
   no longer overwrite each other or a retained build; `test --no-run` keeps its

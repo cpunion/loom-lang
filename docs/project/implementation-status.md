@@ -566,6 +566,14 @@ unprotected heap facts. The
 [factory example](../../compiler/examples/async_contracts/factories.loom) and edited
 frontend-cache trial cover this boundary. Collection completion promises and
 unsupported source-helper bodies remain open.
+Checked enum constructors and match trees now preserve nominal tag/payload
+identity through generic helpers, nested/guarded patterns and declared dynamic
+calls. Selected payloads supply type invariants and known Task promises; branch
+writes join ordinary loop and heap analysis. The
+[enum example](../../compiler/examples/async_contracts/enums.loom) exercises real
+waits. Reassigned enum loop locals retain type guarantees, not old tag/payload
+facts. Relational payload induction and match-based contract predicates remain
+open; shared payloads do not preserve stale facts across suspension.
 Immutable Text values, exact literals and established equality facts participate
 in required proofs, including Text leaves beside shared siblings. Distinct unknown
 values never imply unequal contents. Established equality chains and inequalities

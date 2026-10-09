@@ -1,0 +1,305 @@
+test fn enum_contracts_use_selected_payloads_and_checked_pattern_trees() {
+    let header = """
+        type Positive = Int where self > 0
+        type Impossible = Int where self > 0 && self < 0
+        enum Choice[T] {
+            Value(T)
+            Missing
+        }
+        fn unwrap[T](value Choice[T], fallback T) T {
+            match value {
+                Choice.Value(item) => item
+                Choice.Missing => fallback
+            }
+        }
+
+        """
+    discard accepted(concat(header, """
+        fn positive(value Choice[Positive]) Int
+        ensures result > 0 {
+            unwrap(value, Positive(1))
+        }
+        fn rebound(value Choice[Positive]) Int
+        ensures result > 0 {
+            var current = value
+            var index = 0
+            while index < 3 {
+                current = Choice.Value(Positive(2))
+                index = index + 1
+            }
+            unwrap(current, Positive(1))
+        }
+        fn nested(value Choice[Choice[Positive]]) Int
+        ensures result > 0 {
+            match value {
+                Choice.Value(Choice.Value(number)) if number > 1 => number
+                Choice.Value(inner) => unwrap(inner, Positive(1))
+                rest => match rest {
+                    Choice.Value(inner) => unwrap(inner, Positive(2))
+                    Choice.Missing => 3
+                }
+            }
+        }
+        fn repeated(value Choice[Int]) Int
+        ensures result == 1 {
+            match value {
+                Choice.Value(first) => match value {
+                    Choice.Value(second) => if first == second { 1 } else { 0 }
+                    Choice.Missing => 0
+                }
+                Choice.Missing => 1
+            }
+        }
+        concept Read {
+            fn read(self Self) Positive
+        }
+        fn dynamic(value Choice[Int], source dyn Read) Int
+        ensures result > 0 {
+            match value {
+                Choice.Value(_) => source.read()
+                Choice.Missing => source.read()
+            }
+        }
+        fn only_missing(value Choice[Impossible]) Int
+        ensures result == 1 {
+            match value {
+                Choice.Value(_) => 0
+                Choice.Missing => 1
+            }
+        }
+        """))
+    rejects(concat(header, """
+        fn wrong(value Choice[Positive]) Int
+        ensures result > 0 {
+            match value {
+                Choice.Value(number) if number > 1 => number
+                _ => 0
+            }
+        }
+        """))
+    rejects(concat(header, """
+        fn unknown(value Choice[Int]) Int
+        ensures result > 0 {
+            unwrap(value, 1)
+        }
+        """))
+    // An impossible inactive payload must not make the inhabited Missing
+    // variant contradictory and thereby prove an arbitrary postcondition.
+    rejects(concat(header, """
+        fn wrong(value Choice[Impossible]) Int
+        ensures result > 0 {
+            match value {
+                Choice.Value(number) => number
+                Choice.Missing => 0
+            }
+        }
+        """))
+}
+
+test fn enum_constructors_and_loop_patterns_keep_source_effects() {
+    let header = """
+        enum Pair {
+            Items(Int, Int)
+            Missing
+        }
+
+        """
+    discard accepted(concat(header, """
+        fn ordered() Int
+        ensures result == 8 {
+            var input = 7
+            let pair = Pair.Items(input, {
+                input = 0
+                1
+            })
+            match {
+                input = input + 1
+                pair
+            } {
+                Pair.Items(first, second) => first + second + input - 1
+                Pair.Missing => 0
+            }
+        }
+        fn walk() Int
+        ensures result == 3 {
+            var index = 0
+            while index < 3 {
+                let pair = Pair.Items(index, 1)
+                match pair {
+                    Pair.Items(current, step) => {
+                        index = current + step
+                    }
+                    Pair.Missing => {
+                        index = index + 1
+                    }
+                }
+            }
+            index
+        }
+        fn find(value Pair) Int
+        ensures result >= 0 && result <= 1 {
+            var index = 0
+            while index < 3 {
+                match value {
+                    Pair.Items(_, _) => {
+                        return 1
+                    }
+                    Pair.Missing => {
+                        index = index + 1
+                        continue
+                    }
+                }
+            }
+            0
+        }
+        """))
+    rejects(concat(header, """
+        fn wrong() Int
+        ensures result == 1 {
+            var input = 7
+            let pair = Pair.Items(input, {
+                input = 0
+                1
+            })
+            match pair {
+                Pair.Items(first, _) => first
+                Pair.Missing => 1
+            }
+        }
+        """))
+}
+
+test fn enum_task_payloads_preserve_promises_not_unknown_implementations() {
+    let header = """
+        async fn keep(value Int) Int
+        ensures result == value {
+            value
+        }
+        enum Work {
+            Pending(Task[Int])
+            Ready(Int)
+        }
+        fn make(flag Bool, value Int) Work {
+            if flag {
+                Work.Pending(keep(value))
+            } else {
+                Work.Ready(value)
+            }
+        }
+
+        """
+    discard accepted(concat(header, """
+        async fn finish(flag Bool, value Int) Int
+        ensures result == value {
+            match make(flag, value) {
+                Work.Pending(task) => task.await
+                Work.Ready(number) => number
+            }
+        }
+        type Positive = Int where self > 0
+        enum TypedWork {
+            Pending(Task[Positive])
+            Ready(Positive)
+        }
+        async fn typed(work TypedWork) Int
+        ensures result > 0 {
+            match work {
+                TypedWork.Pending(task) => task.await
+                TypedWork.Ready(number) => number
+            }
+        }
+        enum Route {
+            First
+            Second
+        }
+        concept Keep {
+            async fn keep(self Self, value Int) Int
+            ensures result == value
+        }
+        async fn dynamic(route Route, source dyn Keep, value Int) Int
+        ensures result == value {
+            match route {
+                Route.First => source.keep(value).await
+                Route.Second => source.keep(value).await
+            }
+        }
+        """))
+    rejects(concat(header, """
+        async fn unknown(work Work, value Int) Int
+        ensures result == value {
+            match work {
+                Work.Pending(task) => task.await
+                Work.Ready(number) => number
+            }
+        }
+        """))
+    rejects(concat(header, """
+        async fn wrong(flag Bool, value Int) Int
+        ensures result == value {
+            match make(flag, value) {
+                Work.Pending(task) => task.await
+                Work.Ready(number) => number + 1
+            }
+        }
+        """))
+}
+
+test fn enum_list_payloads_do_not_hide_alias_writes_or_suspension() {
+    let header = """
+        import std.list.length
+        import std.list.push
+        enum Stored {
+            Values(List[Int])
+        }
+
+        """
+    list_length_contract(concat(header, """
+        fn measured(stored Stored) Int
+        ensures result >= 0 {
+            match stored {
+                Stored.Values(values) => length(values)
+            }
+        }
+        fn read_only(values List[Int], stored Stored) Int
+        ensures result == old(length(values)) {
+            discard measured(stored)
+            length(values)
+        }
+        fn snapshot(values List[Int], stored Stored) Int
+        ensures result == old(length(values)) {
+            let before = length(values)
+            var index = 0
+            while index < 2 {
+                match stored {
+                    Stored.Values(alias) => push(alias, 1)
+                }
+                index = index + 1
+            }
+            before
+        }
+        """), true)
+    list_length_contract(concat(header, """
+        fn stale(values List[Int], stored Stored) Int
+        ensures result == old(length(values)) {
+            var index = 0
+            while index < 2 {
+                match stored {
+                    Stored.Values(alias) => push(alias, 1)
+                }
+                index = index + 1
+            }
+            length(values)
+        }
+        """), false)
+    list_length_contract(concat(header, """
+        async fn wait() {}
+        async fn stale(values List[Int]) Int
+        ensures result == old(length(values)) {
+            let stored = Stored.Values(values)
+            wait().await
+            match stored {
+                Stored.Values(alias) => length(alias)
+            }
+        }
+        """), false)
+}

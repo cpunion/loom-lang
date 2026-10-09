@@ -307,6 +307,9 @@ fn pure(expr Expr, state State) Result[Value, Text] {
 
 fn bounded(value Value, state State) State {
     match value {
+        Value.Sum(_, tag, payloads) => assume(assume(state,
+                Predicate.Compare(">=", tag)),
+            Predicate.Compare("<", add(tag, constant(integer(-length(payloads)))))),
         Value.Nonlinear(term) => assume(assume(state,
                 integer_limit(">=", term, -9223372036854775808)),
             integer_limit("<=", term, 9223372036854775807))

@@ -80,6 +80,21 @@ fn loop_local_type(proof Verification, ty Int, depth Int) Bool {
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         return loop_local_type(proof, get(shape.fields, 0).ty, depth + 1)
     }
+    if shape.kind == TypeKind.Enum {
+        var variant = 0
+        while variant < length(shape.variants) {
+            let fields = get(shape.variants, variant).fields
+            var field = 0
+            while field < length(fields) {
+                if !loop_local_type(proof, get(fields, field), depth + 1) {
+                    return false
+                }
+                field = field + 1
+            }
+            variant = variant + 1
+        }
+        return true
+    }
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
         return false
     }
@@ -93,8 +108,26 @@ fn loop_local_type(proof Verification, ty Int, depth Int) Bool {
     true
 }
 
-// Enumerate all writes, including declarations and nested loops. Unknown effects
-// cannot keep stale facts about a local, an alias, or a captured mutable cell.
+fn loop_local_write(proof Verification, local Int, entry State, writes List[Bool]) Result[Bool, Text] {
+    if local < 0 {
+        return Result.Ok(true)
+    }
+    let ty = get(proof.function.locals, local).ty
+    // Body-local declarations and pattern bindings are evaluated anew on
+    // every iteration; only existing values need loop-head reconstruction.
+    let initialized = match get(entry.locals, local) {
+        Value.Empty => false
+        _ => true
+    }
+    if initialized && !loop_local_type(proof, ty, 0) {
+        return Result.Err("required loop proof needs supported value or List local assignments")
+    }
+    set(writes, local, true)
+    Result.Ok(true)
+}
+
+// Enumerate all writes, including declarations, patterns and nested loops.
+// Unknown effects cannot keep stale local, alias or captured-cell facts.
 fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], guard Bool, depth Int) Result[Bool, Text] {
     discard loop_step(proof)?
     if depth <= 0 {
@@ -103,14 +136,14 @@ fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], gu
     let kind = expr.kind
     let scalar = kind == ExprKind.Integer || kind == ExprKind.Float || kind == ExprKind.Bool || kind == ExprKind.Text || kind == ExprKind.Local ||
     kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce ||
-    kind == ExprKind.Field || kind == ExprKind.Record || kind == ExprKind.List ||
+    kind == ExprKind.Field || kind == ExprKind.Record || kind == ExprKind.List || kind == ExprKind.Variant ||
     kind == ExprKind.FrameNew || kind == ExprKind.DynBox
     let call = kind == ExprKind.Call || kind == ExprKind.TaskCall ||
     kind == ExprKind.Await || kind == ExprKind.Suspend ||
     kind == ExprKind.FunctionRef || kind == ExprKind.IndirectCall
     if !scalar && !call &&
     !(kind == ExprKind.Intrinsic && list_operation(expr.text)) {
-        if guard || (kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.While &&
+        if guard || (kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.Match && kind != ExprKind.While &&
             kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
             kind != ExprKind.Assert && kind != ExprKind.Discard &&
             kind != ExprKind.Break && kind != ExprKind.Continue &&
@@ -122,18 +155,7 @@ fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], gu
         return Result.Err("required loop proof needs ordinary scalar cleanup")
     }
     if kind == ExprKind.Let || kind == ExprKind.Assign {
-        let ty = get(proof.function.locals, expr.index).ty
-        // Only existing logical values need loop-head reconstruction. A
-        // declaration starts opaque and is evaluated anew on each iteration;
-        // do not impose a loop-carried type restriction on body-local values.
-        let initialized = match get(entry.locals, expr.index) {
-            Value.Empty => false
-            _ => true
-        }
-        if initialized && !loop_local_type(proof, ty, 0) {
-            return Result.Err("required loop proof needs scalar, List or supported inline aggregate local assignments")
-        }
-        set(writes, expr.index, true)
+        discard loop_local_write(proof, expr.index, entry, writes)?
     }
     // Calls reuse checked summaries or finite pure expansion. Task completion
     // uses the same guarantees; unknown callbacks and suspension freshen heap
@@ -142,6 +164,22 @@ fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], gu
     while index < length(expr.children) {
         discard loop_writes(proof, get(expr.children, index), entry, writes,
             guard || (kind == ExprKind.While && index == 0), depth - 1)?
+        index = index + 1
+    }
+    index = 0
+    while index < length(expr.arms) {
+        let arm = get(expr.arms, index)
+        var binding = 0
+        while binding < length(arm.bindings) {
+            discard loop_local_write(proof, get(arm.bindings, binding), entry, writes)?
+            binding = binding + 1
+        }
+        discard loop_local_write(proof, arm.whole, entry, writes)?
+        var item = 0
+        while item < length(arm.body) {
+            discard loop_writes(proof, get(arm.body, item), entry, writes, guard, depth - 1)?
+            item = item + 1
+        }
         index = index + 1
     }
     Result.Ok(true)
@@ -215,6 +253,18 @@ fn loop_call_free(expr Expr) Bool {
     while index < length(expr.children) {
         if !loop_call_free(get(expr.children, index)) {
             return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(expr.arms) {
+        let body = get(expr.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if !loop_call_free(get(body, item)) {
+                return false
+            }
+            item = item + 1
         }
         index = index + 1
     }
