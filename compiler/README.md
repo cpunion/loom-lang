@@ -966,7 +966,13 @@ CTFE, callbacks, inherited dyn methods and shared List effects. The
 [structural forwarding example](examples/variadics/structural_forwarding.loom)
 adds fixed fields, jointly inferred groups, explicit type words and selected aliases,
 nested constructors, nominal inputs and generic/default method scopes.
-Overloaded/indirect/async callees, freshly assembled sequences, unresolved associated callee
+Overloaded callees also forward when the complete symbolic input shape excludes
+every other declaration. The existing constructor/sequence overlap rules cover
+tuple and nominal inputs, fixed fields and ordinary fixed-argument types, without
+sampling widths. Unknown intersections and possible widening retain contenders;
+declaration order and successful sample specializations cannot select a summary.
+See the [overload example](examples/variadics/overloaded_forwarding.loom).
+Indirect/async callees, freshly assembled sequences, unresolved associated callee
 patterns and fixed types with unknown expanded layouts remain unsupported in
 family proofs.
 Normal selected calls retain their existing checks and static expansion.

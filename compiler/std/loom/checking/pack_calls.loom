@@ -32,6 +32,139 @@ fn pack_forwarded_shape(parameter Node) Node {
     }
 }
 
+// This is only a disjointness filter. Erase correlations and any type which
+// could widen; failure to establish a shape keeps the contender, never drops it.
+fn pack_call_overlap_schema(env Environment, schema Node, depth Int) Node {
+    let unknown = pack_node(schema, NodeKind.Type, "$parameter", new[Node]())
+    if depth >= 64 {
+        return if schema.kind == NodeKind.Spread {
+            pack_node(schema, NodeKind.Spread, "", source_nodes(unknown))
+        } else {
+            unknown
+        }
+    }
+    if schema.value == "$parameter" ||
+    std.text.starts_with(schema.value, "$parameter#") || std.text.starts_with(schema.value, "dyn#") {
+        return unknown
+    }
+    if std.text.starts_with(schema.value, "nominal#") {
+        match std.int.parse(slice(schema.value, 8, length(schema.value))) {
+            Result.Ok(owner) => {
+                if symbol(env, owner).node.kind == NodeKind.Refined {
+                    return unknown
+                }
+            }
+            Result.Err(_) => {
+                return unknown
+            }
+        }
+    } else if schema.kind == NodeKind.Type {
+        match std.int.parse(schema.value) {
+            Result.Ok(ty) => {
+                let kind = get(env.types, ty).kind
+                if kind == TypeKind.Parameter || kind == TypeKind.Associated ||
+                kind == TypeKind.Refined || kind == TypeKind.Dyn {
+                    return unknown
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(schema.children) {
+        push(children, pack_call_overlap_schema(env, child(schema, index), depth + 1))
+        index = index + 1
+    }
+    pack_node(schema, schema.kind, schema.value, children)
+}
+
+fn pack_call_inputs_schema(context Context, caller Node, inputs List[Node], site Node) Node {
+    let sources = group(caller, NodeKind.Parameters)
+    let shapes = new[Node]()
+    var index = 0
+    while index < length(inputs) {
+        let argument = get(inputs, index)
+        let source = pack_forwarded_parameter(caller, argument)
+        let unknown = pack_node(argument, NodeKind.Type, "$parameter", new[Node]())
+        let schema = if source >= 0 {
+            match pack_forward_source_schema(context, caller, pack_forwarded_shape(get(sources, source))) {
+                Result.Ok(value) => pack_call_overlap_schema(context.env, value, 0)
+                Result.Err(_) => unknown
+            }
+        } else {
+            match static_probe(context, if argument.kind == NodeKind.Spread {
+                    child(argument, 0)
+                } else {
+                    argument
+                }, -1) {
+                Result.Ok(value) => pack_call_overlap_schema(context.env,
+                    impl_type_schema(context.env, base_type(context.env, value.ty), argument, false), 0)
+                Result.Err(_) => unknown
+            }
+        }
+        if argument.kind == NodeKind.Spread {
+            if schema.kind == NodeKind.TupleType {
+                var field = 0
+                while field < length(schema.children) {
+                    push(shapes, child(schema, field))
+                    field = field + 1
+                }
+            } else {
+                push(shapes, pack_node(argument, NodeKind.Spread, "", source_nodes(unknown)))
+            }
+        } else {
+            push(shapes, schema)
+        }
+        index = index + 1
+    }
+    pack_node(site, NodeKind.TupleType, "tuple", shapes)
+}
+
+fn pack_call_target(context Context, caller Node, options List[Int], inputs List[Node], site Node) Result[Int, Failure] {
+    if length(options) == 1 {
+        return Result.Ok(get(options, 0))
+    }
+    let actual = pack_call_inputs_schema(context, caller, inputs, site)
+    var selected = -1
+    var index = 0
+    while index < length(options) {
+        let target = get(options, index)
+        let declaration = symbol(context.env, target).node
+        let parameters = group(declaration, NodeKind.Parameters)
+        let patterns = new[Node]()
+        var parameter = 0
+        while parameter < length(parameters) {
+            let source = child(get(parameters, parameter), 0)
+            let schema = match type_pattern_schema(context.env, target, source, false, 0, false) {
+                Result.Ok(value) => pack_call_overlap_schema(context.env, value, 0)
+                Result.Err(_) => {
+                    let unknown = pack_node(source, NodeKind.Type, "$parameter", new[Node]())
+                    if source.kind == NodeKind.Spread {
+                        pack_node(source, NodeKind.Spread, "", source_nodes(unknown))
+                    } else {
+                        unknown
+                    }
+                }
+            }
+            push(patterns, schema)
+            parameter = parameter + 1
+        }
+        if impl_schemas_overlap(pack_node(declaration, NodeKind.TupleType, "tuple", patterns), actual) {
+            if selected >= 0 {
+                return Result.Err(error(context, site, "variadic forwarding proof needs one declared function, not unresolved overloads"))
+            }
+            selected = target
+        }
+        index = index + 1
+    }
+    if selected < 0 {
+        return Result.Err(error(context, site, "no accessible overload matches these forwarded sequences"))
+    }
+    Result.Ok(selected)
+}
+
 fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let owner = pack_proof_caller(context)
     if owner < 0 {
@@ -51,10 +184,8 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
         return Result.Err(error(context, node, "variadic forwarding proof needs an unshadowed declared function"))
     }
     let options = candidates(context.env.source, caller.file, caller.test_only, path)
-    if length(options) != 1 {
-        return Result.Err(error(context, node, "variadic forwarding proof needs one declared function, not unresolved overloads"))
-    }
-    let target = get(options, 0)
+    let inputs = child(node, 1).children
+    let target = pack_call_target(context, caller.node, options, inputs, node)?
     let callee = symbol(context.env, target)
     let declaration = callee.node
     if callee.owner >= 0 || declaration.kind != NodeKind.Function || pack_parameter(declaration) < 0 ||
@@ -62,7 +193,6 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
         return Result.Err(error(context, node, "variadic forwarding proof needs a synchronous family with declared postconditions"))
     }
     let parameters = group(declaration, NodeKind.Parameters)
-    let inputs = child(node, 1).children
     if length(parameters) != length(inputs) {
         return Result.Err(error(context, node, "variadic forwarding proof needs one source sequence per pack parameter"))
     }

@@ -269,7 +269,15 @@ declared bounds, independent groups, CTFE, callbacks and inherited dyn methods.
 The [structural forwarding example](../../compiler/examples/variadics/structural_forwarding.loom)
 covers fixed fields, nested constructors, nominal inputs and generic/default
 method scopes. Mixed captured sequences cannot supply element requirements.
-Overloaded/indirect/async callees, newly assembled
+Overloaded callees now reuse the existing constructor/sequence intersection rules
+to exclude declarations uniformly disjoint from the symbolic input word. Fixed
+arguments use isolated ordinary type probes; unknown shapes, possible weakening
+or boxing and width-dependent overlap remain contenders. The
+[overload example](../../compiler/examples/variadics/overloaded_forwarding.loom)
+covers native/compile-time calls, nominal inputs, fixed anchors, callbacks,
+inherited dyn methods and once-only argument effects. Neither declaration order
+nor sampled arities select a proof summary.
+Indirect/async callees, newly assembled
 sequences, unresolved associated callee patterns and unknown fixed layouts
 still reject in family proofs.
 Type-dependent induction, opaque element escape, pack-dependent results and
