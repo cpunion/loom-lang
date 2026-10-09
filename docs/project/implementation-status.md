@@ -771,8 +771,11 @@ does not treat a sampled length/content guard as a reservation against other ali
 There is no implicit copy, monitor or alias-triggered runtime failure.
 
 Scalar, List and supported inline aggregate loops infer entry/guard bounds and
-check inductiveness to a fixed point. Rebound List leaves supply length bounds,
-not retained handle identities. Mixing
+check inductiveness to a fixed point. Rebound List leaves supply length bounds;
+separate checked identity candidates can retain stable headers, including inline
+projections. Every actual backedge must preserve the identity. Removing a header
+hypothesis rebuilds the abstract head and rechecks dependents, exits and early
+returns; later passes cannot restore published storage privacy. Mixing
 rebinding with possible resizing freshens all tracked extents before induction.
 Zero-iteration paths and early returns retain separate obligations. This supports
 whole-value record/tuple reassignment with independently fresh leaves,
@@ -785,8 +788,11 @@ invariant terms. Resource cleanup and general heap-content proofs remain unsuppo
 Rebound List leaves and inline projections also propose checked current-length
 sum/difference relations with scalar counters. The
 [transfer loop example](../../compiler/examples/loop_contracts/transfers.loom)
-proves generic consume-and-count loops without retaining entry header identities
-or inventing alias separation. Every actual backedge must preserve the equation;
+proves generic consume-and-count and consume-and-build loops without inventing
+alias separation. Checked stable headers retain only existing allocation
+provenance; the [Task metadata example](../../compiler/examples/async_contracts/metadata.loom)
+also transfers a dynamic Task batch with a verified count/length contract.
+Every actual backedge must preserve the equation;
 general transfer content induction and Task List join guarantees remain open.
 Written Int guard cursors propose mathematical entry-difference and weighted
 pair relations after existing storage/quantifier candidates. Constant affine

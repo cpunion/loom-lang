@@ -477,7 +477,24 @@ fn shared_proofs_do_not_restore_private_storage_across_publication_or_loop_backe
     let package = tempfile::tempdir().unwrap();
     for publish in [
         "std.list.set(target, 0, values)",
-        "var index = 0\nwhile index < count { std.list.set(target, 0, values)\nindex = index + 1 }",
+        r#"
+    var index = 0
+    while index < count {
+        std.list.set(target, 0, values)
+        index = index + 1
+    }
+"#,
+        r#"
+    var other = [0]
+    var index = 0
+    while index < count {
+        values = values
+        std.list.set(target, 0, values)
+        other = [index]
+        index = index + 1
+    }
+    discard other
+"#,
     ] {
         let body = format!(
             r#"
@@ -486,7 +503,7 @@ import std.list.set
 fn published(target List[List[Int]], count Int) List[Int]
 ensures length(result) == 1
 {{
-    let values = [1]
+    var values = [1]
     {publish}
     values
 }}

@@ -59,6 +59,10 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
     success(&check());
     for changed in [
         program.replace("processed = processed + 1", "processed = processed + 2"),
+        program.replace(
+            "output = append(output, value)",
+            "output = append[T]([], value)",
+        ),
         program.replace("current = current / 2.0", "current = -current"),
         program.replace("current = current / 2.0", "current = 0.0 / 0.0"),
         r#"

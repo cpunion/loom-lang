@@ -96,3 +96,93 @@ test fn transfer_conservation_tracks_inline_paths_not_entry_headers() {
         }
         """, false)
 }
+
+test fn transfer_loops_prove_stable_headers_through_inline_rebinding() {
+    let source = """
+        import std.list.length
+        record Cursor[T] {
+            pending List[T]
+            output List[T]
+            marker Bool
+        }
+        fn reversed[T](values List[T]) (List[T], Int)
+        ensures length(result.0) == old(length(values)) && result.1 == old(length(values)) {
+            var cursor = Cursor[T] {
+                pending = values
+                output = []
+                marker = false
+            }
+            var count = 0
+            while true {
+                match take(cursor.pending) {
+                    Taken.Value(pair) => {
+                        cursor = Cursor[T] {
+                            pending = pair.1
+                            output = append(cursor.output, pair.0)
+                            marker = !cursor.marker
+                        }
+                        count = count + 1
+                    }
+                    Taken.Empty => {
+                        return (cursor.output, count)
+                    }
+                }
+            }
+        }
+        fn main() {
+            discard reversed([1, 2, 3])
+            discard reversed(["first", "second"])
+            discard reversed[Int]([])
+        }
+        """
+    list_transfer_contract(source, true)
+    list_transfer_contract(std.text.join(std.text.split(source,
+                "output = append(cursor.output, pair.0)"),
+            "output = append[T]([], pair.0)"), false)
+    list_transfer_contract(std.text.join(std.text.split(source,
+                "output = append(cursor.output, pair.0)"),
+            "output = cursor.pending"), false)
+}
+
+test fn rejected_header_hypotheses_recheck_cleanup_and_early_returns() {
+    let cleanup = """
+        import std.list.length
+        fn stable(limit Int) Int
+        requires limit >= 0 && limit <= 3
+        ensures result == 1 {
+            var values = [7]
+            var index = 0
+            while index < limit {
+                defer {
+                    values = values
+                }
+                index = index + 1
+                continue
+            }
+            length(values)
+        }
+        """
+    list_transfer_contract(cleanup, true)
+    list_transfer_contract(std.text.join(std.text.split(cleanup,
+                "values = values"), "values = []"), false)
+    list_transfer_contract("""
+        import std.list.length
+        fn delayed() Int
+        ensures result == 1 {
+            var values = [7]
+            var index = 0
+            while index < 3 {
+                if index == 2 {
+                    return length(values)
+                }
+                values = if index == 1 {
+                    []
+                } else {
+                    values
+                }
+                index = index + 1
+            }
+            length(values)
+        }
+        """, false)
+}

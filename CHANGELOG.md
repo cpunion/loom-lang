@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Infer stable List header identities through loop entry/backedge verification,
+  including inline aggregates. Rebuild the abstract head when an identity
+  hypothesis fails and retain publication loss across passes. Compose generic
+  consume-and-build and dynamic Task batch length contracts without assuming
+  alias separation or retaining stale elements.
+
 - Prove bounded length/counter conservation through rebound Lists and inline
   projections. Reuse entry/backedge induction for generic consume-and-count
   loops without assuming header identity or alias separation; recheck changed

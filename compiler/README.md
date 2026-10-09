@@ -2960,8 +2960,16 @@ between their current length and written scalar counters. Each relation is check
 at entry and every backedge; it does not identify the current handle with its
 entry handle or assume disjoint storage. The
 [transfer example](examples/loop_contracts/transfers.loom) proves a generic
-consume-and-count loop, including empty inputs. Incorrect counts and unrelated
-replacements fail proof; general transfer-loop content induction remains open.
+consume-and-count loop, including empty inputs. Separate entry/backedge candidates
+can also establish stable List header identities through local and inline
+aggregate rebinding. These are internal alias facts, not observable addresses or
+an assumption that different handles are disjoint. Proved identities retain
+existing allocation provenance, enabling consume-and-build length conservation
+in the same example. Rejected identity candidates rebuild the hypothetical head
+and recheck dependent facts, exits and early returns. Publication cannot restore
+private storage on a later inference pass. Incorrect counts, fresh replacement
+headers and possible alias interference reject; general transfer-loop content
+induction remains open.
 
 Required postconditions reuse the integer difference propagation used at
 refinement boundaries: `requires value > lower && lower >= 0` can establish

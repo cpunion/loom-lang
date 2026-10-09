@@ -1,5 +1,6 @@
 import std.list.length
 import std.list.transfer.take_last
+import std.list.transfer.append
 import std.option.Option
 
 fn transfer_count[T](values List[T]) Int
@@ -24,4 +25,31 @@ fn transfer_exercise() {
     assert transfer_count[Int]([]) == 0
     assert transfer_count([7, 8, 9]) == 3
     assert transfer_count(["first", "second"]) == 2
+    let reversed, count = transfer_reverse([7, 8, 9])
+    assert count == 3 && length(reversed) == 3
+    assert reversed[0] == 9 && reversed[2] == 7
+    let words, word_count = transfer_reverse(["first", "second"])
+    assert word_count == 2 && words[0] == "second"
+    let empty, empty_count = transfer_reverse[Int]([])
+    assert length(empty) == 0 && empty_count == 0
+}
+
+fn transfer_reverse[T](values List[T]) (List[T], Int)
+ensures length(result.0) == old(length(values)) && result.1 == old(length(values)) {
+    var pending = values
+    var output List[T] = []
+    var processed = 0
+    while true {
+        match take_last(pending) {
+            Option.Some(pair) => {
+                let value, rest = pair
+                pending = rest
+                output = append(output, value)
+                processed = processed + 1
+            }
+            Option.None => {
+                return (output, processed)
+            }
+        }
+    }
 }
