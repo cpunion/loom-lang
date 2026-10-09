@@ -1,0 +1,202 @@
+// Erased selectors over a checked nominal enum, not runtime reflection or a
+// new user operation. Only the selected tag permits reading its payload.
+fn enum_index(source Expr, value Int) Expr {
+    proof_expr(source, ExprKind.Integer, 1, std.int.to_text(value), -1, new[Expr]())
+}
+
+fn enum_tag(context Expansion, source Expr, receiver Expr, depth Int) Result[Expr, Text] {
+    discard expansion_step(context, depth)?
+    if receiver.kind == ExprKind.Coerce {
+        return enum_tag(context, source, get(receiver.children, 0), depth + 1)
+    }
+    if receiver.kind == ExprKind.Variant {
+        return Result.Ok(enum_index(source, receiver.index))
+    }
+    if receiver.kind == ExprKind.If {
+        return Result.Ok(proof_choice(get(receiver.children, 0),
+                enum_tag(context, source, get(receiver.children, 1), depth + 1)?,
+                enum_tag(context, source, get(receiver.children, 2), depth + 1)?))
+    }
+    Result.Ok(proof_expr(source, ExprKind.Intrinsic, 1, "proof_enum_tag", -1, [receiver]))
+}
+
+fn enum_payload(context Expansion, source Expr, receiver Expr, variant Int,
+    field Int, ty Int, depth Int) Result[Expr, Text] {
+    discard expansion_step(context, depth)?
+    if receiver.kind == ExprKind.Coerce {
+        return enum_payload(context, source, get(receiver.children, 0), variant, field, ty, depth + 1)
+    }
+    if receiver.kind == ExprKind.Variant && receiver.index == variant &&
+    field >= 0 && field < length(receiver.children) {
+        return Result.Ok(get(receiver.children, field))
+    }
+    if receiver.kind == ExprKind.If {
+        return Result.Ok(proof_choice(get(receiver.children, 0),
+                enum_payload(context, source, get(receiver.children, 1), variant, field, ty, depth + 1)?,
+                enum_payload(context, source, get(receiver.children, 2), variant, field, ty, depth + 1)?))
+    }
+    Result.Ok(proof_expr(source, ExprKind.Intrinsic, ty, "proof_enum_payload", -1,
+            [receiver, enum_index(source, variant), enum_index(source, field)]))
+}
+
+fn helper_match(context Expansion, source Expr, path HelperPath, locals List[Local],
+    self Bool, calls Int, depth Int, returns Bool) Result[List[HelperPath], Text] {
+    if length(source.children) != 1 {
+        return Result.Err("contract match needs one checked receiver")
+    }
+    let receiver = expanded(context, get(source.children, 0), path.guard, path.bindings,
+        locals, self, calls, depth + 1)?
+    let ty = proof_enum_type(context.program, receiver.ty, 0)
+    if ty < 0 {
+        return Result.Err("contract match needs a checked nominal enum")
+    }
+    let shape = get(context.program.types, ty)
+    let covered = new[Bool]()
+    var index = 0
+    while index < length(shape.variants) {
+        discard expansion_step(context, depth)?
+        push(covered, false)
+        index = index + 1
+    }
+    let paths = new[HelperPath]()
+    var remaining = path.guard
+    var fallback = false
+    index = 0
+    while index < length(source.arms) {
+        discard expansion_step(context, depth)?
+        let arm = get(source.arms, index)
+        if arm.variant < -1 || arm.variant >= length(shape.variants) {
+            return Result.Err("contract match has an invalid nominal arm")
+        }
+        let fields = if arm.variant < 0 {
+            new[Int]()
+        } else {
+            get(shape.variants, arm.variant).fields
+        }
+        if length(fields) != length(arm.bindings) {
+            return Result.Err("contract match has an invalid payload shape")
+        }
+        let selected = if arm.variant < 0 {
+            fallback = true
+            proof_bool(source, true)
+        } else {
+            set(covered, arm.variant, true)
+            proof_expr(source, ExprKind.Binary, 2, "==", -1,
+                proof_children(enum_tag(context, source, receiver, depth + 1)?, enum_index(source, arm.variant)))
+        }
+        let bindings = clone(path.bindings)
+        var field = 0
+        while field < length(fields) {
+            discard expansion_step(context, depth)?
+            let local = get(arm.bindings, field)
+            if local >= 0 {
+                push(bindings, ExpansionBinding {
+                        local = local
+                        value = enum_payload(context, source, receiver, arm.variant, field, get(fields, field), depth + 1)?
+                    })
+            }
+            field = field + 1
+        }
+        if arm.whole >= 0 {
+            push(bindings, ExpansionBinding {
+                    local = arm.whole
+                    value = receiver
+                })
+        }
+        let start = HelperPath {
+            guard = proof_and(remaining, selected)
+            bindings = bindings
+            value = proof_expr(source, ExprKind.Block, 0, "", -1, new[Expr]())
+            returned = false
+        }
+        remaining = proof_and(remaining, proof_not(selected))
+        let body = proof_expr(source, ExprKind.Block, source.ty, "", -1, arm.body)
+        let branches = helper_branch(context, body, start, locals, self, calls, depth + 1, returns)?
+        var branch = 0
+        while branch < length(branches) {
+            discard helper_path(paths, get(branches, branch))?
+            branch = branch + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(covered) {
+        if !fallback && !get(covered, index) {
+            return Result.Err("contract match needs exhaustive checked arms")
+        }
+        index = index + 1
+    }
+    Result.Ok(paths)
+}
+
+fn projection_index(value Value) Result[Int, Text] {
+    match value {
+        Value.Number(number) => {
+            if length(number.terms) == 0 {
+                return machine(number.constant)
+            }
+        }
+        _ => {
+        }
+    }
+    Result.Err("enum proof projection needs a constant field index")
+}
+
+fn enum_projection(name Text, inputs List[Value]) Result[Value, Text] {
+    match get(inputs, 0) {
+        Value.Sum(_, tag, payloads) => {
+            if name == "proof_enum_tag" {
+                return Result.Ok(Value.Number(tag))
+            }
+            let variant = projection_index(get(inputs, 1))?
+            let field = projection_index(get(inputs, 2))?
+            if variant < 0 || variant >= length(payloads) || field < 0 ||
+            field >= length(get(payloads, variant)) {
+                return Result.Err("enum proof payload has no checked field")
+            }
+            // Logical terms can mention an inactive symbolic payload inside a
+            // guarded formula. Definedness separately requires the selected
+            // tag; no type invariant is assumed for an inactive payload.
+            return Result.Ok(get(get(payloads, variant), field))
+        }
+        _ => {
+        }
+    }
+    Result.Err("enum proof projection requires a checked nominal value")
+}
+
+fn enum_payload_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "proof_enum_payload" &&
+    length(value.children) == 3
+}
+
+fn contains_enum_payload(value Expr) Bool {
+    if enum_payload_expression(value) {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if contains_enum_payload(get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn enum_projection_guard(inputs List[Value]) Result[Predicate, Text] {
+    match get(inputs, 0) {
+        Value.Sum(_, tag, _) => {
+            let variant = projection_index(get(inputs, 1))?
+            return Result.Ok(Predicate.Compare("==", add(tag, constant(integer(-variant)))))
+        }
+        _ => {
+        }
+    }
+    Result.Err("enum proof payload requires a checked nominal receiver")
+}
+
+fn enum_payload_guard(value Expr, state State) Result[Predicate, Text] {
+    enum_projection_guard([pure(get(value.children, 0), state)?,
+            pure(get(value.children, 1), state)?])
+}

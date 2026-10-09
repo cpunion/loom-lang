@@ -1,0 +1,189 @@
+test fn enum_contract_predicates_compose_nominal_tags_and_selected_payloads() {
+    let source = """
+        enum Choice[T] {
+            Value(T)
+            Missing
+        }
+        fn positive(value Choice[Int]) Bool {
+            match value {
+                Choice.Value(number) => number > 0
+                Choice.Missing => false
+            }
+        }
+        fn make(value Int) Choice[Int]
+        requires value > 0
+        ensures positive(result) {
+            Choice.Value(value)
+        }
+        fn forward(value Choice[Int]) Choice[Int]
+        requires positive(value)
+        ensures positive(result) {
+            value
+        }
+        fn extracted(value Choice[Int]) Int
+        requires positive(value)
+        ensures result > 0 {
+            match value {
+                Choice.Value(number) => number
+                Choice.Missing => 0
+            }
+        }
+        """
+    discard accepted(source)
+    rejects(concat(source, """
+        fn wrong(value Int) Choice[Int]
+        ensures positive(result) {
+            Choice.Value(value)
+        }
+        """))
+    rejects(concat(source, """
+        fn wrong() Choice[Int]
+        ensures positive(result) {
+            Choice.Missing()
+        }
+        """))
+}
+
+test fn enum_contract_predicates_keep_guards_preconditions_and_eager_faults() {
+    let source = """
+        enum Choice[T] {
+            Value(T)
+            Missing
+        }
+        fn admitted(value Int) Bool
+        requires value > 0 {
+            true
+        }
+        fn checked(value Choice[Int]) Bool {
+            match value {
+                Choice.Value(number) if number > 0 => admitted(number)
+                _ => false
+            }
+        }
+        fn make(value Int) Choice[Int]
+        requires value > 0
+        ensures checked(result) {
+            Choice.Value(value)
+        }
+        fn nested(value Choice[Choice[Int]]) Bool {
+            match value {
+                Choice.Value(Choice.Value(number)) => number > 0
+                _ => false
+            }
+        }
+        fn wrapped(value Int) Choice[Choice[Int]]
+        requires value > 0
+        ensures nested(result) {
+            Choice.Value(Choice.Value(value))
+        }
+        fn empty() Choice[Choice[Int]]
+        ensures !nested(result) {
+            Choice.Missing()
+        }
+        fn inner_empty() Choice[Choice[Int]]
+        ensures !nested(result) {
+            Choice.Value(Choice.Missing())
+        }
+        fn selected(flag Bool, number Int) Choice[Int] {
+            if flag {
+                Choice.Value(number)
+            } else {
+                Choice.Missing()
+            }
+        }
+        fn acceptable(flag Bool, number Int) Bool {
+            match selected(flag, number) {
+                Choice.Value(value) => value > 0
+                Choice.Missing => true
+            }
+        }
+        fn returned(flag Bool, number Int) Int
+        requires number > 0
+        ensures acceptable(flag, result) {
+            number
+        }
+        """
+    discard accepted(source)
+    rejects(concat(source, """
+        fn unchecked(value Choice[Int]) Bool {
+            match value {
+                Choice.Value(number) => admitted(number)
+                _ => true
+            }
+        }
+        fn wrong(value Int) Choice[Int]
+        ensures unchecked(result) {
+            Choice.Value(value)
+        }
+        """))
+    rejects(concat(source, """
+        fn ignores(value Choice[Int]) Bool {
+            match value {
+                Choice.Value(_) => true
+                _ => true
+            }
+        }
+        fn wrong(value Int) Int
+        ensures ignores(Choice.Value(result + 1)) {
+            value
+        }
+        """))
+}
+
+test fn enum_payload_invariants_are_guarded_and_shared_storage_stays_shared() {
+    discard accepted("""
+        type Positive = Int where self > 0
+        enum Choice[T] {
+            Value(T)
+            Missing
+        }
+        fn positive(value Choice[Positive]) Bool {
+            match value {
+                Choice.Value(number) => number > 0
+                Choice.Missing => true
+            }
+        }
+        fn forward(value Choice[Positive]) Choice[Positive]
+        ensures positive(result) {
+            value
+        }
+        """)
+    rejects("""
+        type Impossible = Int where self > 0 && self < 0
+        enum Choice[T] {
+            Value(T)
+            Missing
+        }
+        fn positive(value Choice[Impossible]) Bool {
+            match value {
+                Choice.Value(number) => number > 0
+                Choice.Missing => false
+            }
+        }
+        fn wrong(value Choice[Impossible]) Choice[Impossible]
+        ensures positive(result) {
+            value
+        }
+        """)
+    task_metadata_contract("""
+        import std.list.length
+        import std.list.push
+        enum Choice[T] {
+            Value(T)
+            Missing
+        }
+        fn single(value Choice[List[Int]]) Bool {
+            match value {
+                Choice.Value(values) => length(values) == 1
+                Choice.Missing => false
+            }
+        }
+        fn wrong(values List[Int]) Choice[List[Int]]
+        requires length(values) == 1
+        ensures single(result) {
+            let choice = Choice.Value(values)
+            push(values, 7)
+            choice
+        }
+        """, false, "postcondition")
+}

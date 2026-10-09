@@ -29,6 +29,10 @@ fn unsupported_operation() ProofOperation {
 }
 
 fn intrinsic_operation(name Text, ty Int, arity Int) ProofOperation {
+    if (name == "proof_enum_tag" && ty == 1 && arity == 1) ||
+    (name == "proof_enum_payload" && arity == 3) {
+        return operation_shape(arity, OperandFlow.Eager, false, true)
+    }
     if name == "proof_bound" && ty == 1 && arity == 0 {
         return operation_shape(0, OperandFlow.Eager, false, true)
     }
@@ -88,7 +92,7 @@ fn proof_operation(value Expr) ProofOperation {
     if arity == 3 && value.kind == ExprKind.If {
         return operation_shape(3, OperandFlow.Choice, false, true)
     }
-    if value.kind == ExprKind.Record ||
+    if value.kind == ExprKind.Record || value.kind == ExprKind.Variant ||
     (arity == 1 && (value.kind == ExprKind.Field || value.kind == ExprKind.Coerce)) {
         return operation_shape(arity, OperandFlow.Eager, false, true)
     }

@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose pure enum match predicates in required contracts through checked
+  nominal tags and guarded payload projections. Nested/guarded patterns,
+  correlated conditional receivers,
+  helper requirements, eager argument faults and selected payload invariants
+  retain the ordinary proof rules; no runtime reflection or library axiom is added.
+
 - Retain checked unreachable-allocation facts for opaque inputs and completions,
   including incompletely observed List graphs. Mutable edge stores widen
   possible ancestor graphs. Loop entry/backedge

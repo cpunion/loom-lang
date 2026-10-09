@@ -56,7 +56,8 @@ fn helper_type(program Program, ty Int, depth Int) Bool {
     }
     // Inline aggregate leaves may be opaque. Projection does not establish
     // facts about their shared storage or permit operations on that storage.
-    shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple || shape.kind == TypeKind.List || shape.kind == TypeKind.Task
+    shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple || shape.kind == TypeKind.Enum ||
+    shape.kind == TypeKind.List || shape.kind == TypeKind.Task
 }
 
 fn expanded_field(context Expansion, field Expr, value Expr, depth Int) Result[Expr, Text] {
@@ -245,7 +246,7 @@ fn expanded_block(context Expansion, value Expr, guard Expr, bindings List[Expan
     var scan = 0
     while scan < length(value.children) {
         let member = get(value.children, scan)
-        if member.kind == ExprKind.If || member.kind == ExprKind.Block || (member.kind == ExprKind.Return && scan + 1 < length(value.children)) || member.kind == ExprKind.Assert {
+        if member.kind == ExprKind.If || member.kind == ExprKind.Match || member.kind == ExprKind.Block || (member.kind == ExprKind.Return && scan + 1 < length(value.children)) || member.kind == ExprKind.Assert {
             return expanded_branches(context, value, guard, bindings, locals, self, calls, depth + 1, returns)
         }
         scan = scan + 1
@@ -288,7 +289,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     if value.kind == ExprKind.Block {
         return expanded_block(context, value, guard, bindings, locals, self, calls, depth + 1, false)
     }
-    if value.kind == ExprKind.If {
+    if value.kind == ExprKind.If || value.kind == ExprKind.Match {
         return expanded_branches(context, value, guard, bindings, locals, self, calls, depth + 1, false)
     }
     if length(value.arms) != 0 {
@@ -348,6 +349,16 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
             index = index + 1
         }
         return Result.Ok(proof_expr(value, ExprKind.Record, value.ty, "", -1, fields))
+    }
+    if value.kind == ExprKind.Variant {
+        let fields = new[Expr]()
+        var index = 0
+        while index < length(value.children) {
+            push(fields, expanded(context, get(value.children, index), guard, bindings,
+                    locals, self, calls, depth + 1)?)
+            index = index + 1
+        }
+        return Result.Ok(proof_expr(value, value.kind, value.ty, value.text, value.index, fields))
     }
     let shape = proof_operation(value)
     if shape.arity < 0 || (value.kind != ExprKind.Intrinsic && !scalar_type(value.ty)) {

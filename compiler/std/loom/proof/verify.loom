@@ -262,7 +262,7 @@ fn required_conditions(proof Verification, conditions List[Expr], state State) R
     while index < length(conditions) {
         let source = get(conditions, index)
         returned = quantified_views(proof, source, returned, false, 256)?
-        let observed = if proof.shared || contains_list_read(source) {
+        let observed = if proof.shared || contains_list_read(source) || contains_enum_payload(source) {
             contract_observations(proof, source, proof_bool(source, true), returned)?
         } else {
             EntrySnapshot {

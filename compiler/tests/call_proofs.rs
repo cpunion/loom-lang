@@ -104,6 +104,67 @@ fn relational_contracts_share_the_prover_and_preserve_real_faults() {
 }
 
 #[test]
+fn enum_predicates_compose_without_runtime_projections_and_recheck_edits() {
+    let package = "compiler/examples/enum_predicates";
+    for command in ["check", "test", "run"] {
+        success(&common::loom(&[command, package]));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = common::executable(directory.path(), "enum-predicates");
+    let ir = directory.path().join("predicates.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package])
+                .arg("--output")
+                .arg(&artifact)
+                .arg("--emit-ir")
+                .arg(&ir)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&artifact));
+        let rejected = Command::new(&artifact)
+            .arg("invalid-entry")
+            .output()
+            .unwrap();
+        assert_eq!(rejected.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("precondition"));
+        assert!(!fs::read_to_string(&ir).unwrap().contains("proof_enum_"));
+    }
+    let source = directory.path().join("main.loom");
+    let original = include_str!("../examples/enum_predicates/main.loom");
+    fs::write(&source, original).unwrap();
+    let cache = directory.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            directory.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    success(&check());
+    success(&check());
+    for (before, after) in [
+        ("Choice.Value(value)\n}", "Choice.Value(0)\n}"),
+        (
+            "Choice.Value(number) => number",
+            "Choice.Value(number) => 0",
+        ),
+    ] {
+        let changed = original.replace(before, after);
+        assert_ne!(changed, original);
+        fs::write(&source, changed).unwrap();
+        let rejected = check();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("postcondition"));
+        fs::write(&source, original).unwrap();
+        success(&check());
+    }
+}
+
+#[test]
 fn proved_body_calls_keep_native_calls_argument_order_and_overflow_faults() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(
@@ -120,6 +181,7 @@ fn snapshot() Int ensures result == 3 {
         value })
     before + value
 }
+
 fn next(value Int) Int { value + 1 }
 fn advanced(value Int) Int ensures result > value { next(value) }
 fn main() {

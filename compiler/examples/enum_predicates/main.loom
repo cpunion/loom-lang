@@ -1,0 +1,124 @@
+import std.process.arguments
+import std.list.length
+import std.time.sleep_ms
+
+enum Choice[T] {
+    Value(T)
+    Missing
+}
+
+fn admitted(value Int) Bool
+requires value > 0 {
+    true
+}
+
+fn positive(value Choice[Int]) Bool {
+    match value {
+        Choice.Value(number) if number > 0 => admitted(number)
+        _ => false
+    }
+}
+
+fn make(value Int) Choice[Int]
+requires value > 0
+ensures positive(result) {
+    Choice.Value(value)
+}
+
+fn forward(value Choice[Int]) Choice[Int]
+requires positive(value)
+ensures positive(result) {
+    value
+}
+
+fn extract(value Choice[Int]) Int
+requires positive(value)
+ensures result > 0 {
+    match value {
+        Choice.Value(number) => number
+        Choice.Missing => 0
+    }
+}
+
+fn nested(value Choice[Choice[Int]]) Bool {
+    match value {
+        Choice.Value(Choice.Value(number)) => number > 0
+        _ => false
+    }
+}
+
+fn wrapped(value Int) Choice[Choice[Int]]
+requires value > 0
+ensures nested(result) {
+    Choice.Value(Choice.Value(value))
+}
+
+fn empty() Choice[Choice[Int]]
+ensures !nested(result) {
+    Choice.Missing()
+}
+
+fn inner_empty() Choice[Choice[Int]]
+ensures !nested(result) {
+    Choice.Value(Choice.Missing())
+}
+
+fn selected(flag Bool, number Int) Choice[Int] {
+    if flag {
+        Choice.Value(number)
+    } else {
+        Choice.Missing()
+    }
+}
+
+fn acceptable(flag Bool, number Int) Bool {
+    match selected(flag, number) {
+        Choice.Value(value) => value > 0
+        Choice.Missing => true
+    }
+}
+
+fn returned(flag Bool, number Int) Int
+requires number > 0
+ensures acceptable(flag, result) {
+    number
+}
+
+async fn delayed(value Int) Choice[Int]
+requires value > 0
+ensures positive(result) {
+    sleep_ms(1).await
+    make(value)
+}
+
+async fn composed(value Int) Int
+requires value > 0
+ensures result > 0 {
+    extract(delayed(value).await)
+}
+
+async fn exercise() {
+    comptime {
+        assert extract(forward(make(7))) == 7
+    }
+    assert extract(forward(make(8))) == 8
+    assert nested(wrapped(9))
+    assert !nested(empty())
+    assert !nested(inner_empty())
+    assert returned(true, 11) == 11
+    assert returned(false, 12) == 12
+    assert !positive(Choice.Missing())
+    assert composed(10).await == 10
+}
+
+async fn main() {
+    if length(arguments()) > 1 {
+        discard extract(Choice.Missing())
+    } else {
+        exercise().await
+    }
+}
+
+test async fn predicates_compose_through_normal_calls_and_tasks() {
+    exercise().await
+}
