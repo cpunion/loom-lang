@@ -1,0 +1,96 @@
+record ForwardedFrame[Ts...] {
+    values (Ts...)
+}
+
+fn overloaded_count[Ts...](values (Ts...)) Int
+ensures result >= 0 {
+    counted(values...)
+}
+
+fn overloaded_count(value Bool) Int {
+    if value {
+        -1
+    } else {
+        -2
+    }
+}
+
+fn overloaded_count[Ts...](values ForwardedFrame[Ts...]) Int
+ensures result == 7 {
+    7
+}
+
+fn count_tuple[Us...](values (Us...)) Int
+ensures result >= 0 {
+    overloaded_count(values)
+}
+
+fn count_frame[Us...](values ForwardedFrame[Us...]) Int
+ensures result >= 0 {
+    overloaded_count(values)
+}
+
+fn overloaded_keep[Ts...](value Int, values Ts...) Int
+ensures result == value {
+    value
+}
+
+fn overloaded_keep[Ts...](value Bool, values Ts...) Int
+ensures result >= 0 {
+    if value {
+        1
+    } else {
+        0
+    }
+}
+
+fn forward_keep[Us...](value Int, values (Us...)) Int
+ensures result == value {
+    overloaded_keep(value, values...)
+}
+
+fn overloaded_edge[Ts...](values (Int, Ts..., Bool)) Int
+ensures result >= 0 {
+    counted(values...)
+}
+
+fn overloaded_edge[Ts...](values (Text, Ts..., Bool)) Int
+ensures result >= 0 {
+    counted(values...)
+}
+
+fn forward_edge[Us...](values (Int, Us..., Bool)) Int
+ensures result >= 0 {
+    overloaded_edge(values)
+}
+
+concept OverloadedForwarding {
+    fn count[Ts...](self Self, values (Ts...)) Int
+    ensures result >= 0 {
+        count_tuple(values)
+    }
+}
+
+impl OverloadedForwarding for Bool {
+}
+
+fn exercise_overloaded_forwarding() {
+    assert overloaded_count(true) == -1
+    assert count_tuple(pack()) == 0
+    assert count_tuple((true, "text", [1])) == 3
+    assert count_frame(ForwardedFrame {
+            values = (1, true)
+        }) == 7
+    assert forward_edge((1, true)) == 2
+    assert forward_edge((1, "middle", 2, false)) == 4
+    assert comptime {
+        count_tuple((true, "text")) + forward_keep(40, (1, false))
+    } == 42
+    let callback fn((Int, Bool)) Int = count_tuple
+    assert callback((1, true)) == 2
+    let source dyn OverloadedForwarding = true
+    assert source.count(pack()) == 0 && source.count((1, true)) == 2
+    let log List[Int] = []
+    assert forward_keep(mark(log, 42), (mark(log, 2), mark(log, 3))) == 42
+    assert length(log) == 3 && log[0] == 42 && log[1] == 2 && log[2] == 3
+}

@@ -47,6 +47,57 @@ fn variadic_functions_run_with_native_values_compile_time_graphs_and_tasks() {
 }
 
 #[test]
+fn cached_pack_forwarding_rechecks_overload_set_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.loom");
+    let original = r#"
+fn keep[Ts...](value Int, values Ts...) Int
+ensures result == value {
+    value
+}
+
+fn forward[Us...](value Int, values (Us...)) Int
+ensures result == value {
+    keep(value, values...)
+}
+
+fn main() {
+    assert forward(42, (true, "context")) == 42
+}
+"#;
+    fs::write(&source, original).unwrap();
+    let package = directory.path().to_str().unwrap();
+    success(&loom(&["check", package]));
+    success(&loom(&["check", package]));
+
+    let disjoint = format!("{original}\nfn keep(value Bool, extra Bool) Int {{ -1 }}\n");
+    fs::write(&source, &disjoint).unwrap();
+    success(&loom(&["check", package]));
+    success(&loom(&["check", package]));
+    let executable = common::executable(directory.path(), "overloaded-forwarding");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package, "--output", executable.to_str().unwrap()])
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+    }
+
+    // This contender becomes applicable for another width/type selection even
+    // though main's current tuple still calls the original family.
+    let overlapping = format!("{disjoint}\nfn keep(value Int, extra Bool) Int {{ -1 }}\n");
+    fs::write(&source, overlapping).unwrap();
+    let rejected = loom(&["check", package]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("unresolved overloads"));
+
+    fs::write(&source, disjoint).unwrap();
+    success(&loom(&["check", package]));
+}
+
+#[test]
 fn static_pack_iteration_runs_in_an_independent_package() {
     let example = common::root().join("compiler/examples/pack_iteration");
     let package = example.to_str().unwrap();

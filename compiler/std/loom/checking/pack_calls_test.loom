@@ -1,5 +1,132 @@
 import std.text.find
 
+test fn pack_forwarding_selects_uniformly_disjoint_overloads_without_sampling_widths() {
+    discard accepted("""
+        record Frame[Ts...] {
+            values (Ts...)
+        }
+        fn count[Ts...](values (Ts...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        fn count(value Bool) Int {
+            -1
+        }
+        fn count[Ts...](values Frame[Ts...]) Int
+        ensures result == 7 {
+            7
+        }
+        fn forward[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count(values)
+        }
+        fn nominal[Us...](values Frame[Us...]) Int
+        ensures result >= 0 {
+            count(values)
+        }
+        fn keep[Ts...](value Int, values Ts...) Int
+        ensures result == value {
+            value
+        }
+        fn keep[Ts...](value Bool, values Ts...) Int
+        ensures result >= 0 {
+            if value { 1 } else { 0 }
+        }
+        fn forwarded_keep[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            keep(value, values...)
+        }
+        type Positive = Int where self > 0
+        fn weakened[Us...](value Positive, values (Us...)) Int
+        ensures result == value {
+            keep(value, values...)
+        }
+        concept Tag {
+        }
+        impl Tag for Int {
+        }
+        fn boxed[Ts...](value dyn Tag, values Ts...) Int
+        ensures result == 7 {
+            7
+        }
+        fn boxed[Ts...](value Bool, values Ts...) Int
+        ensures result == 0 {
+            0
+        }
+        fn forwarded_box[Us...](value Int, values (Us...)) Int
+        ensures result == 7 {
+            boxed(value, values...)
+        }
+        fn edge[Ts...](values (Int, Ts..., Bool)) Int
+        ensures result == 1 {
+            1
+        }
+        fn edge[Ts...](values (Text, Ts..., Bool)) Int
+        ensures result == 2 {
+            2
+        }
+        fn forwarded_edge[Us...](values (Int, Us..., Bool)) Int
+        ensures result == 1 {
+            edge(values)
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn main() {
+            assert forward(pack()) == 0
+            assert forward((true, "text", 1)) == 3
+            assert nominal(Frame { values = (true, 1) }) == 7
+            assert forwarded_keep(42, (true, "text")) == 42
+            assert weakened(Positive(42), (true, "text")) == 42
+            assert forwarded_box(1, (true, "text")) == 7
+            assert forwarded_edge((1, true)) == 1
+            assert forwarded_edge((1, "middle", false)) == 1
+            assert comptime { forward((1, true)) } == 2
+        }
+        """)
+}
+
+test fn pack_overload_disjointness_does_not_forget_refinement_weakening_or_dyn_boxing() {
+    rejects("""
+        type Positive = Int where self > 0
+        fn keep[Ts...](value Int, values Ts...) Int
+        ensures result >= 0 {
+            0
+        }
+        fn keep[Ts...](value Positive, values Ts...) Int
+        ensures result == -1 {
+            -1
+        }
+        fn wrong[Us...](value Positive, values (Us...)) Int
+        ensures result >= 0 {
+            keep(value, values...)
+        }
+        """)
+    rejects("""
+        concept Tag {
+        }
+        impl Tag for Int {
+        }
+        fn keep[Ts...](value dyn Tag, values Ts...) Int
+        ensures result == -1 {
+            -1
+        }
+        fn keep[Ts...](value Bool, values Ts...) Int
+        ensures result >= 0 {
+            0
+        }
+        fn wrong[Us...](value Int, values (Us...)) Int
+        ensures result >= 0 {
+            keep(value, values...)
+        }
+        """)
+}
+
 test fn explicit_pack_types_join_input_shapes_and_selected_type_values() {
     discard accepted("""
         fn count[Ts...](values Ts...) Int
@@ -336,6 +463,11 @@ test fn pack_forwarding_cache_replay_rechecks_edited_family_guarantees() {
         Result.Err(_) => false
     }
     assert bodies_reused(restored) >= 1
+    let disjoint = concat(source, "\nfn keep(value Bool, extra Bool) Int { -1 }\n")
+    assert match cached_source(restored_definition_cache(initial), disjoint) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
     let call = "keep[Us...]"
     let call_offset = std.text.find(source, call)
     assert call_offset >= 0
