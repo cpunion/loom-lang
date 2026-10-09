@@ -654,7 +654,9 @@ nominal tag algebra and guarded payload projections, including nested/guarded
 patterns, helper preconditions and eager argument faults. Only selected payloads
 supply type invariants; selectors erase before native code. The
 [predicate example](../../compiler/examples/enum_predicates/main.loom) covers
-normal calls, CTFE, Task completion and runtime entry checks. Relational payload
+normal calls, CTFE, Task completion and runtime entry checks. Boolean helpers
+compose exhaustive return paths in a compact conjunction or disjunction while
+retaining their independent evaluation checks. General relational payload
 induction remains open; shared payloads do not preserve stale facts across suspension.
 Immutable Text values, exact literals and established equality facts participate
 in required proofs, including Text leaves beside shared siblings. Distinct unknown
@@ -871,8 +873,11 @@ reversal without source counters or auxiliary prefix contracts, including
 inline headers, early returns, shared children and CTFE. Each column needs
 entry/all-backedge proof; shared children remain opaque and Float comparisons
 retain IEEE semantics. Actual return paths only suggest invariant shapes;
-original postconditions still check every reachable return. General transfer
-content induction and Task List join content guarantees remain open.
+original postconditions still check every reachable return. The same candidates
+now cover enum tags and payload columns guarded by both selected tags. The
+[enum transfer example](../../compiler/examples/loop_contracts/enums.loom) proves
+reversal with Int/Text fields, shared children, NaN, early returns and CTFE.
+General transfer content induction and Task List join content guarantees remain open.
 Written Int guard cursors propose mathematical entry-difference and weighted
 pair relations after existing storage/quantifier candidates. Constant affine
 translations supply coefficients, never proof: every relation needs entry and

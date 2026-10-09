@@ -76,6 +76,10 @@ fn helper_match(context Expansion, source Expr, path HelperPath, locals List[Loc
         if length(fields) != length(arm.bindings) {
             return Result.Err("contract match has an invalid payload shape")
         }
+        // Different nominal tags are disjoint by construction. A first arm
+        // for that tag need not repeat every preceding tag's exclusion.
+        // Repeated tags and arms after a fallback still need ordered guards.
+        let exclusive = arm.variant >= 0 && !fallback && !get(covered, arm.variant)
         let selected = if arm.variant < 0 {
             fallback = true
             proof_bool(source, true)
@@ -104,7 +108,11 @@ fn helper_match(context Expansion, source Expr, path HelperPath, locals List[Loc
                 })
         }
         let start = HelperPath {
-            guard = proof_and(remaining, selected)
+            guard = proof_and(if exclusive {
+                    path.guard
+                } else {
+                    remaining
+                }, selected)
             bindings = bindings
             value = proof_expr(source, ExprKind.Block, 0, "", -1, new[Expr]())
             returned = false

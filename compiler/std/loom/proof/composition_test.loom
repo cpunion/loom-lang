@@ -83,3 +83,54 @@ test fn unknown_or_malformed_operations_never_gain_composition_evidence() {
         index = index + 1
     }
 }
+
+test fn boolean_choice_identities_stay_compact_without_hiding_scalar_choices() {
+    let flag = expression(ExprKind.Local, 2, "", 0, [])
+    let value = expression(ExprKind.Local, 2, "", 1, [])
+    let yes = proof_bool(flag, true)
+    let no = proof_bool(flag, false)
+    assert exact_expression(proof_choice(flag, value, no), operation("&&", flag, value))
+    assert exact_expression(proof_choice(flag, no, value), operation("&&", proof_not(flag), value))
+    assert exact_expression(proof_choice(flag, value, yes), guarded_value(flag, value))
+    assert exact_expression(proof_choice(flag, yes, value), guarded_value(proof_not(flag), value))
+    let scalar = proof_choice(flag, literal("1"), literal("2"))
+    let nested = proof_choice(value, operation("==", scalar, literal("1")), no)
+    assert nested.kind == ExprKind.If
+    let normalized = match normalized_predicate(nested) {
+        Result.Ok(output) => output
+        Result.Err(_) => {
+            assert false
+            no
+        }
+    }
+    assert !has_choice(normalized)
+    var left = 0
+    while left < 2 {
+        var right = 0
+        while right < 2 {
+            let state = State {
+                locals = [Value.Boolean(Predicate.Constant(left == 1)),
+                    Value.Boolean(Predicate.Constant(right == 1))]
+                facts = []
+                extents = []
+                observations = []
+            }
+            let actual = match pure(normalized, state) {
+                Result.Ok(observed) => match boolean(observed) {
+                    Result.Ok(predicate) => holds(predicate, [])
+                    _ => {
+                        assert false
+                        false
+                    }
+                }
+                _ => {
+                    assert false
+                    false
+                }
+            }
+            assert actual == (left == 1 && right == 1)
+            right = right + 1
+        }
+        left = left + 1
+    }
+}

@@ -49,6 +49,12 @@ List children; those children are not frozen. Return paths only propose invarian
 never replace the actual return checks. General transfer/content induction
 remains open beyond this bounded candidate generator.
 
+The [enum example](enums.loom) uses the same prefix rules for nominal tags and
+selected immutable payload fields. Tag and payload candidates are checked
+independently; an inactive payload supplies no fact. It covers empty and mixed
+variants, inline transfer state, early returns, CTFE and shared List children
+beside NaN. Neither those children nor the outer input are copied or frozen.
+
 The [Float example](floats.loom) reuses the same entry/backedge checks for IEEE
 order bounds on scalars and inline fields. Supported unresolved induction steps
 use the existing binary64 SMT theory, not real arithmetic. NaN, subnormal

@@ -227,6 +227,24 @@ fn proof_choice(condition Expr, yes Expr, no Expr) Expr {
             proof_not(condition)
         }
     }
+    // Keep Boolean alternatives compact before the substituted-tree limit.
+    // A nested choice still needs correlated scalar lifting; do not bury it
+    // under a logical operator here. Evaluation checks live in Expansion.
+    if (yes.kind == ExprKind.Bool || no.kind == ExprKind.Bool) &&
+    !has_choice(condition) && !has_choice(yes) && !has_choice(no) {
+        if is_bool(no, false) {
+            return proof_and(condition, yes)
+        }
+        if is_bool(yes, false) {
+            return proof_and(proof_not(condition), no)
+        }
+        if is_bool(no, true) {
+            return guarded_value(condition, yes)
+        }
+        if is_bool(yes, true) {
+            return guarded_value(proof_not(condition), no)
+        }
+    }
     let children = proof_children(condition, yes)
     push(children, no)
     proof_expr(condition, ExprKind.If, yes.ty, "", -1, children)
@@ -248,13 +266,57 @@ fn expanded_branches(context Expansion, value Expr, guard Expr, bindings List[Ex
     if !helper_type(context.program, output.ty, 0) {
         return Result.Err("helper body has no scalar or inline aggregate result")
     }
+    var uniform = true
+    var true_paths = if is_bool(output, true) {
+        1
+    } else {
+        0
+    }
+    var false_paths = if is_bool(output, false) {
+        1
+    } else {
+        0
+    }
     while index > 0 {
         index = index - 1
         let path = get(paths, index)
         if path.value.ty != output.ty {
             return Result.Err("helper paths need matching scalar results")
         }
-        output = proof_choice(path.guard, path.value, output)
+        if output.ty == 2 {
+            uniform = uniform && exact_expression(path.value, get(paths, length(paths) - 1).value)
+            if is_bool(path.value, true) {
+                true_paths = true_paths + 1
+            }
+            if is_bool(path.value, false) {
+                false_paths = false_paths + 1
+            }
+        } else {
+            output = binding_choice(path.guard, path.value, output)
+        }
+    }
+    if output.ty == 2 && !uniform {
+        // Exhaustive paths admit both a conjunction of implications and a
+        // disjunction of true-valued paths. Choose the form omitting more
+        // constant arms before building it, not an expanded decision tree.
+        // Evaluation obligations remain independent of either result formula.
+        let disjunction = false_paths > true_paths
+        output = proof_bool(value, !disjunction)
+        index = 0
+        while index < length(paths) {
+            let path = get(paths, index)
+            if !is_bool(path.guard, false) {
+                if disjunction {
+                    if !is_bool(path.value, false) {
+                        let term = proof_and(path.guard, path.value)
+                        output = proof_not(proof_and(proof_not(output), proof_not(term)))
+                    }
+                } else {
+                    output = proof_and(output, guarded_value(path.guard, path.value))
+                }
+            }
+            index = index + 1
+        }
     }
     if !returns && helper_writes(value) {
         // Expression operands continue in their enclosing scope. Merge their
