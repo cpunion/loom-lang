@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Infer finite no-result source helper effects through the same checked body
+  frames as async completion, including List updates and lexical cleanup.
+  Unsupported optional inference retains conservative summaries. Task drain
+  invalidates published aliases without discarding unpublished storage.
+
 - Retain proved unpublished List storage across suspension and closed-input
   call summaries. Track conservative publication through Task inputs, shared
   stores, function captures, dyn boxing and unknown callbacks in both build

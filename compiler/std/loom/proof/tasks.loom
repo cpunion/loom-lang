@@ -67,7 +67,7 @@ fn execute_task_operation(proof Verification, call Expr, name Text, state State,
                 })?
         } else if name == "task_drain" && length(current.values) == 2 {
             discard add_outcome(output, Outcome {
-                    state = forget_extents(proof, published_storage(current.state))
+                    state = suspension_state(proof, current.state)
                     value = Value.Empty
                 })?
         } else if (name == "task_ready_result" || name == "task_ready_outcome" ||
@@ -95,33 +95,10 @@ fn execute_task_operation(proof Verification, call Expr, name Text, state State,
     Result.Ok(output)
 }
 
-// Body inference is optional evidence for a known normal completion. Isolate
-// queued obligations until every path succeeds; unsupported bodies contribute
-// only their result type. Fresh identities and work budgets are never rewound.
 fn completion_body_call(proof Verification, target Int, function Function, input CallArguments,
     source Expr, depth Int) Result[List[Outcome], Text] {
-    let candidate = Verification {
-        function = proof.function
-        program = proof.program
-        fresh = proof.fresh
-        budget = proof.budget
-        loop_control = Option.None
-        query = proof_query(proof.query.backend)
-        shared = proof.shared
-        preservation = proof.preservation
-        body_calls = proof.body_calls
-        capture_returns = false
-        returns = new[Outcome]()
-    }
-    match source_body_call(candidate, target, function, input, true, depth) {
-        Result.Ok(completed) => {
-            var index = 0
-            while index < length(candidate.query.obligations) {
-                push(proof.query.obligations, get(candidate.query.obligations, index))
-                index = index + 1
-            }
-            Result.Ok(completed)
-        }
+    match inferred_body_call(proof, target, function, input, true, depth) {
+        Result.Ok(completed) => Result.Ok(completed)
         Result.Err(_) => {
             let unknown = unknown_completion(proof, source, input.state)
             Result.Ok(outcomes(unknown.state, unknown.value))

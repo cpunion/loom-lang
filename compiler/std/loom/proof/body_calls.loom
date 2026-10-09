@@ -60,6 +60,33 @@ fn call_body_at(value Expr, offset Int, depth Int) Result[Expr, Text] {
         })
 }
 
+// Optional body evidence commits obligations only after every path succeeds.
+// Unknown effects fall back at the caller, never to a partially inferred state.
+// Fresh identities and the shared work budget are not rewound on failure.
+fn inferred_body_call(proof Verification, target Int, function Function, input CallArguments,
+    completion Bool, depth Int) Result[List[Outcome], Text] {
+    let candidate = Verification {
+        function = proof.function
+        program = proof.program
+        fresh = proof.fresh
+        budget = proof.budget
+        loop_control = Option.None
+        query = proof_query(proof.query.backend)
+        shared = proof.shared
+        preservation = proof.preservation
+        body_calls = proof.body_calls
+        capture_returns = false
+        returns = new[Outcome]()
+    }
+    let completed = source_body_call(candidate, target, function, input, completion, depth)?
+    var index = 0
+    while index < length(candidate.query.obligations) {
+        push(proof.query.obligations, get(candidate.query.obligations, index))
+        index = index + 1
+    }
+    Result.Ok(completed)
+}
+
 // Ordinary helper calls and continuing-invariant checks share one symbolic
 // call frame. Inputs already ran once. This executes checked source effects,
 // not runtime code or a new evaluator; budgets and unknown operations still fail.

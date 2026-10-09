@@ -1,0 +1,86 @@
+test fn no_result_source_helpers_preserve_actual_list_updates() {
+    list_transfer_contract("""
+        import std.list.get
+        import std.list.set
+        import std.list.length
+        import std.list.push
+        fn change[T](values List[T], value T) {
+            set(values, 0, value)
+        }
+        fn changed(value Int) Int
+        ensures result == value {
+            let values = [0]
+            change(values, value)
+            get(values, 0)
+        }
+        fn changed_text(value Text) Text
+        ensures result == value {
+            let values = ["before"]
+            change(values, value)
+            get(values, 0)
+        }
+        fn fill(values List[Int], count Int) {
+            var index = 0
+            while index < count {
+                push(values, index)
+                index = index + 1
+            }
+        }
+        fn generated(count Int) Int
+        requires count >= 0 && count <= 100
+        ensures result == count {
+            let values List[Int] = []
+            fill(values, count)
+            length(values)
+        }
+        fn on_exit(values List[Int], value Int) {
+            defer {
+                set(values, 0, value)
+            }
+        }
+        fn cleaned(value Int) Int
+        ensures result == value {
+            let values = [0]
+            on_exit(values, value)
+            get(values, 0)
+        }
+        """, true)
+}
+
+test fn no_result_source_inference_does_not_hide_mutation_or_unknown_effects() {
+    list_transfer_contract("""
+        import std.list.get
+        import std.list.set
+        fn change(values List[Int], value Int) {
+            set(values, 0, value + 1)
+        }
+        fn stale(value Int) Int
+        requires value < 9223372036854775807
+        ensures result == value {
+            let values = [0]
+            change(values, value)
+            get(values, 0)
+        }
+        """, false)
+    list_transfer_contract("""
+        import std.list.get
+        fn invoke(action fn()) {
+            action()
+        }
+        fn stale(values List[Int], action fn()) Int
+        ensures result == old(get(values, 0)) {
+            invoke(action)
+            get(values, 0)
+        }
+        """, false)
+    list_transfer_contract("""
+        fn invoke(action fn()) {
+            action()
+        }
+        fn independent(action fn(), value Int) Int
+        ensures result == value {
+            invoke(action)
+            value
+        }
+        """, true)
+}

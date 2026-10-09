@@ -495,8 +495,14 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
     // guarantees, never a body to expand. Type invariants need no extra ensures.
     // A fresh factory's body footprint supplies only private storage origin.
     if length(function.postconditions) != 0 || function.body.kind == ExprKind.Deferred ||
-    function.result == 0 || private_factory(proof.program, function) {
+    private_factory(proof.program, function) {
         return applied_summary(proof, call, function, state, bindings, boundary, depth)
+    }
+    if function.result == 0 {
+        return match inferred_body_call(proof, call.index, function, arguments, false, depth) {
+            Result.Ok(completed) => Result.Ok(completed)
+            Result.Err(_) => applied_summary(proof, call, function, state, bindings, boundary, depth)
+        }
     }
     // Arguments already ran once. Only snapshot references and a finite pure
     // helper are expanded; unsupported storage effects cannot disappear.
