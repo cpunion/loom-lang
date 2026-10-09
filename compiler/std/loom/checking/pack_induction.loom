@@ -54,6 +54,25 @@ fn pack_forwarded_parameter(declaration Node, argument Node) Int {
     -1
 }
 
+fn pack_forwarded_input(declaration Node, argument Node, depth Int) Bool {
+    if depth >= 64 {
+        return false
+    }
+    if pack_forwarded_parameter(declaration, argument) >= 0 {
+        return true
+    }
+    if argument.kind == NodeKind.Tuple {
+        var index = 0
+        while index < length(argument.children) {
+            if pack_forwarded_input(declaration, child(argument, index), depth + 1) {
+                return true
+            }
+            index = index + 1
+        }
+    }
+    false
+}
+
 fn pack_proof_loop_width(declaration Node, source Node) Int {
     if source.kind != NodeKind.Name {
         return -1
@@ -249,12 +268,26 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "variadic contract proof depth exceeded"))
     }
+    if node.kind == NodeKind.Tuple && pack_forwarded_input(declaration, node, 0) {
+        let children = new[Node]()
+        var index = 0
+        while index < length(node.children) {
+            let value = child(node, index)
+            push(children, if pack_forwarded_parameter(declaration, value) >= 0 {
+                    value
+                } else {
+                    pack_proof_tree(env, owner, declaration, value, erased, elements, count, depth + 1)?
+                })
+            index = index + 1
+        }
+        return Result.Ok(pack_node(node, node.kind, node.value, children))
+    }
     if node.kind == NodeKind.Call {
         let arguments = child(node, 1)
         var forwarded = false
         var index = 0
         while index < length(arguments.children) {
-            forwarded = forwarded || pack_forwarded_parameter(declaration, child(arguments, index)) >= 0
+            forwarded = forwarded || pack_forwarded_input(declaration, child(arguments, index), 0)
             index = index + 1
         }
         if forwarded {

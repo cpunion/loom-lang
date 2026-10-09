@@ -184,7 +184,67 @@ fn pack_forward_explicit(context Context, node Node, caller Node, target Int, wo
     Result.Ok(types)
 }
 
-fn pack_forward_type(context Context, caller Node, schema Node, types Node) Result[Int, Failure] {
+// Recover a checked type identity, not a constructor decoded in another scope.
+// One generic traversal covers tuples, functions and nominal type arguments.
+fn pack_forward_checked_type(env Environment, ty Int, schema Node, seen List[Int], depth Int) Option[Int] {
+    if depth >= 64 || length(seen) >= 512 || resource_seen(seen, ty) {
+        return Option.None
+    }
+    push(seen, ty)
+    if pack_schema_equal(impl_type_schema(env, ty, schema, true), schema) {
+        return Option.Some(ty)
+    }
+    let arguments = get(env.types, ty).arguments
+    var index = 0
+    while index < length(arguments) {
+        match pack_forward_checked_type(env, get(arguments, index), schema, seen, depth + 1) {
+            Option.Some(found) => {
+                return Option.Some(found)
+            }
+            Option.None => {
+            }
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
+fn pack_forward_operand_type(context Context, caller Node, node Node, schema Node, depth Int) Option[Int] {
+    if depth >= 64 || pack_forwarded_parameter(caller, node) >= 0 {
+        return Option.None
+    }
+    if node.span.start == schema.span.start && node.span.end == schema.span.end {
+        match static_probe(context, node, -1) {
+            Result.Ok(value) => {
+                match pack_forward_checked_type(context.env, value.ty, schema, new[Int](), 0) {
+                    Option.Some(found) => {
+                        return Option.Some(found)
+                    }
+                    Option.None => {
+                    }
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    if node.kind == NodeKind.Arguments || node.kind == NodeKind.Tuple {
+        var index = 0
+        while index < length(node.children) {
+            match pack_forward_operand_type(context, caller, child(node, index), schema, depth + 1) {
+                Option.Some(found) => {
+                    return Option.Some(found)
+                }
+                Option.None => {
+                }
+            }
+            index = index + 1
+        }
+    }
+    Option.None
+}
+
+fn pack_forward_type(context Context, caller Node, schema Node, types Node, inputs Node) Result[Int, Failure] {
     let raw = match pack_forward_raw(context, child(caller, part(caller, NodeKind.Parameters)), schema, 0) {
         Option.Some(node) => Option.Some(node)
         Option.None => pack_forward_raw(context, types, schema, 0)
@@ -192,13 +252,42 @@ fn pack_forward_type(context Context, caller Node, schema Node, types Node) Resu
     let node = match raw {
         Option.Some(node) => pack_forward_fixed_node(context, caller, node, 0)?
         Option.None => {
-            return Result.Err(error(context, schema, "forwarded fixed type needs an established source binding"))
+            match pack_forward_operand_type(context, caller, inputs, schema, 0) {
+                Option.Some(ty) => meta_reference(schema, ty)
+                Option.None => {
+                    return Result.Err(error(context, schema, "forwarded fixed type needs an established source binding"))
+                }
+            }
         }
     }
     // Resolve as a header, not through same-spelled mutable body bindings.
     let ty = resolve_bound(context.env, context.signature.symbol, node, context.arguments, context.signature.requirements, 0)?
     discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?
     Result.Ok(ty)
+}
+
+fn pack_forward_effects(context Context, caller Node, operand Node, position Int, effects List[InputEffect], depth Int) Result[Bool, Failure] {
+    if depth >= 64 {
+        return Result.Err(error(context, operand, "forwarded argument nesting limit exceeded"))
+    }
+    if pack_forwarded_parameter(caller, operand) >= 0 {
+        return Result.Ok(true)
+    }
+    if operand.kind == NodeKind.Tuple && pack_forwarded_input(caller, operand, 0) {
+        var index = 0
+        while index < length(operand.children) {
+            discard pack_forward_effects(context, caller, child(operand, index), position, effects, depth + 1)?
+            index = index + 1
+        }
+    } else {
+        let value = expr(context, operand, -1)?
+        discard resource_binding(context, operand, value)?
+        push(effects, InputEffect {
+                position = position
+                value = value
+            })
+    }
+    Result.Ok(true)
 }
 
 fn pack_forward_invoke(context Context, node Node, caller Node, callee Node, bindings PackForwardMatch,
@@ -211,7 +300,7 @@ fn pack_forward_invoke(context Context, node Node, caller Node, callee Node, bin
     while index < length(parameters) {
         if get(parameters, index).kind != NodeKind.TypePack {
             if get(bindings.known, index) {
-                set(arguments, ordinary, pack_forward_type(context, caller, get(get(bindings.values, index), 0), child(node, 0))?)
+                set(arguments, ordinary, pack_forward_type(context, caller, get(get(bindings.values, index), 0), child(node, 0), child(node, 1))?)
             }
             ordinary = ordinary + 1
         }
@@ -231,15 +320,10 @@ fn pack_forward_invoke(context Context, node Node, caller Node, callee Node, bin
             push(checked, value)
             discard infer(context.env, get(selected.params, position), value.ty, arguments)
             position = position + 1
-        } else if pack_forwarded_parameter(caller, operand) < 0 {
+        } else {
             // Erasing a heterogeneous argument must not erase its evaluation.
             // Check original source order before attaching effects at each gap.
-            let value = expr(context, operand, -1)?
-            discard resource_binding(context, operand, value)?
-            push(effects, InputEffect {
-                    position = position
-                    value = value
-                })
+            discard pack_forward_effects(context, caller, operand, position, effects, 0)?
         }
         index = index + 1
     }

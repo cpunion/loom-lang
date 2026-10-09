@@ -287,9 +287,14 @@ remain distinct even when their types agree. Proof erasure retains packed extra
 values' source-ordered evaluation, effects, exits and resource checks; the
 [assembled forwarding example](../../compiler/examples/variadics/assembled_forwarding.loom)
 covers empty/mixed sources, independent words, snapshots, CTFE and shared List effects.
-Indirect callees, nested assembled tuple expressions, non-named expansions,
-unresolved associated callee patterns and unknown fixed layouts
-still reject in family proofs.
+Nested tuple literals can assemble the same words without evaluating erased
+pack values. Fixed leaves retain checked type identities, generic arguments and
+source-ordered effects; symbolic tuple shapes also participate in overload
+disjointness. The
+[nested forwarding example](../../compiler/examples/variadics/nested_forwarding.loom)
+covers nested/independent sources, inferred constructor arguments and shared effects.
+Indirect callees, non-named expansions, unresolved associated callee patterns
+and unknown fixed layouts still reject in family proofs.
 Type-dependent induction, opaque element escape, pack-dependent results and
 iteration over non-tuple structural sources still reject. A
 single type pack can

@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Forward nested assembled tuple inputs through universal variadic contracts.
+  Reuse ordered-word matching and overload disjointness, recover finite operand
+  types from checked identities, and retain tuple leaves' evaluation and resource
+  obligations. Unknown source words remain opaque and cannot escape as fixed values.
+
 - Compose universal variadic contracts across argument words containing fixed
   values and named source expansions. Reuse bounded ordered-word matching for
   inferred and explicit types, retaining fixed operand identity, once-only

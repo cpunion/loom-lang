@@ -43,7 +43,10 @@ fn pack_call_overlap_schema(env Environment, schema Node, depth Int) Node {
             unknown
         }
     }
-    if schema.value == "$parameter" ||
+    if schema.kind == NodeKind.Arguments && length(schema.children) == 1 {
+        return pack_call_overlap_schema(env, child(schema, 0), depth + 1)
+    }
+    if schema.value == "$parameter" || schema.value == "$unresolved" ||
     std.text.starts_with(schema.value, "$parameter#") || std.text.starts_with(schema.value, "dyn#") {
         return unknown
     }
@@ -90,6 +93,11 @@ fn pack_call_inputs_schema(context Context, caller Node, inputs List[Node], site
         let unknown = pack_node(argument, NodeKind.Type, "$parameter", new[Node]())
         let schema = if source >= 0 {
             match pack_forward_source_schema(context, caller, pack_forwarded_shape(get(sources, source))) {
+                Result.Ok(value) => pack_call_overlap_schema(context.env, value, 0)
+                Result.Err(_) => unknown
+            }
+        } else if argument.kind == NodeKind.Tuple && pack_forwarded_input(caller, argument, 0) {
+            match pack_call_word(context, caller, argument.children, argument, 0) {
                 Result.Ok(value) => pack_call_overlap_schema(context.env, value, 0)
                 Result.Err(_) => unknown
             }
@@ -167,14 +175,20 @@ fn pack_call_target(context Context, caller Node, options List[Int], inputs List
 
 // One ordered argument word uses the same bounded matcher as structural types.
 // Wrappers retain fixed operand positions while their children carry type words.
-fn pack_call_word(context Context, caller Node, inputs List[Node], site Node) Result[Node, Failure] {
+fn pack_call_word(context Context, caller Node, inputs List[Node], site Node, depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(error(context, site, "forwarded argument nesting limit exceeded"))
+    }
     let sources = group(caller, NodeKind.Parameters)
     let word = new[Node]()
     var index = 0
     while index < length(inputs) {
         let argument = get(inputs, index)
         let source = pack_forwarded_parameter(caller, argument)
-        if source >= 0 {
+        if argument.kind == NodeKind.Tuple && pack_forwarded_input(caller, argument, 0) {
+            let schema = pack_call_word(context, caller, argument.children, argument, depth + 1)?
+            push(word, pack_node(argument, NodeKind.Arguments, "$sequence", source_nodes(schema)))
+        } else if source >= 0 {
             let schema = pack_forward_source_schema(context, caller, pack_forwarded_shape(get(sources, source)))?
             if argument.kind == NodeKind.Spread {
                 if schema.kind != NodeKind.TupleType {
@@ -252,7 +266,7 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
     }
     push(work, PackForwardShape {
             pattern = pack_node(node, NodeKind.TupleType, "tuple", patterns)
-            actual = pack_call_word(context, caller.node, inputs, node)?
+            actual = pack_call_word(context, caller.node, inputs, node, 0)?
             element = false
         })
     let bindings = pack_forward_shapes(context, caller.node, declaration, work)?

@@ -61,8 +61,14 @@ ensures result == value {
     keep(value, "before", values..., true)
 }
 
+fn nested[Us...](value Int, values (Us...)) Int
+ensures result == value {
+    keep(value, ("before", values..., true))
+}
+
 fn main() {
     assert forward(42, (true, "context")) == 42
+    assert nested(42, (true, "context")) == 42
 }
 "#;
     fs::write(&source, original).unwrap();
@@ -95,8 +101,16 @@ fn main() {
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("unresolved overloads"));
 
-    fs::write(&source, disjoint).unwrap();
+    fs::write(&source, &disjoint).unwrap();
     success(&loom(&["check", package]));
+    let changed = disjoint.replace(
+        "keep(value, (\"before\", values..., true))",
+        "keep(value + 1, (\"before\", values..., true))",
+    );
+    fs::write(&source, changed).unwrap();
+    let rejected = loom(&["check", package]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("required postcondition"));
 }
 
 #[test]
