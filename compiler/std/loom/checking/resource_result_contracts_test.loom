@@ -1,0 +1,43 @@
+test fn synchronous_resource_results_allow_pure_postcondition_observers() {
+    let declarations = """
+        import std.resource.Dispose
+        import std.resource.MustScope
+        record Handle {
+            id Int
+        }
+        impl Dispose for Handle {
+            fn dispose(self Handle) {
+            }
+        }
+        impl MustScope for Handle {
+        }
+        fn id(value Handle) Int {
+            value.id
+        }
+        fn make(value Int) Handle
+        ensures id(result) == value {
+            Handle {
+                id = value
+            }
+        }
+        """
+    resource_accept(concat(declarations, """
+        fn main() {
+            scoped value = make(7)
+            assert id(value) == 7
+        }
+        """))
+    resource_reject_reason(concat(declarations, """
+        fn main() {
+            discard id(make(7))
+        }
+        """), "a resource must enter scoped before a method call")
+    resource_reject(concat(declarations, """
+        fn wrong(value Int) Handle
+        ensures id(result) == value {
+            Handle {
+                id = 0
+            }
+        }
+        """))
+}

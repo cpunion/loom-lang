@@ -1,0 +1,47 @@
+import std.resource.MustScope
+import std.resource.Dispose
+import std.list.push
+import std.list.length
+
+record ContractHandle {
+    id Int
+    closed List[Int]
+}
+
+impl MustScope for ContractHandle {
+}
+
+impl Dispose for ContractHandle {
+    fn dispose(self ContractHandle) {
+        push(self.closed, self.id)
+    }
+}
+
+fn contract_handle_id(value ContractHandle) Int {
+    value.id
+}
+
+fn contract_handle(id Int, closed List[Int]) ContractHandle
+ensures contract_handle_id(result) == id {
+    ContractHandle {
+        id = id
+        closed = closed
+    }
+}
+
+fn forward_contract_handle(id Int, closed List[Int]) ContractHandle
+ensures contract_handle_id(result) == id {
+    contract_handle(id, closed)
+}
+
+test fn synchronous_resource_contracts_preserve_transfer_and_scope_cleanup() {
+    let closed List[Int] = []
+    {
+        scoped first = forward_contract_handle(7, closed)
+        scoped second = contract_handle(8, closed)
+        assert contract_handle_id(first) == 7
+        assert contract_handle_id(second) == 8
+        assert length(closed) == 0
+    }
+    assert length(closed) == 2 && closed[0] == 8 && closed[1] == 7
+}

@@ -947,6 +947,9 @@ language faults, suspension and cancellation. MustScope freshness/escape checks
 and typed cleanup cover nested records/enums/Lists and recursive resource trees.
 Fresh MustScope results crossing a cleanup boundary remain protected until transfer;
 an exit fault drains their resource members rather than leaking the pending result.
+Pure postcondition helpers can observe synchronous MustScope results through a
+logical borrowed binding. It grants neither an executable unscoped borrow nor
+resource transfer, and does not add disposal to contract evaluation.
 Inline MustScope records/tuples/enums may retain Task fields: their owning scope
 consumes those fields explicitly, while resource parameters and cleanup borrow
 without consuming Tasks or granting Task creation authority. Fault/cancellation

@@ -33,3 +33,20 @@ test fn tagged_cleanup_uses_its_checked_body_not_a_resource_exemption() {
         [expression(ExprKind.Intrinsic, 0, "list_push", -1, [local(0), literal("1")])])
     assert !extent_preserving(proof.program, mutating)
 }
+
+test fn nested_helper_frames_remap_resource_drain_bindings_not_cleanup_ids() {
+    let drain = expression(ExprKind.ResourceDrain, 0, "", 1, [local(0), local(1)])
+    let cleanup = expression(ExprKind.Cleanup, 0, "resource-disarm", 7, [drain])
+    match call_body_at(cleanup, 4, 256) {
+        Result.Ok(value) => {
+            assert value.index == 7
+            let mapped = get(value.children, 0)
+            assert mapped.kind == ExprKind.ResourceDrain && mapped.index == 5
+            assert get(mapped.children, 0).index == 4
+            assert get(mapped.children, 1).index == 5
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

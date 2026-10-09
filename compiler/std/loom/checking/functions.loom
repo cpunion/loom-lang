@@ -927,7 +927,9 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
                 name = "result"
                 ty = current.result
                 mutable = false
-                is_scoped = owned_result
+                // Only contracts can name this post-body binding. A logical
+                // observer borrows a resource result; it does not dispose it.
+                is_scoped = must_scope(context, current.result)?
             })
         let binding = length(context.bindings)
         push(context.bindings, Binding {
