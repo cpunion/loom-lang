@@ -1,0 +1,46 @@
+test fn exact_number_identities_preserve_large_values_and_signs() {
+    let large = decimal("123456789012345678901234567890")
+    let negative = negate(large)
+    let zero = integer(0)
+    let one = integer(1)
+    let minus_one = integer(-1)
+    assert compare(sum(zero, large), large) == 0
+    assert compare(sum(negative, zero), negative) == 0
+    assert compare(difference(negative, zero), negative) == 0
+    assert compare(product(one, large), large) == 0
+    assert compare(product(negative, one), negative) == 0
+    assert compare(product(minus_one, negative), large) == 0
+    assert compare(product(large, minus_one), negative) == 0
+    assert compare(product(negative, zero), zero) == 0
+    assert compare(product(zero, negative), zero) == 0
+    assert !negate(zero).negative
+    assert compare(sum(large, negative), zero) == 0
+    assert compare(product(large, integer(2)),
+        decimal("246913578024691357802469135780")) == 0
+    assert compare(large, decimal("123456789012345678901234567890")) == 0
+    assert compare(negative, decimal("-123456789012345678901234567890")) == 0
+}
+
+test fn exact_normalization_and_linear_identities_keep_canonical_values() {
+    let digits = [7, 0, 0]
+    let trimmed = number(true, digits)
+    assert compare(trimmed, integer(-7)) == 0
+    assert length(digits) == 3 && length(trimmed.digits) == 1
+    let zero = number(true, [0, 0])
+    assert !zero.negative && length(zero.digits) == 0
+    let value = add(variable(3), constant(integer(7)))
+    let same_value = add(constant(integer(0)), scale(value, integer(1)))
+    assert same_terms(value.terms, same_value.terms)
+    assert compare(same_value.constant, integer(7)) == 0
+    let shifted = add(value, constant(integer(-7)))
+    assert same_terms(shifted.terms, value.terms)
+    assert length(shifted.constant.digits) == 0
+    let cleared = scale(value, integer(0))
+    assert length(cleared.terms) == 0 && length(cleared.constant.digits) == 0
+    let negated = scale(value, integer(-1))
+    assert compare(negated.constant, integer(-7)) == 0
+    assert opposite_terms(negated.terms, value.terms)
+    let cancelled = add(value, negated)
+    assert length(cancelled.terms) == 0 && length(cancelled.constant.digits) == 0
+    assert length(value.terms) == 1 && compare(value.constant, integer(7)) == 0
+}
