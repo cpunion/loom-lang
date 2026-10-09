@@ -70,6 +70,7 @@ ensures result >= 0
 }
 
 fn exercise() {
+    transfer_exercise()
     float_loop_exercise()
     difference_exercise()
     affine_exercise()

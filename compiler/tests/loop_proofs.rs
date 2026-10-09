@@ -37,12 +37,13 @@ fn inferred_loop_contracts_compile_without_runtime_proof_helpers() {
 }
 
 #[test]
-fn float_loop_induction_rechecks_edits_and_rejects_ieee_counterexamples() {
+fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");
     let program = format!(
-        "{}\nfn main() {{\n    float_loop_exercise()\n}}\n",
-        include_str!("../examples/loop_contracts/floats.loom")
+        "{}\n{}\nfn main() {{\n    float_loop_exercise()\n    transfer_exercise()\n}}\n",
+        include_str!("../examples/loop_contracts/floats.loom"),
+        include_str!("../examples/loop_contracts/transfers.loom")
     );
     let cache = package.path().join("cache");
     let check = || {
@@ -57,6 +58,7 @@ fn float_loop_induction_rechecks_edits_and_rejects_ieee_counterexamples() {
     success(&check());
     success(&check());
     for changed in [
+        program.replace("processed = processed + 1", "processed = processed + 2"),
         program.replace("current = current / 2.0", "current = -current"),
         program.replace("current = current / 2.0", "current = 0.0 / 0.0"),
         r#"
@@ -105,7 +107,7 @@ ensures result >= 0.0 {
         assert_ne!(changed, program, "test edit did not apply");
         fs::write(&source, &changed).unwrap();
         let output = check();
-        assert!(!output.status.success(), "unsound Float loop: {changed}");
+        assert!(!output.status.success(), "unsound loop: {changed}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains("proved") || error.contains("SMT"), "{error}");
     }

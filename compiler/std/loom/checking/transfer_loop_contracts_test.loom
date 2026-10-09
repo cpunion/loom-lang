@@ -1,0 +1,98 @@
+test fn rebound_list_extents_conserve_the_processed_count() {
+    list_transfer_contract("""
+        import std.list.length
+        fn counted[T](values List[T]) Int
+        ensures result == old(length(values)) {
+            var pending = values
+            var count = 0
+            while true {
+                match take(pending) {
+                    Taken.Value(pair) => {
+                        discard pair.0
+                        pending = pair.1
+                        count = count + 1
+                    }
+                    Taken.Empty => {
+                        return count
+                    }
+                }
+            }
+        }
+        fn main() {
+            assert counted([1, 2, 3]) == 3
+            assert counted(["first", "second"]) == 2
+            assert counted[Int]([]) == 0
+        }
+        """, true)
+    list_transfer_contract("""
+        import std.list.length
+        fn wrong(values List[Int]) Int
+        ensures result == old(length(values)) {
+            var pending = values
+            var count = 0
+            while true {
+                match take(pending) {
+                    Taken.Value(pair) => {
+                        pending = pair.1
+                        count = count + 2
+                    }
+                    Taken.Empty => {
+                        return count
+                    }
+                }
+            }
+        }
+        """, false)
+}
+
+test fn transfer_conservation_tracks_inline_paths_not_entry_headers() {
+    list_transfer_contract("""
+        import std.list.length
+        record Cursor {
+            values List[Int]
+            marker Bool
+        }
+        fn counted(values List[Int]) Int
+        ensures result == old(length(values)) {
+            var cursor = Cursor {
+                values = values
+                marker = false
+            }
+            var count = 0
+            while true {
+                match take(cursor.values) {
+                    Taken.Value(pair) => {
+                        cursor = Cursor {
+                            values = pair.1
+                            marker = !cursor.marker
+                        }
+                        count = count + 1
+                    }
+                    Taken.Empty => {
+                        return count
+                    }
+                }
+            }
+        }
+        """, true)
+    list_transfer_contract("""
+        import std.list.length
+        fn unrelated(values List[Int], other List[Int]) Int
+        ensures result == old(length(values)) {
+            var pending = values
+            var count = 0
+            while true {
+                match take(pending) {
+                    Taken.Value(pair) => {
+                        discard pair
+                        pending = other
+                        count = count + 1
+                    }
+                    Taken.Empty => {
+                        return count
+                    }
+                }
+            }
+        }
+        """, false)
+}
