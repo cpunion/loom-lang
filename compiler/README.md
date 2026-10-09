@@ -934,7 +934,7 @@ pack-dependent result shapes and iteration over non-tuple structural sources
 remain unsupported in family proofs. Shadowed erased sources and loop control that would change
 its target reject. Executing a few selected arities is never a universal proof.
 
-Family proofs can forward named pack-bearing inputs into another synchronous
+Family proofs can forward named pack-bearing inputs into another synchronous or async
 family and compose its declared postconditions:
 
 ```loom
@@ -972,7 +972,7 @@ tuple and nominal inputs, fixed fields and ordinary fixed-argument types, withou
 sampling widths. Unknown intersections and possible widening retain contenders;
 declaration order and successful sample specializations cannot select a summary.
 See the [overload example](examples/variadics/overloaded_forwarding.loom).
-Indirect/async callees, freshly assembled sequences, unresolved associated callee
+Indirect callees, freshly assembled sequences, unresolved associated callee
 patterns and fixed types with unknown expanded layouts remain unsupported in
 family proofs.
 Normal selected calls retain their existing checks and static expansion.
@@ -1206,9 +1206,9 @@ and [aggregate parameter example](examples/comptime_parameters/aggregates.loom).
 
 Unselected arities have not had their bodies verified, except for required
 postconditions in the dependency-erasure and induction fragments above. Direct
-`Ts... C` and `(Ts...)` element receivers may call synchronous concept methods
+`Ts... C` and `(Ts...)` element receivers may call synchronous or async concept methods
 with explicitly declared postconditions and omitted returns or supported
-scalar/inline aggregate results. Methods with omitted returns also compose declared heap
+scalar/inline aggregate results. Synchronous methods with omitted returns also compose declared heap
 guarantees through the same call and loop rules. Loops propose the existing
 entry-length comparisons for possibly resized storage even when its handle is
 not reassigned; every backedge must preserve them, independently of call count.
@@ -1225,6 +1225,14 @@ There is no homogeneous-element assumption, sampling, or runtime proof object.
 See the [observation example](examples/variadics/observations.loom), including
 empty/mixed packs, generic and variadic methods, Text/tuple/record guarantees,
 inherited bounds, nested independent packs, CTFE, function references and dyn calls.
+Async families use the same checked summaries after successful await, including
+saved Tasks and element observations. A Task declared inside an iteration is
+evaluated anew, not treated as loop-carried state. Suspension invalidates
+unprotected shared-storage facts at loop heads and completion; it does not make
+callee heap guarantees stable across other ready Tasks. See the
+[async example](examples/variadics/async_contracts.loom), including real waits,
+empty/mixed packs and inherited dyn methods. These are private proof rules, not
+a runtime pack representation or proof by selected arities.
 Type inspection, opaque element escape and structural
 element patterns remain unsupported for family proofs and reject even when
 uncalled: proving selected arities is not a proof for every arity. Preconditions use fixed scalar

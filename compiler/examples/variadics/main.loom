@@ -91,6 +91,7 @@ async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
 }
 
 async fn exercise_tasks() {
+    exercise_async_contracts().await
     exercise_independent_tasks().await
     exercise_pack_position_tasks().await
     exercise_method_tasks().await

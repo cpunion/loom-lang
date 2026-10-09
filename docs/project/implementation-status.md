@@ -253,7 +253,7 @@ elementwise expansions retain the shared width selected by shape checking. The
 covers global indices, List effects, CTFE, function references and inherited
 native/dyn methods. Mixed elements do not inherit a single pack's concept bounds,
 and the existing scalar invariant fragment is unchanged.
-Named pack-bearing inputs can forward into a synchronous family and compose
+Named pack-bearing inputs can forward into a synchronous or async family and compose
 universally checked postconditions. Bare, structural tuple and nominal patterns
 share constructor identities with impl overlap checks. Bounded symbolic-word
 matching jointly binds fixed types and ordered sequences across all inputs;
@@ -277,7 +277,7 @@ or boxing and width-dependent overlap remain contenders. The
 covers native/compile-time calls, nominal inputs, fixed anchors, callbacks,
 inherited dyn methods and once-only argument effects. Neither declaration order
 nor sampled arities select a proof summary.
-Indirect/async callees, newly assembled
+Indirect callees, newly assembled
 sequences, unresolved associated callee patterns and unknown fixed layouts
 still reject in family proofs.
 Type-dependent induction, opaque element escape, pack-dependent results and
@@ -543,9 +543,12 @@ observations are fresh, not borrowed from Task creation or the caller's entry.
 Suspension invalidates unprotected current storage while retaining immutable
 scalar snapshots and validated invariants. Unknown targets contribute only
 typed completion values; faults and cancellation supply no normal-return
-guarantee. General Task-returning helper and collection promise inference, plus
-async variadic family proofs, remain open. See the
-[native example](../../compiler/examples/async_contracts/main.loom).
+guarantee. Variadic families also compose declared async callee and concept-method
+postconditions without choosing concrete widths. Iteration-local Tasks are
+evaluated anew; loop heads discard unprotected pre-suspension storage facts. See
+the [native example](../../compiler/examples/async_contracts/main.loom) and
+[async pack example](../../compiler/examples/variadics/async_contracts.loom).
+General Task-returning helper and collection promise inference remain open.
 Immutable Text values, exact literals and established equality facts participate
 in required proofs, including Text leaves beside shared siblings. Distinct unknown
 values never imply unequal contents. Established equality chains and inequalities
