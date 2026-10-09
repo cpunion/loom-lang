@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Propose enum tag and guarded immutable-payload prefix relations through the
+  existing entry/all-backedge loop checks. Consume-and-build loops can prove
+  reversed enum contents, including inline payload fields beside NaN and shared
+  children. Pure Boolean helpers compose exhaustive return paths in a compact
+  logical form without dropping eager checks or increasing proof budgets.
+
 - Extend logical List columns to nominal enum tags and guarded payloads,
   including nested enum/record refinements and pure constraint helpers.
   Reads, writes, immutable entry elements and typed Task results reuse the

@@ -2937,8 +2937,13 @@ Only a selected tag supplies payload type facts. Stores frame untouched indices
 even when the new variant has no payload. Immutable enum entry elements also
 support `old`; shared children remain opaque, not copied or frozen. The
 [enum contents example](examples/enum_contents/main.loom) combines typed scans,
-arbitrary-index restoration, nested payloads and dynamic Task joins. This does
-not establish general relational payload or transfer-loop induction.
+arbitrary-index restoration, nested payloads and dynamic Task joins. Retained
+prefix candidates also relate enum tags and selected immutable payload columns
+through the ordinary entry/all-backedge checks. The
+[enum transfer example](examples/loop_contracts/enums.loom) proves reversed tags
+and Int/Text payload fields without counters or auxiliary prefix contracts;
+shared children remain writable and NaN equality supplies no invariant. General
+relational content induction remains open.
 
 Bounded pure scans can express List predicates over modeled integer elements or
 inline field paths without special

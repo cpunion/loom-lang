@@ -1,0 +1,125 @@
+import std.list.length
+import std.list.transfer.append
+import std.list.transfer.take_last
+import std.option.Option
+
+enum TransferChoice[T] {
+    Value(T)
+    Missing
+}
+
+fn same_choice(left TransferChoice[Int], right TransferChoice[Int]) Bool {
+    match left {
+        TransferChoice.Value(number) => match right {
+            TransferChoice.Value(other) => number == other
+            TransferChoice.Missing => false
+        }
+        TransferChoice.Missing => match right {
+            TransferChoice.Value(_) => false
+            TransferChoice.Missing => true
+        }
+    }
+}
+
+fn reversed_choices(output List[TransferChoice[Int]], before List[TransferChoice[Int]]) Bool {
+    var index = 0
+    while index < length(output) {
+        if !same_choice(output[index], before[length(before) - index - 1]) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn reverse_choices(values List[TransferChoice[Int]]) List[TransferChoice[Int]]
+ensures length(result) == old(length(values)) && reversed_choices(result, old(values))
+ensures length(values) == 0 {
+    var rest = values
+    var output List[TransferChoice[Int]] = []
+    while length(rest) > 0 {
+        match take_last(rest) {
+            Option.Some(pair) => {
+                let choice, remaining = pair
+                rest = remaining
+                output = append(output, choice)
+            }
+            Option.None => {
+            }
+        }
+    }
+    output
+}
+
+fn same_choice_fields(left TransferChoice[TransferItem], right TransferChoice[TransferItem]) Bool {
+    match left {
+        TransferChoice.Value(item) => match right {
+            TransferChoice.Value(other) => item.amount == other.amount && item.label == other.label
+            TransferChoice.Missing => false
+        }
+        TransferChoice.Missing => match right {
+            TransferChoice.Value(_) => false
+            TransferChoice.Missing => true
+        }
+    }
+}
+
+fn reversed_choice_fields(output List[TransferChoice[TransferItem]], before List[TransferChoice[TransferItem]]) Bool {
+    var index = 0
+    while index < length(output) {
+        if !same_choice_fields(output[index], before[length(before) - index - 1]) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn reverse_choice_items(values List[TransferChoice[TransferItem]]) List[TransferChoice[TransferItem]]
+ensures length(result) == old(length(values)) && reversed_choice_fields(result, old(values))
+ensures length(values) == 0 {
+    var state = TransferState {
+        pending = values
+        output = []
+    }
+    while true {
+        match take_last(state.pending) {
+            Option.Some(pair) => {
+                let choice, remaining = pair
+                state = TransferState {
+                    pending = remaining
+                    output = append(state.output, choice)
+                }
+            }
+            Option.None => {
+                return state.output
+            }
+        }
+    }
+}
+
+fn enum_transfer_exercise() {
+    let before = [TransferChoice.Value(7), TransferChoice.Missing(), TransferChoice.Value(3)]
+    assert reversed_choices(reverse_choices(before),
+        [TransferChoice.Value(7), TransferChoice.Missing(), TransferChoice.Value(3)])
+    assert length(before) == 0 && length(reverse_choices([])) == 0
+    let evaluated = comptime {
+        reverse_choices([TransferChoice.Value(1), TransferChoice.Missing()])
+    }
+    assert reversed_choices(evaluated, [TransferChoice.Value(1), TransferChoice.Missing()])
+    let notes = [7]
+    let item = TransferItem {
+        amount = 3
+        label = "shared"
+        sample = 0.0 / 0.0
+        notes = notes
+    }
+    let items = reverse_choice_items([TransferChoice.Value(item), TransferChoice.Missing()])
+    assert reversed_choice_fields(items, [TransferChoice.Value(item), TransferChoice.Missing()])
+    discard append(notes, 8)
+    assert match items[1] {
+        TransferChoice.Value(value) => length(value.notes) == 2 && value.sample != value.sample
+        _ => false
+    }
+    assert length(reverse_choice_items([])) == 0
+}

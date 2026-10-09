@@ -72,6 +72,7 @@ ensures result >= 0
 fn exercise() {
     transfer_exercise()
     transfer_content_exercise()
+    enum_transfer_exercise()
     opaque_exercise()
     float_loop_exercise()
     difference_exercise()

@@ -2,7 +2,7 @@
 // These are ordinary quantified candidates, checked at entry and every backedge;
 // matching storage at entry neither freezes children nor promises future identity.
 fn loop_prefix_columns(proof Verification, candidates List[LoopCandidate], current Expr,
-    before Expr, start Expr, end Expr, bound Int, limit Expr, entry State, depth Int) {
+    before Expr, start Expr, end Expr, bound Int, limit Expr, guard Expr, entry State, depth Int) {
     if depth <= 0 || length(candidates) >= 64 || current.ty < 0 ||
     current.ty >= length(proof.program.types) {
         return
@@ -10,7 +10,7 @@ fn loop_prefix_columns(proof Verification, candidates List[LoopCandidate], curre
     let ty = current.ty
     if ty == 1 || ty == 2 || ty == 3 || ty == 5 {
         let equal = proof_expr(current, ExprKind.Binary, 2, "==", -1, proof_children(current, before))
-        let prefix = proof_and(limit, quantified_value(current, bound, start, end, equal))
+        let prefix = proof_and(limit, quantified_value(current, bound, start, end, guarded_value(guard, equal)))
         let observed = loop_query_views(proof, [prefix], entry)
         propose_quantified(proof, candidates, prefix, observed)
         return
@@ -21,7 +21,37 @@ fn loop_prefix_columns(proof Verification, candidates List[LoopCandidate], curre
         loop_prefix_columns(proof, candidates,
             proof_expr(current, ExprKind.Coerce, base, "", -1, snapshot_child(current)),
             proof_expr(before, ExprKind.Coerce, base, "", -1, snapshot_child(before)),
-            start, end, bound, limit, entry, depth - 1)
+            start, end, bound, limit, guard, entry, depth - 1)
+        return
+    }
+    if shape.kind == TypeKind.Enum {
+        let tag = proof_expr(current, ExprKind.Intrinsic, 1, "proof_enum_tag", -1, [current])
+        let previous = proof_expr(before, ExprKind.Intrinsic, 1, "proof_enum_tag", -1, [before])
+        loop_prefix_columns(proof, candidates, tag, previous,
+            start, end, bound, limit, guard, entry, depth - 1)
+        var variant = 0
+        while variant < length(shape.variants) && length(candidates) < 64 {
+            // Payload equality applies only when both values select this tag.
+            // Tag equality is a separate candidate and can be withdrawn alone.
+            let selected = proof_and(guard,
+                proof_and(proof_expr(tag, ExprKind.Binary, 2, "==", -1,
+                        proof_children(tag, enum_index(tag, variant))),
+                    proof_expr(previous, ExprKind.Binary, 2, "==", -1,
+                        proof_children(previous, enum_index(previous, variant)))))
+            let fields = get(shape.variants, variant).fields
+            var field = 0
+            while field < length(fields) && length(candidates) < 64 {
+                let ty = get(fields, field)
+                loop_prefix_columns(proof, candidates,
+                    proof_expr(current, ExprKind.Intrinsic, ty, "proof_enum_payload", -1,
+                        [current, enum_index(current, variant), enum_index(current, field)]),
+                    proof_expr(before, ExprKind.Intrinsic, ty, "proof_enum_payload", -1,
+                        [before, enum_index(before, variant), enum_index(before, field)]),
+                    start, end, bound, limit, selected, entry, depth - 1)
+                field = field + 1
+            }
+            variant = variant + 1
+        }
         return
     }
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
@@ -33,7 +63,7 @@ fn loop_prefix_columns(proof Verification, candidates List[LoopCandidate], curre
         loop_prefix_columns(proof, candidates,
             proof_expr(current, ExprKind.Field, member.ty, member.name, field, snapshot_child(current)),
             proof_expr(before, ExprKind.Field, member.ty, member.name, field, snapshot_child(before)),
-            start, end, bound, limit, entry, depth - 1)
+            start, end, bound, limit, guard, entry, depth - 1)
         field = field + 1
     }
 }
@@ -81,7 +111,7 @@ fn loop_prefix_leaves(proof Verification, candidates List[LoopCandidate], receiv
                                 proof_expr(receiver, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(receiver, index)),
                                 proof_expr(before, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(before, index)),
                                 proof_expr(receiver, ExprKind.Integer, 1, "0", -1, new[Expr]()),
-                                end, bound, limit, entry, depth - 1)
+                                end, bound, limit, proof_bool(receiver, true), entry, depth - 1)
                             return
                         }
                     }

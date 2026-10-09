@@ -9,12 +9,20 @@ fn choice_step(budget List[Int], depth Int) Result[Bool, Text] {
 }
 
 fn has_choice(value Expr) Bool {
+    has_choice(value, [256], 0)
+}
+
+fn has_choice(value Expr, budget List[Int], depth Int) Bool {
+    // Exhaustion cannot authorize hiding an unvisited choice during folding.
+    if depth >= 64 || !conjunction_step(budget) {
+        return true
+    }
     if value.kind == ExprKind.If {
         return true
     }
     var index = 0
     while index < length(value.children) {
-        if has_choice(get(value.children, index)) {
+        if has_choice(get(value.children, index), budget, depth + 1) {
             return true
         }
         index = index + 1
@@ -139,18 +147,24 @@ fn choice_predicate(value Expr, budget List[Int], depth Int) Result[Expr, Text] 
     let condition = get(value.children, 0)
     let yes = choice_predicate(get(value.children, 1), budget, depth + 1)?
     let no = choice_predicate(get(value.children, 2), budget, depth + 1)?
-    if is_bool(yes, true) && is_bool(no, false) {
-        return Result.Ok(condition)
+    if is_bool(no, false) {
+        return Result.Ok(proof_and(condition, yes))
     }
-    if is_bool(yes, false) && is_bool(no, true) {
-        return Result.Ok(proof_not(condition))
+    if is_bool(yes, false) {
+        return Result.Ok(proof_and(proof_not(condition), no))
+    }
+    if is_bool(no, true) {
+        return Result.Ok(guarded_value(condition, yes))
+    }
+    if is_bool(yes, true) {
+        return Result.Ok(guarded_value(proof_not(condition), no))
     }
     Result.Ok(proof_and(guarded_value(condition, yes), guarded_value(proof_not(condition), no)))
 }
 
 fn normalized_predicate(value Expr) Result[Expr, Text] {
     if value.ty != 2 || !bounded_contract(value) {
-        return Result.Err("helper predicate expansion budget exhausted")
+        return Result.Err("helper predicate input expansion budget exhausted")
     }
     if !has_choice(value) {
         return Result.Ok(value)
@@ -159,7 +173,7 @@ fn normalized_predicate(value Expr) Result[Expr, Text] {
     push(budget, 2048)
     let output = choice_predicate(lifted_choices(value, budget, 0)?, budget, 0)?
     if !bounded_contract(output) {
-        return Result.Err("helper predicate expansion budget exhausted")
+        return Result.Err("helper predicate result expansion budget exhausted")
     }
     Result.Ok(output)
 }

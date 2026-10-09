@@ -23,10 +23,12 @@ fn inferred_loop_contracts_compile_without_runtime_proof_helpers() {
                 .output()
                 .unwrap(),
         );
+        let lowered = fs::read_to_string(&ir).unwrap();
         assert!(
-            !fs::read_to_string(&ir).unwrap().contains("91827365"),
+            !lowered.contains("91827365"),
             "a proof-only helper became native code"
         );
+        assert!(!lowered.contains("proof_enum_"));
         success(
             &Command::new(&artifact)
                 .env("LOOM_GC_STRESS", "1")
@@ -41,11 +43,12 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");
     let program = format!(
-        "{}\n{}\n{}\n{}\nfn main() {{\n    float_loop_exercise()\n    transfer_exercise()\n    transfer_content_exercise()\n    opaque_exercise()\n}}\n",
+        "{}\n{}\n{}\n{}\n{}\nfn main() {{\n    float_loop_exercise()\n    transfer_exercise()\n    transfer_content_exercise()\n    enum_transfer_exercise()\n    opaque_exercise()\n}}\n",
         include_str!("../examples/loop_contracts/floats.loom"),
         include_str!("../examples/loop_contracts/transfers.loom"),
         include_str!("../examples/loop_contracts/contents.loom"),
-        include_str!("../examples/loop_contracts/opaque.loom")
+        include_str!("../examples/loop_contracts/opaque.loom"),
+        include_str!("../examples/loop_contracts/enums.loom")
     );
     let cache = package.path().join("cache");
     let check = || {
@@ -61,13 +64,30 @@ fn loop_induction_rechecks_edits_and_rejects_counterexamples() {
     success(&check());
     for changed in [
         program.replace("processed = processed + 1", "processed = processed + 2"),
-        program.replace("output = append(output, item)", "output = append(output, 0)"),
+        program.replacen("output = append(output, item)", "output = append(output, 0)", 1),
         format!(
             "import std.list.set\n{}",
-            program.replace(
+            program.replacen(
                 "rest = remaining\n                output = append(output, item)",
                 "rest = remaining\n                if length(rest) > 0 { set(rest, 0, 0) }\n                output = append(output, item)",
+                1,
             )
+        ),
+        program.replace(
+            "output = append(output, choice)",
+            "output = append(output, TransferChoice.Missing())",
+        ),
+        program.replace(
+            "output = append(state.output, choice)",
+            "output = append(state.output, TransferChoice.Missing())",
+        ),
+        program.replace(
+            "if !same_choice(output[index], before[length(before) - index - 1])",
+            "if !same_choice(output[index], before[index])",
+        ),
+        program.replace(
+            "rest = remaining\n                output = append(output, choice)",
+            "rest = remaining\n                if length(rest) > 0 { rest[0] = TransferChoice.Missing() }\n                output = append(output, choice)",
         ),
         program.replace(
             "output = append(output, value)",
