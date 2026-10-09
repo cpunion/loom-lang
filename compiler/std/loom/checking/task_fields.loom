@@ -122,6 +122,9 @@ fn task_take(flow TaskFlow, value Expr, start Int, width Int) Result[Bool, Failu
         if get(flow.locals, index) == 0 {
             return Result.Err(task_error(flow, value, "this task was already awaited or transferred"))
         }
+        if get(flow.locals, index) == 3 {
+            return Result.Err(task_error(flow, value, "a borrowed resource cannot transfer its Task fields"))
+        }
         set(flow.locals, index, 0)
         index = index + 1
     }

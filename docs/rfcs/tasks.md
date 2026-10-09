@@ -191,8 +191,8 @@ drains both subtrees; an earlier work fault retains priority over trigger cleanu
 faults. These are cooperative source policies, not hard execution-time limits.
 
 Direct Task parameters and returns now transfer one-shot obligations, including
-nested `Task[Task[T]]`. Sync helpers expose their owner requirement through a
-Task-bearing parameter/result and use the caller's owner; async constructors adopt
+nested `Task[Task[T]]`. Sync helpers expose their owner requirement through an
+owned Task-bearing parameter or a Task-bearing result and use the caller's owner; async constructors adopt
 Task parameters without running their bodies. A Task-valued result stays below
 its completed producer until the actual consumer extracts it, preserving subtree
 cancellation even when that producer is transferred again. Already-evaluated
@@ -248,6 +248,16 @@ completed producers retain all returned subtrees until extraction. Metadata-only
 fields remain readable after Task fields move. Copying a consumed Task field,
 dropping other fields through a temporary projection, or replacing a live field
 group rejects. See the [aggregate example](../../compiler/examples/task_aggregates).
+
+Inline MustScope aggregates can retain resources and Task fields together. A
+resource parameter borrows the Task leaves rather than consuming them; only the
+owning scope can explicitly await or transfer those leaves. Task-free reads and
+forwarding borrows need no Task owner and remain valid in cleanup. Borrowed
+parameters do not grant authority to create other Tasks, including through
+indirect calls. Cleanup still cannot create, consume or await Tasks; fault and
+cancellation drain existing children before resource disposal. Resource Lists
+with live Task elements and Dispose-only mixed aggregates remain conservative.
+See the [mixed scope tests](../../compiler/examples/cleanup/resource_task_scope_test.loom).
 
 Task-bearing enums transfer once and expose the active payload through ordinary
 `match`, including `Option`, `Result` and `?`. Bound Task-bearing payloads must be

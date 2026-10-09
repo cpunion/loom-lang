@@ -1,0 +1,188 @@
+fn resource_task_scope_header() Text {
+    concat(resource_header(), """
+        record Job {
+            resource Handle
+            pending Task[Int]
+            label Int
+        }
+        impl Dispose for Job {
+            fn dispose(self Job) {
+                push(self.resource.log, self.label)
+            }
+        }
+        async fn work() Int {
+            7
+        }
+        fn job(log List[Int]) Job {
+            Job {
+                resource = make(log)
+                pending = work()
+                label = 2
+            }
+        }
+        fn inspect(value Job) Int {
+            value.label
+        }
+        fn relay(value Job) Int {
+            inspect(value)
+        }
+        fn start_with_resource(value Job) Task[Int] {
+            work()
+        }
+        async fn inspect_async(value Job) Int {
+            inspect(value)
+        }
+        enum MaybeJob {
+            Some(Job)
+            None
+        }
+        impl Dispose for MaybeJob {
+            fn dispose(self MaybeJob) {
+            }
+        }
+        fn inspect_enum(value MaybeJob) Int {
+            match value {
+                MaybeJob.Some(job) => job.label
+                MaybeJob.None => 0
+            }
+        }
+        """)
+}
+
+test fn scoped_resource_task_fields_keep_their_owners_through_borrowing_calls() {
+    resource_accept(concat(resource_task_scope_header(), """
+        async fn run(log List[Int], flag Bool) {
+            scoped first = job(log)
+            scoped second = job(log)
+            let callback = inspect
+            assert callback(if flag { first } else { second }) == 2
+            assert inspect_async(first).await == 2
+            assert relay(first) == 2
+            assert start_with_resource(first).await == 7
+            assert first.pending.await + second.pending.await == 14
+            assert inspect(first) == 2
+        }
+        """))
+    resource_accept(concat(resource_task_scope_header(), """
+        async fn run(log List[Int]) {
+            scoped tuple = (make(log), work())
+            assert tuple.1.await == 7
+            scoped selected = MaybeJob.Some(job(log))
+            assert inspect_enum(selected) == 2
+            match selected {
+                MaybeJob.Some(value) => {
+                    assert value.pending.await == 7
+                }
+                MaybeJob.None => {
+                }
+            }
+        }
+        """))
+}
+
+test fn borrowing_resources_does_not_grant_task_creation_authority_to_cleanup_helpers() {
+    let prefix = concat(resource_task_scope_header(), """
+        import std.task.finish
+        fn factory() Task[Int] {
+            work()
+        }
+        fn hidden(value Job) {
+        """)
+    let suffix = """
+        }
+        record WrappedJob {
+            inner Job
+        }
+        impl Dispose for WrappedJob {
+            fn dispose(self WrappedJob) {
+                hidden(self.inner)
+            }
+        }
+        async fn run(log List[Int]) {
+            scoped value = WrappedJob { inner = job(log) }
+            discard value.inner.pending.await
+        }
+        """
+    let bodies = ["finish(work())", """
+        let create = work
+        finish(create())
+        """, "finish(factory())"]
+    let task_source = """
+        record Fault {
+            message Text
+        }
+        enum Outcome[T] {
+            Completed(T)
+            Faulted(Fault)
+            Cancelled
+        }
+        intrinsic fn task_cancel[T](task Task[T]) Outcome[T]
+        pub fn finish(task Task[Int]) {
+            discard task_cancel(task)
+        }
+        """
+    var index = 0
+    while index < length(bodies) {
+        let files = resource_source_files(concat(prefix, concat(get(bodies, index), suffix)))
+        push(files, source_file("std.task", task_source, true))
+        match checked(files) {
+            Result.Err(failed) => {
+                assert failed.diagnostic.message == "task creation or transfer requires an async function or a Task-bearing parameter or return type"
+            }
+            Result.Ok(_) => {
+                assert false
+            }
+        }
+        index = index + 1
+    }
+}
+
+test fn resource_borrows_cannot_consume_tasks_or_hide_the_callers_obligations() {
+    let header = resource_task_scope_header()
+    resource_reject_reason(concat(header, """
+        fn steal(value Job) Task[Int] {
+            value.pending
+        }
+        """), "a borrowed resource cannot transfer its Task fields")
+    resource_reject_reason(concat(header, """
+        async fn steal(value MaybeJob) {
+            match value {
+                MaybeJob.Some(job) => {
+                    discard job.pending.await
+                }
+                MaybeJob.None => {
+                }
+            }
+        }
+        """), "a borrowed resource cannot transfer its Task fields")
+    resource_reject(concat(header, """
+        async fn run(log List[Int]) {
+            scoped value = job(log)
+            discard inspect(value)
+        }
+        """))
+    resource_reject_reason(concat(header, """
+        async fn run(log List[Int]) {
+            scoped value = job(log)
+            discard value.pending.await
+            discard value.pending.await
+        }
+        """), "this task was already awaited or transferred")
+    resource_reject(concat(header, """
+        async fn run(log List[Int]) {
+            scoped value = job(log)
+            let delayed = inspect_async(value)
+            discard delayed.await
+            discard value.pending.await
+        }
+        """))
+    resource_reject(concat(header, """
+        import std.resource.NoSuspend
+        impl NoSuspend for Job {
+        }
+        async fn run(log List[Int]) {
+            scoped value = job(log)
+            discard value.pending.await
+        }
+        """))
+}

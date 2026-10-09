@@ -3599,6 +3599,16 @@ require a directly awaited call, so the owner outlives its child Tasks and their
 cleanup. The borrowing Task cannot be saved, forwarded or returned. No borrowing
 syntax is required. See the
 [List cleanup tests](examples/cleanup/resource_list_test.loom).
+Inline scoped records, tuples and enums may also contain Task fields. The owning
+scope must explicitly consume those fields; resource parameters borrow them and
+cannot await or transfer them. Task-free fields remain readable through ordinary
+helpers, including cleanup. Such a borrow does not grant a synchronous helper
+authority to create unrelated Tasks. Cleanup neither waits nor cancels implicitly;
+fault/cancellation drain child Tasks before disposing their enclosing resources.
+`NoSuspend` keeps its stronger rule. See the
+[mixed scope tests](examples/cleanup/resource_task_scope_test.loom).
+Resource Lists containing live Task elements and Dispose-only mixed aggregates
+remain conservative; this is not general Task-bearing resource mutation support.
 The four-argument `generate(count, state, next, finish)` overload also accepts
 ordinary elements and an explicit cursor. `next(index, state)` returns
 `(element, next_state)`; `finish(state)` consumes the final state before the List

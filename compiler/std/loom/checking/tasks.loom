@@ -29,21 +29,22 @@ fn direct_task(env Environment, ty Int) Bool {
     ty >= 0 && get(env.types, ty).kind == TypeKind.Task
 }
 
-// A synchronous helper exposes its owner requirement through its Task-bearing inputs
-// or output. No hidden effect or source ownership annotation is introduced.
-fn task_owner(context Context) Bool {
+// A synchronous helper exposes its owner requirement through owned Task inputs
+// or its output. A resource borrow grants no authority to create other Tasks.
+fn task_owner(context Context) Result[Bool, Failure] {
     let current = execution_signature(context)
     if async_signature(context.env, current) || task_value(context.env, current.result) {
-        return true
+        return Result.Ok(true)
     }
     var index = 0
     while index < length(current.params) {
-        if !is_static(current, index) && task_value(context.env, get(current.params, index)) {
-            return true
+        let parameter = get(current.params, index)
+        if !is_static(current, index) && task_value(context.env, parameter) && !task_resource_borrow(context, parameter)? {
+            return Result.Ok(true)
         }
         index = index + 1
     }
-    false
+    Result.Ok(false)
 }
 
 fn task_creation_message(context Context, node Node) Text {
@@ -245,11 +246,11 @@ fn task_call_context(context Context, node Node, values List[Expr], output Int, 
         let value = get(values, index)
         if task_value(context.env, value.ty) {
             discard task_transfer_type(context.env, context.signature, value.ty, node)?
+            transfers = transfers || !task_resource_borrow(context, value.ty)?
         }
-        transfers = transfers || task_value(context.env, value.ty)
         index = index + 1
     }
-    if transfers && !task_owner(context) {
+    if transfers && !task_owner(context)? {
         return Result.Err(error(context, node, "task creation or transfer requires an async function or a Task-bearing parameter or return type"))
     }
     Result.Ok(true)
