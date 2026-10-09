@@ -2955,6 +2955,14 @@ are not snapshotted; a possibly overlapping write removes evidence. The existing
 64-candidate budget bounds inference, and no loop termination claim is inferred.
 See [loop examples](examples/list_elements/loops.loom).
 
+Rebound Lists and inline List projections also propose sum/difference relations
+between their current length and written scalar counters. Each relation is checked
+at entry and every backedge; it does not identify the current handle with its
+entry handle or assume disjoint storage. The
+[transfer example](examples/loop_contracts/transfers.loom) proves a generic
+consume-and-count loop, including empty inputs. Incorrect counts and unrelated
+replacements fail proof; general transfer-loop content induction remains open.
+
 Required postconditions reuse the integer difference propagation used at
 refinement boundaries: `requires value > lower && lower >= 0` can establish
 `ensures result > 0` for a body returning `value`. Inline record/tuple leaves and

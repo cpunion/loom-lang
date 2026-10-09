@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Prove bounded length/counter conservation through rebound Lists and inline
+  projections. Reuse entry/backedge induction for generic consume-and-count
+  loops without assuming header identity or alias separation; recheck changed
+  counter updates after frontend-cache reuse.
+
 - Allow erased postconditions to observe Task-bearing List metadata through
   pure source helpers, including `old` and nested fields. Keep executable
   helpers, preconditions, cleanup and dynamic slots under ordinary one-shot

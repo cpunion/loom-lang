@@ -12,6 +12,7 @@ enum LoopCandidate {
     Entry(Int, List[Int], Text, Value)
     Guard(Expr)
     ExtentLocal(Int, Int, Linear)
+    LocalExtent(Int, List[Int], Int, Number, Linear)
     EntryExtent(Int, List[Int], Text, Linear)
     Element(Int, Linear, Text, Value)
     Affine(List[Term], Value)
@@ -209,6 +210,12 @@ fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] 
         LoopCandidate.ExtentLocal(identity, local, offset) => boolean(binary("==",
                 Value.Number(list_extent(identity, state)?),
                 Value.Number(add(list_value_index(get(state.locals, local))?, offset)))?)
+        LoopCandidate.LocalExtent(local, path, scalar, factor, initial) => {
+            let size = loop_local_extent(get(state.locals, local), path, state)?
+            Result.Ok(Predicate.Compare("==", add(add(size,
+                            scale(list_value_index(get(state.locals, scalar))?, factor)),
+                        scale(initial, integer(-1)))))
+        }
         LoopCandidate.EntryExtent(index, path, relation, initial) => {
             var value = get(state.locals, index)
             var field = 0
@@ -517,6 +524,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     // Optional scalar relations cannot displace existing quantified/storage
     // proposals when the shared candidate budget is nearly full.
     discard loop_affine_candidates(proof, guard, body, candidates, writes, observed)?
+    discard loop_transfer_candidates(proof, candidates, writes, resized, observed)?
     var head = loop_head(proof, writes, storage)
     head = loop_query_views(proof, clauses, head)
     candidates = available_loop_candidates(candidates, head)

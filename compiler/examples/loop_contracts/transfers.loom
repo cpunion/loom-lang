@@ -1,0 +1,27 @@
+import std.list.length
+import std.list.transfer.take_last
+import std.option.Option
+
+fn transfer_count[T](values List[T]) Int
+ensures result == old(length(values)) {
+    var pending = values
+    var processed = 0
+    while true {
+        match take_last(pending) {
+            Option.Some(pair) => {
+                discard pair.0
+                pending = pair.1
+                processed = processed + 1
+            }
+            Option.None => {
+                return processed
+            }
+        }
+    }
+}
+
+fn transfer_exercise() {
+    assert transfer_count[Int]([]) == 0
+    assert transfer_count([7, 8, 9]) == 3
+    assert transfer_count(["first", "second"]) == 2
+}

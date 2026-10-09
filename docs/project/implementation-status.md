@@ -782,6 +782,12 @@ checking inductiveness. Scalar lexical cleanup retains its checked order and
 return snapshots. Guard calls use fresh checked results, not stable syntactic
 invariant terms. Resource cleanup and general heap-content proofs remain unsupported. See the
 [native loop example](../../compiler/examples/loop_contracts).
+Rebound List leaves and inline projections also propose checked current-length
+sum/difference relations with scalar counters. The
+[transfer loop example](../../compiler/examples/loop_contracts/transfers.loom)
+proves generic consume-and-count loops without retaining entry header identities
+or inventing alias separation. Every actual backedge must preserve the equation;
+general transfer content induction and Task List join guarantees remain open.
 Written Int guard cursors propose mathematical entry-difference and weighted
 pair relations after existing storage/quantifier candidates. Constant affine
 translations supply coefficients, never proof: every relation needs entry and
