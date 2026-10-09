@@ -27,30 +27,55 @@ fn contract_call(node Node) Bool {
     }
     false
 }
+
 fn contract_helpers(node Node) Bool {
     var index = 0
     while index < length(node.children) {
         let member = child(node, index)
-        if (member.kind == NodeKind.Requires || member.kind == NodeKind.Ensures) && contract_call(member) { return true }
+        if (member.kind == NodeKind.Requires || member.kind == NodeKind.Ensures) && contract_call(member) {
+            return true
+        }
         index = index + 1
     }
     false
 }
+
 fn with_contracts(function Function, preconditions List[Expr], postconditions List[Expr]) Function {
-    Function { is_async = function.is_async symbol = function.symbol arguments = function.arguments params = function.params result = function.result
-        locals = function.locals preconditions = preconditions postconditions = postconditions result_cleanup = function.result_cleanup result_local = function.result_local
-        body = function.body runtime_name = function.runtime_name span = function.span }
+    Function {
+        is_async = function.is_async
+        symbol = function.symbol
+        arguments = function.arguments
+        params = function.params
+        result = function.result
+        locals = function.locals
+        preconditions = preconditions
+        postconditions = postconditions
+        result_cleanup = function.result_cleanup
+        result_local = function.result_local
+        body = function.body
+        runtime_name = function.runtime_name
+        span = function.span
+    }
 }
+
 fn proof_body_calls(value Expr) Bool {
-    if value.kind == ExprKind.Defer { return false }
-    if value.kind == ExprKind.Call || value.kind == ExprKind.DynCall { return true }
+    if value.kind == ExprKind.Defer {
+        return false
+    }
+    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall ||
+    value.kind == ExprKind.DynCall || value.kind == ExprKind.FunctionRef || value.kind == ExprKind.IndirectCall {
+        return true
+    }
     var index = 0
     while index < length(value.children) {
-        if proof_body_calls(get(value.children, index)) { return true }
+        if proof_body_calls(get(value.children, index)) {
+            return true
+        }
         index = index + 1
     }
     false
 }
+
 fn collect_dynamic_contracts(context Context, value Expr, summaries List[Function]) Result[Bool, Failure] {
     if value.kind == ExprKind.Defer {
         return Result.Ok(true)
@@ -66,27 +91,29 @@ fn collect_dynamic_contracts(context Context, value Expr, summaries List[Functio
     Result.Ok(true)
 }
 
-fn proof_dynamic_calls(value Expr, first Int, position List[Int]) Expr {
+fn proof_dynamic_calls(value Expr, first Int, position List[Int], summaries List[Function]) Expr {
     if value.kind == ExprKind.Defer {
         return value
     }
     var target = value.index
+    var kind = value.kind
     if value.kind == ExprKind.DynCall {
         target = first + get(position, 0)
+        kind = if get(summaries, get(position, 0)).is_async {
+            ExprKind.TaskCall
+        } else {
+            ExprKind.Call
+        }
         set(position, 0, get(position, 0) + 1)
     }
     let children = new[Expr]()
     var index = 0
     while index < length(value.children) {
-        push(children, proof_dynamic_calls(get(value.children, index), first, position))
+        push(children, proof_dynamic_calls(get(value.children, index), first, position, summaries))
         index = index + 1
     }
     Expr {
-        kind = if value.kind == ExprKind.DynCall {
-            ExprKind.Call
-        } else {
-            value.kind
-        }
+        kind = kind
         ty = value.ty
         span = value.span
         text = value.text
@@ -107,7 +134,8 @@ fn with_body(function Function, body Expr) Function {
         locals = function.locals
         preconditions = function.preconditions
         postconditions = function.postconditions
-        result_cleanup = function.result_cleanup result_local = function.result_local
+        result_cleanup = function.result_cleanup
+        result_local = function.result_local
         body = body
         runtime_name = function.runtime_name
         span = function.span
@@ -126,7 +154,9 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
     }
     let body_calls = has_ensures && proof_body_calls(function.body)
     if !contract_helpers(node) && !inherited_method_helpers(context.env, context.signature.symbol) && !body_calls {
-        if !has_ensures { return Result.Ok(function) }
+        if !has_ensures {
+            return Result.Ok(function)
+        }
         let conditions = add_contracts(contracts(context, node, NodeKind.Ensures)?, inherited_contracts(context, NodeKind.Ensures)?)
         let checked = with_contracts(function, function.preconditions, conditions)
         match verify_with_types(context.env.types, checked, backend) {
@@ -161,7 +191,9 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
                 add_contracts(contracts(stage, node, NodeKind.Ensures)?, inherited_contracts(stage, NodeKind.Ensures)?))
         }
         let summaries = new[Function]()
-        if body_calls { discard collect_dynamic_contracts(stage, proof.body, summaries)? }
+        if body_calls {
+            discard collect_dynamic_contracts(stage, proof.body, summaries)?
+        }
         let program = prepared_contract_group(stage)?
         let first = length(program.functions)
         var index = 0
@@ -172,7 +204,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
         if body_calls {
             let position = new[Int]()
             push(position, 0)
-            proof = with_body(proof, proof_dynamic_calls(proof.body, first, position))
+            proof = with_body(proof, proof_dynamic_calls(proof.body, first, position, summaries))
         }
         match verify_with_helpers(program, proof, backend) {
             Result.Ok(conditions) => {

@@ -56,7 +56,7 @@ fn helper_type(program Program, ty Int, depth Int) Bool {
     }
     // Inline aggregate leaves may be opaque. Projection does not establish
     // facts about their shared storage or permit operations on that storage.
-    shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple || shape.kind == TypeKind.List
+    shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple || shape.kind == TypeKind.List || shape.kind == TypeKind.Task
 }
 
 fn expanded_field(context Expansion, field Expr, value Expr, depth Int) Result[Expr, Text] {

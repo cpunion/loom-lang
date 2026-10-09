@@ -151,7 +151,11 @@ fn mutable_value(value Value) Bool {
 }
 
 fn interference(proof Verification, state State) State {
-    if !proof.shared {
+    interference(proof, state, proof.shared)
+}
+
+fn interference(proof Verification, state State, shared Bool) State {
+    if !shared {
         return state
     }
     var current = state

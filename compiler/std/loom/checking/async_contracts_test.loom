@@ -1,0 +1,147 @@
+test fn async_contracts_follow_saved_tasks_and_once_evaluated_arguments() {
+    discard accepted("""
+        async fn keep(value Int, ignored Int) Int
+        ensures result == old(value) {
+            value
+        }
+        fn pass(task Task[Int]) Task[Int] {
+            task
+        }
+        record Pending {
+            task Task[Int]
+            marker Int
+        }
+        async fn forward(value Int) Int
+        ensures result == value {
+            var input = value
+            let callback = keep
+            let pending = Pending {
+                task = pass(callback(input, {
+                    input = 0
+                    1
+                }))
+                marker = 2
+            }
+            input = 3
+            pending.task.await
+        }
+        async fn main() {
+            assert forward(42).await == 42
+        }
+        type Positive = Int where self > 0
+        async fn typed(task Task[Positive]) Int
+        ensures result > 0 {
+            task.await
+        }
+        """)
+    rejects("""
+        async fn keep(value Int) Int
+        ensures result == value {
+            value + 1
+        }
+        async fn forward(value Int) Int
+        ensures result == value {
+            keep(value).await
+        }
+        """)
+    rejects("""
+        async fn unknown(callback fn(Int) Task[Int], value Int) Int
+        ensures result == value {
+            callback(value).await
+        }
+        """)
+    rejects("""
+        type Positive = Int where self > 0
+        async fn wrong(task Task[Positive]) {
+            let widened Task[Int] = task
+            discard widened.await
+        }
+        """)
+    rejects("""
+        async fn wrong(task Task[Int]) Bool {
+            task.await
+        }
+        """)
+}
+
+test fn async_declared_concept_guarantees_compose_without_witness_guesses() {
+    let declarations = """
+        concept Keep {
+            async fn keep(self Self, value Int) Int
+            ensures result == old(value)
+        }
+        impl Keep for Bool {
+            async fn keep(self Bool, value Int) Int {
+                value
+            }
+        }
+        """
+    discard accepted(concat(declarations, """
+        async fn generic[T Keep](receiver T, value Int) Int
+        ensures result == value {
+            let saved = receiver.keep(value)
+            saved.await
+        }
+        async fn dynamic(receiver dyn Keep, value Int) Int
+        ensures result == value {
+            receiver.keep(value).await
+        }
+        async fn main() {
+            assert generic(true, 8).await == 8
+            let receiver dyn Keep = false
+            assert dynamic(receiver, 9).await == 9
+        }
+        """))
+    rejects(concat(declarations, """
+        async fn wrong(receiver dyn Keep, value Int) Int
+        ensures result != value {
+            receiver.keep(value).await
+        }
+        """))
+}
+
+test fn async_entry_storage_and_caller_snapshots_remain_distinct() {
+    let declaration = """
+        import std.list.length
+        import std.list.push
+        async fn read(values List[Int]) Int
+        ensures result == old(length(values)) && result >= 0 {
+            length(values)
+        }
+        """
+    list_length_contract(concat(declaration, """
+        async fn normal(values List[Int]) Int
+        ensures result >= 0 {
+            let pending = read(values)
+            push(values, 3)
+            pending.await
+        }
+        """), true)
+    list_length_contract(concat(declaration, """
+        async fn wrong(values List[Int]) Int
+        ensures result == old(length(values)) {
+            let pending = read(values)
+            push(values, 3)
+            pending.await
+        }
+        """), false)
+    list_length_contract("""
+        import std.list.length
+        async fn wait() {}
+        async fn snapshot(values List[Int]) Int
+        ensures result == old(length(values)) {
+            let before = length(values)
+            wait().await
+            before
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        async fn wait() {}
+        async fn stale(values List[Int]) Int
+        ensures result == old(length(values)) {
+            wait().await
+            length(values)
+        }
+        """, false)
+}
