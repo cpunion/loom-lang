@@ -1,0 +1,54 @@
+fn reduced_float(value Float) Float
+requires value >= 0.0 && value <= 10.0
+ensures result >= 0.0 && result <= 1.0 {
+    var current = value
+    while current > 1.0 {
+        current = current / 2.0
+    }
+    current
+}
+
+fn capped_float(value Float, limit Float) Float
+requires value >= 0.0 && limit >= 0.0
+ensures result >= 0.0 && result <= limit {
+    var current = value
+    while current > limit {
+        current = limit
+    }
+    current
+}
+
+record FloatProgress {
+    value Float
+    rounds Int
+}
+
+fn reduced_float_record(value Float) FloatProgress
+requires value >= 0.0 && value <= 10.0
+ensures result.value >= 0.0 && result.value <= 1.0
+ensures result.rounds >= 0 {
+    var current = FloatProgress {
+        value = value
+        rounds = 0
+    }
+    while current.value > 1.0 {
+        current = FloatProgress {
+            value = current.value / 2.0
+            rounds = current.rounds + 1
+        }
+    }
+    current
+}
+
+fn float_loop_exercise() {
+    assert reduced_float(0.0) == 0.0
+    assert reduced_float(0.25) == 0.25
+    assert reduced_float(5e-324) == 5e-324
+    assert reduced_float(8.0) == 1.0
+    assert reduced_float(10.0) == 0.625
+    assert 1.0 / reduced_float(-0.0) == -1.0 / 0.0
+    assert capped_float(10.0, 3.0) == 3.0
+    assert capped_float(0.25, 3.0) == 0.25
+    let progress = reduced_float_record(10.0)
+    assert progress.value == 0.625 && progress.rounds == 4
+}

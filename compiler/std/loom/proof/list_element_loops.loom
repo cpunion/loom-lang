@@ -134,9 +134,9 @@ fn available_loop_candidates(candidates List[LoopCandidate], head State) List[Lo
     output
 }
 
-fn loop_candidate_preserved(candidate LoopCandidate, state State) Bool {
+fn loop_candidate_preserved(proof Verification, candidate LoopCandidate, state State) Bool {
     match loop_predicate(candidate, state) {
-        Result.Ok(fact) => loop_holds(fact, state)
+        Result.Ok(fact) => loop_entails(proof, fact, state)
         // A write through a possible alias may have forgotten the cell. Losing
         // an observation rejects this proposal, not the rest of the inference.
         Result.Err(_) => loop_holds(Predicate.Constant(false), state)

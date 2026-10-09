@@ -303,6 +303,32 @@ fn loop_entry_candidates(proof Verification, candidates List[LoopCandidate], ind
         Value.Boolean(_) => {
             discard add_loop_candidate(candidates, LoopCandidate.Entry(index, path, "==", initial), entry)?
         }
+        Value.Float(value) => {
+            // IEEE comparisons establish non-NaN bounds, not real-number
+            // algebra or bit identity. Every proposal still needs induction.
+            discard add_loop_candidate(candidates, LoopCandidate.Entry(index, path, ">=", initial), entry)?
+            discard add_loop_candidate(candidates, LoopCandidate.Entry(index, path, "<=", initial), entry)?
+            var fact = 0
+            while fact < length(entry.facts) && fact < 256 && length(candidates) < 64 {
+                match get(entry.facts, fact) {
+                    Predicate.FloatCompare(relation, left, right) => {
+                        // Structural computation identity is required here:
+                        // IEEE equality must not substitute opposite zeros.
+                        if same_float(value, left, [256]) {
+                            discard add_loop_candidate(candidates,
+                                LoopCandidate.Entry(index, path, relation, Value.Float(right)), entry)?
+                        }
+                        if same_float(value, right, [256]) {
+                            discard add_loop_candidate(candidates,
+                                LoopCandidate.Entry(index, path, flip(relation), Value.Float(left)), entry)?
+                        }
+                    }
+                    _ => {
+                    }
+                }
+                fact = fact + 1
+            }
+        }
         Value.Text(_) => {
             discard add_loop_candidate(candidates, LoopCandidate.Entry(index, path, "==", initial), entry)?
         }

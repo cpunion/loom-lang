@@ -1,10 +1,13 @@
-fn quantified_fact(value Predicate) Bool {
+// Local scalar rules stay cheap. Admitted quantified and IEEE obligations
+// share the existing solver; theory combinations still need exact encoding.
+fn loop_solver_fact(value Predicate) Bool {
     match value {
         Predicate.Forall(_, _, _, _) => true
         Predicate.BagEqual(_, _, _, _) => true
-        Predicate.And(values) => quantified_fact(get(values, 0)) || quantified_fact(get(values, 1))
-        Predicate.Or(values) => quantified_fact(get(values, 0)) || quantified_fact(get(values, 1))
-        Predicate.Not(values) => quantified_fact(get(values, 0))
+        Predicate.FloatCompare(_, _, _) => true
+        Predicate.And(values) => loop_solver_fact(get(values, 0)) || loop_solver_fact(get(values, 1))
+        Predicate.Or(values) => loop_solver_fact(get(values, 0)) || loop_solver_fact(get(values, 1))
+        Predicate.Not(values) => loop_solver_fact(get(values, 0))
         _ => false
     }
 }
@@ -13,7 +16,7 @@ fn loop_entails(proof Verification, fact Predicate, state State) Bool {
     if loop_holds(fact, state) {
         return true
     }
-    if !proof.query.backend.enabled || !quantified_fact(fact) {
+    if !proof.query.backend.enabled || !loop_solver_fact(fact) {
         return false
     }
     let query = proof_query(proof.query.backend)
@@ -215,6 +218,6 @@ fn quantified_candidate_preserved(proof Verification, candidate LoopCandidate, s
                 Result.Err(_) => false
             }
         }
-        _ => loop_candidate_preserved(candidate, state)
+        _ => loop_candidate_preserved(proof, candidate, state)
     }
 }
