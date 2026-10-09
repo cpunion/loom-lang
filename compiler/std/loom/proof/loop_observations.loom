@@ -49,44 +49,58 @@ fn loop_observation_leaves(proof Verification, observations List[LoopObservation
 // Keep existing candidates first. Observe changing lengths and scalar/inline
 // leaves with the same algebra, without requiring an artificial source counter.
 // These are only proposals: entry and every actual backedge must establish them.
-fn loop_observation_candidates(proof Verification, candidates List[LoopCandidate], writes List[Bool], resized List[Int], entry State) Result[Bool, Text] {
+fn loop_observation_candidates(proof Verification, expr Expr, candidates List[LoopCandidate], writes List[Bool], resized List[Int], entry State) Result[Bool, Text] {
     if length(resized) == 0 {
         return Result.Ok(true)
     }
     let observations = new[LoopObservation]()
-    var local = 0
-    while local < length(writes) && length(observations) < 64 {
-        discard loop_observation_leaves(proof, observations, writes, resized, local, new[Int](),
-            get(entry.locals, local), entry)?
-        local = local + 1
-    }
-    var left = 0
-    while left < length(observations) && length(candidates) < 64 {
-        let first = get(observations, left)
-        let extent = match first {
-            LoopObservation.Local(slot, path) => match loop_local_value(get(entry.locals, slot), path)? {
-                Value.List(_) => true
-                _ => false
+    // Source-written values take priority over inherited caller-frame storage.
+    // Unwritten handles matter only when this loop actually observes them.
+    var phase = 0
+    while phase < 2 && length(observations) < 64 {
+        var local = 0
+        while local < length(writes) && length(observations) < 64 {
+            if get(writes, local) == (phase == 0) &&
+            (get(writes, local) || scan_mentions(expr, local)) {
+                discard loop_observation_leaves(proof, observations, writes, resized, local, new[Int](),
+                    get(entry.locals, local), entry)?
             }
-            _ => false
+            local = local + 1
         }
-        var right = left + 1
-        while right < length(observations) && length(candidates) < 64 {
-            let second = get(observations, right)
-            let other_extent = match second {
+        phase = phase + 1
+    }
+    // Counter/extent relations precede the additional extent/extent proposals.
+    phase = 0
+    while phase < 2 && length(candidates) < 64 {
+        var left = 0
+        while left < length(observations) && length(candidates) < 64 {
+            let first = get(observations, left)
+            let extent = match first {
                 LoopObservation.Local(slot, path) => match loop_local_value(get(entry.locals, slot), path)? {
                     Value.List(_) => true
                     _ => false
                 }
                 _ => false
             }
-            if extent || other_extent {
-                discard loop_affine_pair(proof, candidates, first, second, integer(1), integer(-1), entry)?
-                discard loop_affine_pair(proof, candidates, first, second, integer(1), integer(1), entry)?
+            var right = left + 1
+            while right < length(observations) && length(candidates) < 64 {
+                let second = get(observations, right)
+                let other_extent = match second {
+                    LoopObservation.Local(slot, path) => match loop_local_value(get(entry.locals, slot), path)? {
+                        Value.List(_) => true
+                        _ => false
+                    }
+                    _ => false
+                }
+                if (extent || other_extent) && (extent && other_extent) == (phase == 1) {
+                    discard loop_affine_pair(proof, candidates, first, second, integer(1), integer(-1), entry)?
+                    discard loop_affine_pair(proof, candidates, first, second, integer(1), integer(1), entry)?
+                }
+                right = right + 1
             }
-            right = right + 1
+            left = left + 1
         }
-        left = left + 1
+        phase = phase + 1
     }
     Result.Ok(true)
 }

@@ -520,11 +520,11 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             storage = forget_modified_elements(storage, modified)
         }
     }
-    // Optional scalar relations cannot displace existing quantified/storage
-    // proposals when the shared candidate budget is nearly full.
-    discard loop_affine_candidates(proof, guard, body, candidates, writes, observed)?
-    discard loop_observation_candidates(proof, candidates, writes, resized, observed)?
+    // Reserve identity proposals before optional affine pairs. Length relations
+    // cannot displace the headers needed to retain checked storage provenance.
     var headers = loop_header_candidates(proof, candidates, writes, observed)?
+    discard loop_affine_candidates(proof, guard, body, candidates, writes, observed)?
+    discard loop_observation_candidates(proof, expr, candidates, writes, resized, observed)?
     var head = loop_head(proof, writes, storage, candidates, headers)?
     head = loop_query_views(proof, clauses, head)
     candidates = available_loop_candidates(candidates, head)

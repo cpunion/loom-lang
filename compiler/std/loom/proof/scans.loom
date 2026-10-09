@@ -22,6 +22,18 @@ fn scan_mentions(value Expr, local Int) Bool {
         }
         index = index + 1
     }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if scan_mentions(get(body, item), local) {
+                return true
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
     false
 }
 
