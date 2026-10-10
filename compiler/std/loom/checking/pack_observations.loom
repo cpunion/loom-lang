@@ -20,25 +20,58 @@ fn pack_proof_method(context Context, node Node, source Node, receiver Expr, enc
     let declaration = symbol(context.env, owner).node
     let input = get(group(declaration, NodeKind.Parameters), parameter)
     let ty = child(input, 0)
-    let pattern = child(if ty.kind == NodeKind.TupleType {
-            child(ty, 0)
+    let patterns = if ty.kind == NodeKind.TupleType {
+        ty.children
+    } else {
+        source_nodes(ty)
+    }
+    let options = new[Int]()
+    var common = new[Int]()
+    var field = 0
+    while field < length(patterns) {
+        let item = get(patterns, field)
+        let pattern = if item.kind == NodeKind.Spread {
+            child(item, 0)
         } else {
-            ty
-        }, 0)
-    let fixed = pack_forward_fixed_node(context, declaration, pattern, 0)?
-    // This is a source annotation, not a body type expression. Local aliases
-    // cannot change its fixed parameters or nominal constructor identity.
-    let actual = resolve_bound(context.env, context.signature.symbol, fixed,
-        context.arguments, context.signature.requirements, 0)?
-    discard well_formed(context.env, context.signature.symbol, actual,
-        context.signature.requirements, node, 0)?
-    // The temporary expression is used only for ordinary method selection,
-    // never evaluated or passed as a value to the proof or native call graph.
-    let shape = expression(ExprKind.Deferred, actual, node, "", -1, new[Expr](), true)
-    let options = method_options(context, node, source, shape, member, types, inputs, -1, expected)?
-    if length(options) == 0 {
-        return Result.Err(error(context, node,
-                "variadic element observation needs an accessible concept and conformance for its element pattern"))
+            item
+        }
+        let fixed = pack_forward_fixed_node(context, declaration, pattern, 0)?
+        // Source annotations resolve in header scope. Body aliases cannot
+        // change a fixed parameter or nominal constructor's identity.
+        let actual = resolve_bound(context.env, context.signature.symbol, fixed,
+            context.arguments, context.signature.requirements, 0)?
+        discard well_formed(context.env, context.signature.symbol, actual,
+            context.signature.requirements, node, 0)?
+        // A shape participates only in selection, never as a proof value.
+        let shape = expression(ExprKind.Deferred, actual, node, "", -1, new[Expr](), true)
+        let choices = method_options(context, node, source, shape, member, types, inputs, -1, expected)?
+        if length(choices) == 0 {
+            return Result.Err(error(context, node,
+                    "variadic element observation needs an accessible concept and conformance for every element pattern"))
+        }
+        var choice = 0
+        while choice < length(choices) {
+            let id = get(choices, choice)
+            if !resource_seen(options, id) {
+                push(options, id)
+            }
+            choice = choice + 1
+        }
+        if field == 0 {
+            common = choices
+        } else {
+            let shared = new[Int]()
+            choice = 0
+            while choice < length(common) {
+                let id = get(common, choice)
+                if resource_seen(choices, id) {
+                    push(shared, id)
+                }
+                choice = choice + 1
+            }
+            common = shared
+        }
+        field = field + 1
     }
     var scope = context
     var index = 0
@@ -48,5 +81,7 @@ fn pack_proof_method(context Context, node Node, source Node, receiver Expr, enc
         scope = with_evidence(scope, receiver.ty, symbol(context.env, method).owner)
         index = index + 1
     }
-    invoke(scope, node, options, types, input_receiver(inputs, source), expressions(receiver), expected)
+    // Keep alternatives when resolving overloads: intersection alone could
+    // hide an ambiguity present on just one of the actual element patterns.
+    invoke_shared(scope, node, options, types, input_receiver(inputs, source), expressions(receiver), expected, common)
 }

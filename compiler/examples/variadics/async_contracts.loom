@@ -92,6 +92,16 @@ ensures result >= 0 {
     async_boxed_total(values).await
 }
 
+async fn async_mixed_total[Us...](values (Bool, MeasuredBox[Us]..., Bool)) Int
+ensures result >= 0 {
+    var sum = 0
+    comptime for item in values {
+        let pending = item.sample()
+        sum = sum + pending.await
+    }
+    sum
+}
+
 concept AsyncSamples {
     async fn total[Ts...AsyncSample](self Self, values Ts...) Int
     ensures result >= 0 {
@@ -115,6 +125,12 @@ async fn exercise_async_contracts() {
             }, MeasuredBox {
                 value = true
             })).await == 2
+    assert async_mixed_total((true, false)).await == 1
+    assert async_mixed_total((true, MeasuredBox {
+                value = "async"
+            }, MeasuredBox {
+                value = true
+            }, false)).await == 3
     let receiver dyn AsyncSamples = "samples"
     assert receiver.total(true, 3, false).await == 4
 }

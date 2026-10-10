@@ -254,7 +254,15 @@ synchronous/async method observations. Ordinary method selection checks the full
 element pattern's header-scope conformance and prerequisites before invoking declared
 contracts on an independent quantified receiver. Raw element types gain no
 hidden bounds; generic/variadic methods and transitive summaries use the same
-call rules. Mixed structural sequences remain unsupported as method receivers.
+call rules. Mixed structural sequences also derive capabilities from every
+fixed member and expansion pattern. Overload resolution retains all alternatives
+and requires the selected concept prototype to be shared by the whole sequence;
+one member's ambiguity cannot be hidden by taking an intersection. The
+[composed bounds example](../../compiler/examples/variadics/composed_bounds.loom)
+includes repeated/independent groups, global indices, CTFE, callbacks and dyn
+overrides with different private proof closures. Async mixed receivers use the
+same completion summaries. A fixed nested tuple counts as one member; patterns
+whose own layout still contains an unexpanded whole pack remain unsupported.
 Element-independent induction also accepts pack-bearing structural tuples: their
 extent composes fixed fields, repeated widths and independent expansion groups
 through ordinary affine arithmetic. A nested fixed field contributes one element;

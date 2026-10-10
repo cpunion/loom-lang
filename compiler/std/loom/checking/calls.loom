@@ -593,6 +593,13 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
 }
 
 fn invoke(context Context, node Node, options List[Int], types List[Node], inputs CallInputs, prefix List[Expr], expected Int) Result[Expr, Failure] {
+    invoke_shared(context, node, options, types, inputs, prefix, expected, options)
+}
+
+// Shared is a subset of options. Ordinary calls admit all their options; a
+// heterogeneous receiver cannot hide alternatives or choose a nonshared method.
+fn invoke_shared(context Context, node Node, options List[Int], types List[Node], inputs CallInputs, prefix List[Expr], expected Int,
+    shared List[Int]) Result[Expr, Failure] {
     let values = new[Expr]()
     let probes = new[Bool]()
     let probing = static_options(context, options)
@@ -633,7 +640,11 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
         index = index + 1
     }
     let matches = matching_overloads(context, node, options, types, values, expected, inferred, length(options) == 1)?
-    let value = invoke_selected(context, node, choose_overload(context, node, matches)?, inputs, values, probes)?
+    let instance = choose_overload(context, node, matches)?
+    if length(shared) != length(options) && !resource_seen(shared, instance.signature) {
+        return Result.Err(error(context, node, "variadic element observation needs the same concept method for every element pattern"))
+    }
+    let value = invoke_selected(context, node, instance, inputs, values, probes)?
     Result.Ok(empty_inputs(context, inputs, node, value))
 }
 

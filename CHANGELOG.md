@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Observe concept methods across mixed structural variadic sequences. Check
+  every fixed member and expansion pattern, preserve overload alternatives,
+  and require the selected prototype to be common to the whole sequence.
+  Retain ordered indices, fresh results and conservative effects; separate
+  override-specific proof auxiliaries from inherited public contract parameters.
+
 - Compose variadic contracts through direct method observations on uniform
   constructed words. Reuse ordinary concept selection and prerequisites, then
   invoke declared summaries with opaque quantified receivers; retain fresh

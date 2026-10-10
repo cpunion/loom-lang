@@ -61,7 +61,10 @@ fn method_contract_context(context Context, declaration Int) Result[Context, Fai
     let source = group(implementation, NodeKind.Parameters)
     let target = group(prototype, NodeKind.Parameters)
     var index = 0
-    while index < length(source) {
+    // Quantified domains belong to each body's summary closure, not the public
+    // method contract. An override can need more or fewer than the default.
+    // They are appended after the aligned fixed parameters and pack widths.
+    while index < length(source) && !std.text.starts_with(get(source, index).value, "$packdomainvalue#") {
         let original = lookup(context, get(source, index).value)
         let binding = get(context.bindings, original)
         let parameter = get(target, index)
