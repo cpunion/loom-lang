@@ -47,6 +47,7 @@ fn exercise() {
     exercise_nested_forwarding()
     exercise_type_word_forwarding()
     exercise_finite_forwarding()
+    exercise_composed_bounds()
     exercise_pack_observations()
     exercise_methods()
     exercise_static()
@@ -95,6 +96,7 @@ async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
 }
 
 async fn exercise_tasks() {
+    assert composed_async_measurement((40,)).await == 42
     assert finite_async_context(42, pack()).await == 42
     assert finite_async_context(42, ("context", true)).await == 42
     assert forwarded_async_constant[Int, Text]().await == 42

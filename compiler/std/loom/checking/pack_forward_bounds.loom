@@ -1,0 +1,44 @@
+// Check each finite member or symbolic element pattern, never sampled widths.
+// Retain a declared opaque source domain: choosing a concrete member type
+// could incorrectly narrow receiver effects or shared-data aliasing.
+fn pack_forward_evidence(context Context, caller Node, parameter Node, sequence List[Node],
+    owner Int, types Node, inputs Node) Result[Int, Failure] {
+    var member = 0
+    while member < length(sequence) {
+        let item = get(sequence, member)
+        let schema = if item.kind == NodeKind.Spread {
+            child(item, 0)
+        } else {
+            item
+        }
+        let ty = pack_forward_type(context, caller, schema, types, inputs)?
+        var bound = 0
+        while bound < length(parameter.children) {
+            let capability = required_concept(context.env, owner, child(parameter, bound))?
+            if !satisfies(context, ty, capability)? {
+                return Result.Err(error(context, item,
+                        "forwarded elements need an explicit implementation or declared concept requirement"))
+            }
+            bound = bound + 1
+        }
+        member = member + 1
+    }
+    let packs = declared_packs(caller)
+    var pack = 0
+    while pack < length(packs) {
+        let ty = context_type(context, pack_node(parameter, NodeKind.Type,
+                pack_proof_element_type(pack), new[Node]()))?
+        var admitted = true
+        var bound = 0
+        while bound < length(parameter.children) {
+            admitted = admitted && satisfies(context, ty,
+                required_concept(context.env, owner, child(parameter, bound))?)?
+            bound = bound + 1
+        }
+        if admitted {
+            return Result.Ok(pack)
+        }
+        pack = pack + 1
+    }
+    Result.Err(error(context, parameter, "bounded forwarding needs a declared opaque element domain"))
+}

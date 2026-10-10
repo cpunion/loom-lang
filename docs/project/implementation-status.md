@@ -278,7 +278,13 @@ The [forwarding example](../../compiler/examples/variadics/forwarding.loom) cove
 declared bounds, independent groups, CTFE, callbacks and inherited dyn methods.
 The [structural forwarding example](../../compiler/examples/variadics/structural_forwarding.loom)
 covers fixed fields, nested constructors, nominal inputs and generic/default
-method scopes. Mixed captured sequences cannot supply element requirements.
+method scopes. Mixed captured sequences now check concept evidence for every
+finite member and symbolic element pattern. They retain a caller-declared opaque
+pack domain satisfying the callee's bounds, rather than a sampled concrete type
+which could narrow receiver effects or shared-data aliasing. Constructor-only
+evidence without that domain still rejects in family proofs. The
+[composed bounds example](../../compiler/examples/variadics/composed_bounds.loom)
+covers mixed/independent sources, CTFE, callbacks and async calls.
 Overloaded callees now reuse the existing constructor/sequence intersection rules
 to exclude declarations uniformly disjoint from the symbolic input word. Fixed
 arguments use isolated ordinary type probes; unknown shapes, possible weakening
