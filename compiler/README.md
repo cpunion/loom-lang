@@ -963,6 +963,11 @@ package's nominal declarations. Explicit type arguments participate in this same
 joint match, for example `counted[Ts...](values...)`. Selected immutable type
 aliases and structural types use ordinary type-value normalization; explicit
 arguments cannot contradict the input shapes or split an unknown source word.
+Explicit source type words also compose a family summary without forwarding a
+value pack, for example `typed_constant[Ts...]()`. Fixed value arguments retain
+ordinary checks; a type word supplies no hidden value facts or extra element
+requirements. See the [type-word example](examples/variadics/type_word_forwarding.loom)
+for empty/mixed words, independent groups, CTFE, callbacks and async calls.
 Bounds must follow from a bare source pack's
 declared requirements; mixed captured sequences can forward only to unconstrained
 packs. The

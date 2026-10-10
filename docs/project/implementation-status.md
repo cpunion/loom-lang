@@ -268,6 +268,12 @@ ordinary call rules; type bindings resolve in the header scope.
 Explicit type words join the same input-shape match, including fixed parameters,
 independent packs and selected immutable type aliases. Structural type identities
 retain their ordinary constructors; no expansion widths or element types are sampled.
+Explicit source type words can compose summaries without forwarding value
+packs, including fixed value arguments and async calls. The
+[type-word example](../../compiler/examples/variadics/type_word_forwarding.loom)
+covers empty/mixed words, independent groups, CTFE and callbacks. Type-only
+forwarding still requires declared postconditions and element evidence; it does
+not expose erased types or values to the body proof.
 The [forwarding example](../../compiler/examples/variadics/forwarding.loom) covers
 declared bounds, independent groups, CTFE, callbacks and inherited dyn methods.
 The [structural forwarding example](../../compiler/examples/variadics/structural_forwarding.loom)

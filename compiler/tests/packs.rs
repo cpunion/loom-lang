@@ -66,9 +66,20 @@ ensures result == value {
     keep(value, ("before", values..., true))
 }
 
+fn typed[Ts...](value Int) Int
+ensures result == value {
+    value
+}
+
+fn by_type[Us...](value Int) Int
+ensures result == value {
+    typed[Us...](value)
+}
+
 fn main() {
     assert forward(42, (true, "context")) == 42
     assert nested(42, (true, "context")) == 42
+    assert by_type[Int, Text](42) == 42
 }
 "#;
     fs::write(&source, original).unwrap();
@@ -108,6 +119,17 @@ fn main() {
         "keep(value + 1, (\"before\", values..., true))",
     );
     fs::write(&source, changed).unwrap();
+    let rejected = loom(&["check", package]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("required postcondition"));
+
+    fs::write(&source, &disjoint).unwrap();
+    success(&loom(&["check", package]));
+    fs::write(
+        &source,
+        disjoint.replace("typed[Us...](value)", "typed[Us...](value + 1)"),
+    )
+    .unwrap();
     let rejected = loom(&["check", package]);
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("required postcondition"));

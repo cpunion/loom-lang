@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose universal variadic contracts through explicit source type words even
+  without forwarded value packs. Reuse joint word matching, declared summaries
+  and bound checks for synchronous/async calls, without type-dependent sampling.
+
 - Forward nested assembled tuple inputs through universal variadic contracts.
   Reuse ordered-word matching and overload disjointness, recover finite operand
   types from checked identities, and retain tuple leaves' evaluation and resource
