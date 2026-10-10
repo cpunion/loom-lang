@@ -214,7 +214,11 @@ fn pack_forward_operand_type(context Context, caller Node, node Node, schema Nod
         return Option.None
     }
     if node.span.start == schema.span.start && node.span.end == schema.span.end {
-        match static_probe(context, node, -1) {
+        match static_probe(context, if node.kind == NodeKind.Spread {
+                child(node, 0)
+            } else {
+                node
+            }, -1) {
             Result.Ok(value) => {
                 match pack_forward_checked_type(context.env, value.ty, schema, new[Int](), 0) {
                     Option.Some(found) => {
@@ -266,32 +270,8 @@ fn pack_forward_type(context Context, caller Node, schema Node, types Node, inpu
     Result.Ok(ty)
 }
 
-fn pack_forward_effects(context Context, caller Node, operand Node, position Int, effects List[InputEffect], depth Int) Result[Bool, Failure] {
-    if depth >= 64 {
-        return Result.Err(error(context, operand, "forwarded argument nesting limit exceeded"))
-    }
-    if pack_forwarded_parameter(caller, operand) >= 0 {
-        return Result.Ok(true)
-    }
-    if operand.kind == NodeKind.Tuple && pack_forwarded_input(caller, operand, 0) {
-        var index = 0
-        while index < length(operand.children) {
-            discard pack_forward_effects(context, caller, child(operand, index), position, effects, depth + 1)?
-            index = index + 1
-        }
-    } else {
-        let value = expr(context, operand, -1)?
-        discard resource_binding(context, operand, value)?
-        push(effects, InputEffect {
-                position = position
-                value = value
-            })
-    }
-    Result.Ok(true)
-}
-
 fn pack_forward_invoke(context Context, node Node, caller Node, callee Node, bindings PackForwardMatch,
-    signature Int, fixed List[Int], expected Int) Result[Expr, Failure] {
+    signature Int, source CallInputs, fixed List[Int], expected Int) Result[Expr, Failure] {
     let parameters = group(callee, NodeKind.TypeParameters)
     let selected = get(context.env.signatures, signature)
     let arguments = supplied_call(context, node, new[Node](), selected)?
@@ -306,26 +286,35 @@ fn pack_forward_invoke(context Context, node Node, caller Node, callee Node, bin
         }
         index = index + 1
     }
-    let source = child(node, 1).children
     let values = new[Node]()
     let checked = new[Expr]()
     let effects = new[InputEffect]()
     var position = 0
     index = 0
-    while index < length(source) {
-        let operand = get(source, index)
+    while index < length(source.nodes) {
+        let operand = get(source.nodes, index)
         if position < length(fixed) && get(fixed, position) == index {
-            let value = expr(context, operand, hint(context, get(selected.params, position), arguments, node)?)?
+            let value = input_value(context, source, index, hint(context, get(selected.params, position), arguments, node)?, false)?
             push(values, operand)
             push(checked, value)
             discard infer(context.env, get(selected.params, position), value.ty, arguments)
             position = position + 1
-        } else {
+        } else if pack_forwarded_parameter(caller, operand) < 0 || has_input_effects(source, index) {
             // Erasing a heterogeneous argument must not erase its evaluation.
             // Check original source order before attaching effects at each gap.
-            discard pack_forward_effects(context, caller, operand, position, effects, 0)?
+            push(effects, InputEffect {
+                    position = position
+                    value = pack_forward_ignored(context, caller, source, index, 0)?
+                })
         }
         index = index + 1
+    }
+    if length(source.nodes) == 0 && has_input_effects(source, 0) {
+        push(effects, InputEffect {
+                position = position
+                value = empty_inputs(context, source, node,
+                    expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true))
+            })
     }
     var pack = 0
     index = 0

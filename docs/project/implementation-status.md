@@ -299,7 +299,12 @@ source-ordered effects; symbolic tuple shapes also participate in overload
 disjointness. The
 [nested forwarding example](../../compiler/examples/variadics/nested_forwarding.loom)
 covers nested/independent sources, inferred constructor arguments and shared effects.
-Indirect callees, non-named expansions, unresolved associated callee patterns
+Finite tuple spreads use ordinary once-only saved projections, including call
+results, empty expansions and spread literals containing symbolic words. Nested
+assembly retains the same ordered gap effects, fixed snapshots and resource
+checks. The [finite forwarding example](../../compiler/examples/variadics/finite_forwarding.loom)
+covers native/compile-time calls, callbacks, async calls and empty-only inputs.
+Indirect callees, expansions without established tuple/source-word shapes, unresolved associated callee patterns
 and unknown fixed layouts still reject in family proofs.
 Type-dependent induction, opaque element escape, pack-dependent results and
 iteration over non-tuple structural sources still reject. A

@@ -61,6 +61,9 @@ fn pack_forwarded_input(declaration Node, argument Node, depth Int) Bool {
     if pack_forwarded_parameter(declaration, argument) >= 0 {
         return true
     }
+    if argument.kind == NodeKind.Spread && child(argument, 0).kind == NodeKind.Tuple {
+        return pack_forwarded_input(declaration, child(argument, 0), depth + 1)
+    }
     if argument.kind == NodeKind.Tuple {
         var index = 0
         while index < length(argument.children) {

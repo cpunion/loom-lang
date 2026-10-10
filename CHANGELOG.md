@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose universal variadic contracts across finite tuple spreads and symbolic
+  words, including nested assembly. Reuse ordinary saved projections and gap
+  effects to preserve once-only evaluation, fixed snapshots, empty expansion
+  work and resource obligations; native representations are unchanged.
+
 - Compose universal variadic contracts through explicit source type words even
   without forwarded value packs. Reuse joint word matching, declared summaries
   and bound checks for synchronous/async calls, without type-dependent sampling.

@@ -58,12 +58,16 @@ ensures result == value {
 
 fn forward[Us...](value Int, values (Us...)) Int
 ensures result == value {
-    keep(value, "before", values..., true)
+    keep(value, extras()..., values..., true)
+}
+
+fn extras() (Text, Bool) {
+    ("before", true)
 }
 
 fn nested[Us...](value Int, values (Us...)) Int
 ensures result == value {
-    keep(value, ("before", values..., true))
+    keep(value, (extras()..., values..., true))
 }
 
 fn typed[Ts...](value Int) Int
@@ -115,8 +119,8 @@ fn main() {
     fs::write(&source, &disjoint).unwrap();
     success(&loom(&["check", package]));
     let changed = disjoint.replace(
-        "keep(value, (\"before\", values..., true))",
-        "keep(value + 1, (\"before\", values..., true))",
+        "keep(value, (extras()..., values..., true))",
+        "keep(value + 1, (extras()..., values..., true))",
     );
     fs::write(&source, changed).unwrap();
     let rejected = loom(&["check", package]);
