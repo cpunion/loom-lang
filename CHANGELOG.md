@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose constrained variadic contracts across mixed fixed members and source
+  words. Check each member/pattern's concept evidence while retaining a declared
+  opaque element domain, including conservative shared-receiver effects; do not
+  infer sequence evidence or purity from a sampled concrete member.
+
 - Compose universal variadic contracts across finite tuple spreads and symbolic
   words, including nested assembly. Reuse ordinary saved projections and gap
   effects to preserve once-only evaluation, fixed snapshots, empty expansion

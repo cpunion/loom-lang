@@ -1,0 +1,27 @@
+fn padded_measurement[Us...Measurement](values (Us...)) Int
+ensures result >= 0 {
+    measured(true, values..., 1)
+}
+
+fn joined_measurement[Us...Measurement, Vs...Measurement](left (Us...), right (Vs...)) Int
+ensures result >= 0 {
+    measured(true, left..., right...)
+}
+
+async fn composed_async_measurement[Us...Measurement](values (Us...)) Int
+ensures result >= 0 {
+    discard item(0).await
+    measured(true, values..., 1)
+}
+
+fn exercise_composed_bounds() {
+    assert padded_measurement(pack()) == 2
+    assert padded_measurement((40,)) == 42
+    assert joined_measurement((true,), (40,)) == 42
+    assert joined_measurement(pack(), pack()) == 1
+    assert comptime {
+        padded_measurement((40,))
+    } == 42
+    let callback fn((Int,)) Int = padded_measurement
+    assert callback((40,)) == 42
+}

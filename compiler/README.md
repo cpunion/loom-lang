@@ -968,9 +968,13 @@ value pack, for example `typed_constant[Ts...]()`. Fixed value arguments retain
 ordinary checks; a type word supplies no hidden value facts or extra element
 requirements. See the [type-word example](examples/variadics/type_word_forwarding.loom)
 for empty/mixed words, independent groups, CTFE, callbacks and async calls.
-Bounds must follow from a bare source pack's
-declared requirements; mixed captured sequences can forward only to unconstrained
-packs. The
+Bounded callees can also receive mixed fixed members and source words. Every
+finite member and symbolic element pattern must supply its own ordinary concept
+evidence. The private proof retains a caller-declared opaque pack domain meeting
+the callee's bounds; choosing a concrete member as representative could narrow
+receiver effects or aliasing. Constructor-only evidence without such an opaque
+domain remains unsupported in family proofs. See the
+[composed bounds example](examples/variadics/composed_bounds.loom). The
 [forwarding example](examples/variadics/forwarding.loom) covers independent groups,
 CTFE, callbacks, inherited dyn methods and shared List effects. The
 [structural forwarding example](examples/variadics/structural_forwarding.loom)

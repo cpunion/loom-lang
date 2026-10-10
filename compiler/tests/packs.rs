@@ -80,6 +80,22 @@ ensures result == value {
     typed[Us...](value)
 }
 
+concept ForwardBound {
+}
+
+impl ForwardBound for Bool {
+}
+
+fn bounded_keep[Ts...ForwardBound](values Ts...) Int
+ensures result == 42 {
+    42
+}
+
+fn bounded_forward[Us...ForwardBound](values (Us...)) Int
+ensures result == 42 {
+    bounded_keep(true, values...)
+}
+
 fn main() {
     assert forward(42, (true, "context")) == 42
     assert nested(42, (true, "context")) == 42
@@ -137,6 +153,20 @@ fn main() {
     let rejected = loom(&["check", package]);
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("required postcondition"));
+
+    // Even an uncalled family must re-establish all captured element evidence.
+    fs::write(&source, &disjoint).unwrap();
+    success(&loom(&["check", package]));
+    fs::write(
+        &source,
+        disjoint.replace("impl ForwardBound for Bool {\n}", ""),
+    )
+    .unwrap();
+    let rejected = loom(&["check", package]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains(
+        "forwarded elements need an explicit implementation or declared concept requirement"
+    ));
 }
 
 #[test]

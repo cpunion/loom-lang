@@ -109,11 +109,6 @@ test fn assembled_forwarding_rejects_false_summaries_mappings_and_fixed_argument
             fn value(self Self) Int
             ensures result >= 0
         }
-        impl Value for Bool {
-            fn value(self Bool) Int {
-                0
-            }
-        }
         fn bounded[Ts... Value](values Ts...) Int
         ensures result >= 0 {
             0

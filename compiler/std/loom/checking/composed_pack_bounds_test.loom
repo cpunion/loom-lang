@@ -1,0 +1,101 @@
+fn composed_bounds_header() Text {
+    """
+        concept Value {
+            fn value(self Self) Int
+            ensures result >= 0
+        }
+        impl Value for Bool {
+            fn value(self Bool) Int {
+                if self { 1 } else { 0 }
+            }
+        }
+        fn bounded[Ts... Value](values Ts...) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """
+}
+
+test fn composed_pack_bounds_do_not_narrow_unknown_receivers_to_finite_types() {
+    let source = concat(composed_bounds_header(), """
+        import std.list.push
+        import std.list.length
+        impl Value for List[Int] {
+            fn value(self List[Int]) Int {
+                push(self, 1)
+                0
+            }
+        }
+        fn wrong[Us... Value](log List[Int], values (Us...)) Int
+        ensures length(log) == old(length(log)) {
+            bounded(true, values...)
+        }
+        """)
+    list_length_contract(std.text.join(std.text.split(source,
+                "ensures length(log) == old(length(log))"), "ensures result >= 0"), true)
+    list_length_contract(source, false)
+}
+
+test fn composed_pack_bounds_check_finite_members_and_every_source_word() {
+    discard accepted(concat(composed_bounds_header(), """
+        fn padded[Us... Value](values (Us...)) Int
+        ensures result >= 0 {
+            bounded(true, values..., false)
+        }
+        fn combined[Us... Value, Vs... Value](left (Us...), right (Vs...)) Int
+        ensures result >= 0 {
+            bounded(true, left..., false, right...)
+        }
+        fn explicit[Us... Value](values (Us...)) Int
+        ensures result >= 0 {
+            bounded[Bool, Us..., Bool](true, values..., false)
+        }
+        fn literal[Us... Value](values (Us...)) Int
+        ensures result >= 0 {
+            bounded((true, values..., false)...)
+        }
+        fn tuple_bound[Ts... Value](values (Ts...)) Int
+        ensures result >= 0 {
+            bounded(values...)
+        }
+        fn nested[Us... Value](values (Us...)) Int
+        ensures result >= 0 {
+            tuple_bound((true, values..., false))
+        }
+        fn constant[Ts... Value]() Int
+        ensures result == 42 {
+            42
+        }
+        fn typed[Us... Value]() Int
+        ensures result == 42 {
+            constant[Bool, Us...]()
+        }
+        """))
+    rejects(concat(composed_bounds_header(), """
+        fn wrong[Us... Value, Vs...](left (Us...), right (Vs...)) Int
+        ensures result >= 0 {
+            bounded(true, left..., right...)
+        }
+        """))
+    rejects(concat(composed_bounds_header(), """
+        fn wrong[Us... Value](values (Us...)) Int
+        ensures result >= 0 {
+            bounded(values..., "no implementation")
+        }
+        """))
+    rejects(concat(composed_bounds_header(), """
+        impl[T Value] Value for List[T] {
+            fn value(self List[T]) Int {
+                1
+            }
+        }
+        fn wrong[Us...](values (List[Us]...)) Int
+        ensures result >= 0 {
+            bounded(values...)
+        }
+        """))
+}
