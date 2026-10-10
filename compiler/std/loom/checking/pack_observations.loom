@@ -25,7 +25,13 @@ fn pack_proof_method(context Context, node Node, source Node, receiver Expr, enc
         } else {
             ty
         }, 0)
-    let actual = context_type(context, pack_forward_fixed_node(context, declaration, pattern, 0)?)?
+    let fixed = pack_forward_fixed_node(context, declaration, pattern, 0)?
+    // This is a source annotation, not a body type expression. Local aliases
+    // cannot change its fixed parameters or nominal constructor identity.
+    let actual = resolve_bound(context.env, context.signature.symbol, fixed,
+        context.arguments, context.signature.requirements, 0)?
+    discard well_formed(context.env, context.signature.symbol, actual,
+        context.signature.requirements, node, 0)?
     // The temporary expression is used only for ordinary method selection,
     // never evaluated or passed as a value to the proof or native call graph.
     let shape = expression(ExprKind.Deferred, actual, node, "", -1, new[Expr](), true)

@@ -251,7 +251,7 @@ receiver identity/types;
 repeated calls remain independent and opaque effects invalidate heap facts.
 Uniform constructed words such as `(Wrapped[Us]...)` also support direct
 synchronous/async method observations. Ordinary method selection checks the full
-element pattern's conformance and prerequisites before invoking declared
+element pattern's header-scope conformance and prerequisites before invoking declared
 contracts on an independent quantified receiver. Raw element types gain no
 hidden bounds; generic/variadic methods and transitive summaries use the same
 call rules. Mixed structural sequences remain unsupported as method receivers.

@@ -121,6 +121,45 @@ test fn constructed_observations_use_fresh_results_not_implementation_bodies() {
         """)
 }
 
+test fn constructed_observations_resolve_header_types_before_body_aliases() {
+    let header = concat(composed_bounds_header(), """
+        concept Marker {}
+        impl Marker for Bool {}
+        record Tagged[Tag, T] {
+            tag Tag
+            value T
+        }
+        impl[Tag Marker, T] Value for Tagged[Tag, T] {
+            fn value(self Tagged[Tag, T]) Int {
+                1
+            }
+        }
+        """)
+    discard accepted(concat(header, """
+        fn right[Tag Marker, Us...](values (Tagged[Tag, Us]...)) Int
+        ensures result >= 0 {
+            let Tag = comptime { Int }
+            let Tagged = comptime { Bool }
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """))
+    rejects(concat(header, """
+        fn wrong[Tag, Us...](values (Tagged[Tag, Us]...)) Int
+        ensures result >= 0 {
+            let Tag = comptime { Bool }
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """))
+}
+
 test fn constructed_observations_preserve_shared_child_effects() {
     let source = concat(composed_bounds_header(), """
         import std.list.push

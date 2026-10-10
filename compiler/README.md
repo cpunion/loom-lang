@@ -1264,7 +1264,7 @@ invariants;
 each observation is fresh and opaque effects invalidate shared-storage facts.
 There is no homogeneous-element assumption, sampling, or runtime proof object.
 For `(Wrapped[Us]...)`, ordinary conformance checking derives capabilities from
-`Wrapped[$U]`, not from raw `Us`. Conditional implementations need their declared
+`Wrapped[$U]` in the header scope, not from raw `Us` or body aliases. Conditional implementations need their declared
 prerequisites. One elementwise pattern can involve several equal-width source
 packs; each raw element type remains independent. Private quantified receivers
 carry only call-local evidence and are threaded through forwarded summaries.

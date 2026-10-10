@@ -36,6 +36,9 @@ ensures result >= 0 {
 
 fn direct_boxed_measurement[Tag, Us...](values (MeasuredBox[Us]...)) Int
 ensures result >= 0 {
+    let MeasuredBox = comptime {
+        Bool
+    }
     var total = 0
     comptime for item in values {
         let pair = item.inspect[Tag](item.measure())
