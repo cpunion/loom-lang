@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose variadic contracts through direct method observations on uniform
+  constructed words. Reuse ordinary concept selection and prerequisites, then
+  invoke declared summaries with opaque quantified receivers; retain fresh
+  results and conservative shared-child effects. Generic/variadic and async
+  methods, forwarded summaries and edited frontend caches use the same rules.
+
 - Forward bounded variadic summaries through constructed element types without
   imposing the callee's concepts on the caller's raw pack. Check whole-sequence
   evidence and use private quantified entry domains across transitive calls;

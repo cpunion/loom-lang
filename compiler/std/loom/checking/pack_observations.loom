@@ -1,0 +1,46 @@
+import std.text.split
+
+// Resolve capabilities on the full element pattern, but invoke their declared
+// summaries on an independent opaque entry value. Neither a concrete member
+// nor the constructor's implementation body represents the heterogeneous word.
+fn pack_proof_method(context Context, node Node, source Node, receiver Expr, encoded Text,
+    types List[Node], inputs CallInputs, expected Int) Result[Expr, Failure] {
+    let owner = pack_proof_caller(context)
+    if owner < 0 {
+        return Result.Err(error(context, node, "variadic observations are private to checked family proofs"))
+    }
+    let parts = std.text.split(slice(encoded, length("$packobserve#"), length(encoded)), "#")
+    let parameter = match std.int.parse(get(parts, 0)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(error(context, node, "invalid variadic observation parameter"))
+        }
+    }
+    let member = get(parts, 1)
+    let declaration = symbol(context.env, owner).node
+    let input = get(group(declaration, NodeKind.Parameters), parameter)
+    let ty = child(input, 0)
+    let pattern = child(if ty.kind == NodeKind.TupleType {
+            child(ty, 0)
+        } else {
+            ty
+        }, 0)
+    let actual = context_type(context, pack_forward_fixed_node(context, declaration, pattern, 0)?)?
+    // The temporary expression is used only for ordinary method selection,
+    // never evaluated or passed as a value to the proof or native call graph.
+    let shape = expression(ExprKind.Deferred, actual, node, "", -1, new[Expr](), true)
+    let options = method_options(context, node, source, shape, member, types, inputs, -1, expected)?
+    if length(options) == 0 {
+        return Result.Err(error(context, node,
+                "variadic element observation needs an accessible concept and conformance for its element pattern"))
+    }
+    var scope = context
+    var index = 0
+    while index < length(options) {
+        let method = get(context.env.signatures, get(options, index)).symbol
+        discard pack_proof_method_contract(context.env, owner, symbol(context.env, method).node, node)?
+        scope = with_evidence(scope, receiver.ty, symbol(context.env, method).owner)
+        index = index + 1
+    }
+    invoke(scope, node, options, types, input_receiver(inputs, source), expressions(receiver), expected)
+}

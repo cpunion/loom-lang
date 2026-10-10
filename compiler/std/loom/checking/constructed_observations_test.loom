@@ -1,0 +1,150 @@
+fn constructed_observation_header() Text {
+    concat(composed_bounds_header(), """
+        record Wrapped[T] {
+            value T
+        }
+        impl[T] Value for Wrapped[T] {
+            fn value(self Wrapped[T]) Int {
+                1
+            }
+        }
+        fn direct[Us...](values (Wrapped[Us]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """)
+}
+
+test fn constructed_observations_derive_evidence_without_narrowing_raw_packs() {
+    // These families must be checked even without a selected width or caller.
+    discard accepted(concat(constructed_observation_header(), """
+        fn forwarded[Us...](values (Wrapped[Us]...)) Int
+        ensures result >= 0 {
+            direct(values)
+        }
+        fn transitive[Us...](values (Wrapped[Us]...)) Int
+        ensures result >= 0 {
+            forwarded(values)
+        }
+        record Pair[A, B] {
+            first A
+            second B
+        }
+        impl[A, B] Value for Pair[A, B] {
+            fn value(self Pair[A, B]) Int {
+                1
+            }
+        }
+        fn elementwise[As..., Bs...](values (Pair[As, Bs]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        fn conditional[Us... Value](values (List[Us]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        impl[T Value] Value for List[T] {
+            fn value(self List[T]) Int {
+                1
+            }
+        }
+        """))
+    rejects(concat(constructed_observation_header(), """
+        impl[T Value] Value for List[T] {
+            fn value(self List[T]) Int {
+                1
+            }
+        }
+        fn wrong[Us...](values (List[Us]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """))
+    rejects(concat(constructed_observation_header(), """
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """))
+}
+
+test fn constructed_observations_use_fresh_results_not_implementation_bodies() {
+    rejects(std.text.join(std.text.split(constructed_observation_header(),
+                "total = total + item.value()"), "total = total - item.value()"))
+    rejects(concat(constructed_observation_header(), """
+        fn wrong[Us...](values (Wrapped[Us]...)) Bool
+        ensures result {
+            var same = true
+            comptime for item in values {
+                same = same && item.value() == item.value()
+            }
+            same
+        }
+        """))
+    rejects("""
+        concept Copy {
+            fn copy(self Self) Self {
+                self
+            }
+        }
+        record Wrapped[T] {
+            value T
+        }
+        impl[T] Copy for Wrapped[T] {}
+        fn wrong[Us...](values (Wrapped[Us]...)) Bool
+        ensures result {
+            comptime for item in values {
+                discard item.copy()
+            }
+            true
+        }
+        """)
+}
+
+test fn constructed_observations_preserve_shared_child_effects() {
+    let source = concat(composed_bounds_header(), """
+        import std.list.push
+        import std.list.length
+        record Wrapped[T] {
+            value T
+            log List[Int]
+        }
+        impl[T] Value for Wrapped[T] {
+            fn value(self Wrapped[T]) Int {
+                push(self.log, 1)
+                0
+            }
+        }
+        fn observed[Us...](log List[Int], values (Wrapped[Us]...)) Int
+        ensures length(log) == old(length(log)) {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """)
+    list_length_contract(std.text.join(std.text.split(source,
+                "ensures length(log) == old(length(log))"), "ensures result >= 0"), true)
+    list_length_contract(source, false)
+}

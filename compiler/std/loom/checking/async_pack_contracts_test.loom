@@ -51,6 +51,26 @@ fn async_pack_contract_source() Text {
             }
             sum
         }
+        record Wrapped[T] {
+            value T
+        }
+        impl[T] Sample for Wrapped[T] {
+            async fn read(self Wrapped[T]) Int {
+                1
+            }
+        }
+        async fn constructed[Us...](values (Wrapped[Us]...)) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values {
+                sum = sum + item.read().await
+            }
+            sum
+        }
+        async fn forwarded_constructed[Us...](values (Wrapped[Us]...)) Int
+        ensures result >= 0 {
+            constructed(values).await
+        }
         """
 }
 
@@ -69,6 +89,8 @@ test fn async_pack_contracts_reuse_family_summaries_and_element_induction() {
             assert contextual(true, "context").await == 0
             assert total().await == 0
             assert total(true, -7, false).await == 1
+            assert forwarded_constructed(tuple()).await == 0
+            assert forwarded_constructed((Wrapped { value = "text" },)).await == 1
         }
         """))
     rejects(std.text.join(std.text.split(definitions, "ensures result == value"),

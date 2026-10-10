@@ -1247,7 +1247,7 @@ and [aggregate parameter example](examples/comptime_parameters/aggregates.loom).
 
 Unselected arities have not had their bodies verified, except for required
 postconditions in the dependency-erasure and induction fragments above. Direct
-`Ts... C` and `(Ts...)` element receivers may call synchronous or async concept methods
+`Ts... C`, `(Ts...)` and uniform constructed-word element receivers may call synchronous or async concept methods
 using their declared return-type invariants and postconditions, with omitted returns or supported
 scalar/inline aggregate results. Synchronous methods with omitted returns also compose declared heap
 guarantees through the same call and loop rules. Loops propose the existing
@@ -1263,6 +1263,13 @@ Results compose through ordinary arithmetic, Text equations, helpers and loop
 invariants;
 each observation is fresh and opaque effects invalidate shared-storage facts.
 There is no homogeneous-element assumption, sampling, or runtime proof object.
+For `(Wrapped[Us]...)`, ordinary conformance checking derives capabilities from
+`Wrapped[$U]`, not from raw `Us`. Conditional implementations need their declared
+prerequisites. One elementwise pattern can involve several equal-width source
+packs; each raw element type remains independent. Private quantified receivers
+carry only call-local evidence and are threaded through forwarded summaries.
+The [composed bounds example](examples/variadics/composed_bounds.loom) exercises
+direct constructed receivers, generic/variadic methods, CTFE and callbacks.
 See the [observation example](examples/variadics/observations.loom), including
 empty/mixed packs, generic and variadic methods, Text/tuple/record guarantees,
 inherited bounds, nested independent packs, CTFE, function references and dyn calls.
@@ -1274,8 +1281,8 @@ callee heap guarantees stable across other ready Tasks. See the
 [async example](examples/variadics/async_contracts.loom), including real waits,
 empty/mixed packs and inherited dyn methods. These are private proof rules, not
 a runtime pack representation or proof by selected arities.
-Type inspection, opaque element escape and structural
-element patterns remain unsupported for family proofs and reject even when
+Type inspection, opaque element escape and method observations over mixed
+structural sequences remain unsupported for family proofs and reject even when
 uncalled: proving selected arities is not a proof for every arity. Preconditions use fixed scalar
 parameters, not the tuple pack, and retain ordinary checked/runtime boundaries.
 Concept methods accept the same type pack, including defaults, overrides,
