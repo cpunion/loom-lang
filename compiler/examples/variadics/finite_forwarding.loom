@@ -1,0 +1,106 @@
+fn fixed_extras(log List[Int]) (Int, Bool)
+ensures length(log) == old(length(log)) + 1 {
+    push(log, 1)
+    (42, true)
+}
+
+fn empty_marker(log List[Int], tag Int)
+ensures length(log) == old(length(log)) + 1 {
+    push(log, tag)
+}
+
+fn finite_count[Us...](log List[Int], values (Us...)) Int
+ensures length(log) == old(length(log)) + 4 {
+    counted({
+            empty_marker(log, 0)
+            pack()
+        }..., fixed_extras(log)..., {
+            empty_marker(log, 2)
+            pack()
+        }..., values..., {
+            empty_marker(log, 3)
+            pack()
+        }...)
+}
+
+fn literal_count[Us...](values (Us...)) Int
+ensures result >= 0 {
+    counted((1, values..., true)...)
+}
+
+fn finite_frame[Us...](log List[Int], values (Us...)) Int
+ensures length(log) == old(length(log)) + 4 {
+    framed_callee(({
+                empty_marker(log, 0)
+                pack()
+            }..., fixed_extras(log)..., {
+                empty_marker(log, 2)
+                pack()
+            }..., values..., {
+                empty_marker(log, 3)
+                pack()
+            }..., true))
+}
+
+fn fixed_pair(value Int) (Int, Bool)
+ensures result.0 == value {
+    (value, true)
+}
+
+fn finite_snapshot[Us...](value Int, values (Us...)) Int
+ensures result == value {
+    var current = value
+    keep_context(fixed_pair(current)..., values..., {
+            current = current + 1
+            false
+        })
+}
+
+fn finite_trailing[Us...](value Int, values (Us...)) Int
+ensures result == value {
+    var current = value
+    keep_tail(values..., (current,)..., {
+            current = current + 1
+            pack()
+        }...)
+}
+
+async fn finite_async_context[Us...](value Int, values (Us...)) Int
+ensures result == value {
+    async_keep((value, true)..., values...).await
+}
+
+fn finite_empty_only[Us...](log List[Int], values (Us...)) Int
+ensures length(log) == old(length(log)) + 1 {
+    typed_constant[Int, Us...]({
+            empty_marker(log, 4)
+            pack()
+        }...)
+}
+
+fn exercise_finite_forwarding() {
+    let log List[Int] = []
+    assert finite_count(log, pack()) == 2
+    trace_is(log, [0, 1, 2, 3])
+    assert finite_count(log, ("context", false)) == 4
+    trace_is(log, [0, 1, 2, 3, 0, 1, 2, 3])
+    assert finite_frame(log, pack()) == 3
+    trace_is(log, [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3])
+    assert finite_snapshot(42, ("snapshot",)) == 42
+    assert finite_trailing(42, pack()) == 42
+    assert finite_trailing(42, ("snapshot", true)) == 42
+    assert literal_count(pack()) == 2
+    assert literal_count((true, "context")) == 4
+    assert comptime {
+        let events List[Int] = []
+        let count = finite_count(events, ("compiled",))
+        trace_is(events, [0, 1, 2, 3])
+        count
+    } == 3
+    let callback fn((Text, Bool)) Int = literal_count
+    assert callback(("callback", true)) == 4
+    let only_empty List[Int] = []
+    assert finite_empty_only(only_empty, pack()) == 42
+    assert finite_empty_only(only_empty, (true,)) == 42
+    trace_is(only_empty, [4, 4])
+}

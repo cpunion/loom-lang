@@ -83,12 +83,12 @@ fn pack_call_overlap_schema(env Environment, schema Node, depth Int) Node {
     pack_node(schema, schema.kind, schema.value, children)
 }
 
-fn pack_call_inputs_schema(context Context, caller Node, inputs List[Node], site Node) Node {
+fn pack_call_inputs_schema(context Context, caller Node, inputs CallInputs, site Node) Node {
     let sources = group(caller, NodeKind.Parameters)
     let shapes = new[Node]()
     var index = 0
-    while index < length(inputs) {
-        let argument = get(inputs, index)
+    while index < length(inputs.nodes) {
+        let argument = get(inputs.nodes, index)
         let source = pack_forwarded_parameter(caller, argument)
         let unknown = pack_node(argument, NodeKind.Type, "$parameter", new[Node]())
         let schema = if source >= 0 {
@@ -97,16 +97,20 @@ fn pack_call_inputs_schema(context Context, caller Node, inputs List[Node], site
                 Result.Err(_) => unknown
             }
         } else if argument.kind == NodeKind.Tuple && pack_forwarded_input(caller, argument, 0) {
-            match pack_call_word(context, caller, argument.children, argument, 0) {
+            match pack_nested_word(context, caller, argument, 0) {
                 Result.Ok(value) => pack_call_overlap_schema(context.env, value, 0)
                 Result.Err(_) => unknown
             }
         } else {
-            match static_probe(context, if argument.kind == NodeKind.Spread {
-                    child(argument, 0)
-                } else {
-                    argument
-                }, -1) {
+            let checked Result[Expr, Failure] = match saved_input(inputs, index) {
+                Option.Some(value) => Result.Ok(value)
+                Option.None => static_probe(context, if argument.kind == NodeKind.Spread {
+                        child(argument, 0)
+                    } else {
+                        argument
+                    }, -1)
+            }
+            match checked {
                 Result.Ok(value) => pack_call_overlap_schema(context.env,
                     impl_type_schema(context.env, base_type(context.env, value.ty), argument, false), 0)
                 Result.Err(_) => unknown
@@ -130,7 +134,7 @@ fn pack_call_inputs_schema(context Context, caller Node, inputs List[Node], site
     pack_node(site, NodeKind.TupleType, "tuple", shapes)
 }
 
-fn pack_call_target(context Context, caller Node, options List[Int], inputs List[Node], site Node) Result[Int, Failure] {
+fn pack_call_target(context Context, caller Node, options List[Int], inputs CallInputs, site Node) Result[Int, Failure] {
     if length(options) == 1 {
         return Result.Ok(get(options, 0))
     }
@@ -175,18 +179,24 @@ fn pack_call_target(context Context, caller Node, options List[Int], inputs List
 
 // One ordered argument word uses the same bounded matcher as structural types.
 // Wrappers retain fixed operand positions while their children carry type words.
-fn pack_call_word(context Context, caller Node, inputs List[Node], site Node, depth Int) Result[Node, Failure] {
+fn pack_nested_word(context Context, caller Node, operand Node, depth Int) Result[Node, Failure] {
+    let probe = static_probe_context(context, operand)?
+    let inputs = pack_forward_inputs(probe, caller, operand.children)?
+    pack_call_word(probe, caller, inputs, operand, depth + 1)
+}
+
+fn pack_call_word(context Context, caller Node, inputs CallInputs, site Node, depth Int) Result[Node, Failure] {
     if depth >= 64 {
         return Result.Err(error(context, site, "forwarded argument nesting limit exceeded"))
     }
     let sources = group(caller, NodeKind.Parameters)
     let word = new[Node]()
     var index = 0
-    while index < length(inputs) {
-        let argument = get(inputs, index)
+    while index < length(inputs.nodes) {
+        let argument = get(inputs.nodes, index)
         let source = pack_forwarded_parameter(caller, argument)
         if argument.kind == NodeKind.Tuple && pack_forwarded_input(caller, argument, 0) {
-            let schema = pack_call_word(context, caller, argument.children, argument, depth + 1)?
+            let schema = pack_nested_word(context, caller, argument, depth)?
             push(word, pack_node(argument, NodeKind.Arguments, "$sequence", source_nodes(schema)))
         } else if source >= 0 {
             let schema = pack_forward_source_schema(context, caller, pack_forwarded_shape(get(sources, source)))?
@@ -204,9 +214,13 @@ fn pack_call_word(context Context, caller Node, inputs List[Node], site Node, de
             }
         } else {
             if argument.kind == NodeKind.Spread {
-                return Result.Err(error(context, argument, "variadic forwarding proof needs a named source expansion"))
+                return Result.Err(error(context, argument, "forwarded expansion needs an established source word"))
             }
-            let schema = match static_probe(context, argument, -1) {
+            let checked Result[Expr, Failure] = match saved_input(inputs, index) {
+                Option.Some(value) => Result.Ok(value)
+                Option.None => static_probe(context, argument, -1)
+            }
+            let schema = match checked {
                 Result.Ok(value) => impl_type_schema(context.env, value.ty, argument, true)
                 // A fixed value may need its ordinary contextual hint ([], a
                 // callback, ...). It still has an operand identity for matching.
@@ -238,7 +252,7 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
         return Result.Err(error(context, node, "variadic forwarding proof needs an unshadowed declared function"))
     }
     let options = candidates(context.env.source, caller.file, caller.test_only, path)
-    let inputs = child(node, 1).children
+    let inputs = pack_forward_inputs(context, caller.node, child(node, 1).children)?
     let target = pack_call_target(context, caller.node, options, inputs, node)?
     let callee = symbol(context.env, target)
     let declaration = callee.node
@@ -285,6 +299,7 @@ fn pack_proof_call(context Context, node Node, expected Int) Result[Expr, Failur
         index = index + 1
     }
     let signature = erased_pack_signature(context.env, target)?
-    let call = pack_node(node, node.kind, node.value, [types, child(node, 1)])
-    pack_forward_invoke(context, call, caller.node, declaration, bindings, signature, values, expected)
+    let call = pack_node(node, node.kind, node.value, [types,
+            pack_node(child(node, 1), NodeKind.Arguments, "", inputs.nodes)])
+    pack_forward_invoke(context, call, caller.node, declaration, bindings, signature, inputs, values, expected)
 }

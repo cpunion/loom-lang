@@ -1,0 +1,82 @@
+// Ordinary finite spreads use the shared once-only projection/effect table.
+// Symbolic sources remain indivisible words, never evaluated erased values.
+fn pack_expand_input(context Context, caller Node, source Node, nodes List[Node],
+    ready List[Option[Expr]], effects List[InputEffect], depth Int) Result[Bool, Failure] {
+    if depth >= 64 {
+        return Result.Err(error(context, source, "forwarded argument nesting limit exceeded"))
+    }
+    if pack_forwarded_parameter(caller, source) >= 0 {
+        push(nodes, source)
+        std.list.push(ready, Option.None)
+        return Result.Ok(true)
+    }
+    if source.kind == NodeKind.Spread && child(source, 0).kind == NodeKind.Tuple {
+        let tuple = child(source, 0)
+        var index = 0
+        while index < length(tuple.children) {
+            discard pack_expand_input(context, caller, child(tuple, index), nodes, ready, effects, depth + 1)?
+            index = index + 1
+        }
+        return Result.Ok(true)
+    }
+    expand_input(context, source, nodes, ready, effects, depth)
+}
+
+fn pack_forward_inputs(context Context, caller Node, sources List[Node]) Result[CallInputs, Failure] {
+    var expanded = false
+    var index = 0
+    while index < length(sources) {
+        let source = get(sources, index)
+        expanded = expanded || (source.kind == NodeKind.Spread && pack_forwarded_parameter(caller, source) < 0)
+        index = index + 1
+    }
+    if !expanded {
+        return Result.Ok(plain_inputs(sources))
+    }
+    let nodes = new[Node]()
+    let ready = new[Option[Expr]]()
+    let effects = new[InputEffect]()
+    index = 0
+    while index < length(sources) {
+        discard pack_expand_input(context, caller, get(sources, index), nodes, ready, effects, 0)?
+        index = index + 1
+    }
+    Result.Ok(CallInputs {
+            nodes = nodes
+            ready = Option.Some(ready)
+            effects = if length(effects) == 0 {
+                Option.None
+            } else {
+                Option.Some(effects)
+            }
+        })
+}
+
+fn pack_forward_ignored(context Context, caller Node, inputs CallInputs, index Int, depth Int) Result[Expr, Failure] {
+    let operand = get(inputs.nodes, index)
+    if depth >= 64 {
+        return Result.Err(error(context, operand, "forwarded argument nesting limit exceeded"))
+    }
+    var value = expression(ExprKind.Block, 0, operand, "", -1, new[Expr](), true)
+    if operand.kind == NodeKind.Tuple && pack_forwarded_input(caller, operand, 0) {
+        let nested = pack_forward_inputs(context, caller, operand.children)?
+        let body = new[Expr]()
+        var member = 0
+        while member < length(nested.nodes) {
+            if pack_forwarded_parameter(caller, get(nested.nodes, member)) < 0 || has_input_effects(nested, member) {
+                let item = pack_forward_ignored(context, caller, nested, member, depth + 1)?
+                push(body, expression(ExprKind.Discard, 0, operand, "", -1, expressions(item), item.falls))
+            }
+            member = member + 1
+        }
+        push(body, value)
+        value = empty_inputs(context, nested, operand,
+            expression(ExprKind.Block, 0, operand, "", -1, body, all_fall(body)))
+    } else if pack_forwarded_parameter(caller, operand) < 0 {
+        let checked = input_value(context, inputs, index, -1, false)?
+        discard resource_binding(context, operand, checked)?
+        return Result.Ok(checked)
+    }
+    // Even a skipped symbolic source can own an adjacent empty spread's work.
+    Result.Ok(input_effects(context, inputs, index, operand, value))
+}

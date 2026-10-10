@@ -165,7 +165,7 @@ fn static_position(context Context, options List[Int], position Int) Bool {
     }
     false
 }
-fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] {
+fn static_probe_context(context Context, node Node) Result[Context, Failure] {
     let stage = staging(context, node)?
     // This contender may become a runtime argument. Preserve its lexical
     // proofs and exits while keeping speculative locals and queues private.
@@ -173,7 +173,10 @@ fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] 
         locals = stage.locals bindings = stage.bindings head = stage.head
         cleanups = clone(context.cleanups) cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
         facts = clone(context.facts) fact_head = context.fact_head emit = false }
-    expr(validation, node, expected)
+    Result.Ok(validation)
+}
+fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] {
+    expr(static_probe_context(context, node)?, node, expected)
 }
 fn static_argument(context Context, node Node, checked Expr, expected Int) Result[StaticValue, Failure] {
     if !static_parameter_type(context.env, expected) {

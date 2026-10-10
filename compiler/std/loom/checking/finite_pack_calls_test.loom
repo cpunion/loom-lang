@@ -1,0 +1,199 @@
+test fn finite_spreads_compose_with_symbolic_words_and_fixed_operands() {
+    discard accepted("""
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            0
+        }
+        fn extras() (Int, Bool) {
+            (1, true)
+        }
+        fn expanded[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count(extras()..., values...)
+        }
+        fn literal[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count((1, values..., true)...)
+        }
+        fn keep[Ts...](value Int, context Ts...) Int
+        ensures result == value {
+            value
+        }
+        fn projected[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            let pair = (value, true)
+            keep(pair..., values...)
+        }
+        fn pair(value Int) (Int, Bool)
+        ensures result.0 == value {
+            (value, true)
+        }
+        fn saved[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            var current = value
+            keep(pair(current)..., values..., {
+                current = current + 1
+                false
+            })
+        }
+        record Box[T] {
+            value T
+        }
+        fn boxes() (Box[(Text, Int)],) {
+            (Box { value = ("text", 1) },)
+        }
+        fn framed[T, Ts...](values (Box[T], Ts..., Bool)) Int
+        ensures result == 42 {
+            42
+        }
+        fn nested[Us...](values (Us...)) Int
+        ensures result == 42 {
+            framed((boxes()..., values..., true))
+        }
+        """)
+}
+
+test fn finite_spreads_retain_empty_gap_effects_and_fixed_snapshots() {
+    let effects = """
+        import std.list.push
+        import std.list.length
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn pair(log List[Int]) (Int, Bool)
+        ensures length(log) == old(length(log)) + 1 {
+            push(log, 1)
+            (42, true)
+        }
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            0
+        }
+        fn forward[Us...](log List[Int], values (Us...)) Int
+        ensures length(log) == old(length(log)) + 4 {
+            count({
+                push(log, 0)
+                pack()
+            }..., pair(log)..., {
+                push(log, 2)
+                pack()
+            }..., values..., {
+                push(log, 3)
+                pack()
+            }...)
+        }
+        fn framed[Ts...](values (Ts...)) Int
+        ensures result >= 0 {
+            0
+        }
+        fn nested[Us...](log List[Int], values (Us...)) Int
+        ensures length(log) == old(length(log)) + 4 {
+            framed(({
+                push(log, 0)
+                pack()
+            }..., pair(log)..., {
+                push(log, 2)
+                pack()
+            }..., values..., {
+                push(log, 3)
+                pack()
+            }...))
+        }
+        fn constant[Ts...]() Int
+        ensures result == 42 {
+            42
+        }
+        fn only_empty[Us...](log List[Int], values (Us...)) Int
+        ensures length(log) == old(length(log)) + 1 {
+            constant[Int, Us...]({
+                push(log, 0)
+                pack()
+            }...)
+        }
+        """
+    list_length_contract(effects, true)
+    list_length_contract(std.text.join(std.text.split(effects, "+ 4"), "+ 3"), false)
+    discard accepted("""
+        fn keep[Ts...](value Int, context Ts...) Int
+        ensures result == value {
+            value
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn forward[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            var current = value
+            keep((current, true)..., values..., {
+                current = current + 1
+                false
+            })
+        }
+        fn tail[Ts...](context Ts..., value Int) Int
+        ensures result == value {
+            value
+        }
+        fn trailing[Us...](value Int, values (Us...)) Int
+        ensures result == value {
+            var current = value
+            tail(values..., (current,)..., {
+                current = current + 1
+                pack()
+            }...)
+        }
+        """)
+}
+
+test fn finite_spreads_reject_false_summaries_mismatched_types_and_resources() {
+    let header = """
+        fn count[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            42
+        }
+        fn extras() (Int, Bool) {
+            (1, true)
+        }
+        """
+    rejects(concat(header, """
+        fn wrong[Us...](values (Us...)) Int
+        ensures result == 42 {
+            count(extras()..., values...)
+        }
+        """))
+    rejects(concat(header, """
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count[Bool, Int, Us...](extras()..., values...)
+        }
+        """))
+    rejects(concat(header, """
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count({
+                return -1
+                extras()
+            }..., values...)
+        }
+        """))
+    rejects(concat(header, """
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn wrong[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            count({
+                return -1
+                pack()
+            }..., values...)
+        }
+        """))
+    resource_reject_reason(concat(resource_header(), concat(header, """
+        fn handles(log List[Int]) (Handle, Bool) {
+            (make(log), true)
+        }
+        fn wrong[Us...](log List[Int], values (Us...)) Int
+        ensures result >= 0 {
+            count(handles(log)..., values...)
+        }
+        """)), "MustScope values require scoped, not an ordinary binding or discard")
+}

@@ -994,7 +994,13 @@ including generic constructor arguments; nested shape matching and overload
 disjointness share the existing rules. Tuple leaves retain source-ordered effects
 and cannot escape as an erased sequence into a fixed value parameter. See the
 [nested forwarding example](examples/variadics/nested_forwarding.loom).
-Indirect callees, non-named expansions, unresolved associated callee patterns
+Statically known finite tuple spreads also compose with symbolic words, including
+call results, empty spreads and spread literals containing named source words.
+They use ordinary saved projections and gap effects: tuple calls evaluate once,
+fixed arguments retain their snapshots, and even empty or erased input slots
+retain ordered work and resource obligations. Nested tuple assembly uses the same
+preparation rules. See the [finite forwarding example](examples/variadics/finite_forwarding.loom).
+Indirect callees, expansions without an established tuple/source-word shape, unresolved associated callee patterns
 and fixed types with unknown expanded layouts remain unsupported in family proofs.
 Normal selected calls retain their existing checks and static expansion.
 
