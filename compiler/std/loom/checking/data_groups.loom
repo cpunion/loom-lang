@@ -78,7 +78,7 @@ fn data_type_groups(env Environment, owner Int, node Node, declaration Int, type
 
 fn data_selection(context Context, node Node, declaration Int, types List[Node], expected Int, inputs CallInputs) Result[DataSelection, Failure] {
     let source = symbol(context.env, declaration).node
-    if length(types) != 0 {
+    if call_type_count(node, types) >= 0 {
         return data_type_groups(context.env, context.signature.symbol, node, declaration, types)
     }
     if !data_pack(source) || one_type_pack(source) {

@@ -383,7 +383,8 @@ fn expand_family_type(env Environment, owner Int, node Node, names List[Text], w
     var index = 0
     while index < length(node.children) {
         let child = child(node, index)
-        let child_types = type_context || (node.kind == NodeKind.Parameter && index == 0)
+        let child_types = type_context || (node.kind == NodeKind.Parameter && index == 0) ||
+        (node.kind == NodeKind.Apply && index == 1 && has_type_expansion(child))
         if child_types && child.kind == NodeKind.Spread &&
         (!preserve_other_packs || length(expansion_packs(get(child.children, 0), names)) != 0) {
             let pattern = get(child.children, 0)
@@ -419,6 +420,11 @@ fn expand_family_type(env Environment, owner Int, node Node, names List[Text], w
             push(children, expand_family_type(env, owner, child, names, widths, elements, child_types, depth + 1, preserve_other_packs)?)
         }
         index = index + 1
+    }
+    if (node.kind == NodeKind.TypeArguments || (node.kind == NodeKind.Arguments && types)) &&
+    length(node.children) != 0 && length(children) == 0 {
+        // A selected empty word is explicit, not a request to infer types.
+        value = "$expanded"
     }
     Result.Ok(pack_node(node, node.kind, value, children))
 }
@@ -1141,7 +1147,7 @@ fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
     Result.Ok(true)
 }
 
-fn pack_references(context Context, options List[Int], types List[Node], desired Int) Result[List[Int], Failure] {
+fn pack_references(context Context, options List[Int], type_count Int, desired Int) Result[List[Int], Failure] {
     if length(context.env.packs) == 0 {
         return Result.Ok(options)
     }
@@ -1164,7 +1170,7 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
             let owner = -1 - id
             let declaration = symbol(context.env, owner).node
             if !one_type_pack(declaration) {
-                let widths = structural_reference_shapes(context.env, declaration, types, desired)
+                let widths = structural_reference_shapes(context.env, declaration, type_count, desired)
                 if length(widths) != 0 {
                     push(choices, selected_pack_signature(context.env, owner, widths)?)
                 }
@@ -1173,8 +1179,8 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
             }
             let parameters = group(declaration, NodeKind.Parameters)
             let variadic = variadic_parameters(parameters)
-            let arity = if length(types) != 0 {
-                length(types) - fixed_pack_parameters(declaration)
+            let arity = if type_count >= 0 {
+                type_count - fixed_pack_parameters(declaration)
             } else if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
                 if !variadic {

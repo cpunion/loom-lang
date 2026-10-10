@@ -8,6 +8,65 @@ ensures result == 42 {
     typed_constant[Us...]()
 }
 
+fn empty_word_constant[Us...](context (Us...)) Int
+ensures result == 42 {
+    typed_constant[Us...]()
+}
+
+fn type_word_callback[Us...](context (Us...)) Int {
+    let callback = typed_constant[Us...]
+    callback()
+}
+
+fn empty_type_groups[As..., Bs...]() Int {
+    42
+}
+
+fn empty_group_context[Us...](context (Us...)) Int {
+    let callback = empty_type_groups[Us...]
+    assert callback() == 42
+    empty_type_groups[Us...]()
+}
+
+concept TypeWordConstant {
+    fn constant[Ts...](self Self) Int {
+        42
+    }
+    fn groups[As..., Bs...](self Self) Int {
+        42
+    }
+}
+
+impl TypeWordConstant for Bool {
+}
+
+record TypeWordMarker[Ts...] {
+    value Int
+}
+
+enum TypeWordSignal[Ts...] {
+    Ready(Int)
+}
+
+fn type_word_data[Us...](context (Us...)) Int {
+    let marker = TypeWordMarker[Us...] {
+        value = 42
+    }
+    match TypeWordSignal.Ready[Us...](marker.value) {
+        TypeWordSignal.Ready(value) => value
+    }
+}
+
+fn type_word_method[S TypeWordConstant, Us...](source S, context (Us...)) Int {
+    assert source.constant[Us...]() == 42
+    TypeWordConstant.constant[Us...](source)
+}
+
+fn empty_dynamic_method[Us...](source dyn TypeWordConstant, context (Us...)) Int {
+    assert source.constant[Us...]() == 42
+    source.groups[Us...]()
+}
+
 fn padded_constant[Us...](context (Us...)) Int
 ensures result == 42 {
     typed_constant[Int, Us...]()
@@ -38,8 +97,24 @@ ensures result == 42 {
     typed_async_constant[Us...]().await
 }
 
+async fn empty_async_context[Us...](context (Us...)) Int
+ensures result == 42 {
+    typed_async_constant[Us...]().await
+}
+
 fn exercise_type_word_forwarding() {
     assert forwarded_constant[Int, Text, Bool]() == 42
+    assert empty_word_constant(pack()) == 42
+    assert empty_word_constant((true, "context")) == 42
+    assert type_word_callback(pack()) == 42
+    assert type_word_callback((true, "context")) == 42
+    assert empty_group_context(pack()) == 42
+    assert type_word_data(pack()) == 42
+    assert type_word_data((true, "context")) == 42
+    assert type_word_method(true, pack()) == 42
+    assert type_word_method(true, (1, "context")) == 42
+    let source dyn TypeWordConstant = true
+    assert empty_dynamic_method(source, pack()) == 42
     assert padded_constant(pack()) == 42
     assert padded_constant((true, "context")) == 42
     assert joined_constant(pack(), ("text", true)) == 42
@@ -47,6 +122,12 @@ fn exercise_type_word_forwarding() {
     assert forwarded_keep[Text, Int, Bool](42) == 42
     assert comptime {
         forwarded_constant[Bool, Text]()
+    } == 42
+    assert comptime {
+        empty_word_constant(pack())
+    } == 42
+    assert comptime {
+        type_word_data(pack())
     } == 42
     let callback fn() Int = forwarded_constant[Int, Text]
     assert callback() == 42

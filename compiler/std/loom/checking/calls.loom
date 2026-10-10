@@ -14,6 +14,26 @@ import std.list.set
 import std.list.length
 import std.result.Result
 
+// -1 means inference was requested; zero can be an explicitly expanded word.
+fn call_type_count(node Node, types List[Node]) Int {
+    if length(types) != 0 {
+        return length(types)
+    }
+    let position = if node.kind == NodeKind.MethodCall || node.kind == NodeKind.Apply {
+        1
+    } else {
+        0
+    }
+    if position < length(node.children) {
+        let arguments = child(node, position)
+        if (arguments.kind == NodeKind.TypeArguments ||
+            (node.kind == NodeKind.Apply && arguments.kind == NodeKind.Arguments)) && arguments.value == "$expanded" {
+            return 0
+        }
+    }
+    -1
+}
+
 fn supplied(context Context, node Node, values List[Node], count Int) Result[List[Int], Failure] {
     if length(values) != 0 && length(values) != count {
         return Result.Err(error(context, node, "wrong number of type arguments"))
@@ -85,7 +105,7 @@ fn pending_resource_exit(value Expr, loops Int, suspension Bool) Bool {
     // Inspect selected checked code, not source branches or closure bodies.
     // Result propagation is already a match with a returning error arm.
     if (suspension && (value.kind == ExprKind.Await || value.kind == ExprKind.Suspend)) ||
-        (!suspension && value.kind == ExprKind.Return) {
+    (!suspension && value.kind == ExprKind.Return) {
         return true
     }
     if !suspension && loops == 0 && (value.kind == ExprKind.Break || value.kind == ExprKind.Continue) {
@@ -521,7 +541,8 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     if package(node.value) != "" && find_data(context.env, context.signature.symbol, node, package(node.value))? >= 0 {
         return variant(context, node, types, inputs, expected)
     }
-    let options = call_signature_options(context.env, available, length(inputs.nodes), length(types))
+    let type_count = call_type_count(node, types)
+    let options = call_signature_options(context.env, available, length(inputs.nodes), type_count)
     var index = 0
     while length(context.env.packs) != 0 && index < length(available) {
         let owner = get(available, index)
@@ -529,7 +550,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         let pack = pack_parameter(declaration)
         if declaration.kind == NodeKind.Function && pack >= 0 {
             if !one_type_pack(declaration) {
-                let widths = structural_call_shapes(context, inputs, declaration, types, expected)
+                let widths = structural_call_shapes(context, inputs, declaration, type_count, expected)
                 if length(widths) != 0 {
                     push(options, pack_signature(context.env, owner, widths)?)
                 }
@@ -542,16 +563,16 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
             if !variadic_parameters(parameters) {
                 arity = -1
                 if length(inputs.nodes) == length(parameters) {
-                    if length(types) != 0 {
+                    if type_count >= 0 {
                         if length(options) == 0 || structural_pack_position(parameters) < 0 {
-                            arity = length(types) - fixed
+                            arity = type_count - fixed
                         } else {
                             // A fixed overload may supply a needed contextual
                             // hint, such as List[T] for an empty list inside a
                             // block. Probe privately before adding a structural
                             // contender that would remove that single hint.
                             if structural_call_arity(context, inputs, parameters) >= 0 {
-                                arity = length(types) - fixed
+                                arity = type_count - fixed
                             }
                         }
                     } else {
@@ -562,7 +583,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                     }
                 }
             }
-            if arity >= 0 && (length(types) == 0 || length(types) == fixed + arity) {
+            if arity >= 0 && (type_count < 0 || type_count == fixed + arity) {
                 push(options, pack_signature(context.env, owner, ints(arity))?)
             }
         }

@@ -53,7 +53,8 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
     } else {
         -1
     }
-    let choices = pack_references(context, options, supplied_types, desired)?
+    let type_count = call_type_count(node, supplied_types)
+    let choices = pack_references(context, options, type_count, desired)?
     var selected = -1
     var output = -1
     var arguments = new[Int]()
@@ -64,7 +65,7 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         let candidate = get(context.env.signatures, id)
         static_only = static_only || has_static(candidate)
         let count = candidate.parameters - parameter_offset(context.env, candidate.symbol)
-        if !has_static(candidate) && (length(supplied_types) == 0 || length(supplied_types) == count) {
+        if !has_static(candidate) && (type_count < 0 || type_count == count) {
             let inferred = supplied_call(context, node, supplied_types, candidate)?
             if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments

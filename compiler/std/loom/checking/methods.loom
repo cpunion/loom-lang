@@ -26,7 +26,7 @@ fn visible_concept(context Context, capability Int) Bool {
 fn method_matches(env Environment, id Int, member Text, arity Int, type_count Int, choices List[Int]) Bool {
     let current = get(env.signatures, id)
     symbol(env, current.symbol).name == member && length(current.params) == arity &&
-    (type_count == 0 || type_count == current.parameters - 1) && selected_method_pack(env, id, choices)
+    (type_count < 0 || type_count == current.parameters - 1) && selected_method_pack(env, id, choices)
 }
 
 fn concept_method(env Environment, capability Concept, member Text, arity Int, type_count Int, choices List[Int]) Bool {
@@ -78,11 +78,12 @@ fn method_call(context Context, node Node, source Node, method_name Text, types 
 }
 
 fn method_call_checked(context Context, node Node, source Node, receiver Expr, method_name Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[Expr, Failure] {
-    let choices = method_pack_selections(context, source, receiver, method_name, types, inputs, selected, expected)?
+    let type_count = call_type_count(node, types)
+    let choices = method_pack_selections(context, source, receiver, method_name, type_count, inputs, selected, expected)?
     let bound = if selected >= 0 {
         false
     } else {
-        bound_method(context, receiver.ty, method_name, length(inputs.nodes) + 1, length(types), choices)?
+        bound_method(context, receiver.ty, method_name, length(inputs.nodes) + 1, type_count, choices)?
     }
     let options = new[Int]()
     var index = 0
@@ -98,7 +99,7 @@ fn method_call_checked(context Context, node Node, source Node, receiver Expr, m
         let methods = get(context.env.concepts, concept_index(context.env, capability)).methods
         while index < length(methods) {
             let id = get(methods, index)
-            if method_matches(context.env, id, method_name, length(inputs.nodes) + 1, length(types), choices) {
+            if method_matches(context.env, id, method_name, length(inputs.nodes) + 1, type_count, choices) {
                 push(options, id)
             }
             index = index + 1
@@ -107,7 +108,7 @@ fn method_call_checked(context Context, node Node, source Node, receiver Expr, m
         index = 0
         while index < length(context.env.concepts) {
             let capability = get(context.env.concepts, index)
-            if concept_method(context.env, capability, method_name, length(inputs.nodes) + 1, length(types), choices) &&
+            if concept_method(context.env, capability, method_name, length(inputs.nodes) + 1, type_count, choices) &&
             ((selected < 0 && visible_concept(context, capability.symbol) &&
                     (!bound || evidence(context, receiver.ty, capability.symbol)?)) || selected == capability.symbol) {
                 let provided = if receiver_type.kind == TypeKind.Parameter || receiver_type.kind == TypeKind.Associated {
@@ -127,7 +128,7 @@ fn method_call_checked(context Context, node Node, source Node, receiver Expr, m
                 var method = 0
                 while method < length(methods) {
                     let id = get(methods, method)
-                    if method_matches(context.env, id, method_name, length(inputs.nodes) + 1, length(types), choices) {
+                    if method_matches(context.env, id, method_name, length(inputs.nodes) + 1, type_count, choices) {
                         push(options, id)
                     }
                     method = method + 1

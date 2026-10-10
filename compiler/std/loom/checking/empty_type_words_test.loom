@@ -1,0 +1,213 @@
+test fn explicit_empty_type_words_select_calls_and_function_references() {
+    discard accepted("""
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn constant[Ts...]() Int {
+            42
+        }
+        fn groups[As..., Bs...]() Int {
+            42
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            let read = constant[Us...]
+            let typed fn() Int = constant[Us...]
+            assert read() == 42 && typed() == 42
+            constant[Us...]()
+        }
+        fn empty_groups[Us...](values (Us...)) Int {
+            discard values
+            let read = groups[Us...]
+            assert read() == 42
+            groups[Us...]()
+        }
+        fn main() {
+            assert forward(pack()) == 42
+            assert forward((true, "text")) == 42
+            assert empty_groups(pack()) == 42
+            assert comptime { forward(pack()) } == 42
+        }
+        """)
+}
+
+test fn explicit_empty_type_words_select_static_and_dynamic_concept_methods() {
+    discard accepted("""
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        concept Constant {
+            fn value[Ts...](self Self) Int {
+                42
+            }
+            fn groups[As..., Bs...](self Self) Int {
+                42
+            }
+        }
+        impl Constant for Bool {
+        }
+        fn forward[S Constant, Us...](source S, values (Us...)) Int {
+            discard values
+            assert source.value[Us...]() == 42
+            Constant.value[Us...](source)
+        }
+        fn dynamic[Us...](source dyn Constant, values (Us...)) Int {
+            discard values
+            assert source.value[Us...]() == 42
+            source.groups[Us...]()
+        }
+        fn main() {
+            assert forward(true, pack()) == 42
+            assert forward(true, (1, "text")) == 42
+            let source dyn Constant = true
+            assert dynamic(source, pack()) == 42
+        }
+        """)
+}
+
+test fn empty_type_words_do_not_infer_omitted_or_required_fixed_arguments() {
+    rejects("""
+        fn constant[Ts...]() Int {
+            42
+        }
+        fn main() {
+            discard constant()
+        }
+        """)
+    rejects("""
+        fn groups[As..., Bs...]() Int {
+            42
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            groups[Us...]()
+        }
+        fn main() {
+            discard forward((true,))
+        }
+        """)
+    rejects("""
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn keep[T](value T) T {
+            value
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            keep[Us...](42)
+        }
+        fn main() {
+            discard forward(pack())
+        }
+        """)
+    rejects("""
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn keep[T](value T) T {
+            value
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            let read fn(Int) Int = keep[Us...]
+            read(42)
+        }
+        fn main() {
+            discard forward(pack())
+        }
+        """)
+    rejects("""
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        concept Keep {
+            fn value[T](self Self, value T) T {
+                value
+            }
+        }
+        impl Keep for Bool {
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            true.value[Us...](42)
+        }
+        fn main() {
+            discard forward(pack())
+        }
+        """)
+}
+
+test fn pack_reference_elaboration_keeps_ordinary_runtime_indices_lexical() {
+    discard accepted("""
+        fn read[Ts...](values (Ts...)) Int {
+            discard values
+            let Ts = 0
+            let items = [42]
+            items[Ts]
+        }
+        fn main() {
+            assert read((true,)) == 42
+        }
+        """)
+}
+
+test fn explicit_empty_data_words_do_not_restart_field_or_payload_inference() {
+    discard accepted("""
+        record Marker[Ts...] {
+            value Int
+        }
+        enum Signal[Ts...] {
+            Ready(Int)
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            let marker = Marker[Us...] { value = 42 }
+            let signal = Signal.Ready[Us...](marker.value)
+            match signal {
+                Signal.Ready(value) => value
+            }
+        }
+        fn main() {
+            assert forward(pack()) == 42
+            assert forward((true, "word")) == 42
+            assert comptime { forward(pack()) } == 42
+        }
+        """)
+    rejects("""
+        record Box[T] {
+            value T
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            let item = Box[Us...] { value = 42 }
+            item.value
+        }
+        fn main() {
+            discard forward(pack())
+        }
+        """)
+    rejects("""
+        enum Box[T] {
+            Value(T)
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            match Box.Value[Us...](42) {
+                Box.Value(value) => value
+            }
+        }
+        fn main() {
+            discard forward(pack())
+        }
+        """)
+}

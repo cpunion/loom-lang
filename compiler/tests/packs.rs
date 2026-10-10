@@ -80,6 +80,15 @@ ensures result == value {
     typed[Us...](value)
 }
 
+fn by_shape[Us...](values (Us...)) Int
+ensures result == 42 {
+    typed[Us...](42)
+}
+
+fn pack[Ts...](values Ts...) (Ts...) {
+    values
+}
+
 concept ForwardBound {
 }
 
@@ -100,6 +109,7 @@ fn main() {
     assert forward(42, (true, "context")) == 42
     assert nested(42, (true, "context")) == 42
     assert by_type[Int, Text](42) == 42
+    assert by_shape(pack()) == 42
 }
 "#;
     fs::write(&source, original).unwrap();
