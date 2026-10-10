@@ -71,6 +71,15 @@ fn async_pack_contract_source() Text {
         ensures result >= 0 {
             constructed(values).await
         }
+        async fn mixed[Us...](values (Bool, Wrapped[Us]..., Bool)) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values {
+                let pending = item.read()
+                sum = sum + pending.await
+            }
+            sum
+        }
         """
 }
 
@@ -91,6 +100,8 @@ test fn async_pack_contracts_reuse_family_summaries_and_element_induction() {
             assert total(true, -7, false).await == 1
             assert forwarded_constructed(tuple()).await == 0
             assert forwarded_constructed((Wrapped { value = "text" },)).await == 1
+            assert mixed((true, false)).await == 1
+            assert mixed((true, Wrapped { value = "text" }, false)).await == 2
         }
         """))
     rejects(std.text.join(std.text.split(definitions, "ensures result == value"),

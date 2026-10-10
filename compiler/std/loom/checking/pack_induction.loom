@@ -64,7 +64,8 @@ fn pack_contract_domains(env Environment, owner Int, node Node, seen List[Int],
         let source = child(node, 0)
         let width = pack_proof_loop_width(caller.node, source)
         let parameter = pack_proof_value_parameter(caller.node, source)
-        if width >= 0 && parameter >= 0 && pack_proof_value_pack(caller.node, source, width) < 0 {
+        if parameter >= 0 && (width < 0 || pack_proof_value_pack(caller.node, source, width) < 0) &&
+        has_type_expansion(child(get(group(caller.node, NodeKind.Parameters), parameter), 0)) {
             var found = false
             var index = 0
             while index < length(domains) {
@@ -525,11 +526,7 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
                         } else {
                             -1
                         }
-                        parameter = if width >= 0 {
-                            pack_proof_value_parameter(declaration, source)
-                        } else {
-                            -1
-                        }
+                        parameter = pack_proof_value_parameter(declaration, source)
                     })
                 let identity = get(count, 0)
                 set(count, 0, identity + 1)

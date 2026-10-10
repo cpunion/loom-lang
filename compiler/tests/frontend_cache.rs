@@ -77,9 +77,20 @@ fn forwarded[Us...](values (Wrapped[Us]...)) Int
 ensures result >= 0 {
     constructed(values)
 }
+fn mixed[Us... Amount, Vs...](left (Us...), right (Vs...), values (Bool, Us..., Wrapped[Vs]..., Bool)) Int
+ensures result >= 0 {
+    var sum = 0
+    comptime for item in values {
+        let report = item.amount[Bool, Bool, Text](1, true, "tag")
+        assert report.1 == "checked"
+        sum = sum + report.0
+    }
+    sum
+}
 fn main() {
     assert total(true, false) == 2
     assert forwarded((Wrapped { value = "text" }, Wrapped { value = true })) == 2
+    assert mixed((false,), ("text",), (true, false, Wrapped { value = "text" }, false)) == 4
 }
 "#;
     fs::write(&path, source).unwrap();

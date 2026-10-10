@@ -54,6 +54,45 @@ ensures result >= 0 {
     direct_boxed_measurement[Bool, Us...](values)
 }
 
+fn mixed_measurement[Tag, Us...Measurement, Vs...](log List[Int], left (Us...), right (Vs...),
+    values (Bool, Us..., MeasuredBox[Vs]..., Us..., Bool)) Int
+ensures result >= 0 {
+    let MeasuredBox = comptime {
+        Bool
+    }
+    var total = 0
+    comptime for index, item in values {
+        let pair = item.inspect[Tag](item.measure())
+        let grouped = item.grouped(pair.0, (1, true), pack())
+        total = total + item.preserve(grouped.0, true, "context") + index
+        push(log, index)
+    }
+    total
+}
+
+fn forwarded_mixed_measurement[Us...Measurement, Vs...](log List[Int], left (Us...), right (Vs...),
+    values (Bool, Us..., MeasuredBox[Vs]..., Us..., Bool)) Int
+ensures result >= 0 {
+    mixed_measurement[Bool, Us..., Vs...](log, left, right, values)
+}
+
+concept MixedMeasurement {
+    fn total[Ts...](self Self, values (Bool, MeasuredBox[Ts]..., Bool)) Int
+    ensures result >= 0 {
+        0
+    }
+}
+
+impl MixedMeasurement for Text {
+    fn total[Us...](self Text, values (Bool, MeasuredBox[Us]..., Bool)) Int {
+        var sum = 0
+        comptime for item in values {
+            sum = sum + item.measure()
+        }
+        sum
+    }
+}
+
 fn exercise_composed_bounds() {
     assert padded_measurement(pack()) == 2
     assert padded_measurement((40,)) == 42
@@ -96,4 +135,23 @@ fn exercise_composed_bounds() {
     assert direct((MeasuredBox {
                 value = "callback"
             },)) == 1
+
+    let log List[Int] = []
+    assert mixed_measurement[Bool](log, pack(), pack(), (true, false)) == 2
+    assert forwarded_mixed_measurement(log, (40,), ("text", true),
+        (true, 40, boxes..., 42, false)) == 100
+    assert length(log) == 8
+    assert log[0] == 0 && log[1] == 1
+    assert log[2] == 0 && log[3] == 1 && log[7] == 5
+    assert comptime {
+        mixed_measurement[Bool, Int]([], (4,), pack(), (true, 4, 5, false))
+    } == 16
+    let mixed fn(List[Int], (Bool,), (Text,), (Bool, Bool, MeasuredBox[Text], Bool, Bool)) Int = mixed_measurement[Bool, Bool, Text]
+    assert mixed([], (true,), ("text",), (true, true, MeasuredBox {
+                value = "callback"
+            }, false, false)) == 13
+    let receiver dyn MixedMeasurement = "override"
+    assert receiver.total((true, MeasuredBox {
+                value = "dynamic"
+            }, false)) == 2
 }
