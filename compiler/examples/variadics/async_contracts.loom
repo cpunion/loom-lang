@@ -71,6 +71,27 @@ ensures result >= 0 {
     sum
 }
 
+impl[T] AsyncSample for MeasuredBox[T] {
+    async fn sample(self MeasuredBox[T]) Int {
+        sleep_ms(1).await
+        1
+    }
+}
+
+async fn async_boxed_total[Us...](values (MeasuredBox[Us]...)) Int
+ensures result >= 0 {
+    var sum = 0
+    comptime for item in values {
+        sum = sum + item.sample().await
+    }
+    sum
+}
+
+async fn async_forwarded_boxes[Us...](values (MeasuredBox[Us]...)) Int
+ensures result >= 0 {
+    async_boxed_total(values).await
+}
+
 concept AsyncSamples {
     async fn total[Ts...AsyncSample](self Self, values Ts...) Int
     ensures result >= 0 {
@@ -88,6 +109,12 @@ async fn exercise_async_contracts() {
     assert async_contextual(true, "context").await == 0
     assert async_total().await == 0
     assert async_total(true, -7, false).await == 1
+    assert async_forwarded_boxes(pack()).await == 0
+    assert async_forwarded_boxes((MeasuredBox {
+                value = "async"
+            }, MeasuredBox {
+                value = true
+            })).await == 2
     let receiver dyn AsyncSamples = "samples"
     assert receiver.total(true, 3, false).await == 4
 }

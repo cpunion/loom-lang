@@ -74,10 +74,13 @@ fn bound_method(context Context, ty Int, member Text, arity Int, type_count Int,
 
 fn method_call(context Context, node Node, source Node, method_name Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[Expr, Failure] {
     let receiver = expr(context, source, -1)?
+    if std.text.starts_with(method_name, "$packobserve#") {
+        return pack_proof_method(context, node, source, receiver, method_name, types, inputs, expected)
+    }
     method_call_checked(context, node, source, receiver, method_name, types, inputs, selected, expected)
 }
 
-fn method_call_checked(context Context, node Node, source Node, receiver Expr, method_name Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[Expr, Failure] {
+fn method_options(context Context, node Node, source Node, receiver Expr, method_name Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[List[Int], Failure] {
     let type_count = call_type_count(node, types)
     let choices = method_pack_selections(context, source, receiver, method_name, type_count, inputs, selected, expected)?
     let bound = if selected >= 0 {
@@ -137,6 +140,12 @@ fn method_call_checked(context Context, node Node, source Node, receiver Expr, m
             index = index + 1
         }
     }
+    Result.Ok(options)
+}
+
+fn method_call_checked(context Context, node Node, source Node, receiver Expr, method_name Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[Expr, Failure] {
+    let options = method_options(context, node, source, receiver, method_name, types, inputs, selected, expected)?
+    let receiver_type = get(context.env.types, receiver.ty)
     if selected < 0 && receiver_type.kind == TypeKind.Record {
         var field = 0
         while field < length(receiver_type.fields) {

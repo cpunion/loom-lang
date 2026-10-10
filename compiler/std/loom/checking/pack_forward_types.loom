@@ -345,6 +345,7 @@ fn pack_forward_invoke(context Context, node Node, caller Node, callee Node, bin
                 name = pack_domain_type(PackProofDomain {
                         owner = symbol(context.env, selected.symbol).owner
                         parameter = index
+                        constructed = false
                     })
                 value = pack_domain_value(name)
                 let ty = context_type(context, pack_node(node, NodeKind.Type, name, new[Node]()))?

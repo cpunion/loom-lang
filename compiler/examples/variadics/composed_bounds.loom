@@ -34,6 +34,26 @@ ensures result >= 0 {
     composed_async_measurement(values).await
 }
 
+fn direct_boxed_measurement[Tag, Us...](values (MeasuredBox[Us]...)) Int
+ensures result >= 0 {
+    let MeasuredBox = comptime {
+        Bool
+    }
+    var total = 0
+    comptime for item in values {
+        let pair = item.inspect[Tag](item.measure())
+        let grouped = item.grouped(pair.0, (1, true), pack())
+        total = total + item.preserve(grouped.0, true, "context")
+        assert item.echo[Tag]("checked", 7) == "checked"
+    }
+    total
+}
+
+fn forwarded_boxed_measurement[Us...](values (MeasuredBox[Us]...)) Int
+ensures result >= 0 {
+    direct_boxed_measurement[Bool, Us...](values)
+}
+
 fn exercise_composed_bounds() {
     assert padded_measurement(pack()) == 2
     assert padded_measurement((40,)) == 42
@@ -59,4 +79,21 @@ fn exercise_composed_bounds() {
     assert boxed((MeasuredBox {
                 value = "callback"
             },)) == 3
+    assert direct_boxed_measurement[Bool](pack()) == 0
+    let boxes = (MeasuredBox {
+            value = "text"
+        }, MeasuredBox {
+            value = true
+        })
+    assert direct_boxed_measurement[Int, Text, Bool](boxes) == 2
+    assert forwarded_boxed_measurement(boxes) == 2
+    assert comptime {
+        direct_boxed_measurement[Bool, Int]((MeasuredBox {
+                    value = 7
+                },))
+    } == 1
+    let direct fn((MeasuredBox[Text],)) Int = direct_boxed_measurement[Bool, Text]
+    assert direct((MeasuredBox {
+                value = "callback"
+            },)) == 1
 }

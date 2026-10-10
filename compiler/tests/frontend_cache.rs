@@ -48,6 +48,11 @@ concept Amount {
     }
 }
 impl Amount for Bool {}
+record Wrapped[T] {
+    value T
+}
+impl[T] Amount for Wrapped[T] {}
+concept Missing {}
 fn total[Ts... Amount](values Ts...) Int
 ensures result >= 0 {
     var sum = 0
@@ -58,8 +63,23 @@ ensures result >= 0 {
     }
     sum
 }
+fn constructed[Us...](values (Wrapped[Us]...)) Int
+ensures result >= 0 {
+    var sum = 0
+    comptime for item in values {
+        let report = item.amount[Bool, Bool, Text](1, true, "tag")
+        assert report.1 == "checked"
+        sum = sum + report.0
+    }
+    sum
+}
+fn forwarded[Us...](values (Wrapped[Us]...)) Int
+ensures result >= 0 {
+    constructed(values)
+}
 fn main() {
     assert total(true, false) == 2
+    assert forwarded((Wrapped { value = "text" }, Wrapped { value = true })) == 2
 }
 "#;
     fs::write(&path, source).unwrap();
@@ -79,6 +99,20 @@ fn main() {
     let invalid = cached("check", &package, &cache, &[]);
     assert!(!invalid.status.success());
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("postcondition"));
+    // A formerly unconditional constructor implementation may not supply
+    // evidence after an edit adds an unsatisfied prerequisite.
+    fs::write(
+        &path,
+        source.replace(
+            "impl[T] Amount for Wrapped[T] {}",
+            "impl[T Missing] Amount for Wrapped[T] {}",
+        ),
+    )
+    .unwrap();
+    let narrowed = cached("check", &package, &cache, &[]);
+    assert!(!narrowed.status.success());
+    let diagnostic = String::from_utf8_lossy(&narrowed.stderr);
+    assert!(diagnostic.contains("conformance"), "{diagnostic}");
     // Required guarantees do not remove a callee's runtime entry guard.
     fs::write(
         &path,
