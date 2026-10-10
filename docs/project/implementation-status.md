@@ -274,6 +274,9 @@ packs, including fixed value arguments and async calls. The
 covers empty/mixed words, independent groups, CTFE and callbacks. Type-only
 forwarding still requires declared postconditions and element evidence; it does
 not expose erased types or values to the body proof.
+Native specialization distinguishes explicitly empty type words from omitted
+inference across calls, function references and static/dyn concept methods.
+Empty words do not supply missing fixed type arguments.
 The [forwarding example](../../compiler/examples/variadics/forwarding.loom) covers
 declared bounds, independent groups, CTFE, callbacks and inherited dyn methods.
 The [structural forwarding example](../../compiler/examples/variadics/structural_forwarding.loom)

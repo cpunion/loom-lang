@@ -230,7 +230,7 @@ fn shape_result_equations(env Environment, declaration Node, expected Int, names
 }
 
 fn shape_explicit_equations(declaration Node, count Int, names List[Text], rows List[List[Int]]) {
-    if count == 0 {
+    if count < 0 {
         return
     }
     let row = shape_equation(length(names), count - fixed_pack_parameters(declaration))
@@ -256,12 +256,12 @@ fn partial_pack_shape(rows List[List[Int]], dimensions Int) List[Int] {
     }
 }
 
-fn structural_call_shapes(context Context, inputs CallInputs, declaration Node, types List[Node], expected Int) List[Int] {
+fn structural_call_shapes(context Context, inputs CallInputs, declaration Node, type_count Int, expected Int) List[Int] {
     let names = pack_names(declared_packs(declaration))
     let parameters = group(declaration, NodeKind.Parameters)
     let rows = new[List[Int]]()
     shape_sequence_equations(parameters, length(inputs.nodes), names, rows)
-    shape_explicit_equations(declaration, length(types), names, rows)
+    shape_explicit_equations(declaration, type_count, names, rows)
     var widths = new[Int]()
     var round = 0
     while round <= length(names) {
@@ -314,11 +314,11 @@ fn probe_shape_equations(context Context, inputs CallInputs, index Int, pattern 
     }
 }
 
-fn structural_reference_shapes(env Environment, declaration Node, types List[Node], desired Int) List[Int] {
+fn structural_reference_shapes(env Environment, declaration Node, type_count Int, desired Int) List[Int] {
     let names = pack_names(declared_packs(declaration))
     let parameters = group(declaration, NodeKind.Parameters)
     let rows = new[List[Int]]()
-    shape_explicit_equations(declaration, length(types), names, rows)
+    shape_explicit_equations(declaration, type_count, names, rows)
     if desired >= 0 {
         let shape = get(env.types, desired)
         if shape.kind != TypeKind.Function {

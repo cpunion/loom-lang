@@ -70,7 +70,7 @@ test fn signature_index_retains_each_declaration_after_late_pack_expansion() {
     }
     assert length(overloads) == 2
     let available = [get(overloads, 1), get(overloads, 0), get(overloads, 1)]
-    let options = call_signature_options(env, available, 1, 0)
+    let options = call_signature_options(env, available, 1, -1)
     assert length(options) == 3
     assert get(options, 0) == source_signature_id(env, get(overloads, 0))
     assert get(options, 1) == source_signature_id(env, get(overloads, 1))

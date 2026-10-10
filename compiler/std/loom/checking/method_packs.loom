@@ -344,7 +344,7 @@ fn selected_pack_signature(env Environment, owner Int, widths List[Int]) Result[
     pack_signature(env, owner, widths)
 }
 
-fn method_pack_selections(context Context, source Node, receiver Expr, member Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[List[Int], Failure] {
+fn method_pack_selections(context Context, source Node, receiver Expr, member Text, type_count Int, inputs CallInputs, selected Int, expected Int) Result[List[Int], Failure] {
     let choices = new[Int]()
     let all_inputs = input_receiver(inputs, source)
     let shape = get(context.env.types, receiver.ty)
@@ -362,7 +362,7 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
             }
             if admitted {
                 if !one_type_pack(item.node) {
-                    let widths = structural_call_shapes(context, all_inputs, item.node, types, expected)
+                    let widths = structural_call_shapes(context, all_inputs, item.node, type_count, expected)
                     if length(widths) != 0 {
                         push(choices, materialize_method_pack(context.env, pack.source, widths)?)
                     }
@@ -375,8 +375,8 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
                     sequence_pack_arity(parameters, length(all_inputs.nodes))
                 } else {
                     if length(all_inputs.nodes) == length(parameters) {
-                        if length(types) != 0 {
-                            length(types) - fixed
+                        if type_count >= 0 {
+                            type_count - fixed
                         } else {
                             let inferred = structural_call_arity(context, all_inputs, parameters)
                             if inferred >= 0 {
@@ -389,7 +389,7 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
                         -1
                     }
                 }
-                if arity >= 0 && (length(types) == 0 || length(types) == fixed + arity) {
+                if arity >= 0 && (type_count < 0 || type_count == fixed + arity) {
                     push(choices, materialize_method_pack(context.env, pack.source, ints(arity))?)
                 }
             }

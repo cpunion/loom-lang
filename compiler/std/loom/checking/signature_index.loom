@@ -26,7 +26,7 @@ fn call_signature_options(env Environment, available List[Int], arguments Int, p
         let id = source_signature_id(env, get(available, index))
         if id >= 0 {
             let signature = get(env.signatures, id)
-            if length(signature.params) == arguments && (parameters == 0 || parameters == signature.parameters) {
+            if length(signature.params) == arguments && (parameters < 0 || parameters == signature.parameters) {
                 // Retain signature-table order and duplicate candidates.
                 var position = length(options)
                 push(options, id)
