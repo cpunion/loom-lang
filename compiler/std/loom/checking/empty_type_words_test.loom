@@ -151,3 +151,63 @@ test fn pack_reference_elaboration_keeps_ordinary_runtime_indices_lexical() {
         }
         """)
 }
+
+test fn explicit_empty_data_words_do_not_restart_field_or_payload_inference() {
+    discard accepted("""
+        record Marker[Ts...] {
+            value Int
+        }
+        enum Signal[Ts...] {
+            Ready(Int)
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            let marker = Marker[Us...] { value = 42 }
+            let signal = Signal.Ready[Us...](marker.value)
+            match signal {
+                Signal.Ready(value) => value
+            }
+        }
+        fn main() {
+            assert forward(pack()) == 42
+            assert forward((true, "word")) == 42
+            assert comptime { forward(pack()) } == 42
+        }
+        """)
+    rejects("""
+        record Box[T] {
+            value T
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            let item = Box[Us...] { value = 42 }
+            item.value
+        }
+        fn main() {
+            discard forward(pack())
+        }
+        """)
+    rejects("""
+        enum Box[T] {
+            Value(T)
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn forward[Us...](values (Us...)) Int {
+            discard values
+            match Box.Value[Us...](42) {
+                Box.Value(value) => value
+            }
+        }
+        fn main() {
+            discard forward(pack())
+        }
+        """)
+}

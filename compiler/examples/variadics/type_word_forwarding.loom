@@ -40,6 +40,23 @@ concept TypeWordConstant {
 impl TypeWordConstant for Bool {
 }
 
+record TypeWordMarker[Ts...] {
+    value Int
+}
+
+enum TypeWordSignal[Ts...] {
+    Ready(Int)
+}
+
+fn type_word_data[Us...](context (Us...)) Int {
+    let marker = TypeWordMarker[Us...] {
+        value = 42
+    }
+    match TypeWordSignal.Ready[Us...](marker.value) {
+        TypeWordSignal.Ready(value) => value
+    }
+}
+
 fn type_word_method[S TypeWordConstant, Us...](source S, context (Us...)) Int {
     assert source.constant[Us...]() == 42
     TypeWordConstant.constant[Us...](source)
@@ -92,6 +109,8 @@ fn exercise_type_word_forwarding() {
     assert type_word_callback(pack()) == 42
     assert type_word_callback((true, "context")) == 42
     assert empty_group_context(pack()) == 42
+    assert type_word_data(pack()) == 42
+    assert type_word_data((true, "context")) == 42
     assert type_word_method(true, pack()) == 42
     assert type_word_method(true, (1, "context")) == 42
     let source dyn TypeWordConstant = true
@@ -106,6 +125,9 @@ fn exercise_type_word_forwarding() {
     } == 42
     assert comptime {
         empty_word_constant(pack())
+    } == 42
+    assert comptime {
+        type_word_data(pack())
     } == 42
     let callback fn() Int = forwarded_constant[Int, Text]
     assert callback() == 42

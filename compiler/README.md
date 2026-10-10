@@ -969,9 +969,10 @@ ordinary checks; a type word supplies no hidden value facts or extra element
 requirements. See the [type-word example](examples/variadics/type_word_forwarding.loom)
 for empty/mixed words, independent groups, CTFE, callbacks and async calls.
 Specialization preserves explicitly empty type words in calls, function
-references and static/dyn concept methods. A selected zero-width word does not
-request inference; omitting arguments still needs ordinary shape evidence, and
-an empty word cannot satisfy required fixed type parameters.
+references, static/dyn concept methods and record/enum constructors. A selected
+zero-width word does not request inference; omitting arguments still needs
+ordinary shape evidence, and an empty word cannot satisfy required fixed type
+parameters.
 Bounded callees can also receive mixed fixed members and source words. Every
 finite member and symbolic element pattern must supply its own ordinary concept
 evidence. The private proof retains a caller-declared opaque pack domain meeting

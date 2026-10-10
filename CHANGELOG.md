@@ -6,8 +6,9 @@ implementation, not a compatibility ledger for previous prototypes.
 ## Unreleased
 
 - Preserve explicitly empty type words during variadic specialization. Calls,
-  function references and static/dyn concept methods distinguish a selected
-  zero-width word from omitted inference; required fixed arguments still reject.
+  function references, static/dyn concept methods and record/enum constructors
+  distinguish a selected zero-width word from omitted inference; required fixed
+  arguments still reject.
 
 - Compose constrained variadic contracts across mixed fixed members and source
   words. Check each member/pattern's concept evidence while retaining a declared
