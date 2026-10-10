@@ -1,0 +1,53 @@
+fn typed_constant[Ts...]() Int
+ensures result == 42 {
+    42
+}
+
+fn forwarded_constant[Us...]() Int
+ensures result == 42 {
+    typed_constant[Us...]()
+}
+
+fn padded_constant[Us...](context (Us...)) Int
+ensures result == 42 {
+    typed_constant[Int, Us...]()
+}
+
+fn joined_constant[Us..., Vs...](left (Us...), right (Vs...)) Int
+ensures result == 42 {
+    typed_constant[Int, Us..., Bool, Vs...]()
+}
+
+fn typed_keep[T, Ts...](value Int) Int
+ensures result == value {
+    value
+}
+
+fn forwarded_keep[U, Us...](value Int) Int
+ensures result == value {
+    typed_keep[U, Us...](value)
+}
+
+async fn typed_async_constant[Ts...]() Int
+ensures result == 42 {
+    42
+}
+
+async fn forwarded_async_constant[Us...]() Int
+ensures result == 42 {
+    typed_async_constant[Us...]().await
+}
+
+fn exercise_type_word_forwarding() {
+    assert forwarded_constant[Int, Text, Bool]() == 42
+    assert padded_constant(pack()) == 42
+    assert padded_constant((true, "context")) == 42
+    assert joined_constant(pack(), ("text", true)) == 42
+    assert joined_constant((1,), pack()) == 42
+    assert forwarded_keep[Text, Int, Bool](42) == 42
+    assert comptime {
+        forwarded_constant[Bool, Text]()
+    } == 42
+    let callback fn() Int = forwarded_constant[Int, Text]
+    assert callback() == 42
+}

@@ -1,0 +1,83 @@
+test fn type_word_forwarding_composes_uncalled_family_summaries() {
+    discard accepted("""
+        fn constant[Ts...]() Int
+        ensures result == 42 {
+            42
+        }
+        fn forward[Us...]() Int
+        ensures result == 42 {
+            constant[Us...]()
+        }
+        fn joined[Us..., Vs...]() Int
+        ensures result == 42 {
+            constant[Int, Us..., Bool, Vs...]()
+        }
+        fn keep[T, Ts...](value Int) Int
+        ensures result == value {
+            value
+        }
+        fn fixed[U, Us...](value Int) Int
+        ensures result == value {
+            keep[U, Us...](value)
+        }
+        concept Value {
+            fn value(self Self) Int
+            ensures result >= 0
+        }
+        fn bounded[Ts... Value]() Int
+        ensures result == 42 {
+            42
+        }
+        fn evidence[Us... Value]() Int
+        ensures result == 42 {
+            bounded[Us...]()
+        }
+        """)
+}
+
+test fn type_word_forwarding_requires_declared_contracts_and_evidence() {
+    let constant = """
+        fn constant[Ts...]() Int
+        ensures result >= 0 {
+            42
+        }
+        """
+    rejects(concat(constant, """
+        fn wrong[Us...]() Int
+        ensures result == 42 {
+            constant[Us...]()
+        }
+        """))
+    rejects("""
+        fn constant[Ts...]() Int
+        ensures result == 42 {
+            0
+        }
+        fn wrong[Us...]() Int
+        ensures result == 42 {
+            constant[Us...]()
+        }
+        """)
+    rejects("""
+        concept Value {
+            fn value(self Self) Int
+        }
+        fn bounded[Ts... Value]() Int
+        ensures result == 42 {
+            42
+        }
+        fn wrong[Us...]() Int
+        ensures result == 42 {
+            bounded[Us...]()
+        }
+        """)
+    rejects(concat(constant, """
+        fn constant() Int {
+            -1
+        }
+        fn wrong[Us...]() Int
+        ensures result >= 0 {
+            constant[Us...]()
+        }
+        """))
+}

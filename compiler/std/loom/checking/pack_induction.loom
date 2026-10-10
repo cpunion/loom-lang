@@ -285,7 +285,13 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
     if node.kind == NodeKind.Call {
         let arguments = child(node, 1)
         var forwarded = false
+        let packs = declared_packs(declaration)
         var index = 0
+        while index < length(packs) {
+            forwarded = forwarded || mentions_pack(child(node, 0), get(packs, index).value)
+            index = index + 1
+        }
+        index = 0
         while index < length(arguments.children) {
             forwarded = forwarded || pack_forwarded_input(declaration, child(arguments, index), 0)
             index = index + 1
