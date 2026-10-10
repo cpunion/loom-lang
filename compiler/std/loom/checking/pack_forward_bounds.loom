@@ -1,8 +1,8 @@
 // Check each finite member or symbolic element pattern, never sampled widths.
-// Retain a declared opaque source domain: choosing a concrete member type
-// could incorrectly narrow receiver effects or shared-data aliasing.
+// A fresh opaque entry domain keeps receiver effects and aliasing general.
+// Its call-local bounds follow from the entire word, never its representative.
 fn pack_forward_evidence(context Context, caller Node, parameter Node, sequence List[Node],
-    owner Int, types Node, inputs Node) Result[Int, Failure] {
+    owner Int, types Node, inputs Node) Result[Bool, Failure] {
     var member = 0
     while member < length(sequence) {
         let item = get(sequence, member)
@@ -23,22 +23,5 @@ fn pack_forward_evidence(context Context, caller Node, parameter Node, sequence 
         }
         member = member + 1
     }
-    let packs = declared_packs(caller)
-    var pack = 0
-    while pack < length(packs) {
-        let ty = context_type(context, pack_node(parameter, NodeKind.Type,
-                pack_proof_element_type(pack), new[Node]()))?
-        var admitted = true
-        var bound = 0
-        while bound < length(parameter.children) {
-            admitted = admitted && satisfies(context, ty,
-                required_concept(context.env, owner, child(parameter, bound))?)?
-            bound = bound + 1
-        }
-        if admitted {
-            return Result.Ok(pack)
-        }
-        pack = pack + 1
-    }
-    Result.Err(error(context, parameter, "bounded forwarding needs a declared opaque element domain"))
+    Result.Ok(true)
 }

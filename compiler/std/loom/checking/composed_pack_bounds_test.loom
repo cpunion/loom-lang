@@ -99,3 +99,102 @@ test fn composed_pack_bounds_check_finite_members_and_every_source_word() {
         }
         """))
 }
+
+test fn constructed_pack_bounds_use_the_constructed_types_not_raw_elements() {
+    let header = concat(composed_bounds_header(), """
+        record Wrapped[T] {
+            value T
+        }
+        impl[T] Value for Wrapped[T] {
+            fn value(self Wrapped[T]) Int {
+                1
+            }
+        }
+        impl[T] Value for List[T] {
+            fn value(self List[T]) Int {
+                1
+            }
+        }
+        fn intermediate[Ts... Value](values Ts...) Int
+        ensures result >= 0 {
+            bounded(values...)
+        }
+        fn constant[Tag, Ts... Value]() Int
+        ensures result == 42 {
+            42
+        }
+        """)
+    discard accepted(concat(header, """
+        fn wrapped[Us...](values (Wrapped[Us]...)) Int
+        ensures result >= 0 {
+            intermediate(values...)
+        }
+        fn listed[Us...](values (List[Us]...)) Int
+        ensures result >= 0 {
+            bounded(true, values...)
+        }
+        fn typed[Us...]() Int
+        ensures result == 42 {
+            constant[Bool, List[Us]...]()
+        }
+        fn separate[Us..., Vs...](left (Wrapped[Us]...), right (List[Vs]...)) Int
+        ensures result >= 0 {
+            bounded(left..., right...)
+        }
+        fn paired[As... Value, Bs... Value](left (As...), right (Bs...)) Int
+        ensures result >= 0 {
+            intermediate(left...) + intermediate(right...)
+        }
+        fn independent[Us..., Vs...](left (Wrapped[Us]...), right (List[Vs]...)) Int
+        ensures result >= 0 {
+            paired(left, right)
+        }
+        fn recursive[Ts... Value](depth Int, values Ts...) Int
+        ensures result >= 0 {
+            if depth > 0 {
+                recursive(depth - 1, values...)
+            } else {
+                bounded(values...)
+            }
+        }
+        fn recursive_wrapped[Us...](depth Int, values (Wrapped[Us]...)) Int
+        ensures result >= 0 {
+            recursive(depth, values...)
+        }
+        """))
+    rejects(concat(header, """
+        fn wrong[Us...](values (Wrapped[Us]...)) Int
+        ensures result == 42 {
+            discard intermediate(values...)
+            constant[Bool, Us...]()
+        }
+        """))
+}
+
+test fn constructed_pack_domains_keep_shared_child_effects_opaque() {
+    let source = concat(composed_bounds_header(), """
+        import std.list.push
+        import std.list.length
+        record Wrapped[T] {
+            value T
+            log List[Int]
+        }
+        impl[T] Value for Wrapped[T] {
+            fn value(self Wrapped[T]) Int {
+                push(self.log, 1)
+                0
+            }
+        }
+        fn intermediate[Ts... Value](values Ts...) Int
+        ensures result >= 0 {
+            bounded(values...)
+        }
+        fn wrong[Us...](log List[Int], values (Wrapped[Us]...)) Int
+        ensures length(log) == old(length(log)) {
+            intermediate(true, values...)
+        }
+        """)
+    list_length_contract(std.text.join(std.text.split(source,
+                "ensures length(log) == old(length(log))"), "ensures result >= 0"), true)
+    list_length_contract(source, false)
+}

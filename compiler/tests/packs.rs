@@ -95,7 +95,19 @@ concept ForwardBound {
 impl ForwardBound for Bool {
 }
 
+record ForwardBox[T] {
+    value T
+}
+
+impl[T] ForwardBound for ForwardBox[T] {
+}
+
 fn bounded_keep[Ts...ForwardBound](values Ts...) Int
+ensures result == 42 {
+    42
+}
+
+fn bounded_constant[Ts...ForwardBound]() Int
 ensures result == 42 {
     42
 }
@@ -105,26 +117,59 @@ ensures result == 42 {
     bounded_keep(true, values...)
 }
 
+fn constructed_forward[Us...](values (ForwardBox[Us]...)) Int
+ensures result == 42 {
+    bounded_forward(values)
+}
+
+fn constructed_types[Us...]() Int
+ensures result == 42 {
+    bounded_constant[ForwardBox[Us]...]()
+}
+
 fn main() {
     assert forward(42, (true, "context")) == 42
     assert nested(42, (true, "context")) == 42
     assert by_type[Int, Text](42) == 42
     assert by_shape(pack()) == 42
+    assert constructed_forward(pack()) == 42
+    assert constructed_forward((ForwardBox { value = "text" }, ForwardBox { value = true })) == 42
+    assert constructed_types[Int, Text]() == 42
 }
 "#;
     fs::write(&source, original).unwrap();
     let package = directory.path().to_str().unwrap();
-    success(&loom(&["check", package]));
-    success(&loom(&["check", package]));
+    let cache = directory.path().join("cache");
+    let check = || {
+        common::command(&["check", package])
+            .arg("--frontend-cache")
+            .arg(&cache)
+            .env("LOOM_NATIVE_TIMINGS", "1")
+            .output()
+            .unwrap()
+    };
+    success(&check());
+    let warm = check();
+    success(&warm);
+    assert!(String::from_utf8_lossy(&warm.stderr).contains("loom cache: frontend hit\n"));
 
     let disjoint = format!("{original}\nfn keep(value Bool, extra Bool) Int {{ -1 }}\n");
     fs::write(&source, &disjoint).unwrap();
-    success(&loom(&["check", package]));
-    success(&loom(&["check", package]));
+    let reused = check();
+    success(&reused);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(trace.contains("loom cache: frontend miss\n"), "{trace}");
+    assert!(
+        trace.contains("bodies reused ") && !trace.contains("bodies reused 0"),
+        "{trace}"
+    );
+    success(&check());
     let executable = common::executable(directory.path(), "overloaded-forwarding");
     for level in ["0", "2"] {
         success(
             &common::command(&["build", package, "--output", executable.to_str().unwrap()])
+                .arg("--frontend-cache")
+                .arg(&cache)
                 .env("LOOM_OPT_LEVEL", level)
                 .output()
                 .unwrap(),
@@ -138,41 +183,54 @@ fn main() {
         "{disjoint}\nfn keep(value Int, leading Text, extra Bool, trailing Bool) Int {{ -1 }}\n"
     );
     fs::write(&source, overlapping).unwrap();
-    let rejected = loom(&["check", package]);
+    let rejected = check();
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("unresolved overloads"));
 
     fs::write(&source, &disjoint).unwrap();
-    success(&loom(&["check", package]));
+    success(&check());
     let changed = disjoint.replace(
         "keep(value, (extras()..., values..., true))",
         "keep(value + 1, (extras()..., values..., true))",
     );
     fs::write(&source, changed).unwrap();
-    let rejected = loom(&["check", package]);
+    let rejected = check();
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("required postcondition"));
 
     fs::write(&source, &disjoint).unwrap();
-    success(&loom(&["check", package]));
+    success(&check());
     fs::write(
         &source,
         disjoint.replace("typed[Us...](value)", "typed[Us...](value + 1)"),
     )
     .unwrap();
-    let rejected = loom(&["check", package]);
+    let rejected = check();
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("required postcondition"));
 
     // Even an uncalled family must re-establish all captured element evidence.
     fs::write(&source, &disjoint).unwrap();
-    success(&loom(&["check", package]));
+    success(&check());
     fs::write(
         &source,
         disjoint.replace("impl ForwardBound for Bool {\n}", ""),
     )
     .unwrap();
-    let rejected = loom(&["check", package]);
+    let rejected = check();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains(
+        "forwarded elements need an explicit implementation or declared concept requirement"
+    ));
+
+    fs::write(&source, &disjoint).unwrap();
+    success(&check());
+    fs::write(
+        &source,
+        disjoint.replace("impl[T] ForwardBound for ForwardBox[T] {\n}", ""),
+    )
+    .unwrap();
+    let rejected = check();
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains(
         "forwarded elements need an explicit implementation or declared concept requirement"

@@ -14,6 +14,26 @@ ensures result >= 0 {
     measured(true, values..., 1)
 }
 
+record MeasuredBox[T] {
+    value T
+}
+
+impl[T] Measurement for MeasuredBox[T] {
+    fn measure(self MeasuredBox[T]) Int {
+        1
+    }
+}
+
+fn boxed_measurement[Us...](values (MeasuredBox[Us]...)) Int
+ensures result >= 0 {
+    padded_measurement(values)
+}
+
+async fn boxed_async_measurement[Us...](values (MeasuredBox[Us]...)) Int
+ensures result >= 0 {
+    composed_async_measurement(values).await
+}
+
 fn exercise_composed_bounds() {
     assert padded_measurement(pack()) == 2
     assert padded_measurement((40,)) == 42
@@ -24,4 +44,19 @@ fn exercise_composed_bounds() {
     } == 42
     let callback fn((Int,)) Int = padded_measurement
     assert callback((40,)) == 42
+    assert boxed_measurement(pack()) == 2
+    assert boxed_measurement((MeasuredBox {
+                value = "text"
+            }, MeasuredBox {
+                value = true
+            })) == 4
+    assert comptime {
+        boxed_measurement((MeasuredBox {
+                    value = 7
+                },))
+    } == 3
+    let boxed fn((MeasuredBox[Text],)) Int = boxed_measurement
+    assert boxed((MeasuredBox {
+                value = "callback"
+            },)) == 3
 }

@@ -7,6 +7,87 @@ record PackProofElement {
     pack Int
 }
 
+record PackProofDomain {
+    owner Int
+    parameter Int
+}
+
+fn pack_domain_type(domain PackProofDomain) Text {
+    concat("$packdomain#", concat(std.int.to_text(domain.owner),
+            concat("#", std.int.to_text(domain.parameter))))
+}
+
+fn pack_domain_value(name Text) Text {
+    concat("$packdomainvalue#", slice(name, length("$packdomain#"), length(name)))
+}
+
+fn pack_forwarded_call(declaration Node, node Node) Bool {
+    if node.kind != NodeKind.Call {
+        return false
+    }
+    let packs = declared_packs(declaration)
+    var index = 0
+    while index < length(packs) {
+        if mentions_pack(child(node, 0), get(packs, index).value) {
+            return true
+        }
+        index = index + 1
+    }
+    let arguments = child(node, 1).children
+    index = 0
+    while index < length(arguments) {
+        if pack_forwarded_input(declaration, get(arguments, index), 0) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Universally bound entry parameters, never uninitialized proof locals or a
+// sampled concrete receiver. Follow only the summary call graph; recursive
+// edges share the same domain identity. Bounds are derived at each call after
+// checking every actual member, not added to the caller's public requirements.
+fn pack_contract_domains(env Environment, owner Int, node Node, seen List[Int],
+    domains List[PackProofDomain], depth Int) Result[Bool, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, node, "variadic summary domain expansion must be finite"))
+    }
+    let caller = symbol(env, owner)
+    if pack_forwarded_call(caller.node, node) {
+        let targets = candidates(env.source, caller.file, caller.test_only, node.value)
+        var target = 0
+        while target < length(targets) {
+            let id = get(targets, target)
+            let callee = symbol(env, id)
+            if callee.owner < 0 && callee.node.kind == NodeKind.Function &&
+            pack_parameter(callee.node) >= 0 && has(callee.node, NodeKind.Ensures) && !resource_seen(seen, id) {
+                push(seen, id)
+                let parameters = group(callee.node, NodeKind.TypeParameters)
+                var parameter = 0
+                while parameter < length(parameters) {
+                    let input = get(parameters, parameter)
+                    if input.kind == NodeKind.TypePack && length(input.children) != 0 {
+                        push(domains, PackProofDomain {
+                                owner = id
+                                parameter = parameter
+                            })
+                    }
+                    parameter = parameter + 1
+                }
+                discard pack_contract_domains(env, id, callee.node, seen, domains, depth + 1)?
+            }
+            target = target + 1
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        discard pack_contract_domains(env, owner, child(node, index), seen, domains, depth + 1)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
 fn pack_proof_width(index Int) Text {
     concat("$packwidth#", std.int.to_text(index))
 }
@@ -287,19 +368,8 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
     }
     if node.kind == NodeKind.Call {
         let arguments = child(node, 1)
-        var forwarded = false
-        let packs = declared_packs(declaration)
         var index = 0
-        while index < length(packs) {
-            forwarded = forwarded || mentions_pack(child(node, 0), get(packs, index).value)
-            index = index + 1
-        }
-        index = 0
-        while index < length(arguments.children) {
-            forwarded = forwarded || pack_forwarded_input(declaration, child(arguments, index), 0)
-            index = index + 1
-        }
-        if forwarded {
+        if pack_forwarded_call(declaration, node) {
             let values = new[Node]()
             index = 0
             while index < length(arguments.children) {
@@ -432,6 +502,8 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
 fn pack_contract_declaration(env Environment, owner Int) Result[Node, Failure] {
     let node = symbol(env, owner).node
     let packs = declared_packs(node)
+    let domains = new[PackProofDomain]()
+    discard pack_contract_domains(env, owner, node, new[Int](), domains, 0)?
     let erased = pack_proof_sources(node)
     let children = new[Node]()
     let count = ints(0)
@@ -457,6 +529,17 @@ fn pack_contract_declaration(env Environment, owner Int) Result[Node, Failure] {
                     push(members, pack_node(member, NodeKind.Parameter, pack_proof_element_value(selected), source_nodes(pack_node(member, NodeKind.Type, pack_proof_element_type(selected), new[Node]()))))
                     push(members, pack_node(member, NodeKind.Parameter, pack_proof_width(selected), source_nodes(pack_node(member, NodeKind.Type, "Int", new[Node]()))))
                 }
+                selected = selected + 1
+            }
+            selected = 0
+            while selected < length(domains) {
+                let name = pack_domain_type(get(domains, selected))
+                push(members, if member.kind == NodeKind.TypeParameters {
+                        pack_node(member, NodeKind.Name, name, new[Node]())
+                    } else {
+                        pack_node(member, NodeKind.Parameter, pack_domain_value(name),
+                            source_nodes(pack_node(member, NodeKind.Type, name, new[Node]())))
+                    })
                 selected = selected + 1
             }
             push(children, pack_node(member, member.kind, member.value, members))

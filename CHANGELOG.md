@@ -5,13 +5,19 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Forward bounded variadic summaries through constructed element types without
+  imposing the callee's concepts on the caller's raw pack. Check whole-sequence
+  evidence and use private quantified entry domains across transitive calls;
+  preserve conservative shared-child effects and recheck removed implementations
+  after warm-cache edits. Native representations and the portable seed are unchanged.
+
 - Preserve explicitly empty type words during variadic specialization. Calls,
   function references, static/dyn concept methods and record/enum constructors
   distinguish a selected zero-width word from omitted inference; required fixed
   arguments still reject.
 
 - Compose constrained variadic contracts across mixed fixed members and source
-  words. Check each member/pattern's concept evidence while retaining a declared
+  words. Check each member/pattern's concept evidence while retaining an
   opaque element domain, including conservative shared-receiver effects; do not
   infer sequence evidence or purity from a sampled concrete member.
 
