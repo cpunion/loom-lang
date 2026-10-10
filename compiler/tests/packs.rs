@@ -95,7 +95,19 @@ concept ForwardBound {
 impl ForwardBound for Bool {
 }
 
+record ForwardBox[T] {
+    value T
+}
+
+impl[T] ForwardBound for ForwardBox[T] {
+}
+
 fn bounded_keep[Ts...ForwardBound](values Ts...) Int
+ensures result == 42 {
+    42
+}
+
+fn bounded_constant[Ts...ForwardBound]() Int
 ensures result == 42 {
     42
 }
@@ -105,11 +117,24 @@ ensures result == 42 {
     bounded_keep(true, values...)
 }
 
+fn constructed_forward[Us...](values (ForwardBox[Us]...)) Int
+ensures result == 42 {
+    bounded_forward(values)
+}
+
+fn constructed_types[Us...]() Int
+ensures result == 42 {
+    bounded_constant[ForwardBox[Us]...]()
+}
+
 fn main() {
     assert forward(42, (true, "context")) == 42
     assert nested(42, (true, "context")) == 42
     assert by_type[Int, Text](42) == 42
     assert by_shape(pack()) == 42
+    assert constructed_forward(pack()) == 42
+    assert constructed_forward((ForwardBox { value = "text" }, ForwardBox { value = true })) == 42
+    assert constructed_types[Int, Text]() == 42
 }
 "#;
     fs::write(&source, original).unwrap();
@@ -170,6 +195,19 @@ fn main() {
     fs::write(
         &source,
         disjoint.replace("impl ForwardBound for Bool {\n}", ""),
+    )
+    .unwrap();
+    let rejected = loom(&["check", package]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains(
+        "forwarded elements need an explicit implementation or declared concept requirement"
+    ));
+
+    fs::write(&source, &disjoint).unwrap();
+    success(&loom(&["check", package]));
+    fs::write(
+        &source,
+        disjoint.replace("impl[T] ForwardBound for ForwardBox[T] {\n}", ""),
     )
     .unwrap();
     let rejected = loom(&["check", package]);

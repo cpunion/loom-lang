@@ -97,6 +97,10 @@ async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
 
 async fn exercise_tasks() {
     assert composed_async_measurement((40,)).await == 42
+    assert boxed_async_measurement(pack()).await == 2
+    assert boxed_async_measurement((MeasuredBox {
+                value = "async"
+            },)).await == 3
     assert finite_async_context(42, pack()).await == 42
     assert finite_async_context(42, ("context", true)).await == 42
     assert forwarded_async_constant[Int, Text]().await == 42

@@ -975,10 +975,15 @@ ordinary shape evidence, and an empty word cannot satisfy required fixed type
 parameters.
 Bounded callees can also receive mixed fixed members and source words. Every
 finite member and symbolic element pattern must supply its own ordinary concept
-evidence. The private proof retains a caller-declared opaque pack domain meeting
-the callee's bounds; choosing a concrete member as representative could narrow
-receiver effects or aliasing. Constructor-only evidence without such an opaque
-domain remains unsupported in family proofs. See the
+evidence. An unconditional implementation for `Wrapped[T]`, for example, permits
+forwarding `(Wrapped[Us]...)` even when raw `Us` has no concept requirement. A
+conditional implementation still needs its prerequisites; the constructed type's
+evidence never becomes evidence for raw `Us`.
+The private proof uses independent quantified entry domains, carrying derived
+bounds only at the checked call. Choosing a concrete member as representative
+could narrow receiver effects or shared-data aliasing. Transitive summary calls
+pass these domains through their private proof closure; native signatures and
+representations are unchanged. See the
 [composed bounds example](examples/variadics/composed_bounds.loom). The
 [forwarding example](examples/variadics/forwarding.loom) covers independent groups,
 CTFE, callbacks, inherited dyn methods and shared List effects. The
