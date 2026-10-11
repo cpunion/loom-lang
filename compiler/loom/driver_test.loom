@@ -14,6 +14,42 @@ fn driver_arguments(command Text) List[Text] {
     values
 }
 
+test fn test_filters_are_literal_nonempty_and_test_only() {
+    let args = driver_arguments("test")
+    push(args, "--filter")
+    push(args, "pkg.selected")
+    assert match options(args) {
+        Result.Ok(value) => value.test_filter == "pkg.selected",
+        Result.Err(_) => false
+    }
+    push(args, "--filter")
+    push(args, "other")
+    assert match options(args) {
+        Result.Err(message) => message == "--filter needs one nonempty test-name substring",
+        Result.Ok(_) => false
+    }
+    let empty = driver_arguments("test")
+    push(empty, "--filter")
+    push(empty, "")
+    assert match options(empty) {
+        Result.Err(message) => message == "--filter needs one nonempty test-name substring",
+        Result.Ok(_) => false
+    }
+    let missing = driver_arguments("test")
+    push(missing, "--filter")
+    assert match options(missing) {
+        Result.Err(message) => message == "--filter needs a value",
+        Result.Ok(_) => false
+    }
+    let build = driver_arguments("build")
+    push(build, "--filter")
+    push(build, "selected")
+    assert match options(build) {
+        Result.Err(message) => message == "--filter is only available with test",
+        Result.Ok(_) => false
+    }
+}
+
 test fn run_separator_preserves_program_arguments_literally() {
     let args = driver_arguments("run")
     std.list.push(args, ".")

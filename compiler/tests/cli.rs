@@ -141,6 +141,107 @@ fn test_no_run_builds_a_real_test_binary_without_executing_tests() {
 }
 
 #[test]
+fn test_filters_select_native_roots_without_skipping_checks_or_reusing_other_filters() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(
+        package.path().join("loom.toml"),
+        "[module]\nname='filtertrial'\n",
+    )
+    .unwrap();
+    let path = package.path().to_str().unwrap();
+    let source = package.path().join("main.loom");
+    let original = r#"
+import std.io.write_text
+
+fn private_answer() Int {
+    42
+}
+
+async fn answer() Int {
+    private_answer()
+}
+
+test fn chosen_sync() {
+    assert private_answer() == 42
+}
+
+test async fn chosen_async() {
+    assert answer().await == 42
+}
+
+test fn excluded_failure() {
+    discard write_text("unselected-test-ran\n")
+    assert false
+}
+"#;
+    fs::write(&source, original).unwrap();
+    let cache = package.path().join("cache");
+    let filtered = |filter: &str| {
+        common::command(&["test", path, "--filter", filter])
+            .arg("--frontend-cache")
+            .arg(&cache)
+            .env("LOOM_NATIVE_TIMINGS", "1")
+            .output()
+            .unwrap()
+    };
+    let selected = filtered("chosen");
+    success(&selected);
+    assert_eq!(selected.stdout, b"2 tests passed\n");
+    assert!(String::from_utf8_lossy(&selected.stderr).contains("frontend miss"));
+    let hit = filtered("chosen");
+    success(&hit);
+    assert!(String::from_utf8_lossy(&hit.stderr).contains("frontend hit"));
+    let exact = filtered("filtertrial.chosen_sync");
+    success(&exact);
+    assert_eq!(exact.stdout, b"1 tests passed\n");
+    let trace = String::from_utf8_lossy(&exact.stderr);
+    assert!(
+        trace.contains("frontend miss")
+            && trace.contains("bodies reused ")
+            && !trace.contains("bodies reused 0")
+    );
+    let absent = filtered("Chosen");
+    success(&absent);
+    assert_eq!(absent.stdout, b"0 tests matched Chosen\n");
+    let literal = filtered("chosen.*");
+    success(&literal);
+    assert_eq!(literal.stdout, b"0 tests matched chosen.*\n");
+    let failed = filtered("excluded_failure");
+    assert_eq!(failed.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&failed.stdout).contains("unselected-test-ran"));
+    let executable = common::executable(package.path(), "chosen-tests");
+    let ir = package.path().join("chosen.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["test", path, "--filter", "chosen", "--no-run"])
+                .arg("--output")
+                .arg(&executable)
+                .arg("--emit-ir")
+                .arg(&ir)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+        assert!(
+            !fs::read_to_string(&ir)
+                .unwrap()
+                .contains("unselected-test-ran")
+        );
+    }
+    fs::write(
+        &source,
+        format!("{original}\nfn invalid() Int ensures result > 0 {{ 0 }}\n"),
+    )
+    .unwrap();
+    for filter in ["chosen", "no_such_test"] {
+        let invalid = filtered(filter);
+        assert!(!invalid.status.success());
+        assert!(String::from_utf8_lossy(&invalid.stderr).contains("postcondition"));
+    }
+}
+
+#[test]
 fn recursive_tests_keep_package_scopes_module_boundaries_and_failure_status() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
@@ -202,6 +303,13 @@ test fn still_runs() {
     let ordinary = loom(&["test", path]);
     success(&ordinary);
     assert_eq!(ordinary.stdout, b"2 tests passed\n");
+
+    let filtered = loom(&["test", path, "--recursive", "--filter", "embedded"]);
+    success(&filtered);
+    let text = String::from_utf8_lossy(&filtered.stdout);
+    assert!(text.contains(": 1 tests passed\n"));
+    assert!(text.ends_with("4 packages tested\n"));
+    assert!(!text.contains("last-package-ran"));
 
     let compiled = loom(&["test", path, "--recursive", "--no-run"]);
     success(&compiled);

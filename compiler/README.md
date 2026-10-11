@@ -130,6 +130,21 @@ are not traversed. It continues after a package fails and exits unsuccessfully
 if any selected package failed. `--no-run` checks and compiles the same selection;
 recursive mode rejects shared `--output`/`--emit-ir` paths. An empty selection is
 an error. Run nested modules separately; this is not dependency-test discovery.
+`loom test --filter <substring>` selects fully qualified test names using a
+case-sensitive literal substring, not a regular expression. It composes with
+`--recursive`, `--no-run`, and the ordinary cache flags. For example:
+
+```sh
+LOOM_OPT_LEVEL=0 target/loom test compiler/std/loom/checking --filter generic_type_guard
+```
+
+All source typing, required contracts and package/test visibility still apply,
+including to unselected tests. Filtering changes executable roots and native
+reachability, not compiler checking. Unselected tests do not run; their otherwise
+unreachable code is not emitted. No match succeeds with `0 tests matched ...`
+without creating a binary. Filtered frontend artifacts have distinct keys;
+definition/body reuse remains shared across filter choices.
+
 `loom run [package] -- [arguments...]` passes arguments to the built program.
 Try the [multi-package file tool](examples/wordcount/README.md) for a complete
 edit, format, test, and run exercise.

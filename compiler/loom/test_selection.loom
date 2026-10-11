@@ -1,0 +1,31 @@
+import std.text.contains
+
+// Selection changes executable roots, not checking or package visibility.
+// Preserve IDs and declaration order so lowering and native reachability reuse
+// the ordinary checked program, including its contracts and test isolation.
+fn select_tests(program std.loom.typed.Program, filter Text) std.loom.typed.Program {
+    if filter == "" {
+        return program
+    }
+    let tests = new[Int]()
+    let names = new[Text]()
+    var index = 0
+    while index < length(program.tests) {
+        let name = get(program.test_names, index)
+        if contains(name, filter) {
+            push(tests, get(program.tests, index))
+            push(names, name)
+        }
+        index = index + 1
+    }
+    std.loom.typed.Program {
+        types = program.types
+        functions = program.functions
+        entry = program.entry
+        tests = tests
+        test_names = names
+        exports = program.exports
+        interfaces = program.interfaces
+        witnesses = program.witnesses
+    }
+}

@@ -39,6 +39,7 @@ record Options {
     ir Text
     native_tool Text
     no_run Bool
+    test_filter Text
     tests Bool
     recursive Bool
     git_tool Text
@@ -68,6 +69,7 @@ fn options(args List[Text]) Result[Options, Text] {
     var ir = ""
     var tool = ""
     var no_run = false
+    var test_filter = ""
     var tests = false
     var recursive = false
     var git_tool = "git"
@@ -112,12 +114,21 @@ fn options(args List[Text]) Result[Options, Text] {
                         }
                         no_run = true
                     } else {
-                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--git-credential-tool" || arg == "--object-cache" || arg == "--frontend-cache" || arg == "--receipt" || arg == "--build-option" {
+                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--git-credential-tool" || arg == "--object-cache" || arg == "--frontend-cache" || arg == "--receipt" || arg == "--build-option" || arg == "--filter" {
                             index = index + 1
                             if index == length(args) {
                                 return Result.Err(concat(arg, " needs a value"))
                             }
                             let value = get(args, index)
+                            if arg == "--filter" {
+                                if command != "test" {
+                                    return Result.Err("--filter is only available with test")
+                                }
+                                if value == "" || test_filter != "" {
+                                    return Result.Err("--filter needs one nonempty test-name substring")
+                                }
+                                test_filter = value
+                            }
                             if arg == "--build-option" {
                                 if command == "resolve" {
                                     return Result.Err("--build-option requires a compilation command")
@@ -245,6 +256,7 @@ fn options(args List[Text]) Result[Options, Text] {
             ir = ir
             native_tool = tools.native_tool
             no_run = no_run
+            test_filter = test_filter
             tests = tests
             recursive = recursive
             git_tool = git_tool
@@ -291,16 +303,17 @@ fn prepare_loaded(options Options, loaded Project, inputs BuildInputs) Result[Pr
 }
 
 fn prepare_checked(options Options, project Project, inputs BuildInputs, value std.loom.typed.Program) Prepared {
+    let selected = select_tests(value, options.test_filter)
     Prepared {
         inputs = inputs.files
         targets = inputs.targets
         input = if options.command == "check" {
             ""
         } else {
-            encode(lower(value), inputs.targets)
+            encode(lower(selected), inputs.targets)
         }
-        entry = value.entry
-        tests = length(value.tests)
+        entry = selected.entry
+        tests = length(selected.tests)
         project = project
     }
 }
@@ -367,6 +380,9 @@ fn execute_package(selected Options) Result[Text, Text] {
         return Result.Err("run requires fn main() in the selected package")
     }
     if selected.command == "test" && prepared.tests == 0 {
+        if selected.test_filter != "" {
+            return Result.Ok(concat("0 tests matched ", concat(selected.test_filter, "\n")))
+        }
         return Result.Ok("0 tests\n")
     }
     let windows = is_windows_path(selected.path)

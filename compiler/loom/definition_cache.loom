@@ -10,7 +10,7 @@ fn definition_key(options Options, project Project, identity Text) Text {
             modules = project.modules
             packages = project.packages
             root = project.root
-        }, identity)
+        }, identity, "")
 }
 
 fn definition_input(path Text, prefix Text, project Project, inputs BuildInputs) Option[Text] {
