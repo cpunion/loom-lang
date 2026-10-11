@@ -5,6 +5,13 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Reuse completed universal pack proofs for selected widths and concrete
+  instances, while retaining body typing, entry checks and independent
+  resource/shared-state verification. Rebind and normalize each signature's
+  clauses instead of copying erased locals; queued or unpublished family proofs
+  remain untrusted. Composed type branches no longer repeat a published family
+  proof for every selected width, without raising proof budgets or the seed.
+
 - Prove compile-time concept and type-comparison branches in type-pack iteration.
   Unresolved decisions check both paths independently per evaluation, retaining
   short-circuit scope and branch-local requirements. Reuse ordinary generic

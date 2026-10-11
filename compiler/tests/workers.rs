@@ -62,6 +62,7 @@ fn workers_reject_resource_transfer_and_stale_shared_proofs() {
         "async fn main() { let mutex = new()\nscoped held = lock(mutex)\ndiscard run(fn() Int { discard held\n1 }).await }",
         "async fn main() { let mutex = new()\nscoped result = run(fn() Guard { lock(mutex) }).await }",
         "fn unchanged(values List[Int]) Int ensures result == std.list.length(values) { std.list.length(values) }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
+        "fn unchanged[Ts...](values List[Int], ignored Ts...) Int ensures result == std.list.length(values) { std.list.length(values) }\nasync fn main() { discard run(fn() Int { unchanged([1], true, 2) }).await }",
         "fn unchanged(values List[Int]) List[Int] requires length(values) == 1 ensures length(result) == 1 { values }\nasync fn main() { discard run(fn() List[Int] { unchanged([1]) }).await }",
         "fn unchanged(values List[Int]) Int ensures length(values) == length(values) { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
         "fn equal(a Int, b Int) Bool { a == b }\nfn unchanged(values List[Int]) Int ensures equal(length(values), length(values)) { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",

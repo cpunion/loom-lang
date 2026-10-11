@@ -38,6 +38,7 @@ fn prepared_contract_group(stage Context, root Function, body_calls Bool) Result
                     instance.arguments, instance.constants, true, false)?
                 let node = symbol(stage.env, built.context.signature.symbol).node
                 let completed = completed_contract(built.context, instance.signature, built.function)
+                let family_proved = completed_pack_contract(stage.env, instance.signature)
                 let clauses = if length(completed) != 0 {
                     completed
                 } else {
@@ -46,13 +47,13 @@ fn prepared_contract_group(stage Context, root Function, body_calls Bool) Result
                 }
                 let function = with_contracts(built.function, built.function.preconditions, clauses)
                 let summaries = new[Function]()
-                if length(completed) == 0 && length(clauses) != 0 {
+                if length(completed) == 0 && !family_proved && length(clauses) != 0 {
                     // Contract helpers may schedule more source instances;
                     // collect them before closing the source worklist.
                     discard collect_dynamic_contracts(built.context, function.body, summaries)?
                 }
                 push(functions, function)
-                push(members, length(completed) == 0)
+                push(members, length(completed) == 0 && !family_proved)
                 push(contexts, built.context)
                 push(dynamic, summaries)
             }

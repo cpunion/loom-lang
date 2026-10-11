@@ -1307,9 +1307,13 @@ packs, CTFE, callbacks and once-only argument effects. Native code selects the
 actual branch at compile time; the proof decision has no runtime representation.
 Families without required postconditions retain ordinary selected-branch
 checking; this proof rule does not require their unselected branches to compile.
-Type equality does not narrow an opaque type to a concrete layout. The existing
-proof budgets still apply, including expansion of selected-width abstract bodies;
-deep composed branches may remain unproved.
+Type equality does not narrow an opaque type to a concrete layout. Once a whole
+family proof batch succeeds, selected widths and concrete instances reuse that
+universal proof. Their bodies still undergo ordinary typing, entry, Task and
+resource checks; their clauses are rebound and normalized in the selected scope,
+not copied from erased local indices. Shared-state verification stays independent.
+Queued or unpublished family proofs cannot supply this evidence and retain the
+ordinary verification path. Existing family/helper proof budgets still apply.
 General type reflection on opaque values, opaque element escape and pack-dependent result shapes
 remain unsupported for family proofs and reject even when
 uncalled: proving selected arities is not a proof for every arity. Preconditions use fixed scalar
