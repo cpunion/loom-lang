@@ -271,6 +271,16 @@ elementwise expansions retain the shared width selected by shape checking. The
 covers global indices, List effects, CTFE, function references and inherited
 native/dyn methods. Mixed elements do not inherit a single pack's concept bounds,
 and the existing scalar invariant fragment is unchanged.
+Type-pack iterations also compose bounded compile-time concept and type-comparison
+branches. Pending decisions prove both paths independently per evaluation;
+type iterator identities are separate from each other and the whole-pack
+domain. Positive evidence remains branch-local, including guarded associated-type
+queries. Short-circuit conditions, declared generic helper summaries, indices,
+CTFE, callbacks and forwarding share ordinary checking rules. Native instances
+select their actual branch without a runtime predicate. See the
+[type guard example](../../compiler/examples/variadics/type_guards.loom).
+Type equality supplies no concrete-layout narrowing or negative conformance
+axiom, and selected-width abstract expansion retains the existing proof budgets.
 Named pack-bearing inputs can forward into a synchronous or async family and compose
 universally checked postconditions. Bare, structural tuple and nominal patterns
 share constructor identities with impl overlap checks. Bounded symbolic-word
@@ -529,8 +539,9 @@ Signed Int bit operations now share this expression model: mask ranges and XOR
 parity normalize locally; remaining supported word relationships use SMT.
 Shift counts and eager arithmetic still need independent safety proofs.
 See the [bit example](../../compiler/examples/smt_contracts/bitwise.loom).
-General collection induction and content/type-dependent variadic proofs remain
-unsupported; nonlinear solver queries may still be unknown or time out.
+General collection induction and content-dependent variadic proofs remain
+unsupported. Bounded type-pack guards use the branch rules described above,
+not general type reflection; nonlinear solver queries may still be unknown or time out.
 Constrained construction, stable scalar facts, pure-helper implication and
 supported List-append preservation now share the same optional backend and
 batched safety/truth obligations. Unknown or failed implication retains the

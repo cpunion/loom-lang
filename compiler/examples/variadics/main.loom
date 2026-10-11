@@ -39,6 +39,7 @@ fn exercise() {
     exercise_pack_positions()
     exercise_contracts()
     exercise_pack_induction()
+    exercise_type_guard_induction()
     exercise_structural_induction()
     exercise_forwarding()
     exercise_overloaded_forwarding()
