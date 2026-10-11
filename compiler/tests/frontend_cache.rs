@@ -30,6 +30,81 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn type_pack_guards_recheck_conformance_and_guarantees_after_body_reuse() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+concept Selected {
+}
+impl Selected for Int {
+}
+fn contribution[T Selected](value Int) Int
+requires value >= 0
+ensures result >= 0 {
+    value
+}
+fn count[Ts...](values Ts...) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for T in Ts {
+        comptime if T implements Selected {
+            total = total + contribution[T](1)
+        }
+    }
+    total
+}
+fn selected_only[Ts...](values Ts...) Int {
+    var total = 0
+    comptime for T in Ts {
+        comptime if T == Int {
+            total = total + 1
+        } else {
+            unavailable_unselected_branch()
+        }
+    }
+    total
+}
+fn main() {
+    assert count(1, true) == 1
+    assert selected_only(1, 2) == 2
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("run", &package, &cache, &[]), false);
+    fs::write(package.join("aaa.loom"), "fn unrelated() {}\n").unwrap();
+    let reused = cached("run", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(
+        trace.contains("bodies reused ") && !trace.contains("bodies reused 0"),
+        "{trace}"
+    );
+    checked(&cached("run", &package, &cache, &[]), true);
+    // The unchanged fold must select the new conformance, not its cached branch.
+    let changed = source
+        .replace(
+            "impl Selected for Int {",
+            "impl Selected for Bool {}\nimpl Selected for Int {",
+        )
+        .replace("assert count(1, true) == 1", "assert count(1, true) == 2");
+    fs::write(&path, &changed).unwrap();
+    checked(&cached("run", &package, &cache, &[]), false);
+    // The implementation still returns a positive value. Its weaker summary
+    // cannot prove every iteration, including in an uncalled family.
+    fs::write(
+        &path,
+        changed.replacen("ensures result >= 0", "ensures result >= -1", 1),
+    )
+    .unwrap();
+    let invalid = cached("check", &package, &cache, &[]);
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("postcondition"));
+}
+
+#[test]
 fn pack_observations_reprove_changed_concept_guarantees_after_body_reuse() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

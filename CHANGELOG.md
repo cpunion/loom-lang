@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Prove compile-time concept and type-comparison branches in type-pack iteration.
+  Unresolved decisions check both paths independently per evaluation, retaining
+  short-circuit scope and branch-local requirements. Reuse ordinary generic
+  helper contracts and selected-width checks; native code still selects concrete
+  branches without runtime type predicates or a seed change.
+
 - Observe concept methods across mixed structural variadic sequences. Check
   every fixed member and expansion pattern, preserve overload alternatives,
   and require the selected prototype to be common to the whole sequence.

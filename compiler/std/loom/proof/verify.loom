@@ -438,7 +438,17 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     execute_expression(proof, expr, state, depth)
 }
 
+fn pack_guard_expression(expr Expr) Bool {
+    expr.kind == ExprKind.Deferred && expr.ty == 2 && expr.text == "$packguard" && length(expr.children) == 0
+}
+
 fn execute_expression(proof Verification, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+    // Private family proofs widen an unresolved type decision to either branch.
+    // Fresh on every evaluation: heterogeneous iterations cannot be correlated.
+    // Other deferred computations remain unproved, and none is native code.
+    if pack_guard_expression(expr) {
+        return Result.Ok(outcomes(state, fresh_result(proof, 2)))
+    }
     if count_expression(expr) {
         let current = quantified_views(proof, expr, state, false, 256)?
         discard solver_defined(proof.query, expr, current, 256)?

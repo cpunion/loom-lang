@@ -198,7 +198,13 @@ fn block(context Context, node Node, expected Int, enforce Bool) Result[Expr, Fa
 
 fn conditional(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let condition = expr(context, child(node, 0), 2)?
-    let yes = block(assuming(context, condition, true, 0), child(node, 1), expected, enforce)?
+    conditional_branches(context, node, condition, assuming(context, condition, true, 0),
+        assuming(context, condition, false, 0), expected, enforce)
+}
+
+fn conditional_branches(context Context, node Node, condition Expr, when_true Context,
+    when_false Context, expected Int, enforce Bool) Result[Expr, Failure] {
+    let yes = block(when_true, child(node, 1), expected, enforce)?
     let values = new[Expr](3)
     push(values, condition)
     push(values, yes)
@@ -214,7 +220,7 @@ fn conditional(context Context, node Node, expected Int, enforce Bool) Result[Ex
     var other_type = 0
     var other_falls = true
     if length(node.children) == 3 {
-        let no = block(assuming(context, condition, false, 0), child(node, 2), hint, enforce || yes.falls)?
+        let no = block(when_false, child(node, 2), hint, enforce || yes.falls)?
         push(values, no)
         other_type = no.ty
         other_falls = no.falls

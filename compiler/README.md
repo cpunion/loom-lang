@@ -863,8 +863,9 @@ reasoning remains bounded; it does not enumerate specializations or solve all
 integer feasibility problems. Impl headers use the same shape equations.
 Iteration contracts use symbolic-width induction. Direct pack elements can also
 supply declared scalar/inline aggregate concept method guarantees, without
-assuming common concrete types or equal results from repeated calls. General type-dependent
-induction remains unsupported.
+assuming common concrete types or equal results from repeated calls. Type-pack
+iterations also prove bounded type guards as described below; general content
+induction and opaque value inspection remain open.
 
 ```loom
 pub fn pack[Ts...](values Ts...) (Ts...) {
@@ -934,7 +935,7 @@ List updates, CTFE and dyn defaults/overrides. The
 fields, repeated/independent groups, elementwise expansions and global tuple
 indices. This broadens input shapes, not the scalar invariant fragment. Element
 observations through declared method contracts are described below; mixed
-structural elements cannot borrow one pack's concept bounds. Type reflection,
+structural elements cannot borrow one pack's concept bounds. General reflection,
 pack-dependent result shapes and iteration over non-tuple structural sources
 remain unsupported in family proofs. Shadowed erased sources and loop control that would change
 its target reject. Executing a few selected arities is never a universal proof.
@@ -1292,7 +1293,24 @@ callee heap guarantees stable across other ready Tasks. See the
 [async example](examples/variadics/async_contracts.loom), including real waits,
 empty/mixed packs and inherited dyn methods. These are private proof rules, not
 a runtime pack representation or proof by selected arities.
-Type inspection, opaque element escape and pack-dependent result shapes
+Type-pack iteration can branch on `T implements C` and type equality/inequality,
+including short-circuit `&&`, `||` and `!`. An unresolved predicate proves both
+branches with an independent decision on every evaluation, not one Boolean for
+the entire heterogeneous sequence. Each lexical type iterator has an independent
+quantified identity, including nested iteration over the same pack; it cannot
+qualify the whole source word. Positive concept evidence is local to the
+matching branch, including associated-type queries on a guarded path; the other
+branch gains no negative-conformance axiom. Declared generic helper contracts,
+ordered indices and forwarded family summaries use the ordinary proof rules.
+The [type guard example](examples/variadics/type_guards.loom) runs empty/mixed
+packs, CTFE, callbacks and once-only argument effects. Native code selects the
+actual branch at compile time; the proof decision has no runtime representation.
+Families without required postconditions retain ordinary selected-branch
+checking; this proof rule does not require their unselected branches to compile.
+Type equality does not narrow an opaque type to a concrete layout. The existing
+proof budgets still apply, including expansion of selected-width abstract bodies;
+deep composed branches may remain unproved.
+General type reflection on opaque values, opaque element escape and pack-dependent result shapes
 remain unsupported for family proofs and reject even when
 uncalled: proving selected arities is not a proof for every arity. Preconditions use fixed scalar
 parameters, not the tuple pack, and retain ordinary checked/runtime boundaries.

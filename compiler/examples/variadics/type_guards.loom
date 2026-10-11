@@ -1,0 +1,117 @@
+concept Selected {
+}
+
+impl Selected for Int {
+}
+
+impl[T] Selected for MeasuredBox[T] {
+}
+
+fn selected_contribution[T Selected](value Int) Int
+requires value >= 0
+ensures result == value
+{
+    value
+}
+
+fn selected_type_indices[Ts...](values Ts...) Int
+ensures result >= 0
+{
+    var total = 0
+    comptime for index, T in Ts {
+        comptime if T implements Selected {
+            total = total + selected_contribution[T](index)
+        } else {
+            total = total + 0
+        }
+    }
+    total
+}
+
+fn selected_scalars[Ts...](values (Ts...)) Int
+ensures result >= 0
+{
+    var total = 0
+    comptime for T in Ts {
+        comptime if T == Int || T == Bool {
+            total = total + 1
+        }
+    }
+    total
+}
+
+fn forwarded_type_indices[Us...](values (Us...)) Int
+ensures result >= 0
+{
+    selected_type_indices(values...)
+}
+
+fn required_type_indices[Ts...Selected](values Ts...) Int
+ensures result >= 0
+{
+    var total = 0
+    comptime for index, T in Ts {
+        total = total + selected_contribution[T](index)
+    }
+    total
+}
+
+fn constructed_type_indices[Us...](values (MeasuredBox[Us]...)) Int
+ensures result >= 0
+{
+    required_type_indices(values...)
+}
+
+fn log_selected_types[Ts...](log List[Int], values Ts...) Int
+ensures result >= 0 && length(log) >= old(length(log))
+{
+    var total = 0
+    comptime for index, T in Ts {
+        comptime if T == Int || T == Bool {
+            push(log, index)
+            total = total + 1
+        }
+    }
+    total
+}
+
+fn different_type_pairs[Ts...](values Ts...) Int
+ensures result >= 0
+{
+    var total = 0
+    comptime for T in Ts {
+        comptime for U in Ts {
+            comptime if T == U {
+                total = total + 0
+            } else {
+                total = total + 1
+            }
+        }
+    }
+    total
+}
+
+fn exercise_type_guard_induction() {
+    assert selected_type_indices() == 0
+    assert selected_type_indices(true, 2, "three", 4) == 4
+    assert selected_scalars(pack()) == 0
+    assert selected_scalars((true, 2, "three", 4)) == 3
+    assert forwarded_type_indices(("first", 2, false, 4)) == 4
+    assert constructed_type_indices(pack()) == 0
+    assert constructed_type_indices((MeasuredBox {
+                value = 1
+            }, MeasuredBox {
+                value = true
+            })) == 1
+    assert different_type_pairs() == 0 && different_type_pairs(1, true) == 2
+    assert comptime {
+        selected_type_indices(false, 2)
+    } == 1
+    let callback fn(Text, Int, Bool, Int) Int = selected_type_indices
+    assert callback("first", 2, false, 4) == 4
+    let log = [0]
+    assert selected_type_indices(mark(log, 1), true, mark(log, 2)) == 2
+    assert length(log) == 3 && log[1] == 1 && log[2] == 2
+    assert log_selected_types(log, "first", true, 2) == 2
+    assert length(log) == 5 && log[3] == 1 && log[4] == 2
+}

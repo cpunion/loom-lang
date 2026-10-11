@@ -1,0 +1,72 @@
+// Abstract family/selected-width checks widen pending type guards only in
+// proof bodies. Native specializations select their actual compile-time branch.
+fn pack_guard_scope(context Context) Bool {
+    // Selected widths are also checked with abstract element types before
+    // concrete native instantiation. Their proof closure can use emit=true
+    // for call indexing; that flag alone does not identify executable code.
+    let signature = source_signature_id(context.env, context.signature.symbol)
+    if signature < 0 || !abstract_context(context) {
+        return false
+    }
+    let instance = pack_instance(context.env, signature)
+    instance >= 0 && pack_has_postcondition(context.env, get(context.env.packs, instance))
+}
+
+fn pack_type_guard(context Context, condition Node) Bool {
+    if condition.kind == NodeKind.Implements {
+        return true
+    }
+    if condition.kind == NodeKind.Unary && condition.value == "!" {
+        return pack_type_guard(context, child(condition, 0))
+    }
+    if condition.kind == NodeKind.Binary {
+        if condition.value == "&&" || condition.value == "||" {
+            return pack_type_guard(context, child(condition, 0))
+        }
+        if condition.value == "==" || condition.value == "!=" {
+            return type_operand(context, child(condition, 0)) && type_operand(context, child(condition, 1))
+        }
+    }
+    false
+}
+
+fn pack_guarded_selection(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
+    let condition = child(source, 0)
+    let yes = child(source, 1)
+    let no = if length(source.children) == 3 {
+        child(source, 2)
+    } else {
+        pack_node(source, NodeKind.Block, "", new[Node]())
+    }
+    if condition.kind == NodeKind.Unary && condition.value == "!" {
+        return selected(context, node, pack_node(source, NodeKind.If, "", [child(condition, 0), no, yes]), expected, enforce)
+    }
+    if condition.kind == NodeKind.Binary && (condition.value == "&&" || condition.value == "||") {
+        let right = pack_node(source, NodeKind.Comptime, "",
+            source_nodes(pack_node(source, NodeKind.If, "", [child(condition, 1), yes, no])))
+        let nested = pack_node(source, NodeKind.Block, "", source_nodes(right))
+        let branches = if condition.value == "&&" {
+            [child(condition, 0), nested, no]
+        } else {
+            [child(condition, 0), yes, nested]
+        }
+        // Preserve short-circuit scope, including associated types on the right.
+        return selected(context, node, pack_node(source, NodeKind.If, "", branches), expected, enforce)
+    }
+    var when_true = context
+    if condition.kind == NodeKind.Implements {
+        let ty = guard_type_operand(context, child(condition, 0))?
+        if ty < 0 {
+            return deferred(context, node, expected)
+        }
+        let capability = required_concept(context.env, context.signature.symbol, child(condition, 1))?
+        when_true = with_evidence(context, ty, capability)
+    } else {
+        if guard_type_operand(context, child(condition, 0))? < 0 || guard_type_operand(context, child(condition, 1))? < 0 {
+            return deferred(context, node, expected)
+        }
+    }
+    let decision = expression(ExprKind.Deferred, 2, condition, "$packguard", -1, new[Expr](), true)
+    // No negative conformance axiom, type equality narrowing, or leaked bound.
+    conditional_branches(context, source, decision, when_true, context, expected, enforce)
+}

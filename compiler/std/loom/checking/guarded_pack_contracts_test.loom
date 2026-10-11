@@ -1,0 +1,255 @@
+test fn type_pack_guards_prove_both_branches_with_local_requirements() {
+    discard accepted("""
+        concept Selected {
+        }
+        concept Other {
+        }
+        concept Family {
+            type Item
+        }
+        impl Selected for Int {
+        }
+        impl Other for Bool {
+        }
+        impl Family for Bool {
+            type Item = Int
+        }
+        fn contribution[T Selected](value Int) Int
+        requires value >= 0
+        ensures result == value
+        {
+            value
+        }
+        fn selected[Ts...](values Ts...) Int
+        ensures result >= 0
+        {
+            var total = 0
+            comptime for index, T in Ts {
+                comptime if T implements Selected && !(T implements Other) {
+                    total = total + contribution[T](index)
+                } else {
+                    total = total + 0
+                }
+            }
+            total
+        }
+        fn forward[Us...](values (Us...)) Int
+        ensures result >= 0
+        {
+            selected(values...)
+        }
+        fn projected[Ts...](values Ts...) Int
+        ensures result >= 0
+        {
+            var total = 0
+            comptime for T in Ts {
+                comptime if T implements Family && T.Item implements Selected {
+                    total = total + contribution[T.Item](1)
+                }
+            }
+            total
+        }
+        fn main() {
+            assert selected() == 0
+            assert selected(1, true, 2) == 2
+            assert forward((false, 7)) == 1
+            assert projected(1, true, false) == 2
+            assert comptime {
+                selected(true, 1)
+            } == 1
+        }
+        """)
+}
+
+test fn type_pack_guards_reject_unproved_branches_and_leaked_evidence() {
+    let definitions = """
+        concept Selected {
+        }
+        fn requires_selected[T Selected]() Int
+        ensures result >= 0
+        {
+            1
+        }
+        """
+    rejects(concat(definitions, """
+        fn wrong[Ts...](values Ts...) Int
+        ensures result >= 0
+        {
+            var total = 0
+            comptime for T in Ts {
+                comptime if T implements Selected {
+                    total = total - 1
+                }
+            }
+            total
+        }
+        fn main() {
+            assert wrong() == 0
+        }
+        """))
+    rejects(concat(definitions, """
+        fn wrong[Ts...](values Ts...) Int
+        ensures result >= 0
+        {
+            var total = 0
+            comptime for T in Ts {
+                comptime if T implements Selected {
+                    total = total + requires_selected[T]()
+                } else {
+                    total = total - 1
+                }
+            }
+            total
+        }
+        """))
+    rejects(concat(definitions, """
+        fn leaked[Ts...](values Ts...) Int
+        ensures result >= 0
+        {
+            var total = 0
+            comptime for T in Ts {
+                comptime if T implements Selected {
+                    total = total + requires_selected[T]()
+                }
+                total = total + requires_selected[T]()
+            }
+            total
+        }
+        """))
+    rejects(concat(definitions, """
+        fn bounded[Us... Selected](values Us...) Int
+        ensures result >= 0
+        {
+            0
+        }
+        fn leaked[Ts...](values Ts...) Int
+        ensures result >= 0
+        {
+            comptime for T in Ts {
+                comptime if T implements Selected {
+                    discard bounded(values...)
+                }
+            }
+            0
+        }
+        """))
+    rejects(concat(definitions, """
+        fn leaked[Ts...](values Ts...) Int
+        ensures result >= 0
+        {
+            var total = 0
+            comptime for T in Ts {
+                comptime if T implements Selected {
+                    comptime for U in Ts {
+                        total = total + requires_selected[U]()
+                    }
+                }
+            }
+            total
+        }
+        """))
+    rejects(concat(definitions, """
+        fn leaked[Ts...](values Ts...) Int
+        ensures result >= 0
+        {
+            var total = 0
+            comptime for T in Ts {
+                comptime if T implements Selected || T == Bool {
+                    total = total + requires_selected[T]()
+                }
+            }
+            total
+        }
+        """))
+}
+
+test fn type_pack_decisions_do_not_assume_uniform_members_or_runtime_conditions() {
+    // Without a required contract, an unselected template branch is not checked.
+    discard accepted("""
+        fn selected[Ts...](values Ts...) Int {
+            var total = 0
+            comptime for T in Ts {
+                comptime if T == Int {
+                    total = total + 1
+                } else {
+                    unavailable_unselected_branch()
+                }
+            }
+            total
+        }
+        fn main() {
+            assert selected(1, 2) == 2
+        }
+        """)
+    rejects("""
+        fn pairs[Ts...](values Ts...) Int
+        ensures result == 0
+        {
+            var total = 0
+            comptime for T in Ts {
+                comptime for U in Ts {
+                    comptime if T == U {
+                        total = total + 0
+                    } else {
+                        total = total + 1
+                    }
+                }
+            }
+            total
+        }
+        """)
+    list_length_contract("""
+        import std.list.push
+        import std.list.length
+        fn unchanged[Ts...](log List[Int], values Ts...) Int
+        ensures length(log) == old(length(log)) && result >= 0
+        {
+            var total = 0
+            comptime for index, T in Ts {
+                comptime if T == Int {
+                    push(log, index)
+                    total = total + 1
+                }
+            }
+            total
+        }
+        """, false)
+    rejects("""
+        concept Selected {
+        }
+        impl Selected for Int {
+        }
+        fn uniform[Ts...](values Ts...) (Int, Int)
+        ensures result.0 == 0 || result.1 == 0
+        {
+            var selected = 0
+            var other = 0
+            comptime for T in Ts {
+                comptime if T implements Selected {
+                    selected = selected + 1
+                } else {
+                    other = other + 1
+                }
+            }
+            (selected, other)
+        }
+        fn main() {
+            assert uniform().0 == 0
+        }
+        """)
+    rejects("""
+        concept Selected {
+        }
+        fn runtime[Ts...](enabled Bool, values Ts...) Int
+        ensures result >= 0
+        {
+            var total = 0
+            comptime for T in Ts {
+                comptime if T implements Selected && enabled {
+                    total = total + 1
+                }
+            }
+            total
+        }
+        """)
+}
