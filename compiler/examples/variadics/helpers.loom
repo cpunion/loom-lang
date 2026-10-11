@@ -1,0 +1,119 @@
+fn measure_or_zero[T](value T) Int
+ensures result >= 0
+{
+    comptime if T implements Measurement {
+        value.measure()
+    } else {
+        0
+    }
+}
+
+fn optional_measurements[Ts...](values Ts...) Int
+ensures result >= 0
+{
+    var total = 0
+    comptime for item in values {
+        total = total + measure_or_zero(item)
+    }
+    total
+}
+
+fn forwarded_optional_measurements[Us...](values (Us...)) Int
+ensures result >= 0
+{
+    optional_measurements(values...)
+}
+
+fn measure_at[T Measurement](value T, index Int) Int
+requires index >= 0
+ensures result >= index
+{
+    value.measure() + index
+}
+
+fn indexed_measurements[Us...](values (Int, MeasuredBox[Us]..., Bool)) Int
+ensures result >= 0
+{
+    var total = 0
+    comptime for index, item in values {
+        total = total + measure_at(item, index)
+    }
+    total
+}
+
+fn measured_pair[A, B](left A, right B) Int
+ensures result >= 0
+{
+    measure_or_zero(left) + measure_or_zero(right)
+}
+
+fn measured_pairs[Ts...](values Ts...) Int
+ensures result >= 0
+{
+    var total = 0
+    comptime for left in values {
+        comptime for right in values {
+            total = total + measured_pair(left, right)
+        }
+    }
+    total
+}
+
+fn note_element[T](value T, log List[Int], index Int)
+requires index >= 0
+ensures length(log) == old(length(log)) + 1
+{
+    push(log, index)
+}
+
+fn note_elements[Ts...](log List[Int], values Ts...) Int
+ensures result >= 0 && length(log) >= old(length(log))
+{
+    var total = 0
+    comptime for index, item in values {
+        note_element({
+                push(log, 99)
+                pack()
+            }..., item, (log, index)...)
+        total = total + index
+    }
+    total
+}
+
+async fn async_measure_or_zero[T](value T) Int
+ensures result >= 0
+{
+    measure_or_zero(value)
+}
+
+async fn async_optional_measurements[Ts...](values Ts...) Int
+ensures result >= 0
+{
+    var total = 0
+    comptime for item in values {
+        let pending = async_measure_or_zero(item)
+        total = total + pending.await
+    }
+    total
+}
+
+fn exercise_pack_helpers() {
+    assert optional_measurements() == 0
+    assert optional_measurements(2, "ignored", true, -1) == 3
+    assert forwarded_optional_measurements((false, "ignored", 7)) == 7
+    assert indexed_measurements((0, false)) == 1
+    assert indexed_measurements((2, MeasuredBox {
+                value = "wrapped"
+            }, true)) == 7
+    assert measured_pairs(2, "ignored") == 8
+    assert comptime {
+        optional_measurements(2, "ignored", true)
+    } == 3
+    let callback fn(Int, Text, Bool) Int = optional_measurements
+    assert callback(2, "ignored", true) == 3
+    let log List[Int] = []
+    assert optional_measurements(mark(log, 2), "ignored", mark(log, 3)) == 5
+    assert length(log) == 2 && log[0] == 2 && log[1] == 3
+    assert note_elements(log, true, "ignored", 7) == 3
+    assert length(log) == 8 && log[2] == 99 && log[3] == 0 && log[4] == 99 && log[5] == 1 && log[6] == 99 && log[7] == 2
+}

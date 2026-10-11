@@ -327,7 +327,7 @@ fn storage_operation(program Program, name Text, ty Int, arguments List[Expr], r
 
 fn storage_expression(value Expr) Bool {
     let kind = value.kind
-    proof_operation(value).arity >= 0 || kind == ExprKind.Bytes || kind == ExprKind.List ||
+    proof_operation(value).arity >= 0 || pack_entry_expression(value) || kind == ExprKind.Bytes || kind == ExprKind.List ||
     kind == ExprKind.Block || kind == ExprKind.If || kind == ExprKind.Match || kind == ExprKind.Variant || kind == ExprKind.While ||
     kind == ExprKind.Let || kind == ExprKind.Assign || kind == ExprKind.Return ||
     kind == ExprKind.Assert || kind == ExprKind.Discard ||

@@ -1,0 +1,145 @@
+// Private lexical entries exist only in an erased family proof. Native
+// instances still bind each actual element with ordinary resource checking.
+fn pack_proof_entry(context Context, node Node) Result[Expr, Failure] {
+    if pack_proof_caller(context) < 0 || length(child(node, 0).children) != 1 ||
+    length(child(node, 1).children) != 0 {
+        return Result.Err(error(context, node, "variadic entries are private to checked family proofs"))
+    }
+    let ty = context_type(context, child(child(node, 0), 0))?
+    if get(context.env.types, ty).kind != TypeKind.Parameter {
+        return Result.Err(error(context, node, "variadic entry needs an independent abstract type"))
+    }
+    Result.Ok(expression(ExprKind.Deferred, ty, node, "$packentry", -1, new[Expr](), true))
+}
+
+fn pack_proof_helper_call(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let owner = pack_proof_caller(context)
+    if owner < 0 {
+        return Result.Err(error(context, node, "variadic helper calls are private to checked family proofs"))
+    }
+    let path = slice(node.value, length("$packhelper#"), length(node.value))
+    let root = slice(path, 0, first_dot(path))
+    if lookup(context, root) >= 0 || parameter_name(context, root) {
+        return Result.Err(error(context, node, "variadic element helper needs an unshadowed declared function"))
+    }
+    let caller = symbol(context.env, owner)
+    let available = candidates(context.env.source, caller.file, caller.test_only, path)
+    let types = child(node, 0).children
+    let inputs = call_inputs(context, child(node, 1).children)?
+    // Ordinary input expansion owns snapshots and empty-gap effects. Remap
+    // opaque positions after it, so fixed spreads cannot shift the evidence.
+    let parameters = new[Node]()
+    var argument = 0
+    while argument < length(inputs.nodes) {
+        let input = get(inputs.nodes, argument)
+        var parameter = "-1"
+        var source = 0
+        while source < length(child(node, 1).children) {
+            let original = child(child(node, 1), source)
+            if input.kind == NodeKind.Name && original.kind == NodeKind.Name &&
+            input.value == original.value && child(child(node, 2), source).value != "-1" {
+                parameter = child(child(node, 2), source).value
+            }
+            source = source + 1
+        }
+        push(parameters, pack_node(input, NodeKind.Integer, parameter, new[Node]()))
+        argument = argument + 1
+    }
+    let prepared = pack_node(node, node.kind, node.value,
+        [child(node, 0), child(node, 1), pack_node(node, NodeKind.Parameters, "", parameters)])
+    let options = call_signature_options(context.env, available, length(inputs.nodes), call_type_count(node, types))
+    // Reuse the forwarding disjointness rule. A contender cannot disappear
+    // merely because this abstract entry does not yet have its concrete type.
+    let targets = new[Int]()
+    var option = 0
+    while option < length(options) {
+        push(targets, get(context.env.signatures, get(options, option)).symbol)
+        option = option + 1
+    }
+    option = 0
+    while option < length(available) {
+        let target = get(available, option)
+        if pack_parameter(symbol(context.env, target).node) >= 0 {
+            push(targets, target)
+        }
+        option = option + 1
+    }
+    let selected = pack_call_target(context, caller.node, targets, inputs, node)?
+    invoke(context, prepared, call_signature_options(context.env, ints(selected),
+            length(inputs.nodes), call_type_count(node, types)), types, inputs, new[Expr](), expected)
+}
+
+// Derive only the selected input's whole-word capabilities, in this call's
+// context. Evidence for one iterator never qualifies another or the source word.
+fn pack_helper_scope(context Context, node Node, options List[Int], values List[Expr]) Result[Context, Failure] {
+    var scope = context
+    var argument = 0
+    while argument < length(values) {
+        let parameter = match std.int.parse(child(child(node, 2), argument).value) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(error(context, node, "invalid variadic helper observation"))
+            }
+        }
+        if parameter >= 0 {
+            let actual = pack_observation_types(context, parameter, node)?
+            var option = 0
+            while option < length(options) {
+                let signature = get(context.env.signatures, get(options, option))
+                var bound = 0
+                while bound < length(signature.requirements) {
+                    let required = get(signature.requirements, bound)
+                    if required.ty == get(signature.params, argument) {
+                        var admitted = true
+                        var member = 0
+                        while member < length(actual) && admitted {
+                            admitted = satisfies(context, get(actual, member), required.capability)?
+                            member = member + 1
+                        }
+                        if admitted {
+                            scope = with_evidence(scope, get(values, argument).ty, required.capability)
+                        }
+                    }
+                    bound = bound + 1
+                }
+                option = option + 1
+            }
+        }
+        argument = argument + 1
+    }
+    Result.Ok(scope)
+}
+
+// A fixed-shape, value-independent summary cannot expose the erased element's
+// representation or correlate heterogeneous iterations. Ordinary invocation
+// still checks fixed arguments, preconditions, effects and Task/resource flow.
+fn pack_helper_contract(context Context, node Node, instance Instance) Result[Bool, Failure] {
+    let signature = get(context.env.signatures, instance.signature)
+    let helper = symbol(context.env, signature.symbol)
+    if helper.owner >= 0 || helper.node.kind != NodeKind.Function ||
+    pack_parameter(helper.node) >= 0 || !has(helper.node, NodeKind.Ensures) ||
+    !concrete(context.env, substitute(context.env, signature.symbol, signature.result, instance.arguments, node)?) {
+        return Result.Err(error(context, node, "variadic element helper needs declared postconditions and a fixed result shape"))
+    }
+    let parameters = group(helper.node, NodeKind.Parameters)
+    var argument = 0
+    while argument < length(parameters) {
+        if child(child(node, 2), argument).value != "-1" {
+            if is_static(signature, argument) {
+                return Result.Err(error(context, node, "an opaque variadic element cannot be a comptime argument"))
+            }
+            let name = get(parameters, argument).value
+            var clause = 0
+            while clause < length(helper.node.children) {
+                let condition = child(helper.node, clause)
+                if (condition.kind == NodeKind.Requires || condition.kind == NodeKind.Ensures) &&
+                pack_proof_opaque_contract(condition, name) {
+                    return Result.Err(error(context, node, "variadic helper contracts cannot observe opaque element values"))
+                }
+                clause = clause + 1
+            }
+        }
+        argument = argument + 1
+    }
+    Result.Ok(true)
+}

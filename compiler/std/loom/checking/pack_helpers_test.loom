@@ -1,0 +1,279 @@
+fn pack_helper_definitions() Text {
+    """
+        concept Measurement {
+            fn measure(self Self) Int
+            ensures result >= 0
+        }
+        impl Measurement for Int {
+            fn measure(self Int) Int {
+                if self >= 0 { self } else { 0 }
+            }
+        }
+        record Wrapped[T] {
+            value T
+        }
+        impl[T] Measurement for Wrapped[T] {
+            fn measure(self Wrapped[T]) Int {
+                1
+            }
+        }
+        fn optional[T](value T) Int
+        ensures result >= 0 {
+            comptime if T implements Measurement {
+                value.measure()
+            } else {
+                0
+            }
+        }
+        fn required[T Measurement](value T, index Int) Int
+        requires index >= 0
+        ensures result >= index {
+            value.measure() + index
+        }
+        fn total[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values {
+                sum = sum + optional(item)
+            }
+            sum
+        }
+        """
+}
+
+test fn pack_helpers_check_optional_bounds_and_whole_element_patterns() {
+    discard accepted(concat(pack_helper_definitions(), """
+        fn bounded[Ts... Measurement](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for index, item in values {
+                sum = sum + required(item, index)
+            }
+            sum
+        }
+        fn constructed[Us...](values (Int, Wrapped[Us]..., Int)) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for index, item in values {
+                sum = sum + required(item, index)
+            }
+            sum
+        }
+        fn spread[Ts... Measurement](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for index, item in values {
+                sum = sum + required(item, (index,) ...)
+            }
+            sum
+        }
+        fn required(value Bool, index Bool) Int
+        ensures result >= 0 {
+            0
+        }
+        fn forwarded[Us...](values (Us...)) Int
+        ensures result >= 0 {
+            total(values...)
+        }
+        fn pair[A, B](left A, right B) Int
+        ensures result >= 0 {
+            optional(left) + optional(right)
+        }
+        fn pairs[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for left in values {
+                comptime for right in values {
+                    sum = sum + pair(left, right)
+                }
+            }
+            sum
+        }
+        fn main() {
+            assert total() == 0 && total(7, true, -1) == 7
+            assert forwarded((false, 7)) == 7
+            assert bounded(2, -1) == 3
+            assert spread(2, -1) == 3
+            assert constructed((0, Wrapped { value = true }, 0)) == 4
+            assert pairs(2, true) == 8
+        }
+        """))
+}
+
+test fn pack_helpers_reject_correlated_iterators_and_false_fixed_argument_results() {
+    let header = pack_helper_definitions()
+    rejects(concat(header, """
+        fn same[T](left T, right T) Int
+        ensures result >= 0 {
+            0
+        }
+        fn wrong[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for left in values {
+                comptime for right in values {
+                    sum = sum + same(left, right)
+                }
+            }
+            sum
+        }
+        """))
+    rejects(concat(header, """
+        fn exact[T](value T, index Int) Int
+        ensures result == index {
+            index
+        }
+        fn wrong[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values {
+                sum = sum + exact(item, -1)
+            }
+            sum
+        }
+        """))
+    rejects(concat(header, """
+        fn wrong[Us...](values (Int, Wrapped[Us]..., Bool)) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values {
+                sum = sum + required(item, 0)
+            }
+            sum
+        }
+        """))
+}
+
+test fn pack_helpers_require_fixed_value_independent_declared_summaries() {
+    let helpers = ["""
+            fn observe[T](value T) Int {
+                0
+            }
+            """, """
+            fn observe[T](value T) Int
+            ensures result == optional(value) {
+                optional(value)
+            }
+            """, """
+            fn observe[T](value T) Int
+            requires optional(value) > 0
+            ensures result >= 0 {
+                0
+            }
+            """, """
+            fn observe[T](comptime value T) Int
+            ensures result >= 0 {
+                0
+            }
+            """, """
+            fn observe[T](value T) T
+            ensures true {
+                value
+            }
+            """]
+    var index = 0
+    while index < length(helpers) {
+        rejects(concat(pack_helper_definitions(), concat(get(helpers, index), """
+            fn wrong[Ts...](values Ts...) Int
+            ensures result >= 0 {
+                comptime for item in values {
+                    discard observe(item)
+                }
+                0
+            }
+            """)))
+        index = index + 1
+    }
+    rejects(std.text.join(std.text.split(pack_helper_definitions(),
+                "value.measure()"), "-1"))
+}
+
+test fn pack_helpers_retain_overloads_that_can_match_another_element_type() {
+    rejects(concat(pack_helper_definitions(), """
+        fn optional(value Bool) Int
+        ensures result == -1 {
+            -1
+        }
+        """))
+    rejects(concat(pack_helper_definitions(), """
+        fn optional[Us...](values Us...) Int
+        ensures result == -1 {
+            -1
+        }
+        """))
+}
+
+test fn pack_helpers_preserve_shared_effects_and_fixed_argument_contracts() {
+    let source = concat(pack_helper_definitions(), """
+        import std.list.length
+        import std.list.push
+        fn note[T](value T, log List[Int], index Int)
+        requires index >= 0
+        ensures length(log) == old(length(log)) + 1 {
+            push(log, index)
+        }
+        fn recorded[Ts...](log List[Int], values Ts...) Int
+        ensures result >= 0 && length(log) >= old(length(log)) {
+            var sum = 0
+            comptime for index, item in values {
+                note(item, log, index)
+                sum = sum + index
+            }
+            sum
+        }
+        """)
+    list_length_contract(source, true)
+    list_length_contract(std.text.join(std.text.split(source,
+                "length(log) >= old(length(log))"), "length(log) == old(length(log))"), false)
+    let opaque = concat(pack_helper_definitions(), """
+        import std.list.length
+        import std.list.push
+        impl Measurement for List[Int] {
+            fn measure(self List[Int]) Int {
+                push(self, 1)
+                0
+            }
+        }
+        fn wrong[Ts... Measurement](log List[Int], values Ts...) Int
+        ensures length(log) == old(length(log)) {
+            var sum = 0
+            comptime for item in values {
+                sum = sum + required(item, 0)
+            }
+            sum
+        }
+        """)
+    list_length_contract(opaque, false)
+}
+
+test fn pack_helpers_do_not_erase_selected_task_and_resource_obligations() {
+    let helper = """
+        fn ignore[T](value T) Int
+        ensures result >= 0 {
+            discard value
+            0
+        }
+        fn observe[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values {
+                sum = sum + ignore(item)
+            }
+            sum
+        }
+        """
+    resource_reject(concat(resource_header(), concat(helper, """
+        fn main() {
+            scoped handle = make([0])
+            discard observe(handle)
+        }
+        """)))
+    rejects(concat(helper, """
+        async fn item() Int {
+            1
+        }
+        fn main() {
+            discard observe(item())
+        }
+        """))
+}

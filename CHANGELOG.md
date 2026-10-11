@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose variadic value iteration through ordinary generic helper summaries,
+  including optional concept branches, whole-pattern bounds, fixed arguments
+  and async completion. Keep lexical entry types independent and values fresh;
+  retain runtime preconditions, shared effects, Task/resource checks and cache
+  invalidation. Opaque input-dependent contracts and result shapes still reject.
+
 - Lower pure inline-field reads from local records directly to field addresses
   and loads, including nested fields, instead of loading unrelated aggregate
   contents. Preserve computed receiver evaluation, GC snapshots and frame access;

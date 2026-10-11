@@ -34,3 +34,33 @@ test fn private_type_decisions_are_fresh_but_other_deferred_values_remain_unprov
             Result.Err(_) => Predicate.Constant(true)
         }, [])
 }
+
+test fn private_pack_entries_are_fresh_and_require_abstract_types() {
+    let entry = expression(ExprKind.Deferred, 0, "$packentry", -1, [])
+    let proof = verification(fixture(literal("0"), [], literal("true")),
+        proof_program_with_types([publication_shape(TypeKind.Parameter, [])]))
+    let state = State {
+        locals = []
+        facts = []
+        extents = []
+        observations = []
+    }
+    let before = get(proof.fresh, 0)
+    var index = 0
+    while index < 2 {
+        assert match execute(proof, entry, state, 16) {
+            Result.Ok(values) => match get(values, 0).value {
+                Value.Opaque(frontier, excluded) => frontier == before + index && length(excluded) == 0
+                _ => false
+            }
+            Result.Err(_) => false
+        }
+        index = index + 1
+    }
+    assert get(proof.fresh, 0) == before + 2
+    let invalid = expression(ExprKind.Deferred, 1, "$packentry", -1, [])
+    assert match execute(proof, invalid, state, 16) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

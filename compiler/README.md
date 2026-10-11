@@ -1322,6 +1322,42 @@ packs, CTFE, callbacks and once-only argument effects. Native code selects the
 actual branch at compile time; the proof decision has no runtime representation.
 Families without required postconditions retain ordinary selected-branch
 checking; this proof rule does not require their unselected branches to compile.
+Value iteration can pass a direct element to an ordinary declared generic
+helper with verified postconditions and a fixed result shape, including an
+async helper followed by `.await`. For example:
+
+```loom
+fn measure_or_zero[T](value T) Int
+ensures result >= 0
+{
+    comptime if T implements Measurement {
+        value.measure()
+    } else {
+        0
+    }
+}
+
+fn optional_measurements[Ts...](values Ts...) Int
+ensures result >= 0
+{
+    var total = 0
+    comptime for item in values {
+        total = total + measure_or_zero(item)
+    }
+    total
+}
+```
+
+Here `Measurement` declares `measure(self Self) Int` with `ensures result >= 0`;
+`T` itself has no required concept. Each lexical value iterator has an independent
+abstract type and each evaluation supplies a fresh opaque entry. Helper input
+bounds must hold for every fixed member and expansion pattern, not just one
+specialization. Fixed arguments, runtime preconditions, overloads and shared
+effects retain ordinary call semantics. Helper clauses cannot mention the opaque
+input value, and its substituted result cannot expose an abstract element type.
+Other opaque-value escape and representation-dependent reasoning still reject.
+See the [helper example](examples/variadics/helpers.loom) for optional and bounded
+helpers, nested iteration, CTFE, callbacks, ordered effects and saved Tasks.
 Type equality does not narrow an opaque type to a concrete layout. Once a whole
 family proof batch succeeds, selected widths and concrete instances reuse that
 universal proof. Their bodies still undergo ordinary typing, entry, Task and
