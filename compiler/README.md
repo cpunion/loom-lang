@@ -1305,6 +1305,8 @@ ordered indices and forwarded family summaries use the ordinary proof rules.
 The [type guard example](examples/variadics/type_guards.loom) runs empty/mixed
 packs, CTFE, callbacks and once-only argument effects. Native code selects the
 actual branch at compile time; the proof decision has no runtime representation.
+Families without required postconditions retain ordinary selected-branch
+checking; this proof rule does not require their unselected branches to compile.
 Type equality does not narrow an opaque type to a concrete layout. The existing
 proof budgets still apply, including expansion of selected-width abstract bodies;
 deep composed branches may remain unproved.

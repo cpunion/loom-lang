@@ -56,8 +56,20 @@ ensures result >= 0 {
     }
     total
 }
+fn selected_only[Ts...](values Ts...) Int {
+    var total = 0
+    comptime for T in Ts {
+        comptime if T == Int {
+            total = total + 1
+        } else {
+            unavailable_unselected_branch()
+        }
+    }
+    total
+}
 fn main() {
     assert count(1, true) == 1
+    assert selected_only(1, 2) == 2
 }
 "#;
     fs::write(&path, source).unwrap();

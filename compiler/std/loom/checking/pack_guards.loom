@@ -5,7 +5,11 @@ fn pack_guard_scope(context Context) Bool {
     // concrete native instantiation. Their proof closure can use emit=true
     // for call indexing; that flag alone does not identify executable code.
     let signature = source_signature_id(context.env, context.signature.symbol)
-    signature >= 0 && pack_instance(context.env, signature) >= 0 && abstract_context(context)
+    if signature < 0 || !abstract_context(context) {
+        return false
+    }
+    let instance = pack_instance(context.env, signature)
+    instance >= 0 && pack_has_postcondition(context.env, get(context.env.packs, instance))
 }
 
 fn pack_type_guard(context Context, condition Node) Bool {

@@ -164,6 +164,23 @@ test fn type_pack_guards_reject_unproved_branches_and_leaked_evidence() {
 }
 
 test fn type_pack_decisions_do_not_assume_uniform_members_or_runtime_conditions() {
+    // Without a required contract, an unselected template branch is not checked.
+    discard accepted("""
+        fn selected[Ts...](values Ts...) Int {
+            var total = 0
+            comptime for T in Ts {
+                comptime if T == Int {
+                    total = total + 1
+                } else {
+                    unavailable_unselected_branch()
+                }
+            }
+            total
+        }
+        fn main() {
+            assert selected(1, 2) == 2
+        }
+        """)
     rejects("""
         fn pairs[Ts...](values Ts...) Int
         ensures result == 0
