@@ -1,27 +1,30 @@
-// Abstract family/selected-width checks widen pending type guards only in
-// proof bodies. Native specializations select their actual compile-time branch.
-fn pack_guard_scope(context Context) Bool {
-    // Selected widths are also checked with abstract element types before
-    // concrete native instantiation. Their proof closure can use emit=true
-    // for call indexing; that flag alone does not identify executable code.
+// Required generic contracts prove both paths of pending type decisions.
+// Native specializations still select their actual compile-time branch.
+fn type_guard_proof_scope(context Context) Bool {
+    // Private helper closures can use emit=true for call indexing. Abstract
+    // arguments, not that flag, distinguish them from executable instances.
     let signature = source_signature_id(context.env, context.signature.symbol)
     if signature < 0 || !abstract_context(context) {
         return false
+    }
+    if has(symbol(context.env, context.signature.symbol).node, NodeKind.Ensures) ||
+    inherited_method_contract(context.env, context.signature.symbol, NodeKind.Ensures) {
+        return true
     }
     let instance = pack_instance(context.env, signature)
     instance >= 0 && pack_has_postcondition(context.env, get(context.env.packs, instance))
 }
 
-fn pack_type_guard(context Context, condition Node) Bool {
+fn proof_type_guard(context Context, condition Node) Bool {
     if condition.kind == NodeKind.Implements {
         return true
     }
     if condition.kind == NodeKind.Unary && condition.value == "!" {
-        return pack_type_guard(context, child(condition, 0))
+        return proof_type_guard(context, child(condition, 0))
     }
     if condition.kind == NodeKind.Binary {
         if condition.value == "&&" || condition.value == "||" {
-            return pack_type_guard(context, child(condition, 0))
+            return proof_type_guard(context, child(condition, 0))
         }
         if condition.value == "==" || condition.value == "!=" {
             return type_operand(context, child(condition, 0)) && type_operand(context, child(condition, 1))
@@ -30,7 +33,7 @@ fn pack_type_guard(context Context, condition Node) Bool {
     false
 }
 
-fn pack_guarded_selection(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
+fn guarded_proof_selection(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let condition = child(source, 0)
     let yes = child(source, 1)
     let no = if length(source.children) == 3 {
@@ -66,7 +69,7 @@ fn pack_guarded_selection(context Context, node Node, source Node, expected Int,
             return deferred(context, node, expected)
         }
     }
-    let decision = expression(ExprKind.Deferred, 2, condition, "$packguard", -1, new[Expr](), true)
+    let decision = expression(ExprKind.Deferred, 2, condition, "$typeguard", -1, new[Expr](), true)
     // No negative conformance axiom, type equality narrowing, or leaked bound.
     conditional_branches(context, source, decision, when_true, context, expected, enforce)
 }

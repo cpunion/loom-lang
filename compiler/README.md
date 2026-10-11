@@ -3375,8 +3375,11 @@ See the [captured callback example](examples/comptime_closures/README.md).
 Selected static branches are checked with abstract type arguments and declared
 requirements before concrete emission. A Boolean switch does not supply missing
 generic capability evidence. Required postconditions still have to pass abstract
-declaration checking, even on unused functions; unsupported parameter-dependent
-proofs reject. Specialization and pure evaluation remain bounded.
+declaration checking, even on unused functions. Pending type guards prove both
+paths with branch-local concept evidence, including inherited method contracts;
+unsupported parameter-dependent proofs still reject. Specialization and pure
+evaluation remain bounded. See the
+[guarded contract example](examples/concept_contracts/guarded.loom).
 
 The [static-parameter example](examples/comptime_parameters/main.loom) covers
 generic recursion, pure argument computation, static Text, shadowing, returned
@@ -3558,10 +3561,15 @@ parses but is not instantiated. Established concept evidence follows the actual
 condition path into subsequent operands and the selected body, including an
 `else` reached through negation. An unresolved left operand waits for concrete
 instantiation instead of inspecting the right operand or applying Boolean
-identities that could hide a fault. Unresolved choices require a contextual
-result type; required proofs cannot assume their result. Code outside the choice
-is still checked. Ordinary runtime Boolean expressions keep their existing
-type and purity checks.
+identities that could hide a fault. Required generic contracts additionally
+check both possible type-guard paths with the ordinary proof algebra, preserving
+short-circuit scope. Neither path may assume the other's concept evidence or a
+concrete layout from type equality. Unknown runtime/static-value choices remain
+unproved. Functions without required postconditions retain selected-only body
+checking. Unresolved choices require a contextual result type; code outside the
+choice is still checked. Native instances emit only their actual selected path,
+not a runtime type predicate. Ordinary runtime Boolean expressions keep their
+existing type and purity checks.
 
 The Loom-written evaluator consumes the same checked model as native lowering;
 constraint folding and pure-predicate validation use this engine too.

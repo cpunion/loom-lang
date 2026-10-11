@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Prove required contracts across pending compile-time type guards in ordinary
+  generic functions and inherited concept methods, using the same branch rules
+  as pack induction. Check both paths with local positive evidence; retain
+  selected-only templates, ordinary resource checks and concrete native branches.
+
 - Reuse completed universal pack proofs for selected widths and concrete
   instances, while retaining body typing, entry checks and independent
   resource/shared-state verification. Rebind and normalize each signature's

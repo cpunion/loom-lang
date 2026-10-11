@@ -65,6 +65,7 @@ ensures result == input {
 }
 
 test fn concept_contracts() {
+    guarded_exercise()
     generic_exercise()
     aggregate_exercise()
     assert 1.preserve(3) == 3
@@ -82,6 +83,7 @@ test fn concept_contracts() {
 }
 
 fn main() {
+    guarded_exercise()
     generic_exercise()
     aggregate_exercise()
     let erased dyn Positive = Parcel {

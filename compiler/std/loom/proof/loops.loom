@@ -142,7 +142,7 @@ fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], gu
     let scalar = kind == ExprKind.Integer || kind == ExprKind.Float || kind == ExprKind.Bool || kind == ExprKind.Text || kind == ExprKind.Local ||
     kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce ||
     kind == ExprKind.Field || kind == ExprKind.Record || kind == ExprKind.List || kind == ExprKind.Variant ||
-    kind == ExprKind.FrameNew || kind == ExprKind.DynBox || pack_guard_expression(expr)
+    kind == ExprKind.FrameNew || kind == ExprKind.DynBox || type_guard_expression(expr)
     let call = kind == ExprKind.Call || kind == ExprKind.TaskCall ||
     kind == ExprKind.Await || kind == ExprKind.Suspend ||
     kind == ExprKind.FunctionRef || kind == ExprKind.IndirectCall

@@ -181,6 +181,13 @@ ordinary bounds, visibility and value-shadowing rules.
 Selected type bindings and explicit static type parameters also participate in
 compile-time equality/conformance guards. Unknown guards remain deferred;
 selected enum constructors are still values, not types.
+Required ordinary generic and inherited method contracts now prove both paths
+of pending type guards using the same rules as pack induction. Positive concept
+evidence stays branch-local, including guarded associated-type queries;
+unknown value conditions and concrete-layout narrowing remain unsupported.
+Uncontracted templates retain selected-only checking, and native instances emit
+only the actual branch. See the
+[guarded contract example](../../compiler/examples/concept_contracts/guarded.loom).
 Static tuple/record type iteration also accepts immutable compile-time-selected
 type bindings, with the same lexical visibility and ordinary generated code.
 Record/enum packs infer arity from structural initializers, preserve nominal

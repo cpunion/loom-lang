@@ -29,7 +29,7 @@ fn concept_contracts_compose_without_emitting_abstract_proof_bodies() {
                 .unwrap(),
         );
         let llvm = fs::read_to_string(&ir).unwrap();
-        for absent in ["executor", "proof", "universal"] {
+        for absent in ["executor", "proof", "universal", "$typeguard"] {
             assert!(
                 !llvm.contains(absent),
                 "private proof machinery leaked: {absent}"

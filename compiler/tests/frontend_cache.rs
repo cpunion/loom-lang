@@ -46,6 +46,15 @@ requires value >= 0
 ensures result >= 0 {
     value
 }
+fn optional[T](value Int) Int
+requires value >= 0
+ensures result >= 0 {
+    comptime if T implements Selected {
+        contribution[T](value)
+    } else {
+        0
+    }
+}
 fn count[Ts...](values Ts...) Int
 ensures result >= 0 {
     var total = 0
@@ -69,6 +78,7 @@ fn selected_only[Ts...](values Ts...) Int {
 }
 fn main() {
     assert count(1, true) == 1
+    assert optional[Int](1) == 1 && optional[Bool](1) == 0
     assert selected_only(1, 2) == 2
 }
 "#;
@@ -89,7 +99,8 @@ fn main() {
             "impl Selected for Int {",
             "impl Selected for Bool {}\nimpl Selected for Int {",
         )
-        .replace("assert count(1, true) == 1", "assert count(1, true) == 2");
+        .replace("assert count(1, true) == 1", "assert count(1, true) == 2")
+        .replace("optional[Bool](1) == 0", "optional[Bool](1) == 1");
     fs::write(&path, &changed).unwrap();
     checked(&cached("run", &package, &cache, &[]), false);
     // The implementation still returns a positive value. Its weaker summary
