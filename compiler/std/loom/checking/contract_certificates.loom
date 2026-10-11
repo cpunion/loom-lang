@@ -36,6 +36,27 @@ fn contract_local_types(function Function) List[Int] {
     types
 }
 
+// A published erased proof covers every width and admitted type argument.
+// Queued/current-batch entries are promises, not reusable evidence. Only whole
+// successful batches publish state 2, within the current binding snapshot.
+fn completed_pack_contract(env Environment, id Int) Bool {
+    let selected = pack_instance(env, id)
+    if selected < 0 || length(get(env.packs, selected).widths) == 0 ||
+    !pack_has_postcondition(env, get(env.packs, selected)) {
+        return false
+    }
+    let source = get(env.packs, selected).source
+    var index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        if pack.source == source && erased_pack(pack) && pack.state == 2 {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
 fn completed_contract(context Context, id Int, function Function) List[Expr] {
     let cache = get(context.env.inputs, 0).contracts
     if id < length(cache) && contract_cacheable(context, id) {

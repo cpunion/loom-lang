@@ -280,7 +280,11 @@ CTFE, callbacks and forwarding share ordinary checking rules. Native instances
 select their actual branch without a runtime predicate. See the
 [type guard example](../../compiler/examples/variadics/type_guards.loom).
 Type equality supplies no concrete-layout narrowing or negative conformance
-axiom, and selected-width abstract expansion retains the existing proof budgets.
+axiom. Published universal family proofs are reused by selected widths and native
+instances, retaining ordinary typing, entry/resource checks and independent
+shared-state verification. Clauses are rebound and normalized for each signature;
+queued or unpublished proofs supply no evidence. Existing family/helper proof
+budgets remain unchanged.
 Named pack-bearing inputs can forward into a synchronous or async family and compose
 universally checked postconditions. Bare, structural tuple and nominal patterns
 share constructor identities with impl overlap checks. Bounded symbolic-word

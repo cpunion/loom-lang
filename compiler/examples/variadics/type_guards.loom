@@ -91,6 +91,26 @@ ensures result >= 0
     total
 }
 
+fn combined_type_counts[Ts...](log List[Int], values Ts...) (Int, Int)
+ensures result.0 >= 0 && result.1 >= 0 && length(log) >= old(length(log))
+{
+    var total = 0
+    var count = 0
+    comptime for index, T in Ts {
+        comptime if T implements Selected {
+            total = total + selected_contribution[T](index)
+            count = count + 1
+            push(log, index)
+        } else {
+            total = total + 0
+        }
+        comptime if T == Int || T == Bool {
+            count = count + 1
+        }
+    }
+    (total, count)
+}
+
 fn exercise_type_guard_induction() {
     assert selected_type_indices() == 0
     assert selected_type_indices(true, 2, "three", 4) == 4
@@ -114,4 +134,11 @@ fn exercise_type_guard_induction() {
     assert length(log) == 3 && log[1] == 1 && log[2] == 2
     assert log_selected_types(log, "first", true, 2) == 2
     assert length(log) == 5 && log[3] == 1 && log[4] == 2
+    let combined_log = [99]
+    let total, count = combined_type_counts(combined_log,
+        1, true, "three", 4,
+        5, false, "seven", 8,
+        9, true, "eleven", 12,
+        13, false, "fifteen", 16)
+    assert total == 60 && count == 20 && length(combined_log) == 9
 }

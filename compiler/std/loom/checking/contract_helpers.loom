@@ -7,6 +7,7 @@ import std.loom.typed.Function
 import std.loom.typed.Arm
 import std.loom.proof.verify_with_types
 import std.loom.proof.verify_with_helpers
+import std.loom.proof.normalized_postconditions
 import std.list.new
 import std.list.get
 import std.list.push
@@ -193,13 +194,17 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             return Result.Ok(with_contracts(function, function.preconditions, completed))
         }
     }
-    let body_calls = has_ensures && proof_body_calls(function.body)
+    let family_proved = has_ensures && completed_pack_contract(context.env, id)
+    let body_calls = has_ensures && !family_proved && proof_body_calls(function.body)
     if !contract_helpers(node) && !inherited_method_helpers(context.env, context.signature.symbol) && !body_calls {
         if !has_ensures {
             return Result.Ok(function)
         }
         let conditions = add_contracts(contracts(context, node, NodeKind.Ensures)?, inherited_contracts(context, NodeKind.Ensures)?)
         let checked = with_contracts(function, function.preconditions, conditions)
+        if family_proved {
+            return certified_contract(context, id, checked)
+        }
         match verify_with_types(context.env.types, checked, backend) {
             Result.Ok(_) => certified_contract(context, id, checked)
             Result.Err(message) => {
@@ -247,7 +252,15 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             push(position, 0)
             proof = with_body(proof, proof_dynamic_calls(proof.body, first, position, summaries))
         }
-        match verify_with_helpers(program, proof, backend) {
+        let checked = if family_proved {
+            // Rebind/normalize the selected clauses; never copy erased locals
+            // or replay the already proved family body. Helper, resource and
+            // Task checks above remain authoritative for this specialization.
+            normalized_postconditions(program, proof)
+        } else {
+            verify_with_helpers(program, proof, backend)
+        }
+        match checked {
             Result.Ok(conditions) => {
                 // Ensures are already proved; retain call-free checked clauses
                 // for reflection/CTFE, not private helper indices or runtime roots.

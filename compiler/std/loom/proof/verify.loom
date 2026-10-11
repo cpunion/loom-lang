@@ -771,6 +771,14 @@ pub fn verify_with_helpers(program Program, function Function, backend ProofBack
     Result.Ok(proof.function.postconditions)
 }
 
+// Expand checked clauses in their own signature/local scope, without proving
+// the body. This supplies no evidence: callers must already hold a completed
+// proof covering the instance and independently check its helper closure.
+pub fn normalized_postconditions(program Program, function Function) Result[List[Expr], Text] {
+    let proof = contract_verification(program, function, no_proof_backend(), false)?
+    Result.Ok(proof.function.postconditions)
+}
+
 // Independent shared observations cannot reuse a previously read extent/cell.
 // Scalar snapshots remain ordinary values; pure scalar contracts are unchanged.
 pub fn verify_shared(program Program, function Function, backend ProofBackend) Result[Bool, Text] {

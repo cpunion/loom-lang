@@ -79,3 +79,70 @@ test fn completed_groups_retain_helper_clauses_only_after_every_member_passes() 
     }
     assert length(get(failed.inputs, 0).contracts) == 0
 }
+
+test fn pack_certificates_require_a_published_family_and_rebind_selected_locals() {
+    let env = match certificate_environment("""
+        fn identity(value Int) Int {
+            value
+        }
+        fn keep[Ts...](value Int, values Ts...) Int
+        ensures result == identity(value) {
+            value
+        }
+        """) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    let owner = get(env.packs, 0).source
+    assert symbol(env, owner).name == "keep"
+    let selected = match pack_signature(env, owner, [4]) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    let erased = match erased_pack_signature(env, owner) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    let erased_index = pack_instance(env, erased)
+    let states = [0, 1, 3, 4]
+    var index = 0
+    while index < length(states) {
+        pack_state(env, erased_index, get(states, index), 1)
+        assert !completed_pack_contract(env, selected)
+        index = index + 1
+    }
+    finish_pack_batch(env, false)
+    assert !completed_pack_contract(env, selected)
+    assert match check_pack_arity(env, erased) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert completed_pack_contract(env, selected)
+    assert !completed_pack_contract(env, erased)
+    let signature = get(env.signatures, selected)
+    let built = match function(env, selected, abstract_arguments(env, signature.parameters),
+        unknown_constants(signature), false) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    assert get(built.locals, built.result_local).name == "result"
+    assert built.result_local != length(get(env.signatures, erased).params)
+    assert length(built.postconditions) != 0
+    assert !proof_body_calls(get(built.postconditions, 0))
+    assert match verify_with_types(env.types, built) {
+        Result.Ok(_) => true
+        _ => false
+    }
+}
