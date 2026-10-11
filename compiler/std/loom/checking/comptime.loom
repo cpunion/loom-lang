@@ -263,8 +263,8 @@ fn type_application(context Context, node Node) Bool {
 fn selected(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
     match guard_condition(context, node, child(source, 0), 0)? {
         GuardDecision.Pending => {
-            if pack_guard_scope(context) && pack_type_guard(context, child(source, 0)) {
-                return pack_guarded_selection(context, node, source, expected, enforce)
+            if type_guard_proof_scope(context) && proof_type_guard(context, child(source, 0)) {
+                return guarded_proof_selection(context, node, source, expected, enforce)
             }
             let value = deferred(context, node, expected)?
             // This branch can read or replace visible Task bindings. Keep that

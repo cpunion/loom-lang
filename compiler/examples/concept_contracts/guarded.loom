@@ -1,0 +1,53 @@
+fn optional_preserve[T](source T, input Int) Int
+requires input >= 0
+ensures result == input
+{
+    comptime if T implements Preserve {
+        source.keep(input)
+    } else {
+        input
+    }
+}
+
+fn optional_scalar[T](source T, input Int) Int
+requires input >= 0
+ensures result >= 0
+{
+    comptime if T implements Preserve && (T == Bool || T == Text) {
+        source.keep(input)
+    } else {
+        0
+    }
+}
+
+concept OptionalPreserve {
+    fn optional[T](self Self, source T, input Int) Int
+    requires input >= 0
+    ensures result == input
+}
+
+impl OptionalPreserve for Bool {
+    fn optional[T](self Bool, source T, input Int) Int {
+        comptime if T implements Preserve {
+            source.keep(input)
+        } else {
+            input
+        }
+    }
+}
+
+fn guarded_exercise() {
+    assert optional_preserve(true, 7) == 7
+    assert optional_preserve(1, 8) == 8
+    assert optional_scalar("selected", 9) == 9
+    assert optional_scalar([true], 10) == 0
+    assert optional_scalar(1, 11) == 0
+    assert comptime {
+        optional_preserve("static", 12)
+    } == 12
+    let callback fn(Bool, Int) Int = optional_preserve
+    assert callback(false, 13) == 13
+    let erased dyn OptionalPreserve = true
+    assert erased.optional("dynamic", 14) == 14
+    assert erased.optional(1, 15) == 15
+}

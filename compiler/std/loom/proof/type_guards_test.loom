@@ -1,5 +1,5 @@
 test fn private_type_decisions_are_fresh_but_other_deferred_values_remain_unproved() {
-    let guard = expression(ExprKind.Deferred, 2, "$packguard", -1, [])
+    let guard = expression(ExprKind.Deferred, 2, "$typeguard", -1, [])
     let body = expression(ExprKind.If, 1, "", -1, [guard, literal("1"), literal("0")])
     assert verified(fixture(body, [], operation(">=", local(1), literal("0"))))
     let pending = expression(ExprKind.Deferred, 2, "comptime selection", -1, [])

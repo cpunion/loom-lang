@@ -12,7 +12,9 @@ test fn composite_type_guards_reject_shadowed_type_arguments() {
         Result.Err(failure) => {
             assert failure.diagnostic.message == "comptime type comparison requires two unshadowed types"
         }
-        Result.Ok(_) => { assert false }
+        Result.Ok(_) => {
+            assert false
+        }
     }
     rejects("fn main() { let Int = 0\ncomptime if List[Int] == List[Int] { discard Int } }")
 }
@@ -34,10 +36,149 @@ test fn boolean_type_guard_evidence_stays_on_the_evaluated_path() {
 }
 
 test fn boolean_type_guards_never_hide_pending_proofs_or_evaluated_faults() {
-    rejects("concept C {}\npub fn pending[T]() Int ensures result == 1 { comptime if T implements C || true { 1 } else { 0 } }")
-    rejects("concept C {}\npub fn pending[T]() Int ensures result == 0 { comptime if T implements C && false { 1 } else { 0 } }")
+    discard accepted("concept C {}\npub fn pending[T]() Int ensures result == 1 { comptime if T implements C || true { 1 } else { 0 } }")
+    discard accepted("concept C {}\npub fn pending[T]() Int ensures result == 0 { comptime if T implements C && false { 1 } else { 0 } }")
     rejects("fn failed() Bool { assert false\ntrue }\nfn main() { comptime if failed() && false { assert true } }")
     rejects("fn main() { comptime if (1 / 0 > 0) || true { assert true } }")
     rejects("fn false_proof() Int ensures result == 2 { comptime if Int == Int || Int == Text { 1 } else { 2 } }")
     discard accepted("fn proved() Int ensures result == 1 { comptime if !(Int == Text) && (Int == Int || Int == Bool) { 1 } else { 2 } }\nfn main() { assert proved() == 1 }")
+}
+
+test fn generic_type_guards_compose_required_contracts_and_associated_evidence() {
+    discard accepted("""
+        concept Measured {
+            fn amount(self Self) Int
+            ensures result >= 0
+        }
+        concept Source {
+            type Item
+        }
+        fn bounded[T Measured]() Int
+        ensures result >= 0
+        {
+            1
+        }
+        pub fn optional[T](value T) Int
+        ensures result >= 0
+        {
+            comptime if T implements Measured {
+                value.amount()
+            } else {
+                0
+            }
+        }
+        pub fn projected[T](source T) Int
+        ensures result >= 0
+        {
+            comptime if T implements Source && T.Item implements Measured {
+                bounded[T.Item]()
+            } else {
+                0
+            }
+        }
+        pub fn selected[T](value T) Int
+        ensures result >= 0
+        {
+            comptime if !(T implements Measured) {
+                0
+            } else {
+                value.amount()
+            }
+        }
+        pub fn scalar[T]() Int
+        ensures result >= 0
+        {
+            comptime if T == Int || T == Bool {
+                1
+            } else {
+                0
+            }
+        }
+        concept Optional {
+            fn number[T](self Self, value T) Int
+            ensures result >= 0
+        }
+        impl Optional for Bool {
+            fn number[T](self Bool, value T) Int {
+                comptime if T implements Measured {
+                    value.amount()
+                } else {
+                    0
+                }
+            }
+        }
+        """)
+}
+
+test fn generic_type_guard_proofs_reject_bad_paths_and_non_type_decisions() {
+    let definitions = """
+        concept Measured {
+            fn amount(self Self) Int
+            ensures result >= 0
+        }
+        """
+    let invalid = ["""
+        pub fn bad[T](value T) Int
+        ensures result >= 0
+        {
+            comptime if T implements Measured {
+                value.amount()
+            } else {
+                -1
+            }
+        }
+        """, """
+        pub fn bad[T](value T) Int
+        ensures result >= 0
+        {
+            comptime if T implements Measured {
+                discard value.amount()
+            }
+            value.amount()
+        }
+        """, """
+        pub fn bad[T](value T) Int
+        ensures result >= 0
+        {
+            comptime if T implements Measured {
+                0
+            } else {
+                value.amount()
+            }
+        }
+        """, """
+        pub fn bad[T](value T, enabled Bool) Int
+        ensures result >= 0
+        {
+            comptime if T implements Measured && enabled {
+                value.amount()
+            } else {
+                0
+            }
+        }
+        """, """
+        pub fn bad[T](value T) Int
+        ensures result >= 0
+        {
+            comptime if T == Int {
+                value + 1
+            } else {
+                0
+            }
+        }
+        """, """
+        async fn bad[T](pending Task[Int]) Int
+        ensures result >= 0
+        {
+            comptime if T implements Measured {
+                discard pending.await
+            }
+            0
+        }
+        """]
+    var index = 0
+    while index < length(invalid) {
+        rejects(concat(definitions, get(invalid, index)))
+        index = index + 1
+    }
 }
