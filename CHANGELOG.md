@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Select test execution with `loom test --filter <substring>`, including recursive
+  packages and compile-only test binaries. Match fully qualified names literally,
+  retain all static checks and test isolation, and keep filtered artifacts distinct
+  while sharing the ordinary definition cache.
+
 - Prove required contracts across pending compile-time type guards in ordinary
   generic functions and inherited concept methods, using the same branch rules
   as pack induction. Check both paths with local positive evidence; retain

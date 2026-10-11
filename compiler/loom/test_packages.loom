@@ -89,6 +89,7 @@ fn test_recursive(selected Options) Result[Text, Text] {
             ir = selected.ir
             native_tool = selected.native_tool
             no_run = selected.no_run
+            test_filter = selected.test_filter
             tests = selected.tests
             recursive = false
             git_tool = selected.git_tool

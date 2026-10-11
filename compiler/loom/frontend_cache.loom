@@ -12,8 +12,13 @@ fn frontend_number(output Bytes, value Int) {
 }
 
 fn frontend_key(options Options, project Project, identity Text) Text {
+    frontend_key(options, project, identity, options.test_filter)
+}
+
+fn frontend_key(options Options, project Project, identity Text, filter Text) Text {
     let output = cache_bytes("loom-frontend-key 3\n")
     frontend_field(output, identity)
+    frontend_field(output, filter)
     frontend_number(output, length(options.build_options))
     var option = 0
     while option < length(options.build_options) {

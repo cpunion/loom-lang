@@ -47,6 +47,11 @@ artifacts belong to `build` or `test --no-run`; concurrent automatic execution
 does not overwrite those outputs.
 Test-only dependencies, including implicit Task helpers used by embedded tests,
 extend the completed production package rather than introducing production cycles.
+`loom test --filter <substring>` selects fully qualified test names literally,
+including recursive packages and compile-only binaries. All static checks and
+test isolation remain in force; only matching executable roots enter native
+reachability. Frontend artifacts distinguish filters while definition reuse
+stays shared. A no-match selection reports zero without producing a binary.
 
 `loom init`, argument-forwarding `run --`, and shared `loom fmt` support the
 [multi-package file-tool trial](../../compiler/examples/wordcount/README.md).
