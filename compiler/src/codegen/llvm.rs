@@ -1265,6 +1265,35 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(value)
     }
 
+    /// Inline fields of stack locals need no whole-record load. This path has
+    /// no source effects, heap dereference or safe point; computed receivers
+    /// and coroutine frame access retain their ordinary evaluation below.
+    fn local_field_address(
+        &self,
+        expr: &checked::Expr,
+    ) -> NativeResult<Option<PointerValue<'ctx>>> {
+        match &expr.kind {
+            checked::ExprKind::Local(local) => Ok(self.locals[*local]),
+            checked::ExprKind::Field(value, index) => {
+                let BasicTypeEnum::StructType(layout) =
+                    native_type(self.context, self.program, value.ty)?
+                else {
+                    return Ok(None);
+                };
+                let Some(address) = self.local_field_address(value)? else {
+                    return Ok(None);
+                };
+                Ok(Some(self.builder.build_struct_gep(
+                    layout,
+                    address,
+                    *index as u32,
+                    "field.address",
+                )?))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn expr(&mut self, expr: &checked::Expr) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         let value = self.expr_inner(expr)?;
         if let Some(value) = value
@@ -1526,6 +1555,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             checked::ExprKind::List(elements) => return self.list_literal(expr.ty, elements),
             checked::ExprKind::Field(value, index) => {
+                if let Some(address) = self.local_field_address(expr)? {
+                    return Ok(Some(self.builder.build_load(
+                        native_type(self.context, self.program, expr.ty)?,
+                        address,
+                        "field.load",
+                    )?));
+                }
                 let frame_type = match value.ty {
                     Type::Data(id)
                         if matches!(self.program.types[id].kind, checked::DataKind::Frame(_)) =>

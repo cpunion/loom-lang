@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Lower pure inline-field reads from local records directly to field addresses
+  and loads, including nested fields, instead of loading unrelated aggregate
+  contents. Preserve computed receiver evaluation, GC snapshots and frame access;
+  native value layouts and calling conventions are unchanged.
+
 - Select test execution with `loom test --filter <substring>`, including recursive
   packages and compile-only test binaries. Match fully qualified names literally,
   retain all static checks and test isolation, and keep filtered artifacts distinct
