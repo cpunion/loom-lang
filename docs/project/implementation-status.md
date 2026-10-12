@@ -291,12 +291,14 @@ queries. Short-circuit conditions, declared generic helper summaries, indices,
 CTFE, callbacks and forwarding share ordinary checking rules. Native instances
 select their actual branch without a runtime predicate. See the
 [type guard example](../../compiler/examples/variadics/type_guards.loom).
-Direct value elements can also call ordinary generic helpers whose verified
-postconditions have fixed result shapes and do not observe the opaque input.
+Value elements and their inferred immutable lexical aliases can call ordinary
+generic helpers whose verified postconditions have fixed result shapes and do
+not observe the opaque input.
 Each lexical iterator retains an independent type and fresh entries; full
-element patterns establish input bounds locally. Optional concept branches,
-fixed arguments, runtime preconditions, shared effects, async completion and
-selected Task/resource obligations use ordinary checking and proof rules. The
+element patterns establish input bounds locally. Alias chains retain the same
+entry and do not escape their block or correlate distinct iterators. Optional
+concept branches, fixed arguments, runtime preconditions, shared effects, async
+completion and selected Task/resource obligations use ordinary checking and proof rules. The
 [helper example](../../compiler/examples/variadics/helpers.loom) runs these paths
 with CTFE, callbacks and nested iteration. No opaque representation or runtime
 proof object is introduced.

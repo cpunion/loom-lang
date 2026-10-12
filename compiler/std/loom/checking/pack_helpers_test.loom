@@ -144,6 +144,103 @@ test fn pack_helpers_reject_correlated_iterators_and_false_fixed_argument_result
         """))
 }
 
+test fn pack_helpers_check_lexical_element_aliases() {
+    discard accepted(concat(pack_helper_definitions(), """
+        fn same[T](left T, right T) Int
+        ensures result >= 0 {
+            optional(left) + optional(right)
+        }
+        fn aliases[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for item in values {
+                let first = item
+                let second = first
+                sum = sum + same(item, second)
+                {
+                    let local = second
+                    sum = sum + optional(local)
+                }
+                {
+                    let local = first
+                    sum = sum + optional(local)
+                }
+            }
+            sum
+        }
+        fn bounded_aliases[Us...](values (Int, Wrapped[Us]..., Int)) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for index, item in values {
+                let receiver = item
+                sum = sum + receiver.measure() + required(receiver, index)
+            }
+            sum
+        }
+        fn alias_pairs[Ts...](values Ts...) Int
+        ensures result >= 0 {
+            var sum = 0
+            comptime for left in values {
+                let outer = left
+                comptime for right in values {
+                    let inner = right
+                    sum = sum + optional(outer) + optional(inner)
+                }
+            }
+            sum
+        }
+        fn main() {
+            assert aliases() == 0 && aliases(2, true, -1) == 8
+            assert bounded_aliases((0, Wrapped { value = true }, 0)) == 5
+            assert alias_pairs(2, true) == 8
+        }
+        """))
+}
+
+test fn pack_helpers_keep_alias_types_independent_and_lexically_scoped() {
+    let bodies = ["""
+            comptime for left in values {
+                let outer = left
+                comptime for right in values {
+                    let inner = right
+                    sum = sum + same(outer, inner)
+                }
+            }
+            """, """
+            comptime for item in values {
+                { let local = item }
+                sum = sum + optional(local)
+            }
+            """, """
+            comptime for item in values {
+                let alias = item
+                let escaped = (alias,)
+                discard escaped
+            }
+            """, """
+            comptime for item in values {
+                var alias = item
+                sum = sum + optional(alias)
+            }
+            """, """
+            comptime for item in values {
+                let alias Int = item
+                sum = sum + optional(alias)
+            }
+            """]
+    var index = 0
+    while index < length(bodies) {
+        rejects(std.text.join([pack_helper_definitions(), """
+                fn same[T](left T, right T) Int
+                ensures result >= 0 { 0 }
+                fn wrong[Ts...](values Ts...) Int
+                ensures result >= 0 {
+                    var sum = 0
+                """, get(bodies, index), "\nsum\n}"], "\n"))
+        index = index + 1
+    }
+}
+
 test fn pack_helpers_require_fixed_value_independent_declared_summaries() {
     let helpers = ["""
             fn observe[T](value T) Int {
@@ -238,7 +335,8 @@ test fn pack_helpers_preserve_shared_effects_and_fixed_argument_contracts() {
         ensures length(log) == old(length(log)) {
             var sum = 0
             comptime for item in values {
-                sum = sum + required(item, 0)
+                let observed = item
+                sum = sum + required(observed, 0)
             }
             sum
         }
@@ -257,7 +355,8 @@ test fn pack_helpers_do_not_erase_selected_task_and_resource_obligations() {
         ensures result >= 0 {
             var sum = 0
             comptime for item in values {
-                sum = sum + ignore(item)
+                let observed = item
+                sum = sum + ignore(observed)
             }
             sum
         }
