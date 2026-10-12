@@ -1,5 +1,36 @@
 import std.text.split
 
+// Resolve every member pattern in header scope. This list carries capability
+// evidence, not representative values or a common concrete element layout.
+fn pack_observation_types(context Context, parameter Int, node Node) Result[List[Int], Failure] {
+    let declaration = symbol(context.env, pack_proof_caller(context)).node
+    let input = get(group(declaration, NodeKind.Parameters), parameter)
+    let ty = child(input, 0)
+    let patterns = if ty.kind == NodeKind.TupleType {
+        ty.children
+    } else {
+        source_nodes(ty)
+    }
+    let types = new[Int]()
+    var index = 0
+    while index < length(patterns) {
+        let item = get(patterns, index)
+        let pattern = if item.kind == NodeKind.Spread {
+            child(item, 0)
+        } else {
+            item
+        }
+        let fixed = pack_forward_fixed_node(context, declaration, pattern, 0)?
+        let actual = resolve_bound(context.env, context.signature.symbol, fixed,
+            context.arguments, context.signature.requirements, 0)?
+        discard well_formed(context.env, context.signature.symbol, actual,
+            context.signature.requirements, node, 0)?
+        push(types, actual)
+        index = index + 1
+    }
+    Result.Ok(types)
+}
+
 // Resolve capabilities on the full element pattern, but invoke their declared
 // summaries on an independent opaque entry value. Neither a concrete member
 // nor the constructor's implementation body represents the heterogeneous word.
@@ -17,33 +48,13 @@ fn pack_proof_method(context Context, node Node, source Node, receiver Expr, enc
         }
     }
     let member = get(parts, 1)
-    let declaration = symbol(context.env, owner).node
-    let input = get(group(declaration, NodeKind.Parameters), parameter)
-    let ty = child(input, 0)
-    let patterns = if ty.kind == NodeKind.TupleType {
-        ty.children
-    } else {
-        source_nodes(ty)
-    }
+    let patterns = pack_observation_types(context, parameter, node)?
     let options = new[Int]()
     var common = new[Int]()
     var field = 0
     while field < length(patterns) {
-        let item = get(patterns, field)
-        let pattern = if item.kind == NodeKind.Spread {
-            child(item, 0)
-        } else {
-            item
-        }
-        let fixed = pack_forward_fixed_node(context, declaration, pattern, 0)?
-        // Source annotations resolve in header scope. Body aliases cannot
-        // change a fixed parameter or nominal constructor's identity.
-        let actual = resolve_bound(context.env, context.signature.symbol, fixed,
-            context.arguments, context.signature.requirements, 0)?
-        discard well_formed(context.env, context.signature.symbol, actual,
-            context.signature.requirements, node, 0)?
         // A shape participates only in selection, never as a proof value.
-        let shape = expression(ExprKind.Deferred, actual, node, "", -1, new[Expr](), true)
+        let shape = expression(ExprKind.Deferred, get(patterns, field), node, "", -1, new[Expr](), true)
         let choices = method_options(context, node, source, shape, member, types, inputs, -1, expected)?
         if length(choices) == 0 {
             return Result.Err(error(context, node,

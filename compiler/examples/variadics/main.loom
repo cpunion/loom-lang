@@ -40,6 +40,7 @@ fn exercise() {
     exercise_contracts()
     exercise_pack_induction()
     exercise_type_guard_induction()
+    exercise_pack_helpers()
     exercise_structural_induction()
     exercise_forwarding()
     exercise_overloaded_forwarding()
@@ -97,6 +98,7 @@ async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
 }
 
 async fn exercise_tasks() {
+    assert async_optional_measurements(2, "ignored", true).await == 3
     assert composed_async_measurement((40,)).await == 42
     assert boxed_async_measurement(pack()).await == 2
     assert boxed_async_measurement((MeasuredBox {

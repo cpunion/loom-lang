@@ -442,12 +442,25 @@ fn type_guard_expression(expr Expr) Bool {
     expr.kind == ExprKind.Deferred && expr.ty == 2 && expr.text == "$typeguard" && length(expr.children) == 0
 }
 
+fn pack_entry_expression(expr Expr) Bool {
+    expr.kind == ExprKind.Deferred && expr.text == "$packentry" && length(expr.children) == 0
+}
+
 fn execute_expression(proof Verification, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
     // Abstract proofs widen an unresolved type decision to either branch.
     // Fresh on every evaluation: heterogeneous iterations cannot be correlated.
     // Other deferred computations remain unproved, and none is native code.
     if type_guard_expression(expr) {
         return Result.Ok(outcomes(state, fresh_result(proof, 2)))
+    }
+    if pack_entry_expression(expr) {
+        if expr.ty < 0 || expr.ty >= length(proof.program.types) ||
+        get(proof.program.types, expr.ty).kind != TypeKind.Parameter {
+            return Result.Err("variadic proof entry needs an abstract type")
+        }
+        let identity = get(proof.fresh, 0)
+        std.list.set(proof.fresh, 0, identity + 1)
+        return Result.Ok(outcomes(state, Value.Opaque(identity, new[Int]())))
     }
     if count_expression(expr) {
         let current = quantified_views(proof, expr, state, false, 256)?

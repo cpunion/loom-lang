@@ -456,6 +456,12 @@ fn structural_call_arity(context Context, inputs CallInputs, parameters List[Nod
 }
 
 fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
+    if node.value == "$packentry" {
+        return pack_proof_entry(context, node)
+    }
+    if std.text.starts_with(node.value, "$packhelper#") {
+        return pack_proof_helper_call(context, node, expected)
+    }
     if std.text.starts_with(node.value, "$packcall#") {
         return pack_proof_call(context, node, expected)
     }
@@ -639,12 +645,21 @@ fn invoke_shared(context Context, node Node, options List[Int], types List[Node]
         }
         index = index + 1
     }
-    let matches = matching_overloads(context, node, options, types, values, expected, inferred, length(options) == 1)?
+    let observed = std.text.starts_with(node.value, "$packhelper#")
+    let scope = if observed {
+        pack_helper_scope(context, node, options, values)?
+    } else {
+        context
+    }
+    let matches = matching_overloads(scope, node, options, types, values, expected, inferred, length(options) == 1)?
     let instance = choose_overload(context, node, matches)?
+    if observed {
+        discard pack_helper_contract(scope, node, instance)?
+    }
     if length(shared) != length(options) && !resource_seen(shared, instance.signature) {
         return Result.Err(error(context, node, "variadic element observation needs the same concept method for every element pattern"))
     }
-    let value = invoke_selected(context, node, instance, inputs, values, probes)?
+    let value = invoke_selected(scope, node, instance, inputs, values, probes)?
     Result.Ok(empty_inputs(context, inputs, node, value))
 }
 

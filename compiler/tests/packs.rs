@@ -47,6 +47,91 @@ fn variadic_functions_run_with_native_values_compile_time_graphs_and_tasks() {
 }
 
 #[test]
+fn cached_element_helpers_recheck_guarantees_and_retain_runtime_entry_checks() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.loom");
+    let original = r#"
+fn observe[T](value T, index Int) Int
+requires index >= 0
+ensures result == index
+{
+    index
+}
+
+fn total[Ts...](index Int, values Ts...) Int
+ensures result >= 0
+{
+    var sum = 0
+    comptime for item in values {
+        sum = sum + observe(item, index)
+    }
+    sum
+}
+
+fn main() {
+    assert total(1, true, "mixed") == 2
+}
+"#;
+    fs::write(&source, original).unwrap();
+    let package = directory.path().to_str().unwrap();
+    let cache = directory.path().join("cache");
+    let check = || {
+        common::command(&["check", package])
+            .arg("--frontend-cache")
+            .arg(&cache)
+            .env("LOOM_NATIVE_TIMINGS", "1")
+            .output()
+            .unwrap()
+    };
+    success(&check());
+    let warm = check();
+    success(&warm);
+    assert!(String::from_utf8_lossy(&warm.stderr).contains("loom cache: frontend hit\n"));
+
+    fs::write(
+        &source,
+        original.replace("ensures result == index", "ensures true"),
+    )
+    .unwrap();
+    let weakened = check();
+    assert!(!weakened.status.success());
+    assert!(String::from_utf8_lossy(&weakened.stderr).contains("required postcondition"));
+    fs::write(
+        &source,
+        format!("{original}\nfn observe(value Int, index Int) Int {{ -1 }}\n"),
+    )
+    .unwrap();
+    let overlapping = check();
+    assert!(!overlapping.status.success());
+    assert!(String::from_utf8_lossy(&overlapping.stderr).contains("unresolved overloads"));
+    fs::write(&source, original).unwrap();
+    success(&check());
+
+    let executable = common::executable(directory.path(), "element-helpers");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package, "--output", executable.to_str().unwrap()])
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+    }
+
+    // Preconditions remain real entry checks, not proof-only assumptions.
+    fs::write(&source, original.replace("total(1,", "total(-1,")).unwrap();
+    success(&loom(&[
+        "build",
+        package,
+        "--output",
+        executable.to_str().unwrap(),
+    ]));
+    let fault = common::run_tasks(&executable);
+    assert!(!fault.status.success());
+    assert!(String::from_utf8_lossy(&fault.stderr).contains("precondition"));
+}
+
+#[test]
 fn cached_pack_forwarding_rechecks_overload_set_changes() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("main.loom");
@@ -518,6 +603,22 @@ impl Number for Int {
 impl Number for Bool {
     fn number(self Bool) Int { if self { 1 } else { 0 } }
 }
+fn optional_number[T](value T) Int
+ensures result >= 0 {
+    comptime if T implements Number {
+        value.number()
+    } else {
+        0
+    }
+}
+fn optional_sum[Ts...](values Ts...) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        total = total + optional_number(item)
+    }
+    total
+}
 record Packet[Ts...] {
     values (Ts...)
 }
@@ -590,6 +691,7 @@ fn main() {
     let values = packet.values
     assert values.0 + values.1 == 42 && values.2
     assert sum(40, true, 1) == 42 && sum() == 0
+    assert optional_sum(40, true, 1) == 42 && optional_sum() == 0
     assert counted() == 0 && counted(40, true, 1) == 3
     assert structural_count(pack(), (1, true), pack()) == 2
     assert structural_count((40,), (1, 40, true, 2, false), (2, false)) == 5
@@ -635,5 +737,7 @@ fn main() {
     assert!(!text.contains("call ptr @loom_"));
     assert!(!text.contains("@loom_task_"));
     assert!(!text.contains("@loom_rt_alloc"));
+    assert!(!text.contains("$packentry"));
+    assert!(!text.contains("$packhelper"));
     success(&Command::new(executable).output().unwrap());
 }
