@@ -26,6 +26,21 @@ fn worker_expression(value Expr) Bool {
     false
 }
 
+fn constraint_modified_inputs(env Environment, value Expr, writes Int, modified List[InputGuarantee], depth Int) {
+    if constraint_weakened(env, value) {
+        push(modified, InputGuarantee {
+                ty = get(value.children, 0).ty
+                writes = writes
+            })
+    } else if value.kind == ExprKind.Record && depth < 64 {
+        var index = 0
+        while index < length(value.children) {
+            constraint_modified_inputs(env, get(get(value.children, index).children, 0), writes, modified, depth + 1)
+            index = index + 1
+        }
+    }
+}
+
 fn constraint_content_updates(env Environment, program std.loom.typed.Program, owner Int, value Expr, modified List[InputGuarantee]) Result[Bool, Failure] {
     let store = std.loom.proof.single_list_write(program.functions, value)
     if store > 0 &&
@@ -40,14 +55,10 @@ fn constraint_content_updates(env Environment, program std.loom.typed.Program, o
         var borrowed = false
         var index = 0
         while index < length(value.children) {
-            let protected = constraint_weakened(env, get(value.children, index))
-            push(inputs, if protected {
-                    origin_input()
-                } else {
-                    origin_empty()
-                })
-            borrowed = borrowed || (protected && get(env.type_states,
-                    get(get(value.children, index).children, 0).ty).list_writes == 0)
+            let argument = get(value.children, index)
+            let origin = constraint_input_origin(env, argument, 0)
+            push(inputs, origin)
+            borrowed = borrowed || (origin_shared(origin) && constraint_input_writes(env, argument, 0) == 0)
             index = index + 1
         }
         if borrowed {
@@ -69,13 +80,7 @@ fn constraint_content_updates(env Environment, program std.loom.typed.Program, o
                 }
                 index = 0
                 while index < length(value.children) {
-                    let argument = get(value.children, index)
-                    if constraint_weakened(env, argument) {
-                        push(modified, InputGuarantee {
-                                ty = get(argument.children, 0).ty
-                                writes = writes
-                            })
-                    }
+                    constraint_modified_inputs(env, get(value.children, index), writes, modified, 0)
                     index = index + 1
                 }
             }

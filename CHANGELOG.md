@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Prove constrained shared-List updates through record/tuple helper arguments.
+  Retain exact protected field identities and per-store preservation, without
+  copying values or reconstructing executable arguments. Revalidate nested
+  borrows under worker interference; unknown aliases and raw exports still reject.
+
 - Preserve variadic element identity through inferred immutable `let` alias
   chains in lexical blocks. Reuse helper and concept-method summaries without
   correlating independent iterators, escaping opaque values or erasing selected

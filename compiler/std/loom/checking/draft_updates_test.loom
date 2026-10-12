@@ -31,6 +31,90 @@ test fn published_raw_aliases_reuse_complete_invariant_preservation_proofs() {
         """))
 }
 
+test fn aggregate_alias_arguments_preserve_only_the_protected_header() {
+    list_constraint_accept(concat(draft_update_source(), """
+        record Builder {
+            nested (List[Int], Bool)
+            notes List[Int]
+        }
+        fn update(builder Builder, value Int) {
+            if value <= 0 {
+                return
+            }
+            builder.nested.0[0] = value
+            builder.nested.0[1] = value
+        }
+        pub fn build(value Int) Result[PositiveHead, ConstraintError] {
+            let builder = Builder {
+                nested = ([1, 2], true)
+                notes = [0]
+            }
+            let alias = builder
+            defer {
+                update(alias, 4)
+            }
+            let published = PositiveHead(builder.nested.0)
+            update(alias, value)
+            builder.notes[0] = -1
+            published
+        }
+        """))
+}
+
+test fn aggregate_alias_arguments_cannot_hide_invalid_stores_or_publication() {
+    let header = concat(draft_update_source(), """
+        record Builder {
+            values List[Int]
+            notes List[Int]
+        }
+        """)
+    list_constraint_reject(concat(header, """
+        fn restore(builder Builder) {
+            builder.values[0] = -1
+            builder.values[0] = 1
+        }
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            let builder = Builder {
+                values = [1, 2]
+                notes = [0]
+            }
+            let published = PositiveHead(builder.values)
+            restore(builder)
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn leak(builder Builder, exports List[List[Int]]) {
+            push(exports, builder.values)
+        }
+        pub fn invalid(exports List[List[Int]]) Result[PositiveHead, ConstraintError] {
+            let builder = Builder {
+                values = [1, 2]
+                notes = [0]
+            }
+            let published = PositiveHead(builder.values)
+            leak(builder, exports)
+            published
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn copy(builder Builder) {
+            builder.values[0] = builder.notes[0]
+        }
+        pub fn invalid(flag Bool) Result[PositiveHead, ConstraintError] {
+            let draft = [1, 2]
+            let other = if flag { draft } else { [-1, 2] }
+            let builder = Builder {
+                values = draft
+                notes = other
+            }
+            let published = PositiveHead(draft)
+            copy(builder)
+            published
+        }
+        """))
+}
+
 test fn published_raw_writes_cannot_assume_may_alias_identity_or_return_only_preservation() {
     let header = draft_update_source()
     list_constraint_reject(concat(header, """
@@ -88,13 +172,18 @@ test fn published_raw_writes_cannot_assume_may_alias_identity_or_return_only_pre
 
 test fn raw_preserving_helpers_revalidate_after_cached_body_edits() {
     let source = concat(draft_update_source(), """
-        fn replace(values List[Int]) {
-            values[0] = 3
+        record Batch {
+            values List[Int]
+        }
+        fn replace(batch Batch) {
+            batch.values[0] = 3
         }
         pub fn build() Result[PositiveHead, ConstraintError] {
-            let draft = [1, 2]
-            let published = PositiveHead(draft)
-            replace(draft)
+            let batch = Batch {
+                values = [1, 2]
+            }
+            let published = PositiveHead(batch.values)
+            replace(batch)
             published
         }
         """)

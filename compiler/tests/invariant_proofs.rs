@@ -416,6 +416,9 @@ async fn main() {
         r#"
 import std.task.worker.run
 import std.result.Result
+fn fill_batch(batch (List[Int], Bool), value Int) {
+    fill_positive(batch.0, value)
+}
 async fn main() {
     var draft = [1, 2]
     if length(draft) == 2 {
@@ -446,7 +449,7 @@ async fn main() {
     discard run(fn() Int {
         0
     }).await
-    fill_positive(cursor.0, 6)
+    fill_batch((cursor.0, true), 6)
     assert match stable {
         Result.Ok(values) => length(values) == 2 && values[0] == 6 && values[1] == 6
         Result.Err(_) => false
@@ -525,14 +528,23 @@ fn main() {
     copy_right_to_left(draft)
     discard published"#,
     );
-    for source in [&raw_copy, &stable_copy] {
+    let aggregate_copy = raw_copy
+        .replace(
+            "fn copy_right_to_left(values List[Int]) {",
+            "record Batch {\n    nested (List[Int], Bool)\n}\nfn copy_right_to_left(batch Batch) {\n    let values = batch.nested.0",
+        )
+        .replace(
+            "    copy_right_to_left(draft)",
+            "    copy_right_to_left(Batch { nested = (draft, true) })",
+        );
+    for source in [&raw_copy, &stable_copy, &aggregate_copy] {
         fs::write(&main, source).unwrap();
         success(&check());
         fs::write(
             &main,
             source.replace("fn main()", "async fn main()").replace(
-                "    copy_right_to_left(draft)",
-                "    discard run(fn() Int {\n        0\n    }).await\n    copy_right_to_left(draft)",
+                "    copy_right_to_left(",
+                "    discard run(fn() Int {\n        0\n    }).await\n    copy_right_to_left(",
             ),
         )
         .unwrap();
