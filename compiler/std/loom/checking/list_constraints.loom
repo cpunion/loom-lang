@@ -141,24 +141,60 @@ fn constraint_operation(env Environment, functions List[Function], value Expr) B
     constraint_operation(env, functions, value, false)
 }
 
+// Private aggregate probes retain field paths instead of treating every sibling
+// as protected. Executable source arguments are never reconstructed this way.
+fn constraint_input_origin(env Environment, value Expr, depth Int) InputOrigin {
+    if constraint_weakened(env, value) {
+        return origin_input()
+    }
+    if depth >= 64 {
+        return origin_input()
+    }
+    var origin = origin_empty()
+    if value.kind == ExprKind.Record && depth < 64 {
+        var index = 0
+        while index < length(value.children) {
+            let field = get(value.children, index)
+            origin = origin_union(origin, origin_field(
+                    constraint_input_origin(env, get(field.children, 0), depth + 1), field.index))
+            index = index + 1
+        }
+    }
+    origin
+}
+
+fn constraint_input_writes(env Environment, value Expr, depth Int) Int {
+    if constraint_weakened(env, value) {
+        return get(env.type_states, get(value.children, 0).ty).list_writes
+    }
+    if depth >= 64 {
+        return 0
+    }
+    var writes = 2
+    if value.kind == ExprKind.Record && depth < 64 {
+        var index = 0
+        while index < length(value.children) {
+            let allowed = constraint_input_writes(env, get(get(value.children, index).children, 0), depth + 1)
+            if allowed < writes {
+                writes = allowed
+            }
+            index = index + 1
+        }
+    }
+    writes
+}
+
 fn constraint_operation(env Environment, functions List[Function], value Expr, established Bool) Bool {
     let inputs = new[InputOrigin]()
     var writes = 2
     var index = 0
     while index < length(value.children) {
         let argument = get(value.children, index)
-        let protected = constraint_weakened(env, argument)
-        if protected {
-            let allowed = get(env.type_states, get(argument.children, 0).ty).list_writes
-            if allowed < writes {
-                writes = allowed
-            }
+        let allowed = constraint_input_writes(env, argument, 0)
+        if allowed < writes {
+            writes = allowed
         }
-        push(inputs, if protected {
-                origin_input()
-            } else {
-                origin_empty()
-            })
+        push(inputs, constraint_input_origin(env, argument, 0))
         index = index + 1
     }
     if writes == 0 {

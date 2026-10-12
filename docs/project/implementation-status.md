@@ -474,7 +474,11 @@ Existing origin analysis validates publication effects; later raw aliases and
 known captures may read without exporting protected storage, including
 from cleanup. Immutable local/field aliases with proved allocation identity also
 reuse constrained-borrow preservation proofs for atomic writes and finite
-helpers. Every actual store must preserve the complete predicate. Proof-only
+helpers, including protected fields in nested record/tuple arguments. Private
+probes abstract the other fields without assuming disjointness; executable
+operands are not reconstructed or replayed. See the
+[aggregate update example](../../compiler/examples/record_refinement/aggregate_updates.loom).
+Every actual store must preserve the complete predicate. Proof-only
 borrows never enter executable IR or persistent evidence; worker builds
 independently revalidate mutation and its observation permissions. A possible
 alias is not a proved identity and supplies no constraint assumption. Local
@@ -525,7 +529,7 @@ copies or identity monitors.
 Publication in loop conditions, repeated publication of an outer allocation,
 changing loop-carried header identities and general nested graph
 publication remain open. Delayed mutable reads/writes, conditional aliases,
-aggregate arguments and captured mutating callbacks without a proved header
+opaque aggregate paths and captured mutating callbacks without a proved header
 identity remain conservative.
 
 Every declared `ensures` requires a static proof. The CLI submits remaining

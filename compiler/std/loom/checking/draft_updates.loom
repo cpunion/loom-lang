@@ -27,31 +27,63 @@ fn draft_borrow(updates DraftUpdates, value Expr) Expr {
 // A may-origin only says an argument can reach the protected allocation. It
 // cannot justify assuming its predicate: another branch might return fresh,
 // invalid storage. Follow immutable definitions to prove actual identity.
+fn draft_update_argument(updates DraftUpdates, argument Expr, origin InputOrigin,
+    borrowed List[DraftRoot], depth Int) Result[Expr, Text] {
+    if !origin_shared(origin) {
+        return Result.Ok(argument)
+    }
+    if depth >= 64 || origin.indirect {
+        return Result.Err("unknown protected storage path")
+    }
+    if argument.ty == base_type(updates.env, updates.ty) && origin_entire(origin) {
+        let root = draft_root(updates.env, updates.functions, get(updates.current, 0), argument)
+        if root.local < 0 || !draft_protected_root(root, updates.root) {
+            return Result.Err("unproved protected header identity")
+        }
+        // Never import predicates from distinct alternatives into one operation,
+        // or equate independent joins with the same possible allocations.
+        if length(borrowed) == 0 {
+            push(borrowed, root)
+        } else if !same_draft_root(get(borrowed, 0), root) {
+            return Result.Err("independent protected header choices")
+        }
+        return Result.Ok(draft_borrow(updates, argument))
+    }
+    let shape = get(updates.env.types, argument.ty)
+    if origin_entire(origin) || (shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple) {
+        return Result.Err("unknown protected aggregate")
+    }
+    var path = 0
+    while path < length(origin.paths) {
+        let field = get(get(origin.paths, path), 0)
+        if field < 0 || field >= length(shape.fields) {
+            return Result.Err("unknown protected field path")
+        }
+        path = path + 1
+    }
+    let node = predicate_node(updates.env, get(updates.env.types, updates.ty).symbol)
+    let fields = new[Expr]()
+    var index = 0
+    while index < length(shape.fields) {
+        let ty = get(shape.fields, index).ty
+        let projected = expression(ExprKind.Field, ty, node, "", index, expressions(argument), true)
+        let value = draft_update_argument(updates, projected, origin_project(origin, index), borrowed, depth + 1)?
+        push(fields, expression(ExprKind.Field, ty, node, "", index, expressions(value), true))
+        index = index + 1
+    }
+    Result.Ok(expression(ExprKind.Record, argument.ty, node, "", -1, fields, true))
+}
+
 fn draft_update(updates DraftUpdates, value Expr, inputs List[InputOrigin]) Bool {
     let arguments = new[Expr]()
-    var borrowed = missing_draft_root()
+    let borrowed = new[DraftRoot]()
     var index = 0
     while index < length(value.children) {
-        let argument = get(value.children, index)
-        if origin_shared(get(inputs, index)) {
-            if argument.ty != base_type(updates.env, updates.ty) {
+        match draft_update_argument(updates, get(value.children, index), get(inputs, index), borrowed, 0) {
+            Result.Ok(argument) => push(arguments, argument)
+            Result.Err(_) => {
                 return false
             }
-            let root = draft_root(updates.env, updates.functions, get(updates.current, 0), argument)
-            if root.local < 0 || !draft_protected_root(root, updates.root) {
-                return false
-            }
-            // A possibly selected allocation has the predicate only when it
-            // is the published header. Never import predicates from distinct
-            // alternatives into one operation, or equate independent joins.
-            if borrowed.local < 0 {
-                borrowed = root
-            } else if !same_draft_root(borrowed, root) {
-                return false
-            }
-            push(arguments, draft_borrow(updates, argument))
-        } else {
-            push(arguments, argument)
         }
         index = index + 1
     }

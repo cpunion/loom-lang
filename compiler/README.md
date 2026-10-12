@@ -2436,6 +2436,11 @@ non-publishing reads, including from `defer` and `scoped` cleanup. Immutable
 local/field aliases to the actual header can also use the same complete-predicate
 preservation proofs as constrained borrows: atomic stores and finite source
 helpers must preserve the invariant after every store, not only on return.
+Record/tuple helper arguments can carry these same proved aliases through nested
+fields. A private proof probe reconstructs their shape from abstract leaf inputs;
+executable arguments, evaluation order and representations stay unchanged. Other
+shared fields are not assumed disjoint, so cross-field writes can still reject.
+See the [aggregate update example](examples/record_refinement/aggregate_updates.loom).
 Conditional may-aliases supply no assumed constraint. These proof-only borrows
 do not change executable types or add checks; worker builds independently
 revalidate mutation and withdraw stale content/extent observations.
