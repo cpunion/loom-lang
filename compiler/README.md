@@ -1342,7 +1342,8 @@ ensures result >= 0
 {
     var total = 0
     comptime for item in values {
-        total = total + measure_or_zero(item)
+        let observed = item
+        total = total + measure_or_zero(observed)
     }
     total
 }
@@ -1355,6 +1356,10 @@ bounds must hold for every fixed member and expansion pattern, not just one
 specialization. Fixed arguments, runtime preconditions, overloads and shared
 effects retain ordinary call semantics. Helper clauses cannot mention the opaque
 input value, and its substituted result cannot expose an abstract element type.
+Inferred immutable `let` aliases can chain within lexical blocks and call the
+same helpers or concept methods. They retain the original entry identity, not a
+fresh type or a type shared with another iterator. Native instances retain
+ordinary alias evaluation and Task/resource transfer checks.
 Other opaque-value escape and representation-dependent reasoning still reject.
 See the [helper example](examples/variadics/helpers.loom) for optional and bounded
 helpers, nested iteration, CTFE, callbacks, ordered effects and saved Tasks.

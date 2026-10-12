@@ -63,7 +63,9 @@ ensures result >= 0
 {
     var sum = 0
     comptime for item in values {
-        sum = sum + observe(item, index)
+        let observed = item
+        let alias = observed
+        sum = sum + observe(alias, index)
     }
     sum
 }
@@ -615,7 +617,8 @@ fn optional_sum[Ts...](values Ts...) Int
 ensures result >= 0 {
     var total = 0
     comptime for item in values {
-        total = total + optional_number(item)
+        let observed = item
+        total = total + optional_number(observed)
     }
     total
 }
@@ -626,7 +629,8 @@ fn sum[Ts... Number](values Ts...) Int
 ensures result >= 0 {
     var total = 0
     comptime for value in values {
-        let pair = value.checked[Bool]()
+        let receiver = value
+        let pair = receiver.checked[Bool]()
         assert pair.1
         total = total + pair.0
     }

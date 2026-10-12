@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Preserve variadic element identity through inferred immutable `let` alias
+  chains in lexical blocks. Reuse helper and concept-method summaries without
+  correlating independent iterators, escaping opaque values or erasing selected
+  Task/resource checks.
+
 - Compose variadic value iteration through ordinary generic helper summaries,
   including optional concept branches, whole-pattern bounds, fixed arguments
   and async completion. Keep lexical entry types independent and values fresh;

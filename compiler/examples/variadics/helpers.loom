@@ -13,7 +13,9 @@ ensures result >= 0
 {
     var total = 0
     comptime for item in values {
-        total = total + measure_or_zero(item)
+        let observed = item
+        let saved = observed
+        total = total + measure_or_zero(saved)
     }
     total
 }
@@ -36,7 +38,9 @@ ensures result >= 0
 {
     var total = 0
     comptime for index, item in values {
-        total = total + measure_at(item, index)
+        let receiver = item
+        assert receiver.measure() >= 0
+        total = total + measure_at(receiver, index)
     }
     total
 }
@@ -52,8 +56,10 @@ ensures result >= 0
 {
     var total = 0
     comptime for left in values {
+        let saved_left = left
         comptime for right in values {
-            total = total + measured_pair(left, right)
+            let saved_right = right
+            total = total + measured_pair(saved_left, saved_right)
         }
     }
     total
@@ -71,10 +77,11 @@ ensures result >= 0 && length(log) >= old(length(log))
 {
     var total = 0
     comptime for index, item in values {
+        let observed = item
         note_element({
                 push(log, 99)
                 pack()
-            }..., item, (log, index)...)
+            }..., observed, (log, index)...)
         total = total + index
     }
     total
@@ -91,7 +98,8 @@ ensures result >= 0
 {
     var total = 0
     comptime for item in values {
-        let pending = async_measure_or_zero(item)
+        let observed = item
+        let pending = async_measure_or_zero(observed)
         total = total + pending.await
     }
     total

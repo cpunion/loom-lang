@@ -311,9 +311,67 @@ fn pack_proof_method_contract(env Environment, owner Int, method Node, node Node
     Result.Ok(true)
 }
 
+fn pack_proof_value_element(elements List[PackProofElement], node Node) Int {
+    if node.kind == NodeKind.Name {
+        var index = 0
+        while index < length(elements) {
+            let element = get(elements, index)
+            if node.value == element.name && length(element.value_name) != 0 {
+                return index
+            }
+            index = index + 1
+        }
+    }
+    -1
+}
+
 fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, erased List[Text], elements List[PackProofElement], count List[Int], iteration_types List[Node], depth Int) Result[Node, Failure] {
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "variadic contract proof depth exceeded"))
+    }
+    if node.kind == NodeKind.Block && length(elements) != 0 {
+        // Copy lexical metadata, not values. An immutable alias is an ordinary
+        // checked local of the same entry type; it neither samples a new entry
+        // nor makes the type of another iteration equal to this one.
+        let entries = new[PackProofElement]()
+        let hidden = new[Text]()
+        var index = 0
+        while index < length(elements) {
+            push(entries, get(elements, index))
+            index = index + 1
+        }
+        index = 0
+        while index < length(erased) {
+            push(hidden, get(erased, index))
+            index = index + 1
+        }
+        let statements = new[Node]()
+        index = 0
+        while index < length(node.children) {
+            let statement = child(node, index)
+            let selected = if statement.kind == NodeKind.Let && length(statement.children) == 1 {
+                pack_proof_value_element(entries, child(statement, 0))
+            } else {
+                -1
+            }
+            if selected >= 0 {
+                let entry = get(entries, selected)
+                let value = pack_node(child(statement, 0), NodeKind.Name, entry.value_name, new[Node]())
+                let binding = pack_node(statement, NodeKind.Let, statement.value, source_nodes(value))
+                push(statements, pack_proof_tree(env, owner, declaration, binding, hidden, entries, count, iteration_types, depth + 1)?)
+                push(entries, PackProofElement {
+                        name = statement.value
+                        parameter = entry.parameter
+                        type_name = entry.type_name
+                        value_name = entry.value_name
+                    })
+                push(hidden, statement.value)
+            } else {
+                push(statements, pack_proof_tree(env, owner, declaration, statement, hidden, entries, count, iteration_types, depth + 1)?)
+            }
+            index = index + 1
+        }
+        return Result.Ok(pack_node(node, node.kind, node.value, statements))
     }
     if (node.kind == NodeKind.Name || node.kind == NodeKind.Type) && length(node.children) == 0 {
         var index = 0
@@ -366,15 +424,7 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
         var observed = false
         while index < length(arguments.children) {
             let argument = child(arguments, index)
-            var selected = -1
-            var element = 0
-            while element < length(elements) {
-                let entry = get(elements, element)
-                if argument.kind == NodeKind.Name && argument.value == entry.name && length(entry.value_name) != 0 {
-                    selected = element
-                }
-                element = element + 1
-            }
+            let selected = pack_proof_value_element(elements, argument)
             if selected >= 0 {
                 let entry = get(elements, selected)
                 push(values, pack_node(argument, NodeKind.Name, entry.value_name, new[Node]()))
