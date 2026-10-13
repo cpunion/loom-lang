@@ -43,6 +43,7 @@ test fn aggregate_alias_arguments_preserve_only_the_protected_header() {
             }
             builder.nested.0[0] = value
             builder.nested.0[1] = value
+            builder.notes[0] = -1
         }
         pub fn build(value Int) Result[PositiveHead, ConstraintError] {
             let builder = Builder {
@@ -55,7 +56,87 @@ test fn aggregate_alias_arguments_preserve_only_the_protected_header() {
             }
             let published = PositiveHead(builder.nested.0)
             update(alias, value)
-            builder.notes[0] = -1
+            published
+        }
+        """))
+}
+
+test fn draft_helper_inputs_retain_exact_aliases_and_distinct_allocations() {
+    list_constraint_accept(concat(draft_update_source(), """
+        fn copy(first List[Int], second List[Int], output List[Int]) {
+            first[0] = 1
+            second[0] = -1
+            output[0] = first[0]
+        }
+        fn same(first List[Int], second List[Int]) {
+            first[0] = 3
+            second[0] = first[0]
+        }
+        pub fn build() Result[PositiveHead, ConstraintError] {
+            let first = [2]
+            let second = [3]
+            let output = [1, 2]
+            let published = PositiveHead(output)
+            copy(first, second, output)
+            same(output, output)
+            published
+        }
+        """))
+    list_constraint_reject(concat(draft_update_source(), """
+        fn copy(first List[Int], second List[Int], output List[Int]) {
+            first[0] = 1
+            second[0] = -1
+            output[0] = first[0]
+        }
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            let first = [2]
+            let second = first
+            let output = [1, 2]
+            let published = PositiveHead(output)
+            copy(first, second, output)
+            published
+        }
+        """))
+    list_constraint_reject(concat(draft_update_source(), """
+        record Scratch {
+            first List[Int]
+            second List[Int]
+        }
+        fn copy(scratch Scratch, alias List[Int], output List[Int]) {
+            scratch.first[0] = 1
+            alias[0] = -1
+            output[0] = scratch.first[0]
+        }
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            let first = [2]
+            let second = [3]
+            let output = [1, 2]
+            let published = PositiveHead(output)
+            copy(Scratch {
+                    second = second
+                    first = first
+                }, first, output)
+            published
+        }
+        """))
+    list_constraint_reject(concat(draft_update_source(), """
+        enum Hidden {
+            Some(List[Int])
+        }
+        fn copy(first List[Int], hidden Hidden, output List[Int]) {
+            first[0] = 1
+            match hidden {
+                Hidden.Some(alias) => {
+                    alias[0] = -1
+                }
+            }
+            output[0] = first[0]
+        }
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            let first = [2]
+            let output = [1, 2]
+            let published = PositiveHead(output)
+            copy(first, Hidden.Some(first), output)
             published
         }
         """))
@@ -174,13 +255,17 @@ test fn raw_preserving_helpers_revalidate_after_cached_body_edits() {
     let source = concat(draft_update_source(), """
         record Batch {
             values List[Int]
+            notes List[Int]
         }
         fn replace(batch Batch) {
             batch.values[0] = 3
+            batch.notes[0] = -1
         }
         pub fn build() Result[PositiveHead, ConstraintError] {
+            let values = [1, 2]
             let batch = Batch {
-                values = [1, 2]
+                values = values
+                notes = [0]
             }
             let published = PositiveHead(batch.values)
             replace(batch)
@@ -205,6 +290,12 @@ test fn raw_preserving_helpers_revalidate_after_cached_body_edits() {
     assert bodies_reused(restored) >= 1
     let changed = std.text.join(std.text.split(source, "values[0] = 3"), "values[0] = -1")
     assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let aliased = std.text.join(std.text.split(source, "notes = [0]"), "notes = values")
+    assert match check_project_cached(fixture_project(list_constraint_files(aliased)),
         false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
         Result.Err(_) => true
         Result.Ok(_) => false

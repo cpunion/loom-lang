@@ -87,7 +87,7 @@ fn draft_update(updates DraftUpdates, value Expr, inputs List[InputOrigin]) Bool
         }
         index = index + 1
     }
-    let operation = Expr {
+    var operation = Expr {
         kind = value.kind
         ty = value.ty
         span = value.span
@@ -98,7 +98,18 @@ fn draft_update(updates DraftUpdates, value Expr, inputs List[InputOrigin]) Bool
         falls = value.falls
     }
     if !constraint_operation(updates.env, updates.functions, operation) {
-        return false
+        if operation.kind != ExprKind.Call {
+            return false
+        }
+        operation = match draft_alias_operation(updates, operation) {
+            Result.Ok(exact) => exact
+            Result.Err(_) => {
+                return false
+            }
+        }
+        if !constraint_operation(updates.env, updates.functions, operation) {
+            return false
+        }
     }
     // Proof-only borrows never enter executable IR or persistent certificates.
     // Shared builds independently revalidate these operations and write sets.

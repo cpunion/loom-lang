@@ -416,8 +416,9 @@ async fn main() {
         r#"
 import std.task.worker.run
 import std.result.Result
-fn fill_batch(batch (List[Int], Bool), value Int) {
+fn fill_batch(batch (List[Int], List[Int]), value Int) {
     fill_positive(batch.0, value)
+    batch.1[0] = -1
 }
 async fn main() {
     var draft = [1, 2]
@@ -449,7 +450,9 @@ async fn main() {
     discard run(fn() Int {
         0
     }).await
-    fill_batch((cursor.0, true), 6)
+    let batch = (cursor.0, [0])
+    fill_batch(batch, 6)
+    assert batch.1[0] == -1
     assert match stable {
         Result.Ok(values) => length(values) == 2 && values[0] == 6 && values[1] == 6
         Result.Err(_) => false
@@ -552,6 +555,53 @@ fn main() {
         assert!(!stale_raw.status.success());
         assert!(String::from_utf8_lossy(&stale_raw.stderr).contains("interference-safe"));
     }
+
+    // Distinct source allocations do not make their cells worker-private.
+    let scratch_copy = r#"
+import std.list.length
+import std.result.Result
+import std.task.worker.run
+type PositiveHead = List[Int] where length(self) > 0 && self[0] > 0
+record Batch {
+    values List[Int]
+    notes List[Int]
+}
+fn copy_notes(batch Batch) {
+    batch.notes[0] = -1
+    batch.notes[0] = 1
+    batch.values[0] = batch.notes[0]
+}
+fn main() {
+    let batch = Batch {
+        values = [1, 2]
+        notes = [0]
+    }
+    let published = PositiveHead(batch.values)
+    copy_notes(batch)
+    discard published
+}
+"#;
+    fs::write(&main, scratch_copy).unwrap();
+    success(&check());
+    fs::write(
+        &main,
+        scratch_copy
+            .replace("fn main()", "async fn main()")
+            .replace(
+                "    copy_notes(batch)",
+                r#"    let notes = batch.notes
+    let writer = run(fn() Int {
+        notes[0] = -1
+        0
+    })
+    copy_notes(batch)
+    discard writer.await"#,
+            ),
+    )
+    .unwrap();
+    let shared_scratch = check();
+    assert!(!shared_scratch.status.success());
+    assert!(String::from_utf8_lossy(&shared_scratch.stderr).contains("interference-safe"));
 
     let raw_observer = [
         UPDATE_TYPES,

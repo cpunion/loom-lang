@@ -2438,8 +2438,12 @@ preservation proofs as constrained borrows: atomic stores and finite source
 helpers must preserve the invariant after every store, not only on return.
 Record/tuple helper arguments can carry these same proved aliases through nested
 fields. A private proof probe reconstructs their shape from abstract leaf inputs;
-executable arguments, evaluation order and representations stay unchanged. Other
-shared fields are not assumed disjoint, so cross-field writes can still reject.
+executable arguments, evaluation order and representations stay unchanged.
+When every shared List input resolves to a known allocation, exact aliases use
+one logical input and independent allocations remain distinct. A helper can
+therefore update an independent notes field beside the constrained header.
+Overlapping choices and unknown input graphs supply no separation evidence;
+distinct storage does not imply worker-private contents.
 See the [aggregate update example](examples/record_refinement/aggregate_updates.loom).
 Conditional may-aliases supply no assumed constraint. These proof-only borrows
 do not change executable types or add checks; worker builds independently

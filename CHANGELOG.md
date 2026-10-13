@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Retain proved allocation identities in constrained draft helper probes.
+  Collapse exact aliases to one input and distinguish independent record/tuple
+  fields without copying data. Unknown input graphs remain conservative, and
+  worker revalidation does not mistake distinct storage for private storage.
+
 - Prove constrained shared-List updates through record/tuple helper arguments.
   Retain exact protected field identities and per-store preservation, without
   copying values or reconstructing executable arguments. Revalidate nested

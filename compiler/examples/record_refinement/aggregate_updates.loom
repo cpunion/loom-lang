@@ -5,6 +5,7 @@ record UpdateBatch {
 
 fn update_batch(batch UpdateBatch, value Int) {
     fill_positive(batch.nested.0, value)
+    batch.notes[0] = -1
 }
 
 fn publish_batch(events List[Int]) Result[PositiveValues, ConstraintError] {
@@ -25,7 +26,6 @@ fn publish_batch(events List[Int]) Result[PositiveValues, ConstraintError] {
             push(events, 2)
             5
         })
-    batch.notes[0] = -1
     assert length(events) == 2 && events[0] == 1 && events[1] == 2
     assert batch.notes[0] == -1 && values_sum(batch.nested.0) == 10
     published
@@ -55,7 +55,6 @@ test async fn aggregate_updates_keep_aliases_across_suspension() {
     let published = PositiveValues(batch.nested.0)
     sleep_ms(1).await
     update_batch(batch, 4)
-    batch.notes[0] = -1
     assert batch.notes[0] == -1 && match published {
         Result.Ok(values) => values_sum(values) == 8
         Result.Err(_) => false
