@@ -314,15 +314,23 @@ fn same_package_identities(project Project, base List[PackageRevision], branch L
     Result.Ok(true)
 }
 
-fn package_changes(base List[PackageRevision], branch List[PackageRevision]) Result[(Bool, Bool, Bool), Text] {
-    var headers = false
-    var edited = false
-    var deleted = false
+record PackageChanges {
+    name Text
+    headers Bool
+    edited Bool
+    deleted Bool
+}
+
+fn package_changes(base List[PackageRevision], branch List[PackageRevision]) Result[List[PackageChanges], Text] {
+    let changes = new[PackageChanges]()
     var package = 0
     while package < length(base) {
         let original = get(base, package)
         let before = indexed(original.revision)?
         let after = indexed(package_revision(branch, original.directory)?.revision)?
+        var headers = false
+        var edited = false
+        var deleted = false
         var index = 0
         while index < length(before.entries) {
             let entry = get(before.entries, index)
@@ -337,9 +345,15 @@ fn package_changes(base List[PackageRevision], branch List[PackageRevision]) Res
             index = index + 1
         }
         edited = edited || length(after.entries) > length(before.entries)
+        push(changes, PackageChanges {
+                name = original.revision.package_name
+                headers = headers
+                edited = edited
+                deleted = deleted
+            })
         package = package + 1
     }
-    Result.Ok((headers, edited, deleted))
+    Result.Ok(changes)
 }
 
 // Imports, module instances and the selected package set stay pinned. Package
@@ -353,12 +367,7 @@ pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], ri
     discard package_scopes(tests, base)?
     discard same_package_identities(production, base, left)?
     discard same_package_identities(production, base, right)?
-    let a_changes = package_changes(base, left)?
-    let b_changes = package_changes(base, right)?
-    if (a_changes.0 && b_changes.1) || (b_changes.0 && a_changes.1) ||
-    (a_changes.2 && b_changes.1) || (b_changes.2 && a_changes.1) {
-        return Result.Err("cross-package signature, contract or deletion versus edit needs explicit resolution")
-    }
+    discard separate_package_changes(package_changes(base, left)?, package_changes(base, right)?, production, tests)?
     let merged = new[PackageRevision]()
     var index = 0
     while index < length(base) {

@@ -19,8 +19,13 @@ resolve to the same identified declaration and relative location, or the same
 pinned dependency location. Unselected module consumers are checked too: unchanged
 text can silently select another overload after an API edit.
 
-The package/import graph stays fixed. Changes to package scope, imports, conflicting
-headers/contracts, deletion versus edits, unsupported declarations and references
+The package/import graph stays fixed. Cross-package header/contract or deletion
+changes can combine with edits only in completely disconnected import components.
+The graph includes production and private-test imports, pinned consumers and
+external module instances; common consumers or dependencies keep packages connected.
+This is a conservative dependency separation rule, not declaration-level independence
+or behavior equivalence. Changes to package scope, imports, conflicting
+headers/contracts, connected deletion versus edits, unsupported declarations and references
 without complete checked evidence require explicit resolution. Batch rename
 composition is not implemented; the single-package entry points retain their
 private nongeneric rename support. This is not behavior-equivalence proof, an

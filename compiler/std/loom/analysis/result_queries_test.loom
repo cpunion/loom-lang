@@ -1,0 +1,24 @@
+test fn implicit_contract_results_have_distinct_zero_width_definition_anchors() {
+    let text = """
+        fn identity(value Int) Int ensures result == value {
+            value
+        }
+
+        fn named(output Int) Int {
+            output
+        }
+
+        fn main() {
+            assert identity(1) == 1 && named(2) == 2
+        }
+        """
+    let analysis = accepted(input(text))
+    let found = inspection(analysis, text, "result == value")
+    let anchor = query_offset(text, "Int ensures") + 3
+    only_type(found, "Int")
+    only_definition(found, anchor, anchor)
+    let parameter = query_offset(text, "output Int")
+    only_definition(inspection(analysis, text, "output\n}"), parameter, parameter + 6)
+    let function = query_offset(text, "identity(value")
+    only_definition(inspection(analysis, text, "identity(1)"), function, function + 8)
+}

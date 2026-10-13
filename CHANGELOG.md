@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Separate cross-package semantic merge conflicts by complete production/test
+  import components, retaining conflicts through shared consumers and dependencies.
+  Give implicit contract results a distinct source anchor in public analysis,
+  without confusing them with function or type declarations.
+
 - Save unresolved semantic identities and partial explicit choices with
   `semantic_change_trial refresh --draft`, without guessing IDs or blocking
   ordinary compilation. Source edits invalidate the draft basis; semantic

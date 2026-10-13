@@ -1,0 +1,127 @@
+import std.list.set
+
+record DependencyPackage {
+    module ModuleInstance
+    relative Text
+}
+
+record PackageComponents {
+    packages List[DependencyPackage]
+    parents List[Int]
+}
+
+// Project-local IDs may differ between production and test loading. Equal
+// package spellings in different locked module sources are not the same node.
+fn dependency_package(graph PackageComponents, project Project, id Int) Result[Int, Text] {
+    if id < 0 || id >= length(project.packages) {
+        return Result.Err("package dependency graph has an unknown target")
+    }
+    let package = get(project.packages, id)
+    if package.instance < 0 || package.instance >= length(project.modules) {
+        return Result.Err("package dependency graph has an unknown module")
+    }
+    let module = get(project.modules, package.instance)
+    if module.source == "" {
+        return Result.Err("package dependency graph needs a pinned module source")
+    }
+    var index = 0
+    while index < length(graph.packages) {
+        let previous = get(graph.packages, index)
+        if previous.module.name == module.name && previous.module.source == module.source &&
+        previous.relative == package.relative {
+            return Result.Ok(index)
+        }
+        index = index + 1
+    }
+    push(graph.packages, DependencyPackage {
+            module = module
+            relative = package.relative
+        })
+    push(graph.parents, index)
+    Result.Ok(index)
+}
+
+fn component_root(parents List[Int], index Int) Int {
+    var root = index
+    while get(parents, root) != root {
+        root = get(parents, root)
+    }
+    var current = index
+    while current != root {
+        let next = get(parents, current)
+        set(parents, current, root)
+        current = next
+    }
+    root
+}
+
+fn include_dependencies(graph PackageComponents, project Project) Result[Bool, Text] {
+    var package = 0
+    while package < length(project.packages) {
+        let source = dependency_package(graph, project, package)?
+        let imports = get(project.packages, package).imports
+        var edge = 0
+        while edge < length(imports) {
+            let target = dependency_package(graph, project, get(imports, edge).target)?
+            set(graph.parents, component_root(graph.parents, source), component_root(graph.parents, target))
+            edge = edge + 1
+        }
+        package = package + 1
+    }
+    Result.Ok(true)
+}
+
+fn conflicting_changes(left PackageChanges, right PackageChanges) Bool {
+    ((left.headers || left.deleted) && right.edited) ||
+    ((right.headers || right.deleted) && left.edited)
+}
+
+// Import edges are undirected for this proof: common consumers, callbacks,
+// nominal types and shared dependencies all keep packages connected. This is
+// deliberately coarser than a declaration/call graph, not behavior equivalence.
+fn separate_package_changes(left List[PackageChanges], right List[PackageChanges],
+    production Project, tests Project) Result[Bool, Text] {
+    var needed = false
+    var a = 0
+    while a < length(left) {
+        var b = 0
+        while b < length(right) {
+            needed = needed || conflicting_changes(get(left, a), get(right, b))
+            b = b + 1
+        }
+        a = a + 1
+    }
+    if !needed {
+        return Result.Ok(true)
+    }
+    let graph = PackageComponents {
+        packages = new[DependencyPackage]()
+        parents = new[Int]()
+    }
+    discard include_dependencies(graph, production)?
+    discard include_dependencies(graph, tests)?
+    let components = new[Int]()
+    a = 0
+    while a < length(left) {
+        let name = get(left, a).name
+        let ordinary = dependency_package(graph, production, project_package(production, name)?)?
+        let testing = dependency_package(graph, tests, project_package(tests, name)?)?
+        if ordinary != testing {
+            return Result.Err("production and test package dependency identities differ")
+        }
+        push(components, component_root(graph.parents, ordinary))
+        a = a + 1
+    }
+    a = 0
+    while a < length(left) {
+        var b = 0
+        while b < length(right) {
+            if conflicting_changes(get(left, a), get(right, b)) && get(components, a) == get(components, b) {
+                return Result.Err("cross-package signature, contract or deletion versus edit needs explicit resolution")
+            }
+            b = b + 1
+        }
+        a = a + 1
+    }
+    Result.Ok(true)
+}
