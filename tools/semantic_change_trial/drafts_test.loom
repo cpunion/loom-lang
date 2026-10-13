@@ -1,0 +1,170 @@
+import std.loom.analysis.analyze
+
+fn rejected_refresh(directory Text, choices List[Resolution], message Text) {
+    match refresh(directory, choices, false) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(problem) => {
+            assert contains(problem, message)
+        }
+    }
+}
+
+fn draft_lifecycle(directory Text) Result[Text, Text] {
+    discard create_dir(directory)
+    discard write_text(path(directory, "loom.toml"), "[module]\nname = \"sample\"\n")
+    discard write_text(path(directory, "loom.lock"), "loom-lock 3\n")
+    let entry = """
+        fn main() {
+            assert value() + other() == 3
+        }
+        """
+    let functions = """
+        fn value() Int {
+            1
+        }
+
+        fn other() Int {
+            2
+        }
+        """
+    discard write_text(path(directory, "value.loom"), concat(functions, entry))
+    discard initialize("sample", directory)?
+    let original = read(directory)?
+    let value = get(original.revision.identities, 0)
+    let other = get(original.revision.identities, 1)
+    let moved_value = Resolution {
+        id = value.id
+        path = "app.loom"
+        name = value.name
+        key = value.key
+        deletion = false
+    }
+    let moved_other = Resolution {
+        id = other.id
+        path = "app.loom"
+        name = other.name
+        key = other.key
+        deletion = false
+    }
+    discard write_text(path(directory, "value.loom"), entry)
+    discard write_text(path(directory, "app.loom"), functions)
+    rejected_refresh(directory, [], "possible move")
+    assert text_at(path(directory, ".loom-ids")) == original.sidecar
+    assert contains(refresh(directory, [], true)?, "unresolved declarations: 2")
+    let draft = read_state(directory)?
+    discard refresh(directory, [], true)?
+    assert text_at(path(directory, ".loom-ids")) == draft.0.sidecar
+    assert length(draft.1.pending) == 2
+    assert draft.1.next == original.next
+    assert contains(draft.0.sidecar, "candidate fn value app.loom -")
+    match read(directory) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(problem) => {
+            assert contains(problem, "unresolved declarations")
+        }
+    }
+    let project = std.loom.project.load(directory, "compiler/std", false)?
+    match analyze(project, false) {
+        Result.Ok(_) => {
+        }
+        Result.Err(problem) => {
+            return Result.Err(problem.diagnostic.message)
+        }
+    }
+    assert contains(refresh(directory, [moved_value], true)?, "unresolved declarations: 1")
+    let partial = read_state(directory)?
+    assert length(partial.1.pending) == 1
+    assert get(partial.1.pending, 0) == other.id
+    assert partial.1.next == original.next
+    let retained = get(partial.0.revision.identities, identity_at(partial.0.revision.identities, value.id))
+    assert retained.path == "app.loom"
+    discard write_text(path(directory, "app.loom"), concat(functions, """
+
+        // Added while only one old identity has been resolved.
+        fn fresh() Int {
+            3
+        }
+        """))
+    rejected_refresh(directory, [moved_other], "stale")
+    assert text_at(path(directory, ".loom-ids")) == partial.0.sidecar
+    discard refresh(directory, [], true)?
+    let rebased = read_state(directory)?
+    assert rebased.1.draft != partial.1.draft
+    assert length(rebased.1.pending) == 1
+    assert rebased.1.next == original.next
+    discard refresh(directory, [moved_other], false)?
+    let finished = read_state(directory)?
+    assert finished.1.draft == ""
+    assert length(finished.1.pending) == 0
+    assert finished.1.next == original.next + 1
+    let moved = read(directory)?
+    assert get(moved.revision.identities, identity_at(moved.revision.identities, other.id)).path == "app.loom"
+    discard review(original, moved, original)?
+    remove_trial(directory)
+    Result.Ok("identity draft resolved")
+}
+
+test fn identity_draft_retains_partial_choices_and_requires_a_current_source_basis() {
+    let directory = concat("tools/semantic_change_trial/target/draft-", to_text(monotonic_ns()))
+    assert successful(draft_lifecycle(directory)) == "identity draft resolved"
+}
+
+test fn identity_draft_codec_requires_pending_intent_and_valid_candidate_locators() {
+    let prefix = "package sample\nnext 2\n"
+    let pending = "pending value-id fn value value.loom -\n"
+    assert rejects_identity_header(concat(prefix, pending))
+    assert rejects_identity_header(concat(prefix, "candidate fn value app.loom -\n"))
+    assert rejects_identity_header(concat(prefix, "draft basis\n"))
+    assert rejects_identity_header(concat(prefix, concat("draft basis\ndraft duplicate\n", pending)))
+    assert rejects_identity_header(concat(prefix, concat("draft basis\n", concat(pending,
+                    "candidate fn value ../app.loom -\n"))))
+    assert !rejects_identity_header(concat(prefix, concat("draft basis\n", concat(pending,
+                    "candidate fn value app.loom -\n"))))
+}
+
+fn restored_draft(directory Text) Result[Text, Text] {
+    discard create_dir(directory)
+    let source = """
+        fn value() Int {
+            1
+        }
+        """
+    discard write_text(path(directory, "value.loom"), source)
+    discard initialize("sample", directory)?
+    let original = read(directory)?
+    let identity = get(original.revision.identities, 0)
+    discard remove_file(path(directory, "value.loom"))
+    discard write_text(path(directory, "app.loom"), source)
+    discard refresh(directory, [], true)?
+    // Restoring a locator is not permission to discard an unresolved choice.
+    discard remove_file(path(directory, "app.loom"))
+    discard write_text(path(directory, "value.loom"), source)
+    discard refresh(directory, [], true)?
+    rejected_refresh(directory, [], "possible move")
+    assert length((read_state(directory)?).1.pending) == 1
+    // Nor may a pending identity silently disappear when no candidates remain.
+    discard remove_file(path(directory, "value.loom"))
+    discard refresh(directory, [], true)?
+    rejected_refresh(directory, [], "possible move")
+    discard refresh(directory, [Resolution {
+                id = identity.id
+                path = ""
+                name = ""
+                key = ""
+                deletion = true
+            }], false)?
+    let finished = read(directory)?
+    assert length(finished.revision.identities) == 0
+    assert finished.next == original.next
+    remove_trial(directory)
+    Result.Ok("explicit deletion retained")
+}
+
+test fn identity_draft_never_infers_restoration_or_deletion_of_pending_ids() {
+    let directory = concat("tools/semantic_change_trial/target/restored-draft-", to_text(monotonic_ns()))
+    assert successful(restored_draft(directory)) == "explicit deletion retained"
+}

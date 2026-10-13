@@ -145,6 +145,29 @@ Keep `.loom-ids-stage-*` recovery directories out of source commits.
 `scan DIR` lists current kind/name/file/key locators without writing metadata;
 use its exact key to resolve a move or parameter-type change.
 
+Ambiguities may be saved without guessing an identity:
+
+```sh
+target/loom run tools/semantic_change_trial -- refresh DIR --draft
+target/loom run tools/semantic_change_trial -- refresh DIR --draft \
+  --move FIRST_ID app.loom first -
+target/loom run tools/semantic_change_trial -- refresh DIR \
+  --move LAST_ID app.loom last -
+```
+
+`--draft` keeps exact bindings and explicit choices, records unresolved old IDs
+as `pending` rows and unmatched source locators as `candidate` rows, and does
+not advance the allocator. A `draft` row binds this state to the source-file
+hash. Source edits require another `refresh DIR --draft` before resolution;
+pending IDs still require an explicit `--move` or `--delete`, even if their old
+locator reappears or no new declarations remain. Resolving every pending ID
+publishes a complete sidecar and only then allocates IDs for new declarations.
+Ordinary `loom check/build/test/run` ignores these identity files. Semantic
+preview/apply rejects draft snapshots, including Git snapshots, until resolved.
+Draft updates use the same staged publication and previous-sidecar recovery
+copy as completed updates; they never rewrite source. This remains the same
+supported declaration subset, not general AST conflict editing.
+
 For example, this creates all three sidecars from ordinary source snapshots,
 then merges a move on one side with a body edit on the other:
 

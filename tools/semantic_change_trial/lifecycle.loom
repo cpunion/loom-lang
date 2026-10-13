@@ -253,18 +253,24 @@ fn initialize(package_name Text, directory Text) Result[Text, Text] {
     Result.Ok(concat(publish_sidecar(directory, "", updated, files, false)?, changes))
 }
 
-fn resolutions(args List[Text], start Int) Result[List[Resolution], Text] {
+fn resolutions(args List[Text], start Int) Result[(List[Resolution], Bool), Text] {
     let output = new[Resolution]()
+    var draft = false
     var index = start
     while index < length(args) {
         let option = get(args, index)
+        if option == "--draft" {
+            draft = true
+            index = index + 1
+            continue
+        }
         let deletion = option == "--delete"
         if (!deletion && option != "--move") || index + if deletion {
             1
         } else {
             4
         } >= length(args) {
-            return Result.Err("refresh options are --move ID NEW_FILE NEW_NAME KEY or --delete ID; scan DIR lists keys")
+            return Result.Err("refresh options are --draft, --move ID NEW_FILE NEW_NAME KEY or --delete ID; scan DIR lists keys")
         }
         let id = get(args, index + 1)
         var previous = 0
@@ -299,11 +305,15 @@ fn resolutions(args List[Text], start Int) Result[List[Resolution], Text] {
             5
         }
     }
-    Result.Ok(output)
+    Result.Ok((output, draft))
 }
 
-fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
-    let loaded = read(directory)?
+fn refresh(directory Text, options List[Resolution], save_draft Bool) Result[Text, Text] {
+    let state = read_state(directory)?
+    let loaded = state.0
+    if state.1.draft != "" && state.1.draft != files_stamp(loaded.revision.files) && !save_draft {
+        return Result.Err("identity draft is stale; run refresh --draft before resolution")
+    }
     let previous = loaded.revision.identities
     let candidates = declarations(loaded.revision.files)?
     let selected = new[Text]()
@@ -342,7 +352,7 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
                 }
                 option_index = option_index + 1
             }
-            if !explicitly_deleted && same_declaration(prior, candidate) {
+            if !explicitly_deleted && !pending_identity(state.1.pending, prior.id) && same_declaration(prior, candidate) {
                 matched = prior_index
             }
             prior_index = prior_index + 1
@@ -381,11 +391,12 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
         index = index + 1
     }
     var remaining_old = 0
+    var unresolved = false
     index = 0
     while index < length(previous) {
         if !get(old_used, index) {
             remaining_old = remaining_old + 1
-            changes = concat(changes, concat("deleted ", concat(get(previous, index).id, "\n")))
+            unresolved = unresolved || pending_identity(state.1.pending, get(previous, index).id)
         }
         index = index + 1
     }
@@ -397,8 +408,24 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
         }
         index = index + 1
     }
-    if remaining_old > 0 && remaining_new > 0 {
+    if remaining_old > 0 && save_draft {
+        let updated = draft_sidecar(loaded, previous, candidates, selected, old_used)
+        let notice = concat("identity draft retained; unresolved declarations: ", concat(to_text(remaining_old), "\n"))
+        if updated == loaded.sidecar {
+            return Result.Ok(notice)
+        }
+        return Result.Ok(concat(publish_sidecar(directory, loaded.sidecar, updated, loaded.revision.files, true)?,
+                concat(changes, notice)))
+    }
+    if (remaining_old > 0 && remaining_new > 0) || unresolved {
         return Result.Err("possible move, rename or signature edit: use --move ID NEW_FILE NEW_NAME KEY, or --delete ID before assigning new identities; scan DIR lists keys")
+    }
+    index = 0
+    while index < length(previous) {
+        if !get(old_used, index) {
+            changes = concat(changes, concat("deleted ", concat(get(previous, index).id, "\n")))
+        }
+        index = index + 1
     }
     let identities = new[Identity]()
     var next = loaded.next
@@ -442,7 +469,8 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
 }
 
 fn refresh_command(args List[Text]) Result[Text, Text] {
-    refresh(get(args, 2), resolutions(args, 3)?)
+    let options = resolutions(args, 3)?
+    refresh(get(args, 2), options.0, options.1)
 }
 
 fn scan(directory Text) Result[Text, Text] {

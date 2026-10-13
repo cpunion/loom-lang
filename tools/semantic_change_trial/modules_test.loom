@@ -67,7 +67,7 @@ fn moved_identity(directory Text, name Text, file Text) Result[Text, Text] {
                         name = name
                         key = identity.key
                         deletion = false
-                    }])
+                    }], false)
         }
         index = index + 1
     }

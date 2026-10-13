@@ -1,0 +1,64 @@
+fn pending_identity(pending List[Text], id Text) Bool {
+    var index = 0
+    while index < length(pending) {
+        if get(pending, index) == id {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn draft_candidate(words List[Text]) Result[Bool, Text] {
+    discard kind(get(words, 1))?
+    if !lifecycle_word(get(words, 2)) || !lifecycle_leaf(get(words, 3)) || !lifecycle_word(get(words, 4)) {
+        return Result.Err("invalid identity draft candidate")
+    }
+    Result.Ok(true)
+}
+
+fn identity_locator(value Identity) Text {
+    concat(kind_name(value.kind), concat(" ", concat(value.name,
+                concat(" ", concat(value.path, concat(" ", concat(value.key, "\n")))))))
+}
+
+fn identity_row(tag Text, value Identity) Text {
+    concat(tag, concat(" ", concat(value.id, concat(" ", identity_locator(value)))))
+}
+
+// Keep explicit choices and exact bindings, but reserve no new identities for
+// unmatched declarations while an old identity's intent remains unresolved.
+fn draft_sidecar(loaded Loaded, previous List[Identity], candidates List[Identity],
+    selected List[Text], old_used List[Bool]) Text {
+    let known = new[Identity]()
+    var index = 0
+    while index < length(candidates) {
+        if get(selected, index) != "" {
+            push(known, Identity {
+                    id = get(selected, index)
+                    ..get(candidates, index)
+                })
+        }
+        index = index + 1
+    }
+    var output = sidecar(Revision {
+            identities = known
+            ..loaded.revision
+        }, loaded.next)
+    output = concat(output, concat("draft ", concat(files_stamp(loaded.revision.files), "\n")))
+    index = 0
+    while index < length(previous) {
+        if !get(old_used, index) {
+            output = concat(output, identity_row("pending", get(previous, index)))
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(candidates) {
+        if get(selected, index) == "" {
+            output = concat(output, concat("candidate ", identity_locator(get(candidates, index))))
+        }
+        index = index + 1
+    }
+    output
+}
