@@ -264,7 +264,7 @@ test fn initialized_package_applies_once_to_a_new_tree() {
     }
     let original_sidecar = text_at(path(base, ".loom-ids"))
     let original_id = get(snapshot.revision.identities, 0).id
-    match refresh(base, []) {
+    match refresh(base, [], false) {
         Result.Ok(_) => {
         }
         Result.Err(_) => {
@@ -281,7 +281,7 @@ test fn initialized_package_applies_once_to_a_new_tree() {
                 name = ""
                 key = ""
                 deletion = true
-            }]) {
+            }], false) {
         Result.Ok(_) => {
         }
         Result.Err(_) => {

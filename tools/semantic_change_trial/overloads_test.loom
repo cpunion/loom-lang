@@ -62,7 +62,7 @@ fn overload_lifecycle(staging Text) Result[Text, Text] {
     assert int_id.key != bool_id.key
     discard write_text(path(left, ".loom-ids"), original.sidecar)
     discard write_text(path(right, ".loom-ids"), original.sidecar)
-    match refresh(left, []) {
+    match refresh(left, [], false) {
         Result.Ok(_) => {
             assert false
         }
@@ -77,7 +77,7 @@ fn overload_lifecycle(staging Text) Result[Text, Text] {
         key = bool_id.key
         deletion = false
     }
-    match refresh(left, [wrong]) {
+    match refresh(left, [wrong], false) {
         Result.Ok(_) => {
             assert false
         }
@@ -88,8 +88,9 @@ fn overload_lifecycle(staging Text) Result[Text, Text] {
     assert text_at(path(left, ".loom-ids")) == original.sidecar
     assert contains(scan(left)?, concat("numbers.loom ", int_id.key))
     // Exercise the same option parser as the command-line entry point.
-    discard refresh(left, resolutions(["--move", int_id.id, "numbers.loom", "amount", int_id.key], 0)?)?
-    discard refresh(right, [])?
+    let options = resolutions(["--move", int_id.id, "numbers.loom", "amount", int_id.key], 0)?
+    discard refresh(left, options.0, options.1)?
+    discard refresh(right, [], false)?
     let changed_left = read(left)?
     let changed_right = read(right)?
     assert changed_left.next == original.next && changed_right.next == original.next

@@ -1318,6 +1318,9 @@ explicit stable-ID sidecars and directory/Git snapshots for reviewed move-plus-e
 private nongeneric function rename-plus-edit and one-sided additions. Rename
 normalization compares checked references through exact token edits in production
 and test views; local shadows, conflicting names and incomplete evidence reject.
+Unresolved identities and partial explicit choices can be saved in a source-bound
+sidecar draft without allocating guessed IDs. Ordinary compilation ignores this
+metadata; semantic preview/apply requires resolution against the current source.
 Public/generic rename composition remains unsupported. Pinned contexts and checked type, initializer and
 value-path targets prevent silent nominal or intermediate-field binding drift.
 Applying creates a new tree. The source library also checks fixed-package batches

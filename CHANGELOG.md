@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Save unresolved semantic identities and partial explicit choices with
+  `semantic_change_trial refresh --draft`, without guessing IDs or blocking
+  ordinary compilation. Source edits invalidate the draft basis; semantic
+  preview/apply requires explicit resolution of pending identities.
+
 - Use the selected system Clang for default macOS native linking, avoiding
   Homebrew SDK configuration in the default path. Explicit linker selections
   and `LOOM_CC` overrides remain authoritative.

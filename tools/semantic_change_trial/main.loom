@@ -48,6 +48,8 @@ record Header {
     package_name Text
     identities List[Identity]
     next Int
+    draft Text
+    pending List[Text]
 }
 
 record Loaded {
@@ -114,6 +116,9 @@ fn header(metadata Text, sidecar Text) Result[Header, Text] {
     var package_name = ""
     var next = 0
     var seen_next = false
+    var draft = ""
+    let pending = new[Text]()
+    var candidates = false
     let lines = split(metadata, "\n")
     var index = 0
     while index < length(lines) {
@@ -138,10 +143,24 @@ fn header(metadata Text, sidecar Text) Result[Header, Text] {
                     }
                     seen_next = true
                 } else {
-                    if length(words) != 6 || get(words, 0) != "id" {
+                    if length(words) == 2 && get(words, 0) == "draft" && draft == "" {
+                        draft = get(words, 1)
+                        index = index + 1
+                        continue
+                    }
+                    if length(words) == 5 && get(words, 0) == "candidate" {
+                        discard draft_candidate(words)?
+                        candidates = true
+                        index = index + 1
+                        continue
+                    }
+                    if length(words) != 6 || (get(words, 0) != "id" && get(words, 0) != "pending") {
                         return Result.Err(concat("invalid identity line in ", sidecar))
                     }
                     let id = get(words, 1)
+                    if get(words, 0) == "pending" {
+                        push(pending, id)
+                    }
                     let name = get(words, 3)
                     let file = get(words, 4)
                     if starts_with(file, "/") || contains(file, "/") || contains(file, "\\") ||
@@ -166,10 +185,16 @@ fn header(metadata Text, sidecar Text) Result[Header, Text] {
     if !seen_next {
         return Result.Err("identity sidecar needs exactly one next line")
     }
+    if (draft == "" && (length(pending) != 0 || candidates)) ||
+    (draft != "" && length(pending) == 0) {
+        return Result.Err("identity draft needs a source basis and unresolved identities")
+    }
     Result.Ok(Header {
             package_name = package_name
             identities = identities
             next = next
+            draft = draft
+            pending = pending
         })
 }
 
@@ -218,7 +243,7 @@ fn read_files(directory Text) Result[List[File], Text] {
     Result.Ok(files)
 }
 
-fn read(directory Text) Result[Loaded, Text] {
+fn read_state(directory Text) Result[(Loaded, Header), Text] {
     discard checked_source_directory(directory)?
     let sidecar = path(directory, ".loom-ids")
     match entry_kind(sidecar) {
@@ -236,16 +261,28 @@ fn read(directory Text) Result[Loaded, Text] {
     }
     let parsed = header(metadata, sidecar)?
     let files = read_files(directory)?
-    Result.Ok(Loaded {
-            revision = Revision {
-                package_name = parsed.package_name
-                files = files
-                identities = parsed.identities
-            }
-            sidecar = metadata
-            commit = ""
-            next = parsed.next
-        })
+    Result.Ok((Loaded {
+                revision = Revision {
+                    package_name = parsed.package_name
+                    files = files
+                    identities = parsed.identities
+                }
+                sidecar = metadata
+                commit = ""
+                next = parsed.next
+            }, parsed))
+}
+
+fn read(directory Text) Result[Loaded, Text] {
+    let state = read_state(directory)?
+    if state.1.draft != "" {
+        return Result.Err(if state.1.draft != files_stamp(state.0.revision.files) {
+                "identity draft is stale; run refresh --draft before resolution"
+            } else {
+                "identity draft has unresolved declarations; use explicit --move or --delete before merge"
+            })
+    }
+    Result.Ok(state.0)
 }
 
 // Every Git operation reads an existing object or tree. Arguments are passed
@@ -360,6 +397,9 @@ fn read_git(git_executable Text, repository Text, directory Text, revision Text)
         return Result.Err("Git revision has no .loom-ids in the package directory")
     }
     let parsed = header(metadata, concat(prefix, ".loom-ids"))?
+    if parsed.draft != "" {
+        return Result.Err("Git snapshot contains an unresolved identity draft")
+    }
     Result.Ok(Loaded {
             revision = Revision {
                 package_name = parsed.package_name
@@ -378,10 +418,7 @@ fn sidecar(revision Revision, next Int) Text {
     var index = 0
     while index < length(revision.identities) {
         let identity = get(revision.identities, index)
-        output = concat(output, concat("id ", concat(identity.id,
-                    concat(" ", concat(kind_name(identity.kind), concat(" ",
-                                concat(identity.name, concat(" ", concat(identity.path,
-                                            concat(" ", concat(identity.key, "\n")))))))))))
+        output = concat(output, identity_row("id", identity))
         index = index + 1
     }
     output
@@ -794,7 +831,7 @@ fn main() {
     !directories_apply && !context_apply && !git_apply && !module_preview && !module_apply {
         discard write_error("usage: semantic_change_trial init PACKAGE_NAME DIR\n")
         discard write_error("   or: semantic_change_trial scan DIR\n")
-        discard write_error("   or: semantic_change_trial refresh DIR [--move ID NEW_FILE NEW_NAME KEY | --delete ID]...\n")
+        discard write_error("   or: semantic_change_trial refresh DIR [--draft] [--move ID NEW_FILE NEW_NAME KEY | --delete ID]...\n")
         discard write_error("usage: semantic_change_trial BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         discard write_error("   or: semantic_change_trial --context PACKAGE_DIR STD_ROOT BASE_DIR LEFT_DIR RIGHT_DIR\n")
