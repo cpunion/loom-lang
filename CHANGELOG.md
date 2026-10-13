@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Recover ordinary function parameter and return-annotation queries even when
+  that function's body is invalid. Query-only signature headers reuse checked
+  types without inventing executable bodies or claiming proof success.
+
 - Separate cross-package semantic merge conflicts by complete production/test
   import components, retaining conflicts through shared consumers and dependencies.
   Give implicit contract results a distinct source anchor in public analysis,

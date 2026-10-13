@@ -12,12 +12,33 @@ import std.result.Result
 
 // Query-local IDs belong to these bindings and checked function tables, not a
 // compilable package. Call/FunctionRef indices retain closure function ordering.
+// Signature headers contain no body or proof-success claim.
+pub record SignatureHeader {
+    symbol Int
+    params List[Int]
+    output Int
+}
+
 pub record CheckedQuery {
     bindings std.loom.binding.Program
     types List[Type]
     interfaces List[Interface]
     functions List[Function]
+    headers List[SignatureHeader]
     declarations List[DeclarationReference]
+}
+
+fn query_signature_header(node Node, offset Int) Bool {
+    var index = 0
+    while index < length(node.children) {
+        let group = get(node.children, index)
+        if (group.kind == NodeKind.Parameters || group.kind == NodeKind.ReturnType) &&
+        offset >= group.span.start && offset < group.span.end {
+            return true
+        }
+        index = index + 1
+    }
+    false
 }
 
 fn query_templates(env Environment) Result[Bool, Failure] {
@@ -33,7 +54,8 @@ fn query_templates(env Environment) Result[Bool, Failure] {
     Result.Ok(true)
 }
 
-// Recover only from unrelated ordinary function-body failures. Binding and
+// Signature queries need no selected body. Other queries recover only from
+// unrelated ordinary function-body failures. Binding and
 // global declaration failures remain fatal. This first version also validates
 // every generic/comptime template: a concrete instance must not substitute for
 // its declaration's abstract legality, including helpers reached only by CTFE.
@@ -48,6 +70,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
     discard expanded_source(source)?
     let env = prepare_with_inputs(query_source(source)?, inputs, true)?
     discard query_templates(env)?
+    let headers = new[SignatureHeader]()
     var selected = -1
     var index = 0
     while index < length(env.signatures) {
@@ -60,13 +83,25 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
         }
         index = index + 1
     }
-    if selected < 0 {
+    if selected >= 0 {
+        let current = get(env.signatures, selected)
+        let item = symbol(env, current.symbol)
+        if item.owner < 0 && item.node.value != "" && query_signature_header(item.node, offset) {
+            push(headers, SignatureHeader {
+                    symbol = current.symbol
+                    params = current.params
+                    output = current.result
+                })
+        }
+    }
+    if selected < 0 || length(headers) != 0 {
         discard layouts(env)?
         return Result.Ok(CheckedQuery {
                 bindings = env.source
                 types = env.types
                 interfaces = env.interfaces
                 functions = new[Function]()
+                headers = headers
                 declarations = get(env.inputs, 0).declaration_references
             })
     }
@@ -81,6 +116,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
             types = env.types
             interfaces = env.interfaces
             functions = functions
+            headers = headers
             declarations = get(env.inputs, 0).declaration_references
         })
 }

@@ -93,17 +93,22 @@ fn inspect_header_type(analysis CheckedQuery, report Inspection, target Query,
 }
 
 fn inspect_function_header(analysis CheckedQuery, report Inspection, function Function, target Query) {
-    if target.node.kind != NodeKind.Type {
+    inspect_signature_header(analysis, report, function.symbol, function.params, function.result, target)
+}
+
+fn inspect_signature_header(analysis CheckedQuery, report Inspection, symbol_id Int,
+    params List[Int], output Int, target Query) {
+    if target.node.kind != NodeKind.Type && target.node.kind != NodeKind.Parameter {
         return
     }
-    let symbol = get(analysis.bindings.symbols, function.symbol)
+    let symbol = get(analysis.bindings.symbols, symbol_id)
     // Captures and static packs can change the runtime parameter layout. Only
     // aligned source/runtime groups supply positional evidence in this slice.
     if symbol.node.value == "" || (symbol.owner >= 0 &&
         get(analysis.bindings.symbols, symbol.owner).node.kind == NodeKind.Function) {
         return
     }
-    var owner = function.symbol
+    var owner = symbol_id
     while owner >= 0 {
         let scope = get(analysis.bindings.symbols, owner)
         var group = 0
@@ -125,19 +130,24 @@ fn inspect_function_header(analysis CheckedQuery, report Inspection, function Fu
     var index = 0
     while index < length(symbol.node.children) {
         let group = get(symbol.node.children, index)
-        if group.kind == NodeKind.Parameters && length(group.children) == length(function.params) {
+        if group.kind == NodeKind.Parameters && length(group.children) == length(params) {
             var item = 0
             while item < length(group.children) {
                 let parameter = get(group.children, item)
                 if length(parameter.children) > 0 && !has(parameter, NodeKind.Comptime) {
-                    inspect_header_type(analysis, report, target, function.symbol, get(parameter.children, 0),
-                        get(function.params, item), 0)
+                    if target.node.kind == NodeKind.Parameter && same_span(parameter.span, target.node.span) &&
+                    target.token.value == parameter.value {
+                        add_type(report, query_type_name(analysis, get(params, item)))
+                        declaration(analysis, report, symbol.file, parameter)
+                    }
+                    inspect_header_type(analysis, report, target, symbol_id, get(parameter.children, 0),
+                        get(params, item), 0)
                 }
                 item = item + 1
             }
         }
         if group.kind == NodeKind.ReturnType && length(group.children) == 1 {
-            inspect_header_type(analysis, report, target, function.symbol, get(group.children, 0), function.result, 0)
+            inspect_header_type(analysis, report, target, symbol_id, get(group.children, 0), output, 0)
         }
         index = index + 1
     }
