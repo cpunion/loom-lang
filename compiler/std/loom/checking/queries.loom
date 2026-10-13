@@ -56,6 +56,26 @@ fn query_function_owner(env Environment, file Int, offset Int) Int {
     selected
 }
 
+// Read the original declaration's signature, never a generated instance that
+// happens to overlap its source span. Some declarations need no source body.
+fn query_header_owner(env Environment, declarations Int, file Int, offset Int) Int {
+    var index = 0
+    while index < declarations {
+        let item = symbol(env, index)
+        if item.file == file && item.node.kind == NodeKind.Function && query_signature_header(item.node, offset) {
+            let id = source_signature_id(env, index)
+            if id >= 0 {
+                let current = get(env.signatures, id)
+                if current.parameters == 0 && !has_static(current) {
+                    return id
+                }
+            }
+        }
+        index = index + 1
+    }
+    -1
+}
+
 fn query_templates(env Environment) Result[Bool, Failure] {
     var index = 0
     while index < length(env.signatures) {
@@ -83,19 +103,18 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int) Result
 
 pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) Result[CheckedQuery, Failure] {
     discard expanded_source(source)?
-    let env = prepare_with_inputs(query_source(source)?, inputs, true)?
+    let detached = query_source(source)?
+    let declarations = length(detached.symbols)
+    let env = prepare_with_inputs(detached, inputs, true)?
     let headers = new[SignatureHeader]()
-    let selected = query_function_owner(env, file, offset)
+    let selected = query_header_owner(env, declarations, file, offset)
     if selected >= 0 {
         let current = get(env.signatures, selected)
-        let item = symbol(env, current.symbol)
-        if item.owner < 0 && item.node.value != "" && query_signature_header(item.node, offset) {
-            push(headers, SignatureHeader {
-                    symbol = current.symbol
-                    params = current.params
-                    output = current.result
-                })
-        }
+        push(headers, SignatureHeader {
+                symbol = current.symbol
+                params = current.params
+                output = current.result
+            })
     }
     var functions = new[Function]()
     if length(headers) == 0 {

@@ -125,9 +125,11 @@ Hover, definition, references, and rename perform fresh compiler checks
 with the same snapshots.
 Diagnostics can coexist with checked query results: an unrelated non-generic
 function-body error, even in the same file, need not hide an independently checked
-concrete function and its dependencies. Ordinary top-level parameter declarations
-and nested parameter/return annotations also retain checked signature types when
-their own body is invalid. These query-only headers contain no executable body
+concrete function and its dependencies. Parameter declarations and nested
+parameter/return annotations in ordinary functions and concrete non-generic
+`impl` methods also retain checked declaration types when their own body is
+invalid. Generic/static declarations do not use generated instances for recovery.
+These query-only headers contain no executable body
 or proof-success claim. Body/call queries still require the selected function
 and its dependencies to check, including generic/comptime template legality.
 Syntax and global declaration errors can still prevent queries. The compiler
