@@ -1,0 +1,57 @@
+test fn signature_queries_keep_checked_annotations_when_the_owners_body_is_invalid() {
+    let text = """
+        record Item {
+            count Int
+        }
+
+        fn broken(value Item, callback fn(Item) Item) Item {
+            true
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let before = length(bindings.symbols)
+    assert match analyze(input(text), false) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    let declared = query_offset(text, "Item {\n")
+    let sites = ["Item, callback", "Item) Item", "Item) Item {", "Item {\n    true"]
+    var index = 0
+    while index < length(sites) {
+        let found = independent_found(bindings, text, get(sites, index))
+        only_type(found, "app.Item")
+        only_definition(found, declared, declared + 4)
+        index = index + 1
+    }
+    let parameter = query_offset(text, "value Item")
+    let found = independent_found(bindings, text, "value Item")
+    only_type(found, "app.Item")
+    only_definition(found, parameter, parameter + 5)
+    only_type(independent_found(bindings, text, "callback fn"), "fn(app.Item) app.Item")
+    let header = match check_query(bindings, 0, query_offset(text, "Item, callback")) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(header.headers) == 1 && length(header.functions) == 0
+    assert match check_query(bindings, 0, query_offset(text, "fn broken")) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    assert match inspect_independent(bindings, 0, query_offset(text, "true")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert length(bindings.symbols) == before
+
+    let invalid = concat(text, """
+
+        fn invalid[T](value T) Int {
+            value + 1
+        }
+        """)
+    let invalid_bindings = query_bindings(input(invalid))
+    only_definition(independent_found(invalid_bindings, invalid, "Item, callback"), declared, declared + 4)
+}

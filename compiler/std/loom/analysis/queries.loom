@@ -7,6 +7,7 @@ import std.loom.typed.Function
 import std.loom.ast.has
 import std.option.Option
 import std.loom.checking.CheckedQuery
+import std.loom.checking.SignatureHeader
 import std.loom.checking.check_query
 import std.loom.binding.Program
 import std.loom.checking.type_name
@@ -690,6 +691,7 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
         types = analysis.program.types
         interfaces = analysis.program.interfaces
         functions = analysis.program.functions
+        headers = new[SignatureHeader]()
         declarations = if length(analysis.declarations) == 0 {
             new[std.loom.checking.DeclarationReference]()
         } else {
@@ -749,6 +751,15 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int) Option[Inspection] 
         return Option.Some(report)
     }
     var index = 0
+    while index < length(analysis.headers) {
+        let header = get(analysis.headers, index)
+        let declaration = get(analysis.bindings.symbols, header.symbol)
+        if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
+            inspect_signature_header(analysis, report, header.symbol, header.params, header.output, target)
+        }
+        index = index + 1
+    }
+    index = 0
     while index < length(analysis.types) {
         let shape = get(analysis.types, index)
         if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {

@@ -430,6 +430,11 @@ async function main() {
       const invalid = at(sameFile ? file : bad, sameFile ? mixed : broken, 'n }');
       assert.equal(await client.rpc.sendRequest('textDocument/hover', invalid), null);
       assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', invalid), []);
+      // Signature types remain known without claiming the erroneous body checked.
+      const header = at(sameFile ? file : bad, sameFile ? mixed : broken, 'Int { let n');
+      const signature = await client.rpc.sendRequest('textDocument/hover', header);
+      assert.ok(signature.contents.some(item => item.value === 'Int'));
+      assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', header), []);
     }
     // A declared return type is not a checked result when the callee fails.
     const dependent = source.replace('helper()', 'broken()') + broken;
