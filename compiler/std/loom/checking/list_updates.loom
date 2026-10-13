@@ -140,6 +140,24 @@ record ListMutationInputs {
     locals List[Local]
     predicates List[Expr]
     protected List[std.loom.proof.InputGuarantee]
+    aliases List[(Int, Int)]
+    allocations List[Int]
+}
+
+fn list_mutation_alias_input(value Expr, depth Int) Bool {
+    if value.kind == ExprKind.Coerce && value.text == "draft input" && value.index >= 0 {
+        return true
+    }
+    if value.kind == ExprKind.Record && depth < 64 {
+        var index = 0
+        while index < length(value.children) {
+            if list_mutation_alias_input(get(get(value.children, index).children, 0), depth + 1) {
+                return true
+            }
+            index = index + 1
+        }
+    }
+    false
 }
 
 fn list_mutation_root(env Environment, value Expr, depth Int) Int {
@@ -166,7 +184,8 @@ fn list_mutation_input(probe ListMutationInputs, argument Expr, depth Int) Resul
     if depth >= 64 {
         return Result.Err(error(probe.context, probe.node, "aggregate mutation proof depth exhausted"))
     }
-    if argument.kind == ExprKind.Record && list_mutation_root(probe.context.env, argument, 0) >= 0 {
+    if argument.kind == ExprKind.Record && (list_mutation_root(probe.context.env, argument, 0) >= 0 ||
+        list_mutation_alias_input(argument, 0)) {
         let fields = new[Expr]()
         var index = 0
         while index < length(argument.children) {
@@ -183,7 +202,31 @@ fn list_mutation_input(probe ListMutationInputs, argument Expr, depth Int) Resul
     } else {
         update_input(probe.context.env, argument).ty
     }
-    let index = length(probe.params)
+    var index = length(probe.params)
+    let identified = argument.kind == ExprKind.Coerce && argument.text == "draft input" && argument.index >= 0
+    if identified {
+        var group = 0
+        while group < length(probe.aliases) && get(probe.aliases, group).0 != argument.index {
+            group = group + 1
+        }
+        if group < length(probe.aliases) {
+            index = get(probe.aliases, group).1
+            if get(probe.params, index) != ty {
+                return Result.Err(error(probe.context, probe.node, "incompatible draft input aliases"))
+            }
+        } else {
+            push(probe.aliases, (argument.index, index))
+            push(probe.allocations, index)
+        }
+    }
+    if index < length(probe.params) {
+        let input = expression(ExprKind.Local, ty, probe.node, "", index, new[Expr](), true)
+        return Result.Ok(if argument.ty != ty {
+                expression(ExprKind.Coerce, argument.ty, probe.node, "", -1, expressions(input), true)
+            } else {
+                input
+            })
+    }
     push(probe.params, ty)
     push(probe.locals, Local {
             name = ""
@@ -245,6 +288,7 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
     let inputs = new[Expr]()
     let predicates = new[Expr]()
     let protected = new[std.loom.proof.InputGuarantee]()
+    let allocations = new[Int]()
     let probe_inputs = ListMutationInputs {
         context = predicate_context(helpers, root, locals, 0, true)?
         node = node
@@ -254,6 +298,8 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
         locals = locals
         predicates = predicates
         protected = protected
+        aliases = new[(Int, Int)]()
+        allocations = allocations
     }
     index = 0
     while index < length(value.children) {
@@ -277,7 +323,7 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
         runtime_name = ""
         span = value.span
     }
-    match std.loom.proof.verify_preservation(program, probe, std.loom.proof.no_proof_backend(), shared, protected) {
+    match std.loom.proof.verify_preservation(program, probe, std.loom.proof.no_proof_backend(), shared, protected, allocations) {
         Result.Ok(proved) => Result.Ok(proved)
         Result.Err(_) => {
             // Pure helper predicates belong to the value's established type,
@@ -285,7 +331,7 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
             // closure; runtime calls and shared type metadata stay unchanged.
             let types = expanded_invariant_types(scope, probe)?
             match std.loom.proof.verify_preservation(proof_types(program, types), probe,
-                get(env.inputs, 0).build.proof_backend, shared, protected) {
+                get(env.inputs, 0).build.proof_backend, shared, protected, allocations) {
                 Result.Ok(proved) => Result.Ok(proved)
                 Result.Err(message) => Result.Err(error(scope, node, message))
             }

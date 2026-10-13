@@ -1,0 +1,135 @@
+// Allocation sets are may-origins, not identities. Separate roots must have no
+// overlapping allocation/path, even when two independent choices use the same
+// alternatives. Copies of one proved root retain one input identity instead.
+fn separate_draft_roots(left DraftRoot, right DraftRoot) Bool {
+    var first = 0
+    while first < length(left.allocations) {
+        let a = get(left.allocations, first)
+        var second = 0
+        while second < length(right.allocations) {
+            let b = get(right.allocations, second)
+            if a.local == b.local {
+                var path = 0
+                while path < length(a.origin.paths) {
+                    let source = get(a.origin.paths, path)
+                    var other = 0
+                    while other < length(b.origin.paths) {
+                        let target = get(b.origin.paths, other)
+                        if origin_prefix(source, target) || origin_prefix(target, source) {
+                            return false
+                        }
+                        other = other + 1
+                    }
+                    path = path + 1
+                }
+            }
+            second = second + 1
+        }
+        first = first + 1
+    }
+    length(left.allocations) != 0 && length(right.allocations) != 0
+}
+
+fn draft_alias_argument(updates DraftUpdates, argument Expr, roots List[DraftRoot], depth Int) Result[Expr, Text] {
+    if depth >= 64 {
+        return Result.Err("draft input shape depth exhausted")
+    }
+    let shape = get(updates.env.types, argument.ty)
+    if shape.kind == TypeKind.List {
+        let borrowed = constraint_weakened(updates.env, argument)
+        let inner = if borrowed {
+            get(argument.children, 0)
+        } else {
+            argument
+        }
+        let source = if borrowed && inner.kind == ExprKind.Coerce && length(inner.children) == 1 &&
+        get(inner.children, 0).ty == argument.ty {
+            get(inner.children, 0)
+        } else {
+            argument
+        }
+        if borrowed && inner.ty != updates.ty {
+            return Result.Err("independent constrained input")
+        }
+        let root = draft_root(updates.env, updates.functions, get(updates.current, 0), source)
+        if root.local < 0 {
+            return Result.Err("unproved draft input allocation")
+        }
+        var group = 0
+        while group < length(roots) && !same_draft_root(root, get(roots, group)) {
+            if !separate_draft_roots(root, get(roots, group)) {
+                return Result.Err("overlapping draft input choices")
+            }
+            group = group + 1
+        }
+        if group == length(roots) {
+            push(roots, root)
+        }
+        // Only private preservation probes consume this marker. It neither
+        // enters executable IR nor grants privacy under worker interference.
+        return Result.Ok(Expr {
+                kind = ExprKind.Coerce
+                ty = argument.ty
+                span = argument.span
+                text = "draft input"
+                index = group
+                children = if borrowed {
+                    argument.children
+                } else {
+                    expressions(argument)
+                }
+                arms = new[Arm]()
+                falls = argument.falls
+            })
+    }
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        let node = predicate_node(updates.env, get(updates.env.types, updates.ty).symbol)
+        let fields = new[Expr]()
+        var index = 0
+        while index < length(shape.fields) {
+            let ty = get(shape.fields, index).ty
+            var projected = expression(ExprKind.Field, ty, node, "", index, expressions(argument), true)
+            if argument.kind == ExprKind.Record {
+                // Initializer order need not be declaration order. Retain any
+                // private field borrow, without replaying the original effects.
+                var field = 0
+                while field < length(argument.children) && get(argument.children, field).index != index {
+                    field = field + 1
+                }
+                if field == length(argument.children) {
+                    return Result.Err("missing draft input field")
+                }
+                projected = get(get(argument.children, field).children, 0)
+            }
+            let value = draft_alias_argument(updates, projected, roots, depth + 1)?
+            push(fields, expression(ExprKind.Field, ty, node, "", index, expressions(value), true))
+            index = index + 1
+        }
+        return Result.Ok(expression(ExprKind.Record, argument.ty, node, "", -1, fields, true))
+    }
+    if inline_constraint_base(updates.env, argument.ty, 0) || shape.kind == TypeKind.Bytes {
+        Result.Ok(argument)
+    } else {
+        Result.Err("unmodeled draft input graph")
+    }
+}
+
+fn draft_alias_operation(updates DraftUpdates, operation Expr) Result[Expr, Text] {
+    let roots = new[DraftRoot]()
+    let arguments = new[Expr]()
+    var index = 0
+    while index < length(operation.children) {
+        push(arguments, draft_alias_argument(updates, get(operation.children, index), roots, 0)?)
+        index = index + 1
+    }
+    Result.Ok(Expr {
+            kind = operation.kind
+            ty = operation.ty
+            span = operation.span
+            text = operation.text
+            index = operation.index
+            children = arguments
+            arms = operation.arms
+            falls = operation.falls
+        })
+}

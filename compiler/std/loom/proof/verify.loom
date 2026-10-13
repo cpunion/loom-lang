@@ -659,6 +659,10 @@ fn verify_body(proof Verification) Result[Bool, Text] {
 }
 
 fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, Text] {
+    verify_body(proof, protected, new[Int]())
+}
+
+fn verify_body(proof Verification, protected List[InputGuarantee], allocations List[Int]) Result[Bool, Text] {
     let function = proof.function
     if length(function.postconditions) == 0 {
         return Result.Ok(true)
@@ -682,6 +686,31 @@ fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, 
         state = integer_input_bounds(value,
             list_bounds(value, text_bounds(value, assigned(state, index, value))))
         index = index + 1
+    }
+    index = 0
+    while index < length(allocations) {
+        let parameter = get(allocations, index)
+        if parameter < 0 || parameter >= length(function.params) {
+            return Result.Err("invalid allocated preservation input")
+        }
+        match get(state.locals, parameter) {
+            Value.List(identity) => {
+                state = with_extent(identity, list_extent(identity, state)?, true, false, state)
+            }
+            _ => {
+                return Result.Err("allocated preservation input must be a List")
+            }
+        }
+        index = index + 1
+    }
+    if length(allocations) != 0 {
+        index = 0
+        while index < length(state.extents) {
+            if !get(state.extents, index).allocated {
+                return Result.Err("allocation preservation needs complete input identities")
+            }
+            index = index + 1
+        }
     }
     index = 0
     while index < length(function.params) {

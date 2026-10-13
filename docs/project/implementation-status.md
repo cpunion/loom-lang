@@ -475,8 +475,12 @@ known captures may read without exporting protected storage, including
 from cleanup. Immutable local/field aliases with proved allocation identity also
 reuse constrained-borrow preservation proofs for atomic writes and finite
 helpers, including protected fields in nested record/tuple arguments. Private
-probes abstract the other fields without assuming disjointness; executable
-operands are not reconstructed or replayed. See the
+probes abstract the other fields; executable operands are not reconstructed or
+replayed. When all shared List inputs resolve to known allocations, exact
+aliases share one logical input and non-overlapping allocation sets establish
+separation. Independent sibling updates can then preserve the protected header.
+Unknown graphs and overlapping choices retain conservative aliasing; shared
+builds still forget interfering cell observations. See the
 [aggregate update example](../../compiler/examples/record_refinement/aggregate_updates.loom).
 Every actual store must preserve the complete predicate. Proof-only
 borrows never enter executable IR or persistent evidence; worker builds

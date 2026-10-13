@@ -3,6 +3,15 @@
 // argument snapshots and loop rules; source bodies never use opaque summaries.
 pub fn verify_preservation(program Program, function Function, backend ProofBackend,
     shared Bool, protected List[InputGuarantee]) Result[Bool, Text] {
+    verify_preservation(program, function, backend, shared, protected, new[Int]())
+}
+
+// The caller proves every List input is a known source allocation, with no
+// hidden input graph aliases. Exact aliases must use one parameter; different
+// parameters must be distinct. This supplies no private-storage/interference
+// guarantee, and is never inferred from different parameter IDs.
+pub fn verify_preservation(program Program, function Function, backend ProofBackend,
+    shared Bool, protected List[InputGuarantee], allocations List[Int]) Result[Bool, Text] {
     let proof = contract_verification(program, function, backend, shared)?
     let conditions = new[Expr]()
     var index = 0
@@ -23,7 +32,7 @@ pub fn verify_preservation(program Program, function Function, backend ProofBack
         capture_returns = true
         returns = new[Outcome]()
     }
-    verify_body(persistent, protected)
+    verify_body(persistent, protected, allocations)
 }
 
 fn with_loop_returns(proof Verification) Verification {
