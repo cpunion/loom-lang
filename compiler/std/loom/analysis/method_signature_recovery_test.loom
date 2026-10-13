@@ -1,0 +1,96 @@
+test fn concrete_impl_headers_remain_queryable_without_checking_the_method_body() {
+    let text = """
+        record Item {
+            count Int
+        }
+
+        concept Echo {
+            fn echo(self Self, value Item) Item
+        }
+
+        impl Echo for Int {
+            fn echo(self Int, value Item) Item {
+                true
+            }
+        }
+
+        fn main() {
+            let receiver = 1
+            discard receiver.echo(Item { count = 1 })
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let before = length(bindings.symbols)
+    assert match analyze(input(text), false) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    let item = query_offset(text, "Item {\n")
+    let parameter = query_offset(text, "value Item) Item {\n")
+    let found = independent_found(bindings, text, "value Item) Item {\n")
+    only_type(found, "app.Item")
+    only_definition(found, parameter, parameter + 5)
+    let header = match check_query(bindings, 0, parameter) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(header.headers) == 1 && length(header.functions) == 0
+    let sites = ["Item) Item {\n", "Item {\n        true"]
+    var index = 0
+    while index < length(sites) {
+        let declared = independent_found(bindings, text, get(sites, index))
+        only_type(declared, "app.Item")
+        only_definition(declared, item, item + 4)
+        index = index + 1
+    }
+    assert match inspect_independent(bindings, 0, query_offset(text, "receiver.echo")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert length(bindings.symbols) == before
+}
+
+test fn generic_impl_headers_do_not_borrow_a_concrete_instances_type_identity() {
+    let text = """
+        record Item {
+            count Int
+        }
+
+        record Box[Item] {
+            value Item
+        }
+
+        concept Echo {
+            fn echo(self Self) Self
+        }
+
+        impl[Item] Echo for Box[Item] {
+            fn echo(self Box[Item]) Box[Item] {
+                self
+            }
+        }
+
+        fn main() {
+            let box = Box { value = Item { count = 1 } }
+            discard box.echo()
+        }
+        """
+    discard accepted(input(text))
+    let bindings = query_bindings(input(text))
+    let offset = query_offset(text, "Item]) Box")
+    let header = match check_query(bindings, 0, offset) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(header.headers) == 0
+    assert match inspect_independent(bindings, 0, offset) {
+        Option.None => true
+        Option.Some(found) => length(found.definitions) == 0
+    }
+}

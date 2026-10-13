@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Recover concrete non-generic `impl` method parameter and return annotations
+  from the original checked declaration, even with an invalid method body.
+  Generic/static declarations never borrow a generated instance's type identity.
+
 - Recover ordinary function parameter and return-annotation queries even when
   that function's body is invalid. Query-only signature headers reuse checked
   types without inventing executable bodies or claiming proof success.

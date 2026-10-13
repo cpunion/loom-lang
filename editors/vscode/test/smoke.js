@@ -436,6 +436,31 @@ async function main() {
       assert.ok(signature.contents.some(item => item.value === 'Int'));
       assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', header), []);
     }
+    const method = `record Item {
+    count Int
+}
+
+concept Echo {
+    fn echo(self Self, value Item) Item
+}
+
+impl Echo for Int {
+    fn echo(self Int, value Item) Item {
+        true
+    }
+}
+`;
+    await client.open(bad, method);
+    assert.ok((await client.wait(bad, 1)).diagnostics.length > 0);
+    const methodHeader = at(bad, method, 'Item {\n        true');
+    const methodHover = await client.rpc.sendRequest('textDocument/hover', methodHeader);
+    assert.ok(methodHover.contents.some(item => item.value === 'Item' || item.value.endsWith('.Item')), JSON.stringify(methodHover));
+    const methodDefinitions = await client.rpc.sendRequest('textDocument/definition', methodHeader);
+    assert.equal(methodDefinitions.length, 1);
+    assert.equal(methodDefinitions[0].uri, URI.file(bad).toString());
+    assert.equal(TextDocument.create(URI.file(bad).toString(), 'loom', 1, method).getText(methodDefinitions[0].range), 'Item');
+    assert.equal(await client.rpc.sendRequest('textDocument/hover', at(bad, method, 'true')), null);
+    await client.rpc.sendNotification('textDocument/didClose', { textDocument: { uri: URI.file(bad).toString() } });
     // A declared return type is not a checked result when the callee fails.
     const dependent = source.replace('helper()', 'broken()') + broken;
     await client.change(file, dependent, 9);
