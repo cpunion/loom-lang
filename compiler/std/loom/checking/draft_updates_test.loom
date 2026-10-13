@@ -142,6 +142,52 @@ test fn draft_helper_inputs_retain_exact_aliases_and_distinct_allocations() {
         """))
 }
 
+test fn draft_entry_handles_predate_fresh_inputs_without_separating_each_other() {
+    list_constraint_accept(concat(draft_update_source(), """
+        record Existing {
+            notes (List[Int], Bool)
+        }
+        fn fill(output List[Int], notes List[Int]) {
+            notes[0] = -1
+            output[0] = 1
+        }
+        pub fn build(existing Existing, other List[Int], flag Bool) Result[PositiveHead, ConstraintError] {
+            let alias = existing.notes.0
+            let selected = if flag { alias } else { other }
+            let values = [1, 2]
+            let published = PositiveHead(values)
+            fill(values, selected)
+            published
+        }
+        """))
+    list_constraint_reject(concat(draft_update_source(), """
+        fn copy(output List[Int], first List[Int], second List[Int]) {
+            first[0] = 1
+            second[0] = -1
+            output[0] = first[0]
+        }
+        pub fn invalid(first List[Int], second List[Int]) Result[PositiveHead, ConstraintError] {
+            let values = [1, 2]
+            let published = PositiveHead(values)
+            copy(values, first, second)
+            published
+        }
+        """))
+    list_constraint_reject(concat(draft_update_source(), """
+        fn restore(output List[Int], inputs List[List[Int]]) {
+            inputs[0][0] = -1
+            output[0] = 1
+        }
+        pub fn invalid() Result[PositiveHead, ConstraintError] {
+            let values = [1, 2]
+            let inputs = [values]
+            let published = PositiveHead(values)
+            restore(values, inputs)
+            published
+        }
+        """))
+}
+
 test fn aggregate_alias_arguments_cannot_hide_invalid_stores_or_publication() {
     let header = concat(draft_update_source(), """
         record Builder {
@@ -261,11 +307,11 @@ test fn raw_preserving_helpers_revalidate_after_cached_body_edits() {
             batch.values[0] = 3
             batch.notes[0] = -1
         }
-        pub fn build() Result[PositiveHead, ConstraintError] {
+        pub fn build(notes List[Int]) Result[PositiveHead, ConstraintError] {
             let values = [1, 2]
             let batch = Batch {
                 values = values
-                notes = [0]
+                notes = notes
             }
             let published = PositiveHead(batch.values)
             replace(batch)
@@ -294,7 +340,7 @@ test fn raw_preserving_helpers_revalidate_after_cached_body_edits() {
         Result.Err(_) => true
         Result.Ok(_) => false
     }
-    let aliased = std.text.join(std.text.split(source, "notes = [0]"), "notes = values")
+    let aliased = std.text.join(std.text.split(source, "notes = notes"), "notes = values")
     assert match check_project_cached(fixture_project(list_constraint_files(aliased)),
         false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
         Result.Err(_) => true

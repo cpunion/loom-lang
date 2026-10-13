@@ -47,6 +47,32 @@ test fn aggregate_updates_preserve_shared_headers_at_compile_time() {
     }
 }
 
+fn publish_entry_batch(notes List[Int]) Result[PositiveValues, ConstraintError] {
+    let batch = UpdateBatch {
+        nested = ([1, 2], true)
+        notes = notes
+    }
+    let published = PositiveValues(batch.nested.0)
+    update_batch(batch, 4)
+    published
+}
+
+fn entry_update_scope() Bool {
+    let notes = [0]
+    let published = publish_entry_batch(notes)
+    notes[0] == -1 && match published {
+        Result.Ok(values) => values_sum(values) == 8
+        Result.Err(_) => false
+    }
+}
+
+test fn aggregate_updates_retain_entry_handle_chronology() {
+    assert entry_update_scope()
+    assert comptime {
+        entry_update_scope()
+    }
+}
+
 test async fn aggregate_updates_keep_aliases_across_suspension() {
     let batch = UpdateBatch {
         nested = ([1, 2], true)

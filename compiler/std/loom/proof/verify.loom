@@ -659,10 +659,10 @@ fn verify_body(proof Verification) Result[Bool, Text] {
 }
 
 fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, Text] {
-    verify_body(proof, protected, new[Int]())
+    verify_body(proof, protected, new[Int](), new[Int]())
 }
 
-fn verify_body(proof Verification, protected List[InputGuarantee], allocations List[Int]) Result[Bool, Text] {
+fn verify_body(proof Verification, protected List[InputGuarantee], allocations List[Int], entries List[Int]) Result[Bool, Text] {
     let function = proof.function
     if length(function.postconditions) == 0 {
         return Result.Ok(true)
@@ -680,33 +680,67 @@ fn verify_body(proof Verification, protected List[InputGuarantee], allocations L
         observations = new[Observation]()
     }
     index = 0
-    while index < length(function.params) {
-        let ty = get(function.params, index)
-        let value = parameter_value(proof, ty, index)?
-        state = integer_input_bounds(value,
-            list_bounds(value, text_bounds(value, assigned(state, index, value))))
-        index = index + 1
-    }
-    index = 0
     while index < length(allocations) {
         let parameter = get(allocations, index)
         if parameter < 0 || parameter >= length(function.params) {
             return Result.Err("invalid allocated preservation input")
         }
+        index = index + 1
+    }
+    // Abstract IDs follow source chronology, not argument order: all entry
+    // handles exist before local allocations. Later reads remain may-aliases.
+    let phases = if length(allocations) == 0 {
+        1
+    } else {
+        2
+    }
+    var phase = 0
+    while phase < phases {
+        index = 0
+        while index < length(function.params) {
+            let allocated = storage_identity_member(allocations, index)
+            if allocated == (phase == 1) {
+                let ty = get(function.params, index)
+                let value = parameter_value(proof, ty, index)?
+                state = integer_input_bounds(value,
+                    list_bounds(value, text_bounds(value, assigned(state, index, value))))
+                if allocated {
+                    match value {
+                        Value.List(identity) => {
+                            state = with_extent(identity, list_extent(identity, state)?, true, false, state)
+                        }
+                        _ => {
+                            return Result.Err("allocated preservation input must be a List")
+                        }
+                    }
+                }
+            }
+            index = index + 1
+        }
+        phase = phase + 1
+    }
+    let existing = new[Int]()
+    index = 0
+    while index < length(entries) {
+        let parameter = get(entries, index)
+        if parameter < 0 || parameter >= length(function.params) || storage_identity_member(allocations, parameter) {
+            return Result.Err("invalid entry preservation input")
+        }
         match get(state.locals, parameter) {
             Value.List(identity) => {
-                state = with_extent(identity, list_extent(identity, state)?, true, false, state)
+                push(existing, identity)
             }
             _ => {
-                return Result.Err("allocated preservation input must be a List")
+                return Result.Err("entry preservation input must be a List")
             }
         }
         index = index + 1
     }
-    if length(allocations) != 0 {
+    if length(allocations) != 0 || length(entries) != 0 {
         index = 0
         while index < length(state.extents) {
-            if !get(state.extents, index).allocated {
+            let extent = get(state.extents, index)
+            if !extent.allocated && !storage_identity_member(existing, extent.identity) {
                 return Result.Err("allocation preservation needs complete input identities")
             }
             index = index + 1

@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Distinguish immutable entry List handles from later local allocations in
+  constrained helper probes, independent of argument order. Entry handles still
+  may alias each other, and later reads retain conservative graph aliasing.
+
 - Retain proved allocation identities in constrained draft helper probes.
   Collapse exact aliases to one input and distinguish independent record/tuple
   fields without copying data. Unknown input graphs remain conservative, and
