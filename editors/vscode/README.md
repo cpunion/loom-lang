@@ -129,8 +129,8 @@ concrete function and its dependencies. Ordinary top-level parameter declaration
 and nested parameter/return annotations also retain checked signature types when
 their own body is invalid. These query-only headers contain no executable body
 or proof-success claim. Body/call queries still require the selected function
-and its dependencies to check. Syntax,
-global declaration, and template errors can still prevent queries. The compiler
+and its dependencies to check, including generic/comptime template legality.
+Syntax and global declaration errors can still prevent queries. The compiler
 keeps the original bindings and never guesses from names. After a successful
 whole-package check, all differing types and targets from checked generic instances
 are retained.

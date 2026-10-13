@@ -53,8 +53,5 @@ test fn signature_queries_keep_checked_annotations_when_the_owners_body_is_inval
         }
         """)
     let invalid_bindings = query_bindings(input(invalid))
-    assert match inspect_independent(invalid_bindings, 0, query_offset(invalid, "Item, callback")) {
-        Option.None => true
-        Option.Some(_) => false
-    }
+    only_definition(independent_found(invalid_bindings, invalid, "Item, callback"), declared, declared + 4)
 }

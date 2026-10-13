@@ -41,6 +41,21 @@ fn query_signature_header(node Node, offset Int) Bool {
     false
 }
 
+fn query_function_owner(env Environment, file Int, offset Int) Int {
+    var selected = -1
+    var index = 0
+    while index < length(env.signatures) {
+        let current = get(env.signatures, index)
+        let item = symbol(env, current.symbol)
+        if item.file == file && offset >= item.node.span.start && offset < item.node.span.end &&
+        current.parameters == 0 && !has_static(current) && has(item.node, NodeKind.Block) {
+            selected = index
+        }
+        index = index + 1
+    }
+    selected
+}
+
 fn query_templates(env Environment) Result[Bool, Failure] {
     var index = 0
     while index < length(env.signatures) {
@@ -54,12 +69,12 @@ fn query_templates(env Environment) Result[Bool, Failure] {
     Result.Ok(true)
 }
 
-// Signature queries need no selected body. Other queries recover only from
-// unrelated ordinary function-body failures. Binding and
-// global declaration failures remain fatal. This first version also validates
-// every generic/comptime template: a concrete instance must not substitute for
+// Signature queries need only their actual header/type dependencies, not
+// unrelated bodies. Other queries recover only from unrelated ordinary body
+// failures. Binding/global declaration failures remain fatal. Body queries also
+// validate every generic/comptime template: a concrete instance must not substitute for
 // its declaration's abstract legality, including helpers reached only by CTFE.
-// Consequently an unrelated invalid template still prevents semantic queries.
+// Consequently an unrelated invalid template still prevents body queries.
 // Generic/comptime source owners have no concrete query instance and return an
 // empty function list; no arbitrary type or static arguments are invented.
 pub fn check_query(source std.loom.binding.Program, file Int, offset Int) Result[CheckedQuery, Failure] {
@@ -69,20 +84,8 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int) Result
 pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) Result[CheckedQuery, Failure] {
     discard expanded_source(source)?
     let env = prepare_with_inputs(query_source(source)?, inputs, true)?
-    discard query_templates(env)?
     let headers = new[SignatureHeader]()
-    var selected = -1
-    var index = 0
-    while index < length(env.signatures) {
-        let current = get(env.signatures, index)
-        let item = symbol(env, current.symbol)
-        if item.file == file && offset >= item.node.span.start && offset < item.node.span.end {
-            if current.parameters == 0 && !has_static(current) && has(item.node, NodeKind.Block) {
-                selected = index
-            }
-        }
-        index = index + 1
-    }
+    let selected = query_function_owner(env, file, offset)
     if selected >= 0 {
         let current = get(env.signatures, selected)
         let item = symbol(env, current.symbol)
@@ -94,22 +97,20 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
                 })
         }
     }
-    if selected < 0 || length(headers) != 0 {
-        discard layouts(env)?
-        return Result.Ok(CheckedQuery {
-                bindings = env.source
-                types = env.types
-                interfaces = env.interfaces
-                functions = new[Function]()
-                headers = headers
-                declarations = get(env.inputs, 0).declaration_references
-            })
+    var functions = new[Function]()
+    if length(headers) == 0 {
+        discard query_templates(env)?
+        // Template checking can append generated functions. Keep body-owner
+        // selection on the completed tables, as in ordinary closure queries.
+        let owner = query_function_owner(env, file, offset)
+        if owner >= 0 {
+            let current = get(env.signatures, owner)
+            discard schedule(env, owner, new[Int](), new[StaticValue](), symbol(env, current.symbol).node)?
+            // A produced dyn value can be used outside this query. Check its
+            // witness methods too, without unrelated application roots.
+            functions = emit_functions(env, true)?
+        }
     }
-    let current = get(env.signatures, selected)
-    discard schedule(env, selected, new[Int](), new[StaticValue](), symbol(env, current.symbol).node)?
-    // A produced dyn value can be used outside this query. Check its witness
-    // methods too, while retaining no unrelated application roots.
-    let functions = emit_functions(env, true)?
     discard layouts(env)?
     Result.Ok(CheckedQuery {
             bindings = env.source
