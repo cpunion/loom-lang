@@ -314,6 +314,22 @@ fn local_binding(source Node, value Expr, local Int, spans List[Span]) {
 fn local_location(analysis CheckedQuery, report Inspection, function Function, local Int) {
     let symbol = get(analysis.bindings.symbols, function.symbol)
     var index = 0
+    if local >= 0 && local == function.result_local {
+        while index < length(symbol.node.children) {
+            let group = get(symbol.node.children, index)
+            if group.kind == NodeKind.ReturnType {
+                // The implicit result has no declaration token. A zero-width
+                // anchor cannot be mistaken for the function or a named type.
+                add_location(report, symbol.file, Span {
+                        start = group.span.end
+                        end = group.span.end
+                    })
+                return
+            }
+            index = index + 1
+        }
+        return
+    }
     var parameter = if symbol.node.value == "" && length(function.params) != 0 &&
     get(analysis.types, get(function.params, 0)).kind == TypeKind.Frame {
         1

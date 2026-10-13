@@ -24,7 +24,10 @@ Each snapshot has regular `loom.toml` and `loom.lock` files and a `.loom-ids`
 sidecar in every directory package, including test-only packages. For example,
 initialize `sample` at the module root and `sample.parser` in its `parser`
 directory with the existing `init` command; carry those sidecars between branches.
-The package set and import graph remain fixed. Manifest and lock bytes must match
+The package set and import graph remain fixed. Cross-package header/contract or
+deletion changes compose with edits only across disconnected production/test
+import components; shared consumers or dependencies still require resolution.
+Manifest and lock bytes must match
 in all three snapshots. Other assets use whole-file three-way byte comparison:
 one-sided edits/additions/deletions and identical concurrent edits combine;
 different concurrent edits, deletion versus edit and file/directory conflicts
@@ -222,7 +225,7 @@ The same trusted-local caveat applies to `init` and `refresh`: native rename
 atomically publishes the staged sidecar but may replace a concurrently created
 target. A failed update leaves its private stage for inspection or recovery.
 
-The merge library accepts one side changing file/declaration layout while the
+The single-package merge path accepts one side changing file/declaration layout while the
 other edits declaration bodies. It preserves the layout side's surrounding
 source text and the chosen declaration body verbatim, then parses and checks
 the merged package. One side may also add uniquely named declarations with

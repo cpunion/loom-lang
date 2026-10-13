@@ -76,7 +76,9 @@ external consumers are not rewritten. Resident workers reuse valid analyses and 
 revalidating loaded source and observed inputs. Completion recovery is virtual;
 it supplies neither build success nor proof evidence.
 Runtime parameter declarations and match payload/whole bindings retain exact
-checked definition locations. Renames include contracts, preserve shadowing and
+checked definition locations. Implicit contract `result` uses a zero-width
+return-annotation anchor, distinct from named function/type declarations.
+Renames include contracts, preserve shadowing and
 recheck the virtual package. Runtime-local renames also cover selected compile-time
 branches when checked specializations account for every occurrence. Compile-time
 parameter hover/navigation/references/rename use a fresh
@@ -1325,7 +1327,10 @@ Public/generic rename composition remains unsupported. Pinned contexts and check
 value-path targets prevent silent nominal or intermediate-field binding drift.
 Applying creates a new tree. The source library also checks fixed-package batches
 against one pinned production/test basis, including private tests in each package
-and unchanged module consumers whose overload bindings could drift. Module
+and unchanged module consumers whose overload bindings could drift. Cross-package
+header/deletion versus edit checks separate disconnected import components, using
+the complete production/test graph; shared consumers and dependencies remain
+conservative conflicts. Module
 directory preview/apply uses the ordinary multi-root loader, pins configuration
 and merges independent asset changes by exact bytes through reviewed staged publication. Module Git
 input, batch renames, package/import-graph changes, arbitrary edits and automatic

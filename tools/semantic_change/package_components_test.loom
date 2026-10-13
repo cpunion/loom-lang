@@ -1,0 +1,194 @@
+fn isolated_package(edited Bool) PackageRevision {
+    package_fixture("sample.utility", "/module/utility", [File {
+                path = "value.loom"
+                text = if edited {
+                    "pub fn value() Int { 3 }\n"
+                } else {
+                    "pub fn value() Int { 2 }\n"
+                }
+            }, File {
+                path = "value_test.loom"
+                text = "test fn available() { assert value() > 0 }\n"
+            }])
+}
+
+fn isolated_context(base List[PackageRevision], tests Bool) Project {
+    let context = batch_context(base, tests)
+    push(context.packages, Package {
+            instance = 0
+            relative = "utility"
+            imports = new[PackageImport]()
+        })
+    let utility = isolated_package(false)
+    var index = 0
+    while index < length(utility.revision.files) {
+        let file = get(utility.revision.files, index)
+        let testing = ends_with(file.path, "_test.loom")
+        if tests || !testing {
+            push(context.files, SourceFile {
+                    package = 3
+                    path = join_path(utility.directory, file.path)
+                    text = file.text
+                    tree = package_tree(file.text)
+                    test_only = testing
+                    trusted_std = false
+                })
+        }
+        index = index + 1
+    }
+    context
+}
+
+fn contract_branch(base List[PackageRevision]) List[PackageRevision] {
+    let changed = std.list.clone(base)
+    let library = get(base, 0)
+    let files = std.list.clone(library.revision.files)
+    set(files, 0, File {
+            path = "value.loom"
+            text = "pub fn amount() Int ensures result > 0 { 1 }\n"
+        })
+    set(changed, 0, package_fixture(library.revision.package_name, library.directory, files))
+    changed
+}
+
+fn reordered_context(project Project) Project {
+    let order = [3, 0, 1, 2]
+    let mapping = [1, 2, 3, 0]
+    let packages = new[Package]()
+    var index = 0
+    while index < length(order) {
+        let package = get(project.packages, get(order, index))
+        let imports = new[PackageImport]()
+        var edge = 0
+        while edge < length(package.imports) {
+            let original = get(package.imports, edge)
+            push(imports, PackageImport {
+                    target = get(mapping, original.target)
+                    ..original
+                })
+            edge = edge + 1
+        }
+        push(packages, Package {
+                imports = imports
+                ..package
+            })
+        index = index + 1
+    }
+    let files = new[SourceFile]()
+    index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        push(files, SourceFile {
+                package = get(mapping, file.package)
+                ..file
+            })
+        index = index + 1
+    }
+    Project {
+        packages = packages
+        files = files
+        root = get(mapping, project.root)
+        ..project
+    }
+}
+
+test fn package_components_allow_separate_contract_and_body_changes_in_both_orders() {
+    let ordinary = batch_fixture(false, false, false, false)
+    let production = isolated_context(ordinary, false)
+    let tests = reordered_context(isolated_context(ordinary, true))
+    let base = std.list.clone(ordinary)
+    push(base, isolated_package(false))
+    let left = contract_branch(base)
+    let right = std.list.clone(base)
+    set(right, 2, isolated_package(true))
+    var order = 0
+    while order < 2 {
+        let branches = [left, right]
+        let merged = match merge_packages(base, get(branches, order), get(branches, 1 - order), production, tests) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        assert contains(get(get(merged, 0).revision.files, 0).text, "ensures result > 0")
+        assert contains(get(get(merged, 2).revision.files, 0).text, "{ 3 }")
+        order = order + 1
+    }
+}
+
+test fn package_components_keep_transitive_test_consumers_and_fork_identities() {
+    let base = batch_fixture(false, false, false, false)
+    let production = isolated_context(base, false)
+    let tests = isolated_context(base, true)
+    let graph = PackageComponents {
+        packages = new[DependencyPackage]()
+        parents = new[Int]()
+    }
+    // An unedited private-test consumer joins otherwise separate components.
+    let reader = get(tests.packages, 2)
+    push(reader.imports, PackageImport {
+            spelling = "sample.utility"
+            target = 3
+        })
+    let source = "import sample.utility.value\ntest fn utility_available() { assert value() > 0 }\n"
+    push(tests.files, SourceFile {
+            package = 2
+            path = "/module/reader/check_test.loom"
+            text = source
+            tree = package_tree(source)
+            test_only = true
+            trusted_std = false
+        })
+    let selected = std.list.clone(base)
+    push(selected, isolated_package(false))
+    let edited = std.list.clone(selected)
+    set(edited, 2, isolated_package(true))
+    let branches = [contract_branch(selected), edited]
+    var order = 0
+    while order < 2 {
+        assert match merge_packages(selected, get(branches, order), get(branches, 1 - order), production, tests) {
+            Result.Err(message) => contains(message, "contract or deletion versus edit")
+            Result.Ok(_) => false
+        }
+        order = order + 1
+    }
+    assert match include_dependencies(graph, production) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match include_dependencies(graph, tests) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let library = match dependency_package(graph, production, 0) {
+        Result.Ok(value) => value
+        Result.Err(_) => -1
+    }
+    let utility = match dependency_package(graph, production, 3) {
+        Result.Ok(value) => value
+        Result.Err(_) => -1
+    }
+    assert library >= 0 && utility >= 0
+    assert component_root(graph.parents, library) == component_root(graph.parents, utility)
+    let fork = ModuleInstance {
+        name = "sample"
+        source = "/fork"
+    }
+    push(tests.modules, fork)
+    push(tests.packages, Package {
+            instance = 1
+            relative = "lib"
+            imports = new[PackageImport]()
+        })
+    let fork_package = match dependency_package(graph, tests, 4) {
+        Result.Ok(value) => value
+        Result.Err(_) => -1
+    }
+    assert fork_package >= 0 && fork_package != library
+    assert match dependency_package(graph, tests, 99) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
