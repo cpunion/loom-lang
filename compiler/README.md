@@ -33,12 +33,16 @@ pass the LLVM 22 bootstrap and native gate. On Ubuntu 24.04 use the signed
 and `libpolly-22-dev`; set `LLVM_SYS_221_PREFIX=/usr/lib/llvm-22` and
 `LOOM_CC=/usr/bin/clang-22`. The [CI recipe](../.github/workflows/ci.yml) shows
 repository setup and runs the same full native/bootstrap gate.
+
+macOS links with `/usr/bin/clang` from the selected Xcode/Command Line Tools by
+default; LLVM 22 still generates the native objects. Set `LOOM_CC` to choose a
+different host linker explicitly.
+
 From the repository root on macOS:
 
 ```sh
 brew install llvm@22 z3
 export LLVM_SYS_221_PREFIX="$(brew --prefix llvm@22)"
-export LOOM_CC="$LLVM_SYS_221_PREFIX/bin/clang"
 bash scripts/bootstrap.sh
 
 target/loom check compiler/examples/scalar

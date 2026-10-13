@@ -150,8 +150,7 @@ int main(void) {
 
 fn link(object: &Path, shim: &Path, driver: &Path, output: &Path, level: &str) {
     let windows = cfg!(all(windows, target_env = "msvc"));
-    let cc = std::env::var_os("LOOM_CC")
-        .unwrap_or_else(|| if windows { "clang-cl" } else { "clang" }.into());
+    let cc = loom_native::native_tool::host_linker();
     let runtime = std::env::var_os("LOOM_RUNTIME_LIBRARY")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {

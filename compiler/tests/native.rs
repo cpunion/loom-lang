@@ -31,6 +31,13 @@ fn native_cli_closure_and_source_library() {
     ]));
     success(&Command::new(&artifact).output().unwrap());
     success(&loom(&["run", path(&fixture)]));
+    #[cfg(target_os = "macos")]
+    success(
+        &common::command(&["run", path(&fixture)])
+            .env_remove("LOOM_CC")
+            .output()
+            .unwrap(),
+    );
     let tests = loom(&["test", path(&fixture)]);
     success(&tests);
     assert_eq!(

@@ -20,6 +20,21 @@ fn uses_tls(object: &Path) -> Result<bool, String> {
     }))
 }
 
+/// Select the host driver, retaining an explicit environment override.
+pub fn host_linker() -> OsString {
+    std::env::var_os("LOOM_CC").unwrap_or_else(|| {
+        if cfg!(all(windows, target_env = "msvc")) {
+            "clang-cl"
+        } else if cfg!(target_os = "macos") {
+            // Use the selected Apple SDK, not a Homebrew driver configuration.
+            "/usr/bin/clang"
+        } else {
+            "clang"
+        }
+        .into()
+    })
+}
+
 pub fn link(
     object: &Path,
     output: &Path,
@@ -28,8 +43,7 @@ pub fn link(
     linker: Option<&OsStr>,
 ) -> Result<(), String> {
     let windows = cfg!(all(windows, target_env = "msvc"));
-    let default_linker = std::env::var_os("LOOM_CC")
-        .unwrap_or_else(|| if windows { "clang-cl" } else { "clang" }.into());
+    let default_linker = host_linker();
     let runtime = if uses_runtime {
         let mut runtime = runtime.map(Path::to_path_buf).unwrap_or_else(|| {
             std::env::var_os("LOOM_RUNTIME_LIBRARY")
