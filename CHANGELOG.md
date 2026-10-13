@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Use the selected system Clang for default macOS native linking, avoiding
+  Homebrew SDK configuration in the default path. Explicit linker selections
+  and `LOOM_CC` overrides remain authoritative.
+
 - Distinguish immutable entry List handles from later local allocations in
   constrained helper probes, independent of argument order. Entry handles still
   may alias each other, and later reads retain conservative graph aliasing.
