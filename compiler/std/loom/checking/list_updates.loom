@@ -142,10 +142,11 @@ record ListMutationInputs {
     protected List[std.loom.proof.InputGuarantee]
     aliases List[(Int, Int)]
     allocations List[Int]
+    entries List[Int]
 }
 
 fn list_mutation_alias_input(value Expr, depth Int) Bool {
-    if value.kind == ExprKind.Coerce && value.text == "draft input" && value.index >= 0 {
+    if value.kind == ExprKind.Coerce && (value.text == "draft input" || value.text == "draft entry") && value.index >= 0 {
         return true
     }
     if value.kind == ExprKind.Record && depth < 64 {
@@ -203,7 +204,8 @@ fn list_mutation_input(probe ListMutationInputs, argument Expr, depth Int) Resul
         update_input(probe.context.env, argument).ty
     }
     var index = length(probe.params)
-    let identified = argument.kind == ExprKind.Coerce && argument.text == "draft input" && argument.index >= 0
+    let identified = argument.kind == ExprKind.Coerce &&
+    (argument.text == "draft input" || argument.text == "draft entry") && argument.index >= 0
     if identified {
         var group = 0
         while group < length(probe.aliases) && get(probe.aliases, group).0 != argument.index {
@@ -216,7 +218,11 @@ fn list_mutation_input(probe ListMutationInputs, argument Expr, depth Int) Resul
             }
         } else {
             push(probe.aliases, (argument.index, index))
-            push(probe.allocations, index)
+            if argument.text == "draft entry" {
+                push(probe.entries, index)
+            } else {
+                push(probe.allocations, index)
+            }
         }
     }
     if index < length(probe.params) {
@@ -289,6 +295,7 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
     let predicates = new[Expr]()
     let protected = new[std.loom.proof.InputGuarantee]()
     let allocations = new[Int]()
+    let entries = new[Int]()
     let probe_inputs = ListMutationInputs {
         context = predicate_context(helpers, root, locals, 0, true)?
         node = node
@@ -300,6 +307,7 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
         protected = protected
         aliases = new[(Int, Int)]()
         allocations = allocations
+        entries = entries
     }
     index = 0
     while index < length(value.children) {
@@ -323,7 +331,7 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
         runtime_name = ""
         span = value.span
     }
-    match std.loom.proof.verify_preservation(program, probe, std.loom.proof.no_proof_backend(), shared, protected, allocations) {
+    match std.loom.proof.verify_preservation(program, probe, std.loom.proof.no_proof_backend(), shared, protected, allocations, entries) {
         Result.Ok(proved) => Result.Ok(proved)
         Result.Err(_) => {
             // Pure helper predicates belong to the value's established type,
@@ -331,7 +339,7 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
             // closure; runtime calls and shared type metadata stay unchanged.
             let types = expanded_invariant_types(scope, probe)?
             match std.loom.proof.verify_preservation(proof_types(program, types), probe,
-                get(env.inputs, 0).build.proof_backend, shared, protected, allocations) {
+                get(env.inputs, 0).build.proof_backend, shared, protected, allocations, entries) {
                 Result.Ok(proved) => Result.Ok(proved)
                 Result.Err(message) => Result.Err(error(scope, node, message))
             }

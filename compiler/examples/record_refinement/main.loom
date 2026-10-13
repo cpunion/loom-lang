@@ -67,6 +67,7 @@ fn main() {
     assert structural_draft_scope()
     assert raw_update_scope()
     assert aggregate_update_scope()
+    assert entry_update_scope()
     assert loop_draft_scope()
     assert versioned_draft_scope()
     assert joined_draft_scope()

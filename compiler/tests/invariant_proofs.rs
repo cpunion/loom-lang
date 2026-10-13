@@ -416,9 +416,16 @@ async fn main() {
         r#"
 import std.task.worker.run
 import std.result.Result
+import std.result.ConstraintError
 fn fill_batch(batch (List[Int], List[Int]), value Int) {
     fill_positive(batch.0, value)
     batch.1[0] = -1
+}
+fn fill_entry(notes List[Int]) Result[PositiveValues, ConstraintError] {
+    let values = [1, 2]
+    let published = PositiveValues(values)
+    fill_batch((values, notes), 6)
+    published
 }
 async fn main() {
     var draft = [1, 2]
@@ -454,6 +461,17 @@ async fn main() {
     fill_batch(batch, 6)
     assert batch.1[0] == -1
     assert match stable {
+        Result.Ok(values) => length(values) == 2 && values[0] == 6 && values[1] == 6
+        Result.Err(_) => false
+    }
+    let notes = [0]
+    let writer = run(fn() Int {
+        notes[0] = -2
+        0
+    })
+    let entry_published = fill_entry(notes)
+    discard writer.await
+    assert match entry_published {
         Result.Ok(values) => length(values) == 2 && values[0] == 6 && values[1] == 6
         Result.Err(_) => false
     }
@@ -556,7 +574,7 @@ fn main() {
         assert!(String::from_utf8_lossy(&stale_raw.stderr).contains("interference-safe"));
     }
 
-    // Distinct source allocations do not make their cells worker-private.
+    // Entry handles predate local allocations, but are not worker-private.
     let scratch_copy = r#"
 import std.list.length
 import std.result.Result
@@ -571,14 +589,17 @@ fn copy_notes(batch Batch) {
     batch.notes[0] = 1
     batch.values[0] = batch.notes[0]
 }
-fn main() {
+fn publish_notes(notes List[Int]) {
     let batch = Batch {
         values = [1, 2]
-        notes = [0]
+        notes = notes
     }
     let published = PositiveHead(batch.values)
     copy_notes(batch)
     discard published
+}
+fn main() {
+    publish_notes([0])
 }
 "#;
     fs::write(&main, scratch_copy).unwrap();
@@ -588,13 +609,13 @@ fn main() {
         scratch_copy
             .replace("fn main()", "async fn main()")
             .replace(
-                "    copy_notes(batch)",
-                r#"    let notes = batch.notes
+                "    publish_notes([0])",
+                r#"    let notes = [0]
     let writer = run(fn() Int {
         notes[0] = -1
         0
     })
-    copy_notes(batch)
+    publish_notes(notes)
     discard writer.await"#,
             ),
     )

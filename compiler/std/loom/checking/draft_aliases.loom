@@ -51,13 +51,15 @@ fn draft_alias_argument(updates DraftUpdates, argument Expr, roots List[DraftRoo
         if borrowed && inner.ty != updates.ty {
             return Result.Err("independent constrained input")
         }
-        let root = draft_root(updates.env, updates.functions, get(updates.current, 0), source)
+        let root = draft_input_root(updates.env, updates.functions, get(updates.current, 0), source)
         if root.local < 0 {
             return Result.Err("unproved draft input allocation")
         }
         var group = 0
         while group < length(roots) && !same_draft_root(root, get(roots, group)) {
-            if !separate_draft_roots(root, get(roots, group)) {
+            let other = get(roots, group)
+            if length(root.allocations) != 0 && length(other.allocations) != 0 &&
+            !separate_draft_roots(root, other) {
                 return Result.Err("overlapping draft input choices")
             }
             group = group + 1
@@ -71,7 +73,11 @@ fn draft_alias_argument(updates DraftUpdates, argument Expr, roots List[DraftRoo
                 kind = ExprKind.Coerce
                 ty = argument.ty
                 span = argument.span
-                text = "draft input"
+                text = if length(root.allocations) == 0 {
+                    "draft entry"
+                } else {
+                    "draft input"
+                }
                 index = group
                 children = if borrowed {
                     argument.children
