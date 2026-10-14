@@ -2,6 +2,44 @@ import std.loom.proof.ProofBackend
 import std.loom.checking.with_proof_backend
 import std.bytes.length
 import std.text.trim
+import std.map.new
+import std.map.get
+import std.map.insert
+import std.map.length
+import std.map.clear
+
+// The complete query includes all declarations, premises and conclusions.
+// Reuse only a determinate answer in this compiler context, never a partial
+// proof key, an error or an exhausted search. Nothing is persisted to disk.
+fn cached_proof_backend(tool Text, solve fn(Text, Text) Result[Bool, Text]) ProofBackend {
+    let decisions = std.map.new[Text, Bool]()
+    let stored_bytes = [0]
+    ProofBackend {
+        enabled = true
+        context = tool
+        solve = fn(context Text, query Text) Result[Bool, Text] {
+            let size = std.text.length(query)
+            if context != tool || size > 4194304 {
+                return solve(context, query)
+            }
+            match std.map.get(decisions, query) {
+                Option.Some(answer) => {
+                    return Result.Ok(answer)
+                }
+                Option.None => {
+                }
+            }
+            let answer = solve(context, query)?
+            if std.map.length(decisions) >= 256 || get(stored_bytes, 0) > 4194304 - size {
+                std.map.clear(decisions)
+                set(stored_bytes, 0, 0)
+            }
+            discard std.map.insert(decisions, query, answer)
+            set(stored_bytes, 0, get(stored_bytes, 0) + size)
+            Result.Ok(answer)
+        }
+    }
+}
 
 // Z3 is a compiler tool, never a linked dependency of a Loom application.
 // Literal arguments and stdin carry the query without shell interpretation.

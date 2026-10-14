@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Reuse exact determinate SMT queries in a bounded compiler-context memory table,
+  avoiding repeated solver processes without caching errors or exhausted searches.
+
 - Prove bounded Float remainder ranges through local IEEE order rules, including
   nested remainders and dynamic signed divisors, without bit-blasting their
   arithmetic circuits. Preserve finite-dividend and nonzero/non-NaN domains,

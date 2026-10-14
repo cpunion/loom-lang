@@ -2775,6 +2775,12 @@ them under the actual evaluation guards as well as the final truth. For example,
 `length(value) == 0` makes `value == "" || number + 1 > number` safe even for
 `Int`'s maximum, but cannot make an eagerly evaluated helper argument safe.
 Hypothetical operations never supply their own successful-check assumptions.
+
+The CLI reuses determinate answers only for identical complete queries in the
+same host proof context. Its in-memory table retains at most 256 entries and
+4 MiB of query text, clearing on saturation. Errors and exhausted searches are
+not cached or retried; changed queries still require their own decisions.
+
 Non-affine integer `+`, `-` and `*` remain symbolic terms over the same logical
 values. The [polynomial example](examples/smt_contracts/polynomials.loom) proves
 square nonnegativity, square expansion and difference-of-squares identities, with

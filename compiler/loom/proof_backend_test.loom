@@ -16,3 +16,73 @@ test fn smt_process_accepts_only_an_exact_unsatisfiable_result() {
         _ => false
     }
 }
+
+fn proof_answer(value Result[Bool, Text], expected Bool) Bool {
+    match value {
+        Result.Ok(answer) => answer == expected
+        Result.Err(_) => false
+    }
+}
+
+test fn proof_decisions_reuse_complete_queries_but_not_errors_or_other_contexts() {
+    let calls = [0]
+    let backend = cached_proof_backend("solver", fn(context Text, query Text) Result[Bool, Text] {
+            set(calls, 0, get(calls, 0) + 1)
+            if query == "retry" && get(calls, 0) == 5 {
+                return Result.Err("unknown or timeout")
+            }
+            Result.Ok(context == "solver" && query != "sat")
+        })
+    assert proof_answer(backend.solve("solver", "unsat"), true)
+    assert proof_answer(backend.solve("solver", "unsat"), true)
+    assert get(calls, 0) == 1
+    assert proof_answer(backend.solve("solver", "sat"), false)
+    assert proof_answer(backend.solve("solver", "sat"), false)
+    assert get(calls, 0) == 2
+    assert proof_answer(backend.solve("other", "unsat"), false)
+    assert proof_answer(backend.solve("other", "unsat"), false)
+    assert get(calls, 0) == 4
+    assert match backend.solve("solver", "retry") {
+        Result.Err(message) => message == "unknown or timeout"
+        Result.Ok(_) => false
+    }
+    assert proof_answer(backend.solve("solver", "retry"), true)
+    assert proof_answer(backend.solve("solver", "retry"), true)
+    assert get(calls, 0) == 6
+    assert proof_answer(backend.solve("solver", "changed premise"), true)
+    assert get(calls, 0) == 7
+}
+
+test fn proof_decisions_are_bounded_and_do_not_cross_build_contexts() {
+    let calls = [0]
+    let solve = fn(context Text, query Text) Result[Bool, Text] {
+        set(calls, 0, get(calls, 0) + 1)
+        Result.Ok(true)
+    }
+    let first = cached_proof_backend("solver", solve)
+    let second = cached_proof_backend("solver", solve)
+    assert proof_answer(first.solve("solver", "same"), true)
+    assert proof_answer(second.solve("solver", "same"), true)
+    assert get(calls, 0) == 2
+    var index = 0
+    while index < 256 {
+        assert proof_answer(first.solve("solver", std.int.to_text(index)), true)
+        index = index + 1
+    }
+    assert proof_answer(first.solve("solver", "same"), true)
+    assert get(calls, 0) == 259
+    var payload = "x"
+    while std.text.length(payload) < 2097152 {
+        payload = std.text.concat(payload, payload)
+    }
+    let large_a = std.text.concat(payload, "a")
+    let large_b = std.text.concat(payload, "b")
+    assert proof_answer(first.solve("solver", large_a), true)
+    assert proof_answer(first.solve("solver", large_b), true)
+    assert proof_answer(first.solve("solver", large_a), true)
+    assert get(calls, 0) == 262
+    let oversized = std.text.concat(large_a, large_b)
+    assert proof_answer(first.solve("solver", oversized), true)
+    assert proof_answer(first.solve("solver", oversized), true)
+    assert get(calls, 0) == 264
+}
