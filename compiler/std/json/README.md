@@ -59,6 +59,9 @@ container grammar carries across feeds. `feed` reports consumed bytes, while
 `finish` requires EOF and returns the value. Errors retain absolute byte offsets
 and stick across later calls; finish is terminal. Decoder copies share a cursor,
 so serialize feeds. The same duplicate-key and 64-level nesting policy applies.
+`feed(decoder, chunk, start, end)` consumes a half-open byte range without
+copying it. The count covers that range; document offsets exclude skipped bytes.
+Invalid ranges fault before parsing.
 
 [`std.json.stream`](stream/README.md) awaits an existing Stream and uses this
 decoder. It needs no JSON runtime or new producer protocol.
@@ -79,8 +82,8 @@ when a consistent document is required. Encoding retains traversal state, key
 sets and the current output chunk, not a complete serialized document.
 Constrained Lists retain their constrained handle and starting length rather
 than exposing a writable unconstrained view; synchronize mutations while encoding.
-The async writer uses the same cursor. Record-at-a-time document sequences are
-not provided.
+The async writer uses the same cursor. The source Stream adapter also reads
+LF-framed document sequences; other framing and sequence writers remain open.
 
 `Encoder` implements `std.iter.Iterator` with `Item = Result[Bytes, WriteError]`,
 so normal iterator consumers and `std.stream.from_iter` can use the same cursor.
