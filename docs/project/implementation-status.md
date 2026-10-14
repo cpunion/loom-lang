@@ -557,8 +557,11 @@ are tied to sequence lengths. Unknown, timeout, malformed output and solver
 failure never establish a proof. The public checker remains I/O-free unless its
 host supplies `ProofBackend` through `BuildInputs`; this is a trusted capability,
 like importing trusted cache evidence, not a source axiom. Native programs do not
-link the solver. The [example](../../compiler/examples/smt_contracts/main.loom)
-exercises sequence cancellation, empty content, Unicode byte lengths and integer
+link the solver.
+The CLI's bounded in-memory decision table reuses only identical complete queries
+with determinate answers, never errors or exhausted searches; it is not persisted.
+The [example](../../compiler/examples/smt_contracts/main.loom) exercises sequence
+cancellation, empty content, Unicode byte lengths and integer
 feasibility. Unresolved arithmetic, concatenation-size and modeled access safety
 become separate path-guarded obligations in the same query as truth. Short-circuit
 guards do not guard eager call arguments, and hypothetical operations supply no
