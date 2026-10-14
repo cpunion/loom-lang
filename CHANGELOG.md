@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Read LF-framed JSON documents as a source Stream, without waiting for EOF or
+  adding runtime behavior. Preserve chunked UTF-8, strict record errors, scoped
+  factory ownership and terminal cancellation; feed decoder byte ranges without
+  copying surrounding input.
+
 - Compose ordinary finite-Float predicates with local order and remainder
   proofs, without helper-name axioms or substitution of equal signed zeros.
   Reuse established pure-helper conditions when constructing constraints over

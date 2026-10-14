@@ -1,3 +1,4 @@
+import std.stream.Stream
 import std.net.tcp.Stream
 import std.net.tcp.TcpError
 import std.net.tcp.listen
@@ -18,10 +19,13 @@ import std.json.stream.TypedError
 import std.json.stream.parse
 import std.json.stream.decode
 import std.json.stream.write
+import std.json.stream.lines
+import std.option.Option
 import std.result.Result
 import std.text.to_bytes
 import std.text.byte
 import std.text.length
+import std.text.concat
 import std.bytes.new
 import std.bytes.push
 import std.time.sleep_ms
@@ -38,7 +42,7 @@ fn packet(item Result[Bytes, TcpError]) Result[Bytes, TcpError] {
     item
 }
 
-async fn send(client Stream) Result[Int, TcpError] {
+async fn send(client std.net.tcp.Stream) Result[Int, TcpError] {
     defer {
         discard shutdown_write(client)
     }
@@ -57,7 +61,7 @@ async fn send(client Stream) Result[Int, TcpError] {
     Result.Ok(index)
 }
 
-async fn reply(server Stream, value Value) Result[Int, TcpError] {
+async fn reply(server std.net.tcp.Stream, value Value) Result[Int, TcpError] {
     defer {
         discard shutdown_write(server)
     }
@@ -129,8 +133,63 @@ async fn trial() Result[Bool, TcpError] {
     Result.Ok(true)
 }
 
+async fn line_trial() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let client = connect(local_address(listener)?).await?
+    defer {
+        discard close_stream(client)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    let input = read(server, 1)
+    let abandoned = lines(input, packet)
+    let pending = abandoned.next()
+    sleep_ms(1).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert match abandoned.next().await {
+        Option.None => true
+        _ => false
+    }
+    let source = lines(input, packet)
+    let first = """
+        {"name":"hé中😀"}
+        """
+    discard write_bytes(client, to_bytes(concat(first, "\r\n"))).await?
+    // The peer's write side is still open: this pull must not await EOF.
+    assert match source.next().await {
+        Option.Some(Result.Ok(value)) => match stringify(value) {
+            Result.Ok(text) => text == first
+            _ => false
+        }
+        _ => false
+    }
+    discard write_bytes(client, to_bytes("123456789012345678901234567890")).await?
+    discard shutdown_write(client)?
+    assert match source.next().await {
+        Option.Some(Result.Ok(Value.Number(text))) => text == "123456789012345678901234567890"
+        _ => false
+    }
+    assert match source.next().await {
+        Option.None => true
+        _ => false
+    }
+    Result.Ok(true)
+}
+
 async fn main() {
     assert match trial().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match line_trial().await {
         Result.Ok(value) => value
         _ => false
     }
@@ -138,6 +197,10 @@ async fn main() {
 
 test async fn fragmented_json_uses_real_io_and_cancellation_drains_readiness() {
     assert match trial().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match line_trial().await {
         Result.Ok(value) => value
         _ => false
     }

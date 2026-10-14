@@ -1,0 +1,203 @@
+import std.iter.from_list
+import std.stream.from_iter
+import std.list.new
+import std.list.push
+import std.text.to_bytes
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.Outcome
+
+fn line_chunks(text Text, width Int) List[Bytes] {
+    let input = to_bytes(text)
+    let chunks = std.list.new[Bytes]()
+    var position = 0
+    while position < std.bytes.length(input) {
+        let chunk = std.bytes.new()
+        var count = 0
+        while count < width && position < std.bytes.length(input) {
+            std.bytes.push(chunk, std.bytes.get(input, position))
+            count = count + 1
+            position = position + 1
+        }
+        std.list.push(chunks, chunk)
+    }
+    chunks
+}
+
+test async fn json_lines_frame_fragmented_utf8_and_finish_the_last_record_at_eof() {
+    let document = """
+        "hé中😀\n"
+        true
+        1e+20
+        """
+    let widths = [1, 7, 1000]
+    var index = 0
+    while index < 3 {
+        let input dyn Stream[Item = Bytes] = from_iter(from_list(line_chunks(document, widths[index])))
+        let source = lines(input, raw)
+        assert match source.next().await {
+            Option.Some(Result.Ok(Value.String(text))) => text == "hé中😀\n"
+            _ => false
+        }
+        assert match source.next().await {
+            Option.Some(Result.Ok(Value.Boolean(value))) => value
+            _ => false
+        }
+        assert match source.next().await {
+            Option.Some(Result.Ok(Value.Number(text))) => text == "1e+20"
+            _ => false
+        }
+        assert match source.next().await {
+            Option.None => true
+            _ => false
+        }
+        index = index + 1
+    }
+    let input = from_iter(from_list([to_bytes("1\r"), to_bytes("\n2\n"), to_bytes("unread")]))
+    let source = lines(input, raw)
+    assert match source.next().await {
+        Option.Some(Result.Ok(Value.Number(text))) => text == "1"
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(Result.Ok(Value.Number(text))) => text == "2"
+        _ => false
+    }
+    // Completing a record does not pull the next chunk to look for EOF.
+    assert match input.next().await {
+        Option.Some(bytes) => std.bytes.to_text(bytes) == "unread"
+        _ => false
+    }
+}
+
+test async fn json_lines_stop_after_one_error_and_do_not_pull_the_suffix() {
+    let input = from_iter(from_list([to_bytes("true\n["), to_bytes("0,]\n"), to_bytes("unread")]))
+    let source = lines(input, raw)
+    assert match source.next().await {
+        Option.Some(Result.Ok(Value.Boolean(value))) => value
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(Result.Err(LineError.Syntax(line, failed))) => line == 2 && failed.offset == 3
+        _ => false
+    }
+    assert match source.next().await {
+        Option.None => true
+        _ => false
+    }
+    assert match input.next().await {
+        Option.Some(bytes) => std.bytes.to_text(bytes) == "unread"
+        _ => false
+    }
+    let pieces List[Result[Bytes, Text]] = [Result.Ok(to_bytes("1\n")), Result.Err("read failed")]
+    let failed = lines(from_iter(from_list(pieces)), packet)
+    discard failed.next().await
+    assert match failed.next().await {
+        Option.Some(Result.Err(LineError.Input(message))) => message == "read failed"
+        _ => false
+    }
+    let empty = lines(from_iter(from_list([std.bytes.new()])), raw)
+    assert match empty.next().await {
+        Option.None => true
+        _ => false
+    }
+    let blank = lines(from_iter(from_list([to_bytes("\n")])), raw)
+    assert match blank.next().await {
+        Option.Some(Result.Err(LineError.Syntax(line, _))) => line == 1
+        _ => false
+    }
+}
+
+record LineInput {
+    events List[Int]
+}
+
+impl MustScope for LineInput {
+}
+
+impl Dispose for LineInput {
+    fn dispose(self LineInput) {
+        std.list.push(self.events, 99)
+    }
+}
+
+impl Stream for LineInput {
+    type Item = Bytes
+
+    async fn next(self LineInput) Option[Bytes] {
+        std.list.push(self.events, 1)
+        sleep_ms(1).await
+        Option.Some(to_bytes("1\n2\n"))
+    }
+}
+
+fn create_line_input(events List[Int]) LineInput {
+    std.list.push(events, 0)
+    LineInput {
+        events = events
+    }
+}
+
+fn open_line_input(events List[Int]) Result[LineInput, Text] {
+    Result.Ok(create_line_input(events))
+}
+
+async fn first_owned_line(events List[Int]) Result[Bool, Text] {
+    scoped source = lines(open_line_input, events, raw)?
+    Result.Ok(match source.next().await {
+            Option.Some(Result.Ok(Value.Number(text))) => text == "1"
+            _ => false
+        })
+}
+
+test async fn json_lines_factories_keep_one_owner_and_close_on_early_exit() {
+    let events = std.list.new[Int]()
+    assert match first_owned_line(events).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert std.list.length(events) == 3 && events[0] == 0 && events[1] == 1 && events[2] == 99
+    let direct = std.list.new[Int]()
+    {
+        scoped source = lines(create_line_input, direct, raw)
+        discard source.next().await
+    }
+    assert std.list.length(direct) == 3 && direct[2] == 99
+}
+
+record WaitingLine {
+    calls List[Int]
+}
+
+impl Stream for WaitingLine {
+    type Item = Bytes
+
+    async fn next(self WaitingLine) Option[Bytes] {
+        self.calls[0] = self.calls[0] + 1
+        if self.calls[0] == 1 {
+            sleep_ms(10000).await
+        }
+        Option.Some(to_bytes("2\n"))
+    }
+}
+
+test async fn cancelled_line_pull_is_terminal_without_closing_a_borrowed_source() {
+    let input = WaitingLine {
+        calls = [0]
+    }
+    let source = lines(input, raw)
+    let pending = source.next()
+    sleep_ms(1).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert match source.next().await {
+        Option.None => true
+        _ => false
+    }
+    assert match lines(input, raw).next().await {
+        Option.Some(Result.Ok(Value.Number(text))) => text == "2"
+        _ => false
+    }
+}

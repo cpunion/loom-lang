@@ -1,0 +1,167 @@
+import std.json.Decoder
+import std.bytes.new
+import std.bytes.get
+import std.bytes.length
+import std.resource.Dispose
+import std.resource.MustScope
+
+pub enum LineError[E] {
+    Input(E)
+    Syntax(Int, ParseError)
+}
+
+record LineCursor {
+    chunk Bytes
+    position Int
+    document Decoder
+    line Int
+    started Bool
+    ended Bool
+}
+
+pub record Lines[S Stream, E] {
+    source S
+    bytes fn(S.Item) Result[Bytes, E]
+    cursor List[LineCursor]
+}
+
+fn line_cursor() List[LineCursor] {
+    [LineCursor {
+            chunk = std.bytes.new()
+            position = 0
+            document = decoder()
+            line = 1
+            started = false
+            ended = false
+        }]
+}
+
+// One serialized consumer. Retain only the delivered chunk and current decoder;
+// a newline completes a document without waiting for the producer's EOF.
+pub fn lines[S Stream, E](source S, bytes fn(S.Item) Result[Bytes, E]) Lines[S, E] {
+    Lines[S, E] {
+        source = source
+        bytes = bytes
+        cursor = line_cursor()
+    }
+}
+
+// A fresh resource factory transfers ownership instead of retaining a borrow.
+pub fn lines[A, S Stream + Dispose + MustScope, E](create fn(A) S, input A,
+    bytes fn(S.Item) Result[Bytes, E]) Lines[S, E] {
+    Lines[S, E] {
+        source = create(input)
+        bytes = bytes
+        cursor = line_cursor()
+    }
+}
+
+pub fn lines[A, S Stream + Dispose + MustScope, E, F](create fn(A) Result[S, F], input A,
+    bytes fn(S.Item) Result[Bytes, E]) Result[Lines[S, E], F] {
+    Result.Ok(Lines[S, E] {
+            source = create(input)?
+            bytes = bytes
+            cursor = line_cursor()
+        })
+}
+
+fn line_failed[E](state List[LineCursor], failed ParseError) Result[Value, LineError[E]] {
+    let cursor = state[0]
+    state[0] = LineCursor {
+        chunk = std.bytes.new()
+        ended = true
+        ..cursor
+    }
+    Result.Err(LineError.Syntax(cursor.line, failed))
+}
+
+fn line_finished[E](state List[LineCursor]) Result[Value, LineError[E]] {
+    let cursor = state[0]
+    match finish(cursor.document) {
+        Result.Ok(value) => {
+            state[0] = LineCursor {
+                document = decoder()
+                line = cursor.line + 1
+                started = false
+                ..cursor
+            }
+            Result.Ok(value)
+        }
+        Result.Err(failed) => line_failed[E](state, failed)
+    }
+}
+
+impl[S Stream, E] Stream for Lines[S, E] {
+    type Item = Result[Value, LineError[E]]
+
+    async fn next(self Lines[S, E]) Option[Result[Value, LineError[E]]] {
+        if self.cursor[0].ended {
+            return Option.None
+        }
+        while true {
+            let cursor = self.cursor[0]
+            let size = std.bytes.length(cursor.chunk)
+            if cursor.position < size {
+                var end = cursor.position
+                var newline = false
+                while end < size && !newline {
+                    newline = std.bytes.get(cursor.chunk, end) == 10
+                    end = end + 1
+                }
+                self.cursor[0] = LineCursor {
+                    position = end
+                    started = true
+                    ..cursor
+                }
+                match feed(cursor.document, cursor.chunk, cursor.position, end) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(failed) => {
+                        return Option.Some(line_failed[E](self.cursor, failed))
+                    }
+                }
+                if newline {
+                    return Option.Some(line_finished[E](self.cursor))
+                }
+            } else {
+                // Cancellation or a fault while pulling/converting is terminal:
+                // a consumed producer item cannot be silently replayed.
+                self.cursor[0] = LineCursor {
+                    ended = true
+                    ..cursor
+                }
+                match self.source.next().await {
+                    Option.None => {
+                        return if cursor.started {
+                            Option.Some(line_finished[E](self.cursor))
+                        } else {
+                            Option.None
+                        }
+                    }
+                    Option.Some(item) => {
+                        let chunk = match self.bytes(item) {
+                            Result.Ok(value) => value
+                            Result.Err(failed) => {
+                                return Option.Some(Result.Err(LineError.Input(failed)))
+                            }
+                        }
+                        self.cursor[0] = LineCursor {
+                            chunk = chunk
+                            position = 0
+                            ended = false
+                            ..cursor
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl[S Stream + Dispose + MustScope, E] MustScope for Lines[S, E] {
+}
+
+impl[S Stream + Dispose + MustScope, E] Dispose for Lines[S, E] {
+    fn dispose(self Lines[S, E]) {
+    }
+}

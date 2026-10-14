@@ -17,7 +17,28 @@ Cancellation drains a pending pull through ordinary Task cleanup; it does not
 close the producer, undo consumed bytes or preserve the local decoder for a
 restart. The caller closes borrowed resources after child Tasks drain. Input
 size limits and deadlines belong to the caller/producer. This parses one
-document into a `Value`, not a lazy sequence of array items or JSON documents.
+document into a `Value`, not a lazy sequence of array items.
+
+`lines(source, bytes)` returns a `Lines[S, E]` Stream of LF-framed JSON documents.
+Each `next().await` returns one `Result[Value, LineError[E]]` before the producer
+reaches EOF. CRLF is accepted; blank/whitespace-only records reject. Empty input
+is an empty sequence, a final LF adds no empty record, and a final valid record
+may omit LF. Raw newlines inside a JSON string or container do not span records.
+Arbitrary chunks may split UTF-8 or escapes, or contain multiple records. The
+adapter retains the current chunk and decoder, not a complete sequence or Text.
+
+`LineError.Input(E)` preserves producer errors. `Syntax(line, ParseError)` gives
+a one-based record number and a byte offset within that record. The first error
+is terminal and no later chunk is pulled; unread bytes of the delivered chunk
+are discarded. Copies share a serialized cursor. Cancellation or a fault during
+a pull/conversion is terminal for that cursor, with no automatic replay or
+closure of a borrowed producer. Its pending child still drains normally.
+
+`lines(create, input, bytes)` also accepts a fresh `Stream + Dispose + MustScope`
+factory, including a fallible one. The returned adapter is then a scoped owner;
+early exit and cancellation drain pending pulls before ordinary source disposal.
+It cannot retain a borrow of an already scoped producer. Other document framing
+and sequence writers remain open.
 
 `decode(source, bytes).await` constructs a visible typed shape after the same
 EOF check, using `std.json.from_value`. Infer the target from the result type:
@@ -44,11 +65,13 @@ validation errors. `Count(expected, reported)` rejects partial, negative or
 excessive success counts, without pulling another chunk or guessing a retry.
 Already-emitted bytes are not undone, and cancellation drains the pending sink
 without closing the caller's resource. Neither operation freezes shared input
-data. Document sequences remain open.
+data.
 
 The [TCP example](../../../examples/json_stream/main.loom) sends UTF-8 and escapes
 one byte at a time, exercises cancellation followed by a fresh parse, then
-echoes the value through three-byte output chunks and decodes a typed record:
+echoes the value through three-byte output chunks and decodes a typed record.
+It also reads LF-framed records through an open connection, without waiting for
+EOF, and checks terminal pull cancellation:
 
 ```sh
 target/loom run compiler/examples/json_stream

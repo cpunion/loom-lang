@@ -257,8 +257,7 @@ fn json_byte(previous DecoderState, current Int) Result[DecoderState, ParseError
 
 // Carry only the lexical mode through a string span, rather than copying the
 // complete parse state for every byte. Short scalar tokens keep the direct path.
-fn json_scan(previous DecoderState, chunk Bytes, start Int) Result[DecoderState, ParseError] {
-    let end = std.bytes.length(chunk)
+fn json_scan(previous DecoderState, chunk Bytes, start Int, end Int) Result[DecoderState, ParseError] {
     var index = start
     var mode = previous.mode
     while index < end {
@@ -304,6 +303,13 @@ fn json_failed(previous DecoderState, failed ParseError) DecoderState {
 // Success reports consumed bytes, not a value: trailing input and truncated
 // final tokens are only ruled out after the producer reaches EOF.
 pub fn feed(decoder Decoder, chunk Bytes) Result[Int, ParseError] {
+    feed(decoder, chunk, 0, std.bytes.length(chunk))
+}
+
+// A byte range avoids copying framed input. Offsets remain relative to the
+// document, and success reports only the number of bytes in this range.
+pub fn feed(decoder Decoder, chunk Bytes, start Int, end Int) Result[Int, ParseError] {
+    assert start >= 0 && start <= end && end <= std.bytes.length(chunk)
     var state = get(decoder.state, 0)
     match state.failure {
         Option.Some(failed) => {
@@ -315,8 +321,7 @@ pub fn feed(decoder Decoder, chunk Bytes) Result[Int, ParseError] {
     if state.finished {
         return Result.Err(error(state.offset, "JSON decoder is finished"))
     }
-    let end = std.bytes.length(chunk)
-    var index = 0
+    var index = start
     while index < end {
         if state.mode != JsonToken.String && state.mode != JsonToken.Escape {
             state = match json_byte(state, std.bytes.get(chunk, index)) {
@@ -333,7 +338,7 @@ pub fn feed(decoder Decoder, chunk Bytes) Result[Int, ParseError] {
             index = index + 1
         } else {
             let offset = state.offset
-            state = match json_scan(state, chunk, index) {
+            state = match json_scan(state, chunk, index, end) {
                 Result.Ok(next) => next
                 Result.Err(failed) => {
                     std.list.set(decoder.state, 0, json_failed(state, failed))
@@ -344,7 +349,7 @@ pub fn feed(decoder Decoder, chunk Bytes) Result[Int, ParseError] {
         }
     }
     std.list.set(decoder.state, 0, state)
-    Result.Ok(index)
+    Result.Ok(index - start)
 }
 
 fn json_finished(previous DecoderState) Result[Value, ParseError] {

@@ -1070,10 +1070,14 @@ The [file pipeline](../../compiler/examples/stream_lines/README.md) uses a lazy
 `std.file.lines.stream`: bounded native workers perform open/read/normal close,
 and both I/O modes share line framing and UTF-8 checks. Infallible resource
 factories compose owned adapters without an artificial Result. Lifting a
-synchronous Iterator still does not make its I/O nonblocking. Document sequences,
-general borrow-retaining adapters and application-grade
-networking remain open. Fresh async resource acquisition uses the Task result
-ownership described below.
+synchronous Iterator still does not make its I/O nonblocking.
+Source `std.json.stream.lines` now yields LF-framed documents before producer
+EOF, including split UTF-8/escapes, CRLF and a final record without LF. The
+existing decoder consumes chunk ranges without copies. Input/syntax errors and
+cancelled pulls are terminal; fresh resource factories retain scoped ownership.
+Other framing, sequence writers, general borrow-retaining adapters and
+application-grade networking remain open. Fresh async resource acquisition uses
+the Task result ownership described below.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;
 large-object storage is separate and stress tests relocate all sizes. Ordinary

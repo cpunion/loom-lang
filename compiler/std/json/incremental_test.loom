@@ -36,7 +36,7 @@ fn json_chunked(input Bytes, width Int) Result[Value, ParseError] {
         } else {
             index + width
         }
-        discard feed(cursor, json_bytes(input, index, end))?
+        discard feed(cursor, input, index, end)?
         index = end
     }
     finish(cursor)
@@ -44,9 +44,27 @@ fn json_chunked(input Bytes, width Int) Result[Value, ParseError] {
 
 fn json_split(input Bytes, split Int) Result[Value, ParseError] {
     let cursor = decoder()
-    discard feed(cursor, json_bytes(input, 0, split))?
-    discard feed(cursor, json_bytes(input, split, std.bytes.length(input)))?
+    discard feed(cursor, input, 0, split)?
+    discard feed(cursor, input, split, std.bytes.length(input))?
     finish(cursor)
+}
+
+test fn incremental_json_ranges_exclude_surrounding_bytes_and_keep_document_offsets() {
+    let input = to_bytes("prefix\"hé中😀\"suffix")
+    let cursor = decoder()
+    let end = std.bytes.length(input) - 6
+    assert match feed(cursor, input, 6, end) {
+        Result.Ok(count) => count == end - 6
+        _ => false
+    }
+    assert match finish(cursor) {
+        Result.Ok(Value.String(text)) => text == "hé中😀"
+        _ => false
+    }
+    assert match feed(decoder(), to_bytes("ignored[1,]suffix"), 7, 11) {
+        Result.Err(failed) => failed.offset == 3
+        _ => false
+    }
 }
 
 test fn incremental_json_accepts_every_split_and_keeps_exact_scalar_rules() {
