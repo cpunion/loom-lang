@@ -76,6 +76,15 @@ ensures std.text.byte(std.text.slice(value, start, end), index) == std.text.byte
     true
 }
 "#,
+        r#"
+fn wrong_slice_byte(value Text, start Int, end Int, index Int) Int
+requires start <= end && std.text.is_boundary(value, start) && std.text.is_boundary(value, end)
+requires index >= 0 && index < end - start
+ensures result == std.text.byte(value, start + index) + 1
+{
+    std.text.byte(std.text.slice(value, start, end), index)
+}
+"#,
     ] {
         fs::write(
             &source,
