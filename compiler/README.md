@@ -2926,9 +2926,24 @@ arguments and helper preconditions remain obligations even if the result is
 unused. Only an executed concatenation supplies a successful-allocation size
 bound on normal continuation. Symbolic words are limited to 256 atoms; exhausting
 the limit rejects a required proof or retains a checked conversion. No runtime
-proof strings or entry snapshots are allocated. Substring reasoning remains
-unsupported. See the [native Text example](examples/text_contracts) and its
-[concatenation contracts](examples/text_contracts/concatenation.loom).
+proof strings or entry snapshots are allocated.
+
+`std.text.slice` retains mathematical byte offsets and their length difference.
+The same bounded word algebra composes empty/full ranges, nested offsets and
+ordered adjacent slices of equal sources; equal lengths alone never identify
+their contents. `std.text.is_boundary(value, offset)` is a pure source helper
+that returns false outside the Text or inside a UTF-8 scalar. Successful slicing
+establishes bounds and scalar boundaries on normal continuation. A hypothetical
+slice in a contract must first prove both, even for an empty interval, and eager
+operand obligations cannot be erased by normalization. SMT uses byte-sequence
+extraction, not Unicode-character substring semantics. Within a proved range,
+byte reads normalize to the corresponding source offset; outside it, the original
+extraction remains. Native slicing retains
+its runtime range/UTF-8 checks. See the [native Text example](examples/text_contracts),
+[concatenation contracts](examples/text_contracts/concatenation.loom), and
+[slice contracts](examples/text_contracts/slices.loom).
+Slice terms, including byte-dependent offsets, have a 256-node graph budget;
+exhaustion supplies no proof evidence.
 
 List lengths are stateful, unlike immutable Text lengths. `std.list.length`,
 List literals, `std.list.new`, indexing, `std.list.get/set` and `std.list.push`

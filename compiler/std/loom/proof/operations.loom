@@ -64,6 +64,9 @@ fn intrinsic_operation(name Text, ty Int, arity Int) ProofOperation {
             return operation_shape(2, OperandFlow.Eager, true, false)
         }
     }
+    if name == "text_slice" && ty == 3 && arity == 3 {
+        return operation_shape(3, OperandFlow.Eager, false, false)
+    }
     unsupported_operation()
 }
 
@@ -148,6 +151,10 @@ fn runtime_proof_operation(program Program, function Function, value Expr) Bool 
     if name == "text_byte" {
         return function.result == 1 && length(function.params) == 2 &&
         get(function.params, 0) == 3 && get(function.params, 1) == 1
+    }
+    if name == "text_slice" {
+        return function.result == 3 && length(function.params) == 3 &&
+        get(function.params, 0) == 3 && get(function.params, 1) == 1 && get(function.params, 2) == 1
     }
     if name == "list_len" || name == "list_get" {
         let count = if name == "list_len" {

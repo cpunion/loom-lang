@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose Text slice contracts through byte-offset and immutable sequence rules:
+  length differences, empty/full ranges, nested slices, adjacent reassembly and
+  guarded source-offset byte reads.
+  Add source `std.text.is_boundary`; hypothetical slices retain range/UTF-8
+  obligations, and native slicing checks are unchanged.
+
 - Recover concrete non-generic `impl` method parameter and return annotations
   from the original checked declaration, even with an invalid method body.
   Generic/static declarations never borrow a generated instance's type identity.

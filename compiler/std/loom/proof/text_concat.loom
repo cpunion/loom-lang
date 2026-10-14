@@ -54,6 +54,7 @@ fn text_literal(value TextValue) Bool {
         TextValue.Literal(_) => true
         TextValue.Variable(_) => false
         TextValue.Select(_, _, _) => false
+        TextValue.Slice(_, _) => false
         TextValue.Joined(parts) => {
             var index = 0
             while index < length(parts) {
@@ -150,7 +151,14 @@ fn same_text_sequence(left TextValue, right TextValue) Bool {
                     return false
                 }
             }
-            TextValue.Select(identity, path, position) => {
+            TextValue.Select(_, _, _) => {
+                if !same_text(l, r) {
+                    return false
+                }
+                a = a + 1
+                b = b + 1
+            }
+            TextValue.Slice(_, _) => {
                 if !same_text(l, r) {
                     return false
                 }
@@ -193,14 +201,20 @@ fn text_atom_representative(value TextValue, facts List[Predicate]) TextValue {
 }
 
 fn normalized_text(value TextValue, facts List[Predicate]) TextValue {
+    normalized_text(value, facts, [256])
+}
+
+fn normalized_text(value TextValue, facts List[Predicate], budget List[Int]) TextValue {
+    if get(budget, 0) <= 0 {
+        return value
+    }
+    set(budget, 0, get(budget, 0) - 1)
     let parts = text_parts(value)
     let output = new[TextValue]()
     var index = 0
     while index < length(parts) {
-        let atom = text_atom_representative(get(parts, index), facts)
-        if !same_text(atom, TextValue.Literal("")) {
-            push(output, atom)
-        }
+        let atom = normalized_text_range(text_atom_representative(get(parts, index), facts), facts, budget)
+        append_text_range(output, atom, facts, budget)
         index = index + 1
     }
     text_sequence(output)
@@ -218,15 +232,8 @@ fn text_equal(left TextValue, right TextValue, facts List[Predicate]) Bool {
         while b < length(second) {
             let l = get(first, a)
             let r = get(second, b)
-            let joined = match l {
-                TextValue.Joined(_) => true,
-                _ => false
-            } ||
-            match r {
-                TextValue.Joined(_) => true,
-                _ => false
-            }
-            if joined && same_text(normalized_text(l, facts), normalized_text(r, facts)) {
+            if (text_composed(l) || text_composed(r)) &&
+            same_text(normalized_text(l, facts), normalized_text(r, facts)) {
                 return true
             }
             b = b + 1

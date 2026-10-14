@@ -775,8 +775,14 @@ Bounded concatenation proofs preserve ordered contents, byte-length sums, empty
 identity, reassociation and established atom equalities. Pure helpers, entry
 values and constraint weakening compose without runtime proof allocations;
 hypothetical sizes and eager helper obligations must still be proved. This is
-not a word-equation solver. Substring reasoning is not implemented; Bytes remain
-opaque.
+not a word-equation solver. Text slices now retain mathematical byte offsets,
+length differences, empty/full identity, nested ranges and ordered adjacent-range
+composition. `std.text.is_boundary` provides a source-written UTF-8 boundary query.
+Only successful execution supplies slice domain facts; hypothetical slices must
+prove bounds and scalar boundaries, including for empty ranges, before their
+values participate in local normalization or SMT byte-sequence extraction.
+Guarded byte reads reuse source offsets without assuming out-of-range reads are defined.
+Runtime slicing checks are unchanged. Bytes remain opaque.
 List lengths belong to the current proof state: exact aliases share extent
 updates, while unknown overlap and opaque calls forget current-length facts.
 Scalar reads remain snapshots. Length helpers, literals/allocation, indexed

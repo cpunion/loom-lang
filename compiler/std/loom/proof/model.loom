@@ -19,6 +19,9 @@ enum TextValue {
     Variable(Int)
     Joined(List[TextValue])
     Select(Int, List[Int], Linear)
+    // One source and two mathematical byte offsets. Lists break the recursive
+    // Text/integer term layout; neither represents runtime slice storage.
+    Slice(List[TextValue], List[IntegerTerm])
 }
 
 enum FloatValue {

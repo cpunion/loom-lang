@@ -1,0 +1,107 @@
+import std.text.slice
+import std.text.is_boundary
+import std.text.length
+import std.text.concat
+import std.text.byte
+import std.time.sleep_ms
+
+fn portion(value Text, start Int, end Int) Text
+requires start <= end && is_boundary(value, start) && is_boundary(value, end)
+ensures length(result) == end - start
+{
+    slice(value, start, end)
+}
+
+fn reassembled(value Text, cut Int) Text
+requires is_boundary(value, cut)
+ensures result == value
+{
+    concat(slice(value, 0, cut), slice(value, cut, length(value)))
+}
+
+fn nested_portion(value Text, start Int, end Int, first Int, last Int) Text
+ensures length(result) == last - first
+{
+    slice(slice(value, start, end), first, last)
+}
+
+fn portion_byte(value Text, start Int, end Int, index Int) Int
+requires start <= end && is_boundary(value, start) && is_boundary(value, end)
+requires index >= 0 && index < end - start
+ensures result == byte(value, start + index)
+{
+    byte(slice(value, start, end), index)
+}
+
+fn sliced_entry(value Text) Text
+ensures result == old(slice(value, 0, length(value)))
+{
+    value
+}
+
+fn sequenced_slice(value Text) Text
+ensures result == concat(value, "!")
+{
+    var saved = value
+    concat(slice(saved, 0, length(saved)), {
+            saved = "!"
+            slice(saved, 0, length(saved))
+        })
+}
+
+fn slice_law(value Text, cut Int) Bool {
+    let slice_proof_marker = 41273895
+    slice_proof_marker > 0 &&
+    concat(slice(value, 0, cut), slice(value, cut, length(value))) == value
+}
+
+fn proved_reassembly(value Text, cut Int) Text
+requires is_boundary(value, cut)
+ensures slice_law(result, cut)
+{
+    value
+}
+
+fn whole_name_within_limit(value Text) Bool {
+    let slice_constraint_marker = 41373895
+    slice_constraint_marker > 0 && length(slice(value, 0, length(value))) <= 8
+}
+
+type WholeShortName = Text where whole_name_within_limit(self)
+
+fn whole_short_name(value ShortName) WholeShortName {
+    WholeShortName(value)
+}
+
+async fn sliced_across_wait(value Text, cut Int) Text
+requires is_boundary(value, cut)
+ensures result == value
+{
+    let first = slice(value, 0, cut)
+    let last = slice(value, cut, length(value))
+    sleep_ms(1).await
+    concat(first, last)
+}
+
+async fn exercise_slices() {
+    let value = concat("é", "中😀")
+    assert portion(value, 2, 5) == "中"
+    assert nested_portion(value, 2, 9, 3, 7) == "😀"
+    assert portion_byte(value, 2, 9, 3) == byte(value, 5)
+    assert reassembled(value, 0) == value
+    assert reassembled(value, 2) == value
+    assert reassembled(value, length(value)) == value
+    assert sliced_entry(value) == value
+    assert sequenced_slice(value) == concat(value, "!")
+    assert proved_reassembly(value, 5) == value
+    assert whole_short_name(ShortName("é😀")) == "é😀"
+    assert sliced_across_wait(value, 5).await == value
+    let constant = comptime {
+        portion("é中😀", 2, 5)
+    }
+    assert constant == "中"
+}
+
+test async fn slice_contracts_compose_with_refinements_and_suspension() {
+    exercise_slices().await
+}
