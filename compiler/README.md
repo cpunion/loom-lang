@@ -3367,6 +3367,12 @@ preserves signed zero, NaN, infinite divisors and exact subnormal remainders.
 IEEE classification rules avoid unnecessary circuits; a single explicit
 alternative may be split before branch-local equalities are substituted.
 Every branch remains a required proof under the original solver time budget.
+Before SMT, truncating remainder transfers finite-result, magnitude and numeric
+sign bounds through the existing Float order rules. This requires an established
+finite dividend and a strictly signed divisor, which excludes zero and NaN but
+permits infinity. Nested remainders compose without substituting equal signed
+zeros into arithmetic. The local transfer is bounded to 16 remainder terms and
+256 collection steps; unresolved cases retain the exact IEEE solver path.
 See the [Float trial](examples/floats/contracts.loom),
 [arithmetic contracts](examples/smt_contracts/floats.loom) and
 [remainder contracts](examples/smt_contracts/float_remainders.loom). Source `std.float.abs`

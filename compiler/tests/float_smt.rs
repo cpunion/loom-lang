@@ -110,6 +110,20 @@ fn float_solver_does_not_invent_real_algebra_or_nearest_quotient_remainders() {
         "fn bad(a Float, b Float, c Float) Bool ensures result {\n    (a + b) + c == a + (b + c)\n}",
         "fn bad(value Float) Float requires value == 3.0 ensures result == -1.0 {\n    value % 2.0\n}",
         "fn bad(a Float, b Float) Bool requires a == b ensures result {\n    1.0 / a == 1.0 / b\n}",
+        r#"
+fn bad(value Float, divisor Float) Float
+requires -1.0 / 0.0 < value && value < 1.0 / 0.0 && divisor >= 0.0
+ensures result < divisor {
+    value % divisor
+}
+"#,
+        r#"
+fn bad(value Float, divisor Float) Float
+requires value == 0.0 && divisor > 0.0
+ensures 1.0 / result == 1.0 / 0.0 {
+    value % divisor
+}
+"#,
     ] {
         fs::write(&source, program).unwrap();
         let output = common::loom(&["check", package.path().to_str().unwrap()]);

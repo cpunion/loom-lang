@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Prove bounded Float remainder ranges through local IEEE order rules, including
+  nested remainders and dynamic signed divisors, without bit-blasting their
+  arithmetic circuits. Preserve finite-dividend and nonzero/non-NaN domains,
+  signed-zero behavior and the original solver budget.
+
 - Compose Text slice contracts through byte-offset and immutable sequence rules:
   length differences, empty/full ranges, nested slices, adjacent reassembly and
   guarded source-offset byte reads.
