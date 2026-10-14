@@ -74,6 +74,50 @@ fn main() {
 """, true)
 }
 
+test fn ieee_finite_helpers_compose_with_ranges_and_construction_without_a_solver() {
+    discard accepted_result("""
+fn finite(value Float) Bool {
+    value - value == 0.0
+}
+
+type Wrapped = Float where self >= 0.0 && self < 2.0
+
+fn wrap(value Float) Wrapped
+requires finite(value) && value >= 0.0 {
+    Wrapped(value % 2.0)
+}
+
+fn nested(value Float, divisor Float) Float
+requires finite(value) && divisor > 0.0
+ensures -divisor < result && result < divisor {
+    (value % divisor) % divisor
+}
+""")
+    rejects("""
+fn finite(value Float) Bool {
+    value == value
+}
+
+fn invalid(value Float, divisor Float) Float
+requires finite(value) && divisor > 0.0
+ensures -divisor < result && result < divisor {
+    value % divisor
+}
+""")
+    rejects_result("""
+fn finite(value Float) Bool {
+    value - value == 0.0
+}
+
+type Wrapped = Float where self >= 0.0 && self < 2.0
+
+fn invalid(value Float) Wrapped
+requires finite(value) {
+    Wrapped(value % 2.0)
+}
+""")
+}
+
 test fn ieee_loop_candidates_reuse_entry_bounds_without_a_solver_or_nan_assumptions() {
     discard accepted("""
         fn reset(value Float) Float

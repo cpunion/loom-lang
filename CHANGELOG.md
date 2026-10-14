@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compose ordinary finite-Float predicates with local order and remainder
+  proofs, without helper-name axioms or substitution of equal signed zeros.
+  Reuse established pure-helper conditions when constructing constraints over
+  bounded immutable scalar expressions, without reevaluating source inputs.
+
 - Reuse exact determinate SMT queries in a bounded compiler-context memory table,
   avoiding repeated solver processes without caching errors or exhausted searches.
 

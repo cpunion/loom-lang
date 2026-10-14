@@ -10,8 +10,8 @@ ensures result >= 0.0 && result < 2.0 {
 }
 
 fn checked_wrap(value Float) WrappedFloat
-requires value >= 0.0 && value <= 100.0 {
-    WrappedFloat(wrap_two(value))
+requires is_finite(value) && value >= 0.0 {
+    WrappedFloat(value % 2.0)
 }
 
 fn negative_wrap(value Float) Float
@@ -57,13 +57,14 @@ ensures result >= 0.0 && result < 2.0 {
 }
 
 fn dynamic_remainder(value Float, divisor Float) Float
-requires -1.0 / 0.0 < value && value < 1.0 / 0.0
+requires is_finite(value)
 requires divisor > 0.0
 ensures -divisor < result && result < divisor {
     value % divisor
 }
 
 fn float_remainder_cases() {
+    assert wrap_two(17.5) == 1.5
     assert checked_wrap(17.5) == 1.5
     assert negative_wrap(-3.5) == -1.5
     assert truncated_remainder(3.5, 2.0) == 1.5

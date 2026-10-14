@@ -284,7 +284,9 @@ fn proved_construction(context Context, node Node, source Node, value Expr, targ
         return flow_construction_proof(context, node, value, target)
     }
     if value.kind != ExprKind.Call {
-        if context.fact_head >= 0 && fact_reference(context, value) >= 0 &&
+        // Preserve bounded pure scalar computations, not just bare bindings.
+        // fact_size excludes mutable locals, heap observations and calls.
+        if context.fact_head >= 0 && fact_size(context, value, 0) > 0 &&
         (contract_call(predicate_node(context.env, get(context.env.types, target).symbol)) || helper_facts(context)) {
             return flow_construction_proof(context, node, value, target)
         }

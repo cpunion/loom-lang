@@ -43,6 +43,38 @@ fn float_order_edge(edges List[FloatOrderEdge], relation Text, left Int, right I
     }
 }
 
+// If the exact computation x - x is ordered, x must be finite: either
+// infinity or NaN would produce NaN. Do not substitute numerically equal
+// operands, or infer finiteness from a negated comparison.
+fn float_order_finite_inputs(values List[FloatValue], edges List[FloatOrderEdge],
+    ordered List[Bool], start Int) Result[Bool, Text] {
+    var current = start
+    var remaining = 32
+    while remaining > 0 {
+        let inputs = match get(values, current) {
+            FloatValue.Apply("-", inputs) => inputs
+            _ => {
+                return Result.Ok(true)
+            }
+        }
+        if length(inputs) != 2 || !same_float(get(inputs, 0), get(inputs, 1), [256]) {
+            return Result.Ok(true)
+        }
+        let operand = float_order_identity(values, get(inputs, 0))?
+        let low = float_order_identity(values, FloatValue.Literal("-inf"))?
+        let high = float_order_identity(values, FloatValue.Literal("inf"))?
+        while length(ordered) < length(values) {
+            push(ordered, false)
+        }
+        set(ordered, operand, true)
+        float_order_edge(edges, "<", low, operand)
+        float_order_edge(edges, "<", operand, high)
+        current = operand
+        remaining = remaining - 1
+    }
+    Result.Err("Float classification budget exhausted")
+}
+
 // Positive comparisons establish non-NaN endpoints. A negated ordered
 // comparison may be reversed only after both endpoints are known non-NaN.
 fn float_order_facts(values List[FloatValue], edges List[FloatOrderEdge],
@@ -71,6 +103,8 @@ fn float_order_facts(values List[FloatValue], edges List[FloatOrderEdge],
                             set(ordered, left, true)
                             set(ordered, right, true)
                             float_order_edge(edges, relation, left, right)
+                            discard float_order_finite_inputs(values, edges, ordered, left)?
+                            discard float_order_finite_inputs(values, edges, ordered, right)?
                         }
                     } else {
                         if negated && get(ordered, left) && get(ordered, right) {

@@ -52,6 +52,39 @@ test fn ieee_order_ranges_and_complements_require_non_nan_evidence() {
     assert !holds(Predicate.FloatCompare("==", FloatValue.Apply("-", [a, a]), zero), guarded)
 }
 
+test fn ordered_self_subtraction_establishes_finiteness_not_numeric_substitution() {
+    let value = FloatValue.Variable(1)
+    let other = FloatValue.Variable(2)
+    let difference = FloatValue.Apply("-", [value, value])
+    let zero = FloatValue.Literal("0")
+    let low = FloatValue.Literal("-inf")
+    let high = FloatValue.Literal("inf")
+    let finite = Predicate.FloatCompare("==", difference, zero)
+    assert holds(Predicate.FloatCompare("<", low, value), [finite])
+    assert holds(Predicate.FloatCompare("<", value, high), [finite])
+    assert holds(Predicate.FloatCompare("<", value, high),
+        [Predicate.FloatCompare("<=", zero, difference)])
+    let nested = FloatValue.Apply("-", [difference, difference])
+    assert holds(Predicate.FloatCompare("<", value, high),
+        [Predicate.FloatCompare("==", nested, zero)])
+    assert !holds(Predicate.FloatCompare("<", value, high), [not(finite)])
+    assert !holds(Predicate.FloatCompare("<", value, high),
+        [not(Predicate.FloatCompare("<", difference, zero))])
+    assert !holds(Predicate.FloatCompare("<", value, high),
+        [Predicate.FloatCompare("==", value, value)])
+    assert !holds(Predicate.FloatCompare("<", value, high),
+        [Predicate.FloatCompare("==", FloatValue.Apply("-", [value, other]), zero)])
+    // Equal zeros can have opposite reciprocal signs; these remain distinct
+    // computations even when their numeric results are equal.
+    let inverse = FloatValue.Apply("/", [FloatValue.Literal("1"), value])
+    let other_inverse = FloatValue.Apply("/", [FloatValue.Literal("1"), other])
+    assert !holds(Predicate.FloatCompare("<", inverse, high),
+        [Predicate.FloatCompare("==", value, other),
+            Predicate.FloatCompare("==", FloatValue.Apply("-", [inverse, other_inverse]), zero)])
+    assert !holds(Predicate.FloatCompare("==", inverse, other_inverse),
+        [finite, Predicate.FloatCompare("==", value, other)])
+}
+
 test fn ieee_order_rules_agree_with_special_values() {
     let a = FloatValue.Variable(1)
     let b = FloatValue.Variable(2)
@@ -62,6 +95,12 @@ test fn ieee_order_rules_agree_with_special_values() {
     var first = 0
     while first < length(values) {
         let x = get(values, first)
+        if x - x == 0.0 {
+            let finite = [Predicate.FloatCompare("==", FloatValue.Apply("-", [a, a]), FloatValue.Literal("0"))]
+            assert holds(Predicate.FloatCompare("<", FloatValue.Literal("-inf"), a), finite)
+            assert holds(Predicate.FloatCompare("<", a, FloatValue.Literal("inf")), finite)
+            assert -1.0 / 0.0 < x && x < 1.0 / 0.0
+        }
         var second = 0
         while second < length(values) {
             let y = get(values, second)

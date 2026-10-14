@@ -155,6 +155,13 @@ Finite dividends and strictly signed divisors now transfer remainder magnitude,
 finiteness and numeric sign bounds through the local Float order theory. Nested
 range contracts can avoid SMT entirely; zero signs are not substituted into
 arithmetic, and unresolved or exhausted cases keep the exact IEEE solver path.
+Source predicates such as `std.float.is_finite` now supply these local finite
+bounds through ordinary pure-helper expansion: an ordered exact `x - x`
+computation excludes NaN and both infinities. No helper name is trusted, and
+negated comparisons or numeric operand equality supply no such inference.
+Constrained construction can reuse these established helper conditions for
+bounded scalar expressions over immutable bindings, retaining operand/fault
+checks and evaluating the input once.
 Float scalar/inline-field loops now propose established entry order bounds and
 reuse the ordinary inductive fixed point. Supported unresolved backedge steps
 use this same IEEE solver; removed candidates trigger rechecking. The

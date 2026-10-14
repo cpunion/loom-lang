@@ -65,6 +65,7 @@ fn truncating_remainder_contracts_compose_and_reject_stale_or_wrong_ieee_proofs(
         program.replace("1.0 / result == 1.0 / value", "1.0 / result == 1.0 / 0.0"),
         program.replace(" && !is_nan(divisor)", ""),
         program.replace("value <= 100.0", "value <= 1.0 / 0.0"),
+        program.replace("requires is_finite(value)\n", "requires value == value\n"),
     ] {
         assert_ne!(changed, program, "test edit did not apply");
         fs::write(&source, &changed).unwrap();

@@ -17,7 +17,8 @@ fn with_result(text Text) Result[std.loom.typed.Program, Failure] {
 fn accepted_result(text Text) std.loom.typed.Program {
     match with_result(text) {
         Result.Ok(program) => program
-        Result.Err(_) => {
+        Result.Err(failed) => {
+            show_failure(fixture_project(source_files(text)), failed)
             assert false
             accepted_result("")
         }
