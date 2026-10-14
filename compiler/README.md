@@ -2758,6 +2758,11 @@ loops/shared-storage mutation, indirect calls or exhausted expansion retain runt
 General implications over shared mutable contents remain open; supported
 immutable input invariants and flow facts are described below.
 
+Construction also reuses established pure-helper conditions for bounded scalar
+expressions over immutable bindings, not only a bare binding. The expression
+evaluates once; proof preparation keeps its operand and fault obligations and
+does not identify separate heap reads.
+
 `requires` is checked before the callee body. Every declared `ensures` must be
 proved; unknown or unsupported proofs reject the build, including for functions
 outside the emitted entry closure. There is no runtime postcondition fallback.
@@ -3376,7 +3381,11 @@ Every branch remains a required proof under the original solver time budget.
 Before SMT, truncating remainder transfers finite-result, magnitude and numeric
 sign bounds through the existing Float order rules. This requires an established
 finite dividend and a strictly signed divisor, which excludes zero and NaN but
-permits infinity. Nested remainders compose without substituting equal signed
+permits infinity. Ordinary pure predicates such as `std.float.is_finite(value)`
+provide local finite bounds: an ordered exact `value - value` computation
+excludes NaN and both infinities. A negated comparison or numeric equality of
+different computations does not establish this condition. No helper name is
+trusted. Nested remainders compose without substituting equal signed
 zeros into arithmetic. The local transfer is bounded to 16 remainder terms and
 256 collection steps; unresolved cases retain the exact IEEE solver path.
 See the [Float trial](examples/floats/contracts.loom),

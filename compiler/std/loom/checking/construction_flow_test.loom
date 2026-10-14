@@ -44,6 +44,26 @@ pub fn branch(value Float) Nonnegative {
     }
 }
 
+test fn constant_construction_does_not_prepare_unrelated_runtime_calls() {
+    discard accepted_result("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where positive(self)
+
+fn guarded(value Int) Positive
+requires value > 0 {
+    Positive(value)
+}
+
+fn main() {
+    assert guarded(1) == 1
+    assert Positive(1 + 1) == 2
+}
+""")
+}
+
 test fn helper_flow_does_not_assume_requirements_or_hypothetical_safety() {
     rejects_result("""
 fn admitted(value Int) Bool
