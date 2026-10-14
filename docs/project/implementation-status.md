@@ -151,6 +151,10 @@ intrinsic or application-specific proof rule.
 The [remainder example](../../compiler/examples/smt_contracts/float_remainders.loom)
 proves range/refinement composition, dynamic divisor alternatives, signed-zero
 preservation, exceptional inputs, subnormals and nested remainders.
+Finite dividends and strictly signed divisors now transfer remainder magnitude,
+finiteness and numeric sign bounds through the local Float order theory. Nested
+range contracts can avoid SMT entirely; zero signs are not substituted into
+arithmetic, and unresolved or exhausted cases keep the exact IEEE solver path.
 Float scalar/inline-field loops now propose established entry order bounds and
 reuse the ordinary inductive fixed point. Supported unresolved backedge steps
 use this same IEEE solver; removed candidates trigger rechecking. The

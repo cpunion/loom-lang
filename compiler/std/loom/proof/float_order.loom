@@ -132,7 +132,7 @@ fn float_order_reach(edges List[FloatOrderEdge], ordered List[Bool], start Int) 
 
 // This is an IEEE order theory, not real arithmetic. Numeric equality can
 // connect comparison paths (including signed zeros), never computation terms.
-fn float_holds(relation Text, left FloatValue, right FloatValue,
+fn float_order_holds(relation Text, left FloatValue, right FloatValue,
     facts List[Predicate], negative Bool) Bool {
     if relation != "<" && relation != "<=" && relation != "==" {
         return false

@@ -410,6 +410,20 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
                 return true
             }
         }
+        Predicate.FloatCompare(relation, left, right) => {
+            if float_holds(relation, left, right, facts, false) {
+                return true
+            }
+        }
+        Predicate.Not(values) => match get(values, 0) {
+            Predicate.FloatCompare(relation, left, right) => {
+                if float_holds(relation, left, right, facts, true) {
+                    return true
+                }
+            }
+            _ => {
+            }
+        }
         _ => {
         }
     }

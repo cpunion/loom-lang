@@ -1,0 +1,143 @@
+// Range transfer for truncating IEEE remainder, not real arithmetic or fp.rem.
+// Derived comparisons never replace a computation or identify signed zeros.
+fn float_remainder_terms(value FloatValue, output List[FloatValue], budget List[Int]) Bool {
+    if get(budget, 0) <= 0 {
+        return false
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    match value {
+        FloatValue.Apply(operator, inputs) => {
+            if operator == "%" && length(inputs) == 2 {
+                if !float_remainder_terms(get(inputs, 0), output, budget) ||
+                !float_remainder_terms(get(inputs, 1), output, budget) {
+                    return false
+                }
+                var index = 0
+                while index < length(output) {
+                    if same_float(value, get(output, index), [256]) {
+                        return true
+                    }
+                    index = index + 1
+                }
+                if length(output) >= 16 {
+                    return false
+                }
+                push(output, value)
+            }
+        }
+        _ => {
+        }
+    }
+    true
+}
+
+fn float_remainder_range(value FloatValue, facts List[Predicate]) Bool {
+    let inputs = match value {
+        FloatValue.Apply("%", inputs) => inputs
+        _ => {
+            return false
+        }
+    }
+    let dividend = get(inputs, 0)
+    let divisor = get(inputs, 1)
+    let zero = FloatValue.Literal("0")
+    let low = FloatValue.Literal("-inf")
+    let high = FloatValue.Literal("inf")
+    // A finite dividend is essential: ordered nonnegative includes +infinity.
+    // A strictly signed divisor excludes both zeros and NaN, but may be infinite.
+    if !float_order_holds("<", low, dividend, facts, false) ||
+    !float_order_holds("<", dividend, high, facts, false) {
+        return false
+    }
+    let positive = float_order_holds("<", zero, divisor, facts, false)
+    if !positive && !float_order_holds("<", divisor, zero, facts, false) {
+        return false
+    }
+    let opposite = match float_unary("-", divisor) {
+        Result.Ok(Value.Float(negated)) => negated
+        _ => {
+            return false
+        }
+    }
+    let nonnegative = float_order_holds("<=", zero, dividend, facts, false)
+    let nonpositive = float_order_holds("<=", dividend, zero, facts, false)
+    push(facts, Predicate.FloatCompare("<", if positive {
+                opposite
+            } else {
+                divisor
+            }, value))
+    push(facts, Predicate.FloatCompare("<", value, if positive {
+                divisor
+            } else {
+                opposite
+            }))
+    push(facts, Predicate.FloatCompare("<", low, value))
+    push(facts, Predicate.FloatCompare("<", value, high))
+    if nonnegative {
+        push(facts, Predicate.FloatCompare("<=", zero, value))
+    }
+    if nonpositive {
+        push(facts, Predicate.FloatCompare("<=", value, zero))
+    }
+    true
+}
+
+fn float_holds(relation Text, left FloatValue, right FloatValue,
+    facts List[Predicate], negative Bool) Bool {
+    if float_order_holds(relation, left, right, facts, negative) {
+        return true
+    }
+    let terms = new[FloatValue]()
+    let budget = [256]
+    if !float_remainder_terms(left, terms, budget) || !float_remainder_terms(right, terms, budget) {
+        return false
+    }
+    var index = 0
+    while index < length(facts) && index < 256 {
+        let selected = match get(facts, index) {
+            Predicate.Not(parts) => get(parts, 0)
+            _ => get(facts, index)
+        }
+        match selected {
+            Predicate.FloatCompare(_, first, second) => {
+                if !float_remainder_terms(first, terms, budget) || !float_remainder_terms(second, terms, budget) {
+                    return false
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    if length(terms) == 0 {
+        return false
+    }
+    // Never publish speculative facts into the caller's shared proof state.
+    let expanded = new[Predicate]()
+    index = 0
+    while index < length(facts) && index < 256 {
+        push(expanded, get(facts, index))
+        index = index + 1
+    }
+    let applied = new[Bool]()
+    index = 0
+    while index < length(terms) {
+        push(applied, false)
+        index = index + 1
+    }
+    var changed = true
+    var pass = 0
+    while changed && pass < length(terms) {
+        changed = false
+        index = 0
+        while index < length(terms) {
+            if !get(applied, index) && float_remainder_range(get(terms, index), expanded) {
+                set(applied, index, true)
+                changed = true
+            }
+            index = index + 1
+        }
+        pass = pass + 1
+    }
+    float_order_holds(relation, left, right, expanded, negative)
+}

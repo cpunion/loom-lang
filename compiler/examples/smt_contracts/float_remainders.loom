@@ -56,6 +56,13 @@ ensures result >= 0.0 && result < 2.0 {
     (value % 4.0) % 2.0
 }
 
+fn dynamic_remainder(value Float, divisor Float) Float
+requires -1.0 / 0.0 < value && value < 1.0 / 0.0
+requires divisor > 0.0
+ensures -divisor < result && result < divisor {
+    value % divisor
+}
+
 fn float_remainder_cases() {
     assert checked_wrap(17.5) == 1.5
     assert negative_wrap(-3.5) == -1.5
@@ -71,6 +78,10 @@ fn float_remainder_cases() {
     assert infinite_divisor(3.5, -1.0 / 0.0) == 3.5
     assert subnormal_remainder(-1.5e-323) == -5e-324
     assert nested_remainder(17.5) == 1.5
+    assert dynamic_remainder(-17.5, 4.0) == -1.5
+    assert dynamic_remainder(17.5, 1.0 / 0.0) == 17.5
+    assert dynamic_remainder(-5e-324, 1e-323) == -5e-324
+    assert 1.0 / dynamic_remainder(-0.0, 2.0) == -1.0 / 0.0
 }
 
 test fn ieee_remainder_contracts() {

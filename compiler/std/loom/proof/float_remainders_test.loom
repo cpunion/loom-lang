@@ -1,0 +1,71 @@
+test fn remainder_ranges_compose_without_a_solver_or_mutating_entry_facts() {
+    let value = FloatValue.Variable(0)
+    let divisor = FloatValue.Variable(1)
+    let zero = FloatValue.Literal("0")
+    let two = FloatValue.Literal("2")
+    let first = FloatValue.Apply("%", [value, FloatValue.Literal("4")])
+    let remainder = FloatValue.Apply("%", [first, two])
+    let facts = [Predicate.FloatCompare("<=", zero, value),
+        Predicate.FloatCompare("<=", value, FloatValue.Literal("100"))]
+    assert !float_order_holds("<", remainder, two, facts, false)
+    assert holds(Predicate.FloatCompare("<=", zero, remainder), facts)
+    assert holds(Predicate.FloatCompare("<", remainder, two), facts)
+    assert holds(not(Predicate.FloatCompare("<=", two, remainder)), facts)
+    assert length(facts) == 2
+    let dynamic = FloatValue.Apply("%", [value, divisor])
+    push(facts, Predicate.FloatCompare("<", zero, divisor))
+    assert holds(Predicate.FloatCompare("<", dynamic, divisor), facts)
+    assert holds(Predicate.FloatCompare("<", FloatValue.Apply("-", [divisor]), dynamic), facts)
+    let negative = FloatValue.Apply("%", [value, FloatValue.Literal("-2")])
+    assert holds(Predicate.FloatCompare("<", negative, two), facts)
+    assert holds(Predicate.FloatCompare("<=", zero, negative), facts)
+    let finite = [Predicate.FloatCompare("<", FloatValue.Literal("-inf"), value),
+        Predicate.FloatCompare("<", value, FloatValue.Literal("inf"))]
+    let negative_divisor = FloatValue.Variable(2)
+    push(finite, Predicate.FloatCompare("<", negative_divisor, zero))
+    let negative_dynamic = FloatValue.Apply("%", [value, negative_divisor])
+    assert holds(Predicate.FloatCompare("<", negative_divisor, negative_dynamic), finite)
+    assert holds(Predicate.FloatCompare("<", negative_dynamic, FloatValue.Apply("-", [negative_divisor])), finite)
+    let subnormal = FloatValue.Literal("5e-324")
+    assert holds(Predicate.FloatCompare("<", FloatValue.Apply("%", [value, subnormal]), subnormal), finite)
+    assert holds(Predicate.FloatCompare("<", FloatValue.Apply("%", [value, FloatValue.Literal("inf")]),
+            FloatValue.Literal("inf")), finite)
+    let input = expression(ExprKind.Local, 5, "", 0, [])
+    let returned = expression(ExprKind.Local, 5, "", 1, [])
+    let zero_expr = expression(ExprKind.Float, 5, "0", -1, [])
+    let two_expr = expression(ExprKind.Float, 5, "2", -1, [])
+    let nested = expression(ExprKind.Binary, 5, "%", -1,
+        [expression(ExprKind.Binary, 5, "%", -1,
+                [input, expression(ExprKind.Float, 5, "4", -1, [])]), two_expr])
+    let guarantee = [operation(">=", returned, zero_expr), operation("<", returned, two_expr)]
+    assert verified(contract_fixture([5], 5, nested,
+            [operation(">=", input, zero_expr),
+                operation("<=", input, expression(ExprKind.Float, 5, "100", -1, []))], guarantee))
+    assert !verified(contract_fixture([5], 5, nested, [operation(">=", input, zero_expr)], guarantee))
+}
+
+test fn remainder_ranges_require_finiteness_and_nonzero_non_nan_divisors() {
+    let value = FloatValue.Variable(0)
+    let zero = FloatValue.Literal("0")
+    let remainder = FloatValue.Apply("%", [value, FloatValue.Literal("2")])
+    assert !holds(Predicate.FloatCompare("<=", zero, remainder), [Predicate.FloatCompare("<=", zero, value)])
+    let finite = [Predicate.FloatCompare("<", FloatValue.Literal("-inf"), value),
+        Predicate.FloatCompare("<", value, FloatValue.Literal("inf"))]
+    assert !holds(Predicate.FloatCompare("<=", zero, remainder), finite)
+    let divisors = [zero, FloatValue.Literal("-0"), FloatValue.Literal("NaN"), FloatValue.Variable(1)]
+    var index = 0
+    while index < length(divisors) {
+        let invalid = FloatValue.Apply("%", [value, get(divisors, index)])
+        assert !holds(Predicate.FloatCompare("<", invalid, FloatValue.Literal("inf")), finite)
+        index = index + 1
+    }
+    assert !holds(Predicate.FloatCompare("==", remainder, zero), finite)
+    assert !float_remainder_terms(remainder, [], [0])
+    var deep = remainder
+    index = 0
+    while index < 17 {
+        deep = FloatValue.Apply("%", [deep, FloatValue.Literal("2")])
+        index = index + 1
+    }
+    assert !float_remainder_terms(deep, [], [256])
+}
