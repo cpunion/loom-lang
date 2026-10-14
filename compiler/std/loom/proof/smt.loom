@@ -266,6 +266,37 @@ fn smt_relation(relation Text) Result[Text, Text] {
     Result.Err("invalid proof comparison")
 }
 
+fn smt_text_byte(writer SmtWriter, text TextValue, index IntegerTerm, depth Int) Result[Text, Text] {
+    match text {
+        TextValue.Slice(source, bounds) => {
+            if length(source) != 1 || length(bounds) != 2 {
+                return Result.Err("invalid Text slice proof operands")
+            }
+            discard smt_step(writer, depth + 1)?
+            let value = smt_text(writer, get(source, 0), depth + 2)?
+            let start = smt_integer(writer, get(bounds, 0), depth + 2)?
+            let size = smt_integer(writer, subtracted_integer_terms(get(bounds, 1), get(bounds, 0)), depth + 2)?
+            let position = smt_integer(writer, index, depth + 1)?
+            let output = std.bytes.new()
+            smt_append(output, concat("(let ((loom_text ", concat(value,
+                        concat(") (loom_start ", concat(start, concat(") (loom_size ", concat(size,
+                                        concat(") (loom_index ", concat(position, ")) ")))))))))
+            // nth(extract(s, a, n), i) = nth(s, a+i) only inside the
+            // extracted range. Keep the original term outside that domain;
+            // this identity neither assumes nor removes source definedness.
+            smt_append(output, "(ubv_to_int (ite (and (>= loom_start 0) (>= loom_index 0) (< loom_index loom_size) (< (+ loom_start loom_index) (seq.len loom_text))) ")
+            smt_append(output, "(seq.nth loom_text (+ loom_start loom_index)) ")
+            smt_append(output, "(seq.nth (seq.extract loom_text loom_start loom_size) loom_index))))")
+            return Result.Ok(std.bytes.to_text(output))
+        }
+        _ => {
+        }
+    }
+    let value = smt_text(writer, text, depth + 1)?
+    let position = smt_integer(writer, index, depth + 1)?
+    Result.Ok(concat("(ubv_to_int (seq.nth ", concat(value, concat(" ", concat(position, "))")))))
+}
+
 fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text] {
     discard smt_step(writer, depth)?
     match value {
@@ -278,9 +309,7 @@ fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text
             if length(inputs) != 1 {
                 return Result.Err("invalid Text byte operands")
             }
-            let value = smt_text(writer, text, depth + 1)?
-            let index = smt_integer(writer, get(inputs, 0), depth + 1)?
-            Result.Ok(concat("(ubv_to_int (seq.nth ", concat(value, concat(" ", concat(index, "))")))))
+            smt_text_byte(writer, text, get(inputs, 0), depth)
         }
         IntegerTerm.Select(identity, path, index) => {
             smt_select(writer, identity, path, index, ScalarDomain.Integer)

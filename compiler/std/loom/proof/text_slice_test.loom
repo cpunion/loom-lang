@@ -5,8 +5,8 @@ fn slice_expression(text Expr, start Expr, end Expr) Expr {
 fn boundary_expression(text Expr, offset Expr, size Expr) Expr {
     let byte = expression(ExprKind.Intrinsic, 1, "text_byte", -1, [text, offset])
     let endpoints = operation("||", operation("==", offset, literal("0")), operation("==", offset, size))
-    operation("||", operation("||", endpoints, operation("<", byte, literal("128"))),
-        operation(">=", byte, literal("192")))
+    operation("||", endpoints,
+        operation("||", operation("<", byte, literal("128")), operation(">=", byte, literal("192"))))
 }
 
 test fn text_slices_keep_lengths_and_check_hypothetical_utf8_domains() {

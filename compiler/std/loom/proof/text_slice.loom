@@ -14,8 +14,8 @@ fn text_boundary(text TextValue, offset IntegerTerm) Predicate {
     let byte = IntegerTerm.TextByte(text, [offset])
     let endpoints = Predicate.Or(predicates(integer_limit("==", offset, 0),
             integer_predicate("==", offset, text_length(text))))
-    Predicate.Or(predicates(Predicate.Or(predicates(endpoints, integer_limit("<", byte, 128))),
-            integer_limit(">=", byte, 192)))
+    Predicate.Or(predicates(endpoints,
+            Predicate.Or(predicates(integer_limit("<", byte, 128), integer_limit(">=", byte, 192)))))
 }
 
 fn text_slice_guard(value Value, start Value, end Value) Result[Predicate, Text] {

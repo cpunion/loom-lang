@@ -68,10 +68,18 @@ ensures std.text.slice("é", 1, 1) == ""
     true
 }
 "#,
+        r#"
+fn undefined_slice_byte(value Text, start Int, end Int, index Int) Bool
+requires start <= end && std.text.is_boundary(value, start) && std.text.is_boundary(value, end)
+ensures std.text.byte(std.text.slice(value, start, end), index) == std.text.byte(value, start + index)
+{
+    true
+}
+"#,
     ] {
         fs::write(
             &source,
-            format!("import std.text.slice\nimport std.text.length\n{body}"),
+            format!("import std.text.slice\nimport std.text.length\nimport std.text.byte\nimport std.text.is_boundary\n{body}"),
         )
         .unwrap();
         let output = common::command(&["check"])

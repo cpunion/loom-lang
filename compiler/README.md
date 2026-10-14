@@ -2936,7 +2936,9 @@ that returns false outside the Text or inside a UTF-8 scalar. Successful slicing
 establishes bounds and scalar boundaries on normal continuation. A hypothetical
 slice in a contract must first prove both, even for an empty interval, and eager
 operand obligations cannot be erased by normalization. SMT uses byte-sequence
-extraction, not Unicode-character substring semantics. Native slicing retains
+extraction, not Unicode-character substring semantics. Within a proved range,
+byte reads normalize to the corresponding source offset; outside it, the original
+extraction remains. Native slicing retains
 its runtime range/UTF-8 checks. See the [native Text example](examples/text_contracts),
 [concatenation contracts](examples/text_contracts/concatenation.loom), and
 [slice contracts](examples/text_contracts/slices.loom).

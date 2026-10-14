@@ -781,6 +781,7 @@ composition. `std.text.is_boundary` provides a source-written UTF-8 boundary que
 Only successful execution supplies slice domain facts; hypothetical slices must
 prove bounds and scalar boundaries, including for empty ranges, before their
 values participate in local normalization or SMT byte-sequence extraction.
+Guarded byte reads reuse source offsets without assuming out-of-range reads are defined.
 Runtime slicing checks are unchanged. Bytes remain opaque.
 List lengths belong to the current proof state: exact aliases share extent
 updates, while unknown overlap and opaque calls forget current-length facts.

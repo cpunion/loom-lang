@@ -6,7 +6,8 @@ implementation, not a compatibility ledger for previous prototypes.
 ## Unreleased
 
 - Compose Text slice contracts through byte-offset and immutable sequence rules:
-  length differences, empty/full ranges, nested slices and adjacent reassembly.
+  length differences, empty/full ranges, nested slices, adjacent reassembly and
+  guarded source-offset byte reads.
   Add source `std.text.is_boundary`; hypothetical slices retain range/UTF-8
   obligations, and native slicing checks are unchanged.
 

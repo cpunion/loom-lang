@@ -53,6 +53,15 @@ test fn text_slice_encoding_extracts_utf8_bytes_not_unicode_characters() {
     assert contains(query, "(seq.extract (seq.++")
     assert contains(query, "(_ bv195 8)") && contains(query, "(_ bv169 8)")
     assert contains(query, "(+ 0) (+ 2))")
+    let read = encoding([Obligation {
+                facts = []
+                conclusion = integer_limit("==", IntegerTerm.TextByte(value,
+                        [IntegerTerm.Linear(variable(1))]), 195)
+            }])
+    assert contains(read, "(ubv_to_int (ite (and (>= loom_start 0) (>= loom_index 0)")
+    assert contains(read, "(< loom_index loom_size) (< (+ loom_start loom_index) (seq.len loom_text)))")
+    assert contains(read, "(seq.nth loom_text (+ loom_start loom_index))")
+    assert contains(read, "(seq.nth (seq.extract loom_text loom_start loom_size) loom_index)")
 }
 
 test fn backend_failures_propagate_and_easy_or_unsupported_proofs_do_not_call_it() {
