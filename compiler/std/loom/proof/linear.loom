@@ -246,6 +246,12 @@ fn same_text(left TextValue, right TextValue) Bool {
             _ => false
         }
         TextValue.Joined(_) => false
+        TextValue.Slice(source, bounds) => match right {
+            TextValue.Slice(other, positions) => same_text(get(source, 0), get(other, 0)) &&
+            same_integer_term(get(bounds, 0), get(positions, 0), [256]) &&
+            same_integer_term(get(bounds, 1), get(positions, 1), [256])
+            _ => false
+        }
     }
 }
 

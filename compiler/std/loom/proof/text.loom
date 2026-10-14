@@ -7,6 +7,7 @@ fn text_length(value TextValue) IntegerTerm {
         // their byte length in the numeric domain, never another Int local.
         TextValue.Variable(id) => IntegerTerm.Linear(variable(id))
         TextValue.Select(_, _, _) => IntegerTerm.TextLength(value)
+        TextValue.Slice(_, bounds) => subtracted_integer_terms(get(bounds, 1), get(bounds, 0))
         TextValue.Joined(parts) => {
             var size = IntegerTerm.Linear(constant(integer(0)))
             var index = 0

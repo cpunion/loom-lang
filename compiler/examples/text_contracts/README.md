@@ -36,7 +36,16 @@ A length constraint involving a prefix also accepts a proved weakening directly.
 The native exercise checks eager left-to-right argument snapshots. These are
 bounded symbolic proofs, not sampled strings or runtime postcondition checks;
 unknown sizes in hypothetical concatenations must still be proved safe.
-Substring properties and arbitrary word equations remain outside this fragment.
+Arbitrary word equations remain outside this fragment.
+
+The [slice example](slices.loom) proves byte lengths, empty/full ranges, nested
+offsets and ordered adjacent-range reassembly through the same Text algebra.
+`std.text.is_boundary` is a pure source helper for UTF-8 scalar boundaries.
+Successful slice execution establishes its range and boundary facts; a slice
+appearing only in a contract must prove both before normalization or SMT.
+This includes empty ranges inside a multibyte scalar, which remain invalid.
+Refinement weakening, `old`, compile-time calls and suspension reuse these rules;
+the runtime slice still performs its ordinary bounds and UTF-8 checks.
 
 The [composition example](composition.loom) combines correlated conditional
 operands, Text lengths, integer arithmetic and pure helpers. It also selects an

@@ -43,6 +43,18 @@ test fn text_byte_encoding_uses_unsigned_utf8_sequence_elements() {
     assert contains(query, "(_ bv170 8))) (+ 0))) (+ 233))")
 }
 
+test fn text_slice_encoding_extracts_utf8_bytes_not_unicode_characters() {
+    let value = TextValue.Slice([TextValue.Literal("é😀")],
+        [IntegerTerm.Linear(constant(integer(0))), IntegerTerm.Linear(constant(integer(2)))])
+    let query = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.TextEqual(value, TextValue.Literal("é"))
+            }])
+    assert contains(query, "(seq.extract (seq.++")
+    assert contains(query, "(_ bv195 8)") && contains(query, "(_ bv169 8)")
+    assert contains(query, "(+ 0) (+ 2))")
+}
+
 test fn backend_failures_propagate_and_easy_or_unsupported_proofs_do_not_call_it() {
     let backend = ProofBackend {
         enabled = true

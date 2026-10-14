@@ -39,6 +39,12 @@ pub fn slice(value Text, start Int, end Int) Text {
     text_slice(value, start, end)
 }
 
+// Whether offset is a UTF-8 scalar boundary; out-of-range offsets are false.
+pub fn is_boundary(value Text, offset Int) Bool {
+    offset >= 0 && offset <= length(value) &&
+    (offset == 0 || offset == length(value) || byte(value, offset) < 128 || byte(value, offset) >= 192)
+}
+
 // The input Text is valid UTF-8; offset must point at a scalar's first byte.
 pub fn width(value Text, offset Int) Int {
     let first = byte(value, offset)

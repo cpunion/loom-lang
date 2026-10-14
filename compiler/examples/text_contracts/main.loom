@@ -141,6 +141,7 @@ async fn main() {
     exercise_affine()
     exercise_inequalities()
     exercise_concatenation()
+    exercise_slices().await
     exercise().await
     exercise_text_lengths().await
 }

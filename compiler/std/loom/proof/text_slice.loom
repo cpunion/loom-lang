@@ -1,0 +1,219 @@
+import std.text.is_boundary
+import std.text.slice
+import std.list.transfer.take_last
+
+fn text_composed(value TextValue) Bool {
+    match value {
+        TextValue.Joined(_) => true
+        TextValue.Slice(_, _) => true
+        _ => false
+    }
+}
+
+fn text_boundary(text TextValue, offset IntegerTerm) Predicate {
+    let byte = IntegerTerm.TextByte(text, [offset])
+    let endpoints = Predicate.Or(predicates(integer_limit("==", offset, 0),
+            integer_predicate("==", offset, text_length(text))))
+    Predicate.Or(predicates(Predicate.Or(predicates(endpoints, integer_limit("<", byte, 128))),
+            integer_limit(">=", byte, 192)))
+}
+
+fn text_slice_guard(value Value, start Value, end Value) Result[Predicate, Text] {
+    let text = match value {
+        Value.Text(text) => text
+        _ => {
+            return Result.Err("Text slice proof requires immutable Text")
+        }
+    }
+    let first = integer_term(start)?
+    let last = integer_term(end)?
+    Result.Ok(Predicate.And(predicates(integer_limit(">=", first, 0),
+                Predicate.And(predicates(integer_predicate("<=", first, last),
+                        Predicate.And(predicates(integer_predicate("<=", last, text_length(text)),
+                                Predicate.And(predicates(text_boundary(text, first), text_boundary(text, last))))))))))
+}
+
+// Logical offsets use mathematical arithmetic. Definedness belongs to the
+// composition layer, so normalization cannot erase an eager fault obligation.
+fn sliced_text(value Value, start Value, end Value) Result[Value, Text] {
+    let text = match value {
+        Value.Text(text) => text
+        _ => {
+            return Result.Err("Text slice proof requires immutable Text")
+        }
+    }
+    let first = integer_term(start)?
+    let last = integer_term(end)?
+    let budget = [255]
+    if !text_range_budget(text, budget) || !text_range_index_budget(first, budget) ||
+    !text_range_index_budget(last, budget) {
+        return Result.Err("Text slice proof budget exhausted")
+    }
+    let ranged = text_range(text, first, last)
+    if !text_range_budget(ranged, [256]) {
+        return Result.Err("Text slice proof budget exhausted")
+    }
+    Result.Ok(Value.Text(ranged))
+}
+
+// Offsets can themselves observe Text bytes. Bound that entire recursive term
+// graph, not just its outer word or its numeric expression in isolation.
+fn text_range_budget(value TextValue, budget List[Int]) Bool {
+    if get(budget, 0) <= 0 {
+        return false
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    match value {
+        TextValue.Joined(parts) => {
+            var index = 0
+            while index < length(parts) {
+                if !text_range_budget(get(parts, index), budget) {
+                    return false
+                }
+                index = index + 1
+            }
+        }
+        TextValue.Slice(source, bounds) => {
+            return text_range_budget(get(source, 0), budget) &&
+            text_range_index_budget(get(bounds, 0), budget) && text_range_index_budget(get(bounds, 1), budget)
+        }
+        _ => {
+        }
+    }
+    true
+}
+
+fn text_range_index_budget(value IntegerTerm, budget List[Int]) Bool {
+    if get(budget, 0) <= 0 {
+        return false
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    match value {
+        IntegerTerm.TextLength(text) => text_range_budget(text, budget)
+        IntegerTerm.TextByte(text, inputs) => text_range_budget(text, budget) &&
+        text_range_index_budget(get(inputs, 0), budget)
+        IntegerTerm.Apply(_, inputs) => text_range_indices_budget(inputs, budget)
+        IntegerTerm.Count(_, inputs) => text_range_indices_budget(inputs, budget)
+        _ => true
+    }
+}
+
+fn text_range_indices_budget(inputs List[IntegerTerm], budget List[Int]) Bool {
+    var index = 0
+    while index < length(inputs) {
+        if !text_range_index_budget(get(inputs, index), budget) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn text_range(text TextValue, start IntegerTerm, end IntegerTerm) TextValue {
+    if same_integer_term(start, end, [256]) {
+        return TextValue.Literal("")
+    }
+    if same_integer_term(start, IntegerTerm.Linear(constant(integer(0))), [256]) &&
+    same_integer_term(end, text_length(text), [256]) {
+        return text
+    }
+    match text {
+        TextValue.Slice(source, bounds) => {
+            return text_range(get(source, 0), added_integer_terms(get(bounds, 0), start),
+                added_integer_terms(get(bounds, 0), end))
+        }
+        TextValue.Literal(literal) => match start {
+            IntegerTerm.Linear(first) => match end {
+                IntegerTerm.Linear(last) => {
+                    if length(first.terms) == 0 && length(last.terms) == 0 {
+                        match machine(first.constant) {
+                            Result.Ok(a) => match machine(last.constant) {
+                                Result.Ok(b) => {
+                                    if a <= b && std.text.is_boundary(literal, a) && std.text.is_boundary(literal, b) {
+                                        return TextValue.Literal(std.text.slice(literal, a, b))
+                                    }
+                                }
+                                _ => {
+                                }
+                            }
+                            _ => {
+                            }
+                        }
+                    }
+                }
+                _ => {
+                }
+            }
+            _ => {
+            }
+        }
+        _ => {
+        }
+    }
+    TextValue.Slice([text], [start, end])
+}
+
+fn text_offset_equal(left IntegerTerm, right IntegerTerm, facts List[Predicate]) Bool {
+    same_integer_term(left, right, [256]) || holds(integer_predicate("==", left, right), facts)
+}
+
+fn normalized_text_range(value TextValue, facts List[Predicate], budget List[Int]) TextValue {
+    match value {
+        TextValue.Slice(source, bounds) => {
+            let text = normalized_text(get(source, 0), facts, budget)
+            let start = get(bounds, 0)
+            let end = get(bounds, 1)
+            if text_offset_equal(start, end, facts) {
+                return TextValue.Literal("")
+            }
+            if text_offset_equal(start, IntegerTerm.Linear(constant(integer(0))), facts) &&
+            text_offset_equal(end, text_length(text), facts) {
+                return text
+            }
+            text_range(text, start, end)
+        }
+        _ => value
+    }
+}
+
+// Adjacent ranges compose over the same immutable word. Order, source identity
+// and the shared endpoint must all agree; equal lengths do not establish this.
+fn append_text_range(output List[TextValue], value TextValue, facts List[Predicate], budget List[Int]) {
+    if same_text(value, TextValue.Literal("")) {
+        return
+    }
+    if get(budget, 0) > 0 {
+        set(budget, 0, get(budget, 0) - 1)
+        match value {
+            TextValue.Joined(parts) => {
+                var index = 0
+                while index < length(parts) {
+                    append_text_range(output, get(parts, index), facts, budget)
+                    index = index + 1
+                }
+                return
+            }
+            TextValue.Slice(source, bounds) => {
+                if length(output) > 0 {
+                    match get(output, length(output) - 1) {
+                        TextValue.Slice(before, positions) => {
+                            if same_text(get(before, 0), get(source, 0)) &&
+                            text_offset_equal(get(positions, 1), get(bounds, 0), facts) {
+                                discard std.list.transfer.take_last(output)
+                                let merged = normalized_text_range(TextValue.Slice(before,
+                                        [get(positions, 0), get(bounds, 1)]), facts, budget)
+                                append_text_range(output, merged, facts, budget)
+                                return
+                            }
+                        }
+                        _ => {
+                        }
+                    }
+                }
+            }
+            _ => {
+            }
+        }
+    }
+    push(output, value)
+}

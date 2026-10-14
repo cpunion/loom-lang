@@ -13,6 +13,9 @@ fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Va
     if name == "text_concat" {
         return joined_text(get(inputs, 0), get(inputs, 1))
     }
+    if name == "text_slice" {
+        return sliced_text(get(inputs, 0), get(inputs, 1), get(inputs, 2))
+    }
     if name == "text_byte" {
         return match get(inputs, 0) {
             Value.Text(text) => Result.Ok(Value.Nonlinear(
@@ -96,6 +99,14 @@ fn intrinsic_defined(expr Expr, state State) Result[Bool, Text] {
         }
         return Result.Ok(true)
     }
+    if expr.text == "text_slice" {
+        let guard = text_slice_guard(pure(get(expr.children, 0), state)?,
+            pure(get(expr.children, 1), state)?, pure(get(expr.children, 2), state)?)?
+        if !holds(guard, state.facts) && !difference_holds(guard, state.facts) {
+            return Result.Err("postcondition Text slice range or UTF-8 boundary is not proved defined")
+        }
+        return Result.Ok(true)
+    }
     if expr.text == "text_concat" {
         let size = match pure(expr, state)? {
             Value.Text(text) => text_length(text)
@@ -139,7 +150,12 @@ fn execute_immutable_operation(proof Verification, expr Expr, name Text, state S
         let current = if name == "text_byte" {
             assume(arguments.state, text_byte_guard(get(arguments.values, 0), get(arguments.values, 1))?)
         } else {
-            arguments.state
+            if name == "text_slice" {
+                assume(arguments.state, text_slice_guard(get(arguments.values, 0),
+                        get(arguments.values, 1), get(arguments.values, 2))?)
+            } else {
+                arguments.state
+            }
         }
         // Successful execution, unlike a hypothetical contract expression, may
         // establish result bounds. No equation permits reordering arguments.

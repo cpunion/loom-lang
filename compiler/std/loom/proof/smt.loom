@@ -160,6 +160,15 @@ fn smt_text(writer SmtWriter, value TextValue, depth Int) Result[Text, Text] {
             smt_append(output, ")")
             Result.Ok(std.bytes.to_text(output))
         }
+        TextValue.Slice(source, bounds) => {
+            if length(source) != 1 || length(bounds) != 2 {
+                return Result.Err("invalid Text slice proof operands")
+            }
+            let text = smt_text(writer, get(source, 0), depth + 1)?
+            let start = smt_integer(writer, get(bounds, 0), depth + 1)?
+            let size = smt_integer(writer, subtracted_integer_terms(get(bounds, 1), get(bounds, 0)), depth + 1)?
+            Result.Ok(concat("(seq.extract ", concat(text, concat(" ", concat(start, concat(" ", concat(size, ")")))))))
+        }
     }
 }
 

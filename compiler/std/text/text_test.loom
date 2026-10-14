@@ -45,3 +45,18 @@ test fn utf8_encoding_is_an_isolated_mutable_copy() {
             to_bytes("é\0")
         }) == "é\0"
 }
+
+test fn scalar_boundaries_include_endpoints_and_reject_continuation_bytes() {
+    let text = "Aé中😀"
+    let boundaries = [true, true, false, true, false, false, true, false, false, false, true]
+    var offset = 0
+    while offset < std.list.length(boundaries) {
+        assert is_boundary(text, offset) == std.list.get(boundaries, offset)
+        offset = offset + 1
+    }
+    assert !is_boundary(text, -1) && !is_boundary(text, 11)
+    assert is_boundary("", 0) && !is_boundary("", 1)
+    assert comptime {
+        is_boundary("é😀", 2) && !is_boundary("é😀", 1)
+    }
+}

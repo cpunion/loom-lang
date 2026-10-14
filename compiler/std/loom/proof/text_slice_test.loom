@@ -1,0 +1,72 @@
+fn slice_expression(text Expr, start Expr, end Expr) Expr {
+    expression(ExprKind.Intrinsic, 3, "text_slice", -1, [text, start, end])
+}
+
+fn boundary_expression(text Expr, offset Expr, size Expr) Expr {
+    let byte = expression(ExprKind.Intrinsic, 1, "text_byte", -1, [text, offset])
+    let endpoints = operation("||", operation("==", offset, literal("0")), operation("==", offset, size))
+    operation("||", operation("||", endpoints, operation("<", byte, literal("128"))),
+        operation(">=", byte, literal("192")))
+}
+
+test fn text_slices_keep_lengths_and_check_hypothetical_utf8_domains() {
+    let text = expression(ExprKind.Local, 3, "", 0, [])
+    let start = local(1)
+    let end = local(2)
+    let size = expression(ExprKind.Intrinsic, 1, "text_len", -1, [text])
+    let sliced = slice_expression(text, start, end)
+    let returned = expression(ExprKind.Local, 3, "", 3, [])
+    let length = expression(ExprKind.Intrinsic, 1, "text_len", -1, [returned])
+    assert verified(contract_fixture([3, 1, 1], 3, sliced, [],
+            [operation("==", length, operation("-", end, start))]))
+    let bounds = [operation(">=", start, literal("0")), operation("<=", start, end), operation("<=", end, size)]
+    let yes = expression(ExprKind.Bool, 2, "true", -1, [])
+    let reflexive = operation("==", sliced, sliced)
+    assert !verified(contract_fixture([3, 1, 1], 2, yes, [], [reflexive]))
+    assert !verified(contract_fixture([3, 1, 1], 2, yes, bounds, [reflexive]))
+    push(bounds, boundary_expression(text, start, size))
+    push(bounds, boundary_expression(text, end, size))
+    assert verified(contract_fixture([3, 1, 1], 2, yes, bounds, [reflexive]))
+    let split_scalar = slice_expression(expression(ExprKind.Text, 3, "é", -1, []), literal("1"), literal("1"))
+    assert !verified(contract_fixture([], 2, yes, [],
+            [operation("==", split_scalar, expression(ExprKind.Text, 3, "", -1, []))]))
+}
+
+test fn text_slice_words_compose_without_identifying_unrelated_sources() {
+    let text = expression(ExprKind.Local, 3, "", 0, [])
+    let cut = local(1)
+    let size = expression(ExprKind.Intrinsic, 1, "text_len", -1, [text])
+    let prefix = slice_expression(text, literal("0"), cut)
+    let suffix = slice_expression(text, cut, size)
+    let joined = expression(ExprKind.Intrinsic, 3, "text_concat", -1, [prefix, suffix])
+    let returned = expression(ExprKind.Local, 3, "", 2, [])
+    assert verified(contract_fixture([3, 1], 3, joined, [], [operation("==", returned, text)]))
+    let reversed = expression(ExprKind.Intrinsic, 3, "text_concat", -1, [suffix, prefix])
+    assert !verified(contract_fixture([3, 1], 3, reversed, [], [operation("==", returned, text)]))
+    let other = expression(ExprKind.Local, 3, "", 1, [])
+    let first = slice_expression(text, literal("0"), literal("1"))
+    let second = slice_expression(other, literal("0"), literal("1"))
+    assert !verified(contract_fixture([3, 3], 3, first, [], [operation("==", returned, second)]))
+    let nested = slice_expression(prefix, literal("0"), cut)
+    assert verified(contract_fixture([3, 1], 3, nested, [], [operation("==", returned, prefix)]))
+    let empty = slice_expression(text, cut, cut)
+    assert verified(contract_fixture([3, 1], 3, empty, [],
+            [operation("==", returned, expression(ExprKind.Text, 3, "", -1, []))]))
+}
+
+test fn text_slice_term_budget_counts_byte_dependent_offsets() {
+    var value = TextValue.Variable(0)
+    var index = 0
+    while index < 260 {
+        value = TextValue.Slice([TextValue.Variable(0)],
+            [IntegerTerm.TextByte(value, [IntegerTerm.Linear(constant(integer(0)))]),
+                IntegerTerm.Linear(constant(integer(1)))])
+        index = index + 1
+    }
+    assert !text_range_budget(value, [256])
+    assert match sliced_text(Value.Text(value), Value.Number(constant(integer(0))),
+        integer_value(text_length(value))) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
