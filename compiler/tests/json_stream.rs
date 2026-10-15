@@ -150,6 +150,22 @@ async fn main() {
     discard write(Value.Null, 0, sink).await
 }
 "#,
+        r#"
+import std.json.stream.write_lines
+import std.json.Value
+import std.iter.from_list
+import std.stream.from_iter
+import std.result.Result
+import std.bytes.length
+
+async fn main() {
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        assert false
+        Result.Ok(length(chunk))
+    }
+    discard write_lines(from_iter(from_list([Value.Null])), 0, sink).await
+}
+"#,
     ] {
         std::fs::write(temporary.path().join("main.loom"), source).unwrap();
         for level in ["0", "2"] {

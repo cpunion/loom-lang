@@ -19,13 +19,15 @@ import std.json.stream.TypedError
 import std.json.stream.parse
 import std.json.stream.decode
 import std.json.stream.write
+import std.json.stream.write_lines
 import std.json.stream.lines
+import std.iter.from_list
+import std.stream.from_iter
 import std.option.Option
 import std.result.Result
 import std.text.to_bytes
 import std.text.byte
 import std.text.length
-import std.text.concat
 import std.bytes.new
 import std.bytes.push
 import std.time.sleep_ms
@@ -159,14 +161,25 @@ async fn line_trial() Result[Bool, TcpError] {
         _ => false
     }
     let source = lines(input, packet)
-    let first = """
-        {"name":"hé中😀"}
-        """
-    discard write_bytes(client, to_bytes(concat(first, "\r\n"))).await?
+    let sink = async fn(chunk Bytes) Result[Int, TcpError] {
+        write_bytes(client, chunk).await
+    }
+    let message = Echo {
+        name = "hé中😀"
+        amount = Value.Null
+        items = []
+    }
+    let output = from_iter(from_list([message]))
+    assert match write_lines(output, 1, sink).await {
+        Result.Ok(count) => count > 0
+        _ => false
+    }
     // The peer's write side is still open: this pull must not await EOF.
     assert match source.next().await {
         Option.Some(Result.Ok(value)) => match stringify(value) {
-            Result.Ok(text) => text == first
+            Result.Ok(text) => text == """
+                {"name":"hé中😀","amount":null,"items":[]}
+                """
             _ => false
         }
         _ => false

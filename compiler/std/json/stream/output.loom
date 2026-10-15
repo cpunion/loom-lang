@@ -2,11 +2,26 @@ import std.json.encoder
 import std.json.next
 import std.json.WriteError
 import std.bytes.length
+import std.text.to_bytes
 
 pub enum OutputError[E] {
     Sink(E)
     Encoding(WriteError)
     Count(Int, Int)
+}
+
+async fn write_chunk[E](chunk Bytes, sink fn(Bytes) Task[Result[Int, E]]) Result[Int, OutputError[E]] {
+    let expected = std.bytes.length(chunk)
+    let written = match sink(chunk).await {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(OutputError.Sink(failed))
+        }
+    }
+    if written != expected {
+        return Result.Err(OutputError.Count(expected, written))
+    }
+    Result.Ok(written)
 }
 
 // The sink must finish writing each chunk or report an error. A mismatched
@@ -26,17 +41,28 @@ requires chunk_size > 0
                 return Result.Err(OutputError.Encoding(failed))
             }
             Option.Some(Result.Ok(chunk)) => {
-                let expected = std.bytes.length(chunk)
-                let written = match sink(chunk).await {
-                    Result.Ok(value) => value
-                    Result.Err(failed) => {
-                        return Result.Err(OutputError.Sink(failed))
-                    }
-                }
-                if written != expected {
-                    return Result.Err(OutputError.Count(expected, written))
-                }
-                count = count + written
+                count = count + write_chunk(chunk, sink).await?
+            }
+        }
+    }
+    Result.Ok(count)
+}
+
+// Finish each document and its LF before requesting another producer item.
+// Errors and cancellation leave emitted bytes intact and never retry a record.
+pub async fn write_lines[S Stream, E](source S, chunk_size Int,
+    sink fn(Bytes) Task[Result[Int, E]]) Result[Int, OutputError[E]]
+requires chunk_size > 0
+{
+    var count = 0
+    while true {
+        match source.next().await {
+            Option.None => {
+                return Result.Ok(count)
+            }
+            Option.Some(value) => {
+                count = count + write[S.Item, E](value, chunk_size, sink).await?
+                count = count + write_chunk[E](std.text.to_bytes("\n"), sink).await?
             }
         }
     }
