@@ -128,12 +128,13 @@ pub fn inspect_sqlite_migration(tool Text, database Text,
 pub fn inspect_live_sqlite_upgrade(tool Text, database Text,
     value SqliteMigrationPackage, phase SqliteLivePhase) Result[SqliteLiveInspection, Text] {
     let identity = validated_package(value)?
-    let previous = match latest(tool, database)? {
-        Option.Some(entry) => entry.attempt,
+    let stored = match latest(tool, database)? {
+        Option.Some(entry) => entry,
         Option.None => {
             return Result.Err("no deployment basis has been recorded")
         }
     }
+    let previous = stored.attempt
     if previous.state == DeploymentState.Started || previous.state == DeploymentState.Failed {
         if previous.id != value.operation.attempt_id ||
         previous.from_basis != value.from_schema.basis ||
@@ -142,7 +143,7 @@ pub fn inspect_live_sqlite_upgrade(tool Text, database Text,
             return Result.Err("unresolved deployment does not match this SQLite package")
         }
     } else {
-        match effective(previous) {
+        match stored.evidence {
             BasisEvidence.Observed(basis) => {
                 if basis != value.from_schema.basis {
                     return Result.Err("starting basis differs from observed deployment")
