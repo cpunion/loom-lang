@@ -389,6 +389,23 @@ fn body_types(env Environment, reuse BodyReuse, types List[Int]) Result[List[Int
     Result.Ok(mapped)
 }
 
+// Reject only identities already rekeyed by this check. Unknown mappings still
+// decode and take the full eligibility path; they supply no guessed equality.
+fn body_arguments_differ(reuse BodyReuse, previous List[Int], current List[Int]) Bool {
+    if length(previous) != length(current) {
+        return true
+    }
+    var index = 0
+    while index < length(previous) {
+        let mapped = get(reuse.types, get(previous, index))
+        if mapped >= 0 && mapped != get(current, index) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
 fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure] {
     let mapped = get(reuse.targets, target)
     if mapped >= 0 {
@@ -520,7 +537,7 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         let candidate = get(candidates, index)
         let target = get(prior.targets, candidate)
         if !same(target.widths, widths) || !same(target.implementation_widths, implementation_widths) ||
-        body_symbol(reuse, target.symbol) != owner ||
+        body_symbol(reuse, target.symbol) != owner || body_arguments_differ(reuse, target.arguments, instance.arguments) ||
         (!std.loom.ast.has(current.node, NodeKind.ExpansionId) &&
             (current.text == "" || current.text != get(prior.definitions.entries, target.symbol).text)) {
             index = index + 1
