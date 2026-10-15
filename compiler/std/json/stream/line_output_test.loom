@@ -5,6 +5,25 @@ import std.time.sleep_ms
 import std.task.cancel
 import std.task.Outcome
 
+test async fn json_output_snapshots_chunk_sizes_before_awaiting_mutating_sinks() {
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        let written = std.bytes.length(chunk)
+        sleep_ms(0).await
+        // The sink has finished consuming the original chunk and may retain
+        // or modify its own buffer before reporting that original byte count.
+        std.bytes.push(chunk, 33)
+        Result.Ok(written)
+    }
+    assert match write(Value.Null, 2, sink).await {
+        Result.Ok(count) => count == 4
+        _ => false
+    }
+    assert match write_lines(from_iter(from_list([Value.Null])), 2, sink).await {
+        Result.Ok(count) => count == 5
+        _ => false
+    }
+}
+
 test async fn json_line_output_round_trips_typed_records_with_serial_backpressure() {
     let values = [StreamEntry {
             name = "hé中😀\n"

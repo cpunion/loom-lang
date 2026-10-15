@@ -29,6 +29,7 @@ jobs:
       - name: Check documentation
         run: |
           node --test .github/scripts/check-docs.test.mjs
+          node --test scripts/draft-toolchain-release.test.mjs
           node .github/scripts/check-docs.mjs
 
       - name: Install LLVM 22

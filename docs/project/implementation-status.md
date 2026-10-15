@@ -1066,7 +1066,8 @@ result tree grow without buffering the full document text. EOF/trailing input,
 producer errors and cancellation use existing library/Task semantics. The
 [real TCP trial](../../compiler/examples/json_stream/main.loom) also runs at
 O0/O2 under moving-GC stress. A source encoder now emits bounded fresh byte chunks;
-the async writer awaits each sink with checked full-chunk counts. JSON errors,
+the async writer directly awaits each sink with pre-await full-chunk counts and
+synchronous count validation, without an extra per-chunk Task. JSON errors,
 sink errors and cancellation preserve partial-output and caller-managed resource
 semantics. Open containers retain fixed-shape views, not deep snapshots.
 Typed streaming encoding uses specialized source callbacks without a complete
@@ -1386,7 +1387,11 @@ as unknown and cannot execute a hotfix. General migration packages, application
 mapping proof, online coexistence and generalized recovery remain goals.
 
 CI packages relocatable development archives for macOS/Linux/Windows and tests
-them outside the checkout. Host LLVM/linker dependencies remain external; these
+them outside the checkout. An explicit [draft release workflow](../../distribution/README.md)
+promotes successful main CI archives after checking all host gates, actual
+archive checksums and embedded commit/platform identities. It defaults to
+dry-run, accepts explicit SemVer prerelease tags and never publishes a release.
+Host LLVM/linker dependencies remain external; these
 are not self-contained published releases or evidence for other targets.
 
 New status updates should replace the relevant boundary above, not append a

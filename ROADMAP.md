@@ -69,8 +69,10 @@ sources remain on a conservative seed subset: a new user feature alone does
 not justify advancing the seed. Raise the minimum seed only for substantial
 simplification or measured benefit, batching necessary changes.
 
-CI stages and tests relocatable toolchain archives for all three hosts. Published
-releases, bundled host LLVM/linker dependencies and additional target guarantees
+CI stages and tests relocatable toolchain archives for all three hosts. An
+explicit draft-release workflow verifies and promotes successful main archives
+without rebuilding or publishing them. Published releases, bundled host
+LLVM/linker dependencies and additional target guarantees
 need separate delivery evidence. The historical seed stays a recovery input in
 Git history, not maintained legacy compatibility.
 
