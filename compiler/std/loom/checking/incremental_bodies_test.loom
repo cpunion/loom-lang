@@ -67,7 +67,7 @@ test fn body_type_support_memoizes_complete_roots_and_separates_stored_permissio
     assert left >= 0 && right >= 0
     let reuse = body_reuse(cache, prior.definitions, allowed)
     assert body_type_supported(reuse, left) && body_type_supported(reuse, left)
-    assert get(reuse.type_support, right * 2) == 0
+    assert get(reuse.type_support, right * 2) == 1
 
     // Exercise a cyclic private type graph with a later unsupported leaf. A
     // provisional child visit must not escape as a cached successful closure.

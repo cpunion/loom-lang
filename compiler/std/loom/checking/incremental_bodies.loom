@@ -164,8 +164,8 @@ fn body_type_supported(reuse BodyReuse, ty Int) Bool {
     body_type_shape_supported(reuse, ty, false)
 }
 
-// Cache only a completed root traversal. A recursive child's provisional visit
-// cannot establish its closure if an ancestor later reaches an unsupported leaf.
+// Publish visited nodes only after the complete root traversal succeeds. A
+// recursive provisional visit proves nothing if a later leaf is unsupported.
 // Stored compile-time values and executable types retain distinct permissions.
 fn body_type_shape_supported(reuse BodyReuse, ty Int, stored Bool) Bool {
     let slot = ty * 2 + if stored {
@@ -177,16 +177,33 @@ fn body_type_shape_supported(reuse BodyReuse, ty Int, stored Bool) Bool {
     if known != 0 {
         return known > 0
     }
-    let supported = body_type_shape_walk(reuse, ty, new[Int](), stored)
-    set(reuse.type_support, slot, if supported {
-            1
-        } else {
-            -1
-        })
+    let seen = new[Int]()
+    let supported = body_type_shape_walk(reuse, ty, seen, stored)
+    if supported {
+        var index = 0
+        while index < length(seen) {
+            set(reuse.type_support, get(seen, index) * 2 + if stored {
+                    1
+                } else {
+                    0
+                }, 1)
+            index = index + 1
+        }
+    } else {
+        set(reuse.type_support, slot, -1)
+    }
     supported
 }
 
 fn body_type_shape_walk(reuse BodyReuse, ty Int, seen List[Int], stored Bool) Bool {
+    let known = get(reuse.type_support, ty * 2 + if stored {
+            1
+        } else {
+            0
+        })
+    if known != 0 {
+        return known > 0
+    }
     if resource_seen(seen, ty) {
         return true
     }
