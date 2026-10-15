@@ -1,0 +1,165 @@
+record PackLayoutRequirement {
+    schema Node
+    capability Int
+}
+
+// Establish capabilities of a whole symbolic type word by matching source impl
+// headers. This is entailment, not overlap testing or arity specialization.
+fn pack_layout_admitted(context Context, caller Node, schema Node, capability Int,
+    path List[PackLayoutRequirement], budget List[Int], depth Int) Result[Bool, Failure] {
+    if depth >= 64 || get(budget, 0) == 0 {
+        return Result.Ok(false)
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    let source = group(caller, NodeKind.TypeParameters)
+    let parameter = pack_schema_parameter(schema)
+    if parameter >= 0 {
+        let bounds = get(source, parameter).children
+        var index = 0
+        while index < length(bounds) {
+            if required_concept(context.env, pack_proof_caller(context), get(bounds, index))? == capability {
+                return Result.Ok(true)
+            }
+            index = index + 1
+        }
+        return Result.Ok(false)
+    }
+    // Already checked scalar/fixed parameter identities keep ordinary evidence.
+    if schema.kind == NodeKind.Type && length(schema.children) == 0 {
+        match std.int.parse(schema.value) {
+            Result.Ok(ty) => {
+                if ty >= 0 && ty < length(context.env.types) &&
+                pack_schema_equal(impl_type_schema(context.env, ty, schema, true), schema) {
+                    return satisfies(context, ty, capability)
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    var index = 0
+    while index < depth {
+        let earlier = get(path, index)
+        if earlier.capability == capability && pack_schema_equal(earlier.schema, schema) {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    let here = PackLayoutRequirement {
+        schema = schema,
+        capability = capability
+    }
+    if depth == length(path) {
+        push(path, here)
+    } else {
+        set(path, depth, here)
+    }
+    let protocol = get(context.env.concepts, concept_index(context.env, capability))
+    let candidates = std.list.clone(protocol.implementations)
+    index = 0
+    while index < length(protocol.families) {
+        push(candidates, get(protocol.families, index))
+        index = index + 1
+    }
+    index = 0
+    while index < length(candidates) && get(budget, 0) > 0 {
+        let header = get(context.env.implementations, get(candidates, index))
+        let owner = header.source
+        let declaration = symbol(context.env, owner)
+        // Materialized widths are not a proof of the original family. Test-only
+        // implementations likewise cannot supply production evidence.
+        if length(header.widths) == 0 &&
+        (!declaration.test_only || symbol(context.env, pack_proof_caller(context)).test_only) {
+            let parameters = group(declaration.node, NodeKind.TypeParameters)
+            let bindings = PackForwardMatch {
+                values = new[List[Node]](),
+                known = new[Bool]()
+            }
+            var bound = 0
+            while bound < length(parameters) {
+                push(bindings.values, new[Node]())
+                push(bindings.known, false)
+                bound = bound + 1
+            }
+            let pattern = match type_pattern_schema(context.env, owner, child(declaration.node, 1), false, 0, true) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    // Optional structural inference cannot reject an otherwise
+                    // valid, unrelated target outside this schema fragment.
+                    index = index + 1
+                    continue
+                }
+            }
+            let work = [PackForwardShape {
+                    pattern = pattern,
+                    actual = schema,
+                    element = false
+                }]
+            let solutions = new[PackForwardMatch]()
+            pack_forward_search(parameters, source, work, bindings, solutions, budget, 0)
+            if get(budget, 0) > 0 && length(solutions) == 1 &&
+            pack_layout_prerequisites(context, caller, owner, parameters, get(solutions, 0), path, budget, depth + 1)? {
+                return Result.Ok(true)
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
+
+fn pack_layout_prerequisites(context Context, caller Node, owner Int, parameters List[Node],
+    bindings PackForwardMatch, path List[PackLayoutRequirement], budget List[Int], depth Int) Result[Bool, Failure] {
+    var index = 0
+    while index < length(parameters) {
+        if !get(bindings.known, index) {
+            return Result.Ok(false)
+        }
+        let parameter = get(parameters, index)
+        let sequence = get(bindings.values, index)
+        var bound = 0
+        while bound < length(parameter.children) {
+            let capability = required_concept(context.env, owner, child(parameter, bound))?
+            var member = 0
+            while member < length(sequence) {
+                let item = get(sequence, member)
+                let actual = if item.kind == NodeKind.Spread {
+                    child(item, 0)
+                } else {
+                    item
+                }
+                if !pack_layout_admitted(context, caller, actual, capability, path, budget, depth)? {
+                    return Result.Ok(false)
+                }
+                member = member + 1
+            }
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// Evidence is local to shape checking. It neither qualifies a raw pack element
+// nor changes a family signature, exported summary or runtime witness.
+fn pack_layout_evidence(context Context, caller Node) Result[Context, Failure] {
+    let layouts = pack_proof_layouts(caller)
+    var scope = context
+    var index = 0
+    while index < length(layouts) {
+        let layout = get(layouts, index)
+        let schema = pack_forward_source_schema(context, caller, layout)?
+        let ty = resolve_bound(context.env, context.signature.symbol,
+            pack_node(layout, NodeKind.Type, pack_proof_layout_type(index), new[Node]()),
+            context.arguments, context.signature.requirements, 0)?
+        var capability_index = 0
+        while capability_index < length(context.env.concepts) {
+            let capability = get(context.env.concepts, capability_index).symbol
+            if pack_layout_admitted(context, caller, schema, capability, new[PackLayoutRequirement](), ints(512), 0)? {
+                scope = with_evidence(scope, ty, capability)
+            }
+            capability_index = capability_index + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(scope)
+}

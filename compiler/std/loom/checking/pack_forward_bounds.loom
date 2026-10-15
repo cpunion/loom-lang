@@ -3,6 +3,7 @@
 // Its call-local bounds follow from the entire word, never its representative.
 fn pack_forward_evidence(context Context, caller Node, parameter Node, sequence List[Node],
     owner Int, types Node, inputs Node) Result[Bool, Failure] {
+    let scope = pack_layout_evidence(context, caller)?
     var member = 0
     while member < length(sequence) {
         let item = get(sequence, member)
@@ -11,11 +12,11 @@ fn pack_forward_evidence(context Context, caller Node, parameter Node, sequence 
         } else {
             item
         }
-        let ty = pack_forward_type(context, caller, schema, types, inputs)?
+        let ty = pack_forward_type(scope, caller, schema, types, inputs)?
         var bound = 0
         while bound < length(parameter.children) {
             let capability = required_concept(context.env, owner, child(parameter, bound))?
-            if !satisfies(context, ty, capability)? {
+            if !satisfies(scope, ty, capability)? {
                 return Result.Err(error(context, item,
                         "forwarded elements need an explicit implementation or declared concept requirement"))
             }

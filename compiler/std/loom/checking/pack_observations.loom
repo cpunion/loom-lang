@@ -48,14 +48,15 @@ fn pack_proof_method(context Context, node Node, source Node, receiver Expr, enc
         }
     }
     let member = get(parts, 1)
-    let patterns = pack_observation_types(context, parameter, node)?
+    var scope = pack_layout_evidence(context, symbol(context.env, owner).node)?
+    let patterns = pack_observation_types(scope, parameter, node)?
     let options = new[Int]()
     var common = new[Int]()
     var field = 0
     while field < length(patterns) {
         // A shape participates only in selection, never as a proof value.
         let shape = expression(ExprKind.Deferred, get(patterns, field), node, "", -1, new[Expr](), true)
-        let choices = method_options(context, node, source, shape, member, types, inputs, -1, expected)?
+        let choices = method_options(scope, node, source, shape, member, types, inputs, -1, expected)?
         if length(choices) == 0 {
             return Result.Err(error(context, node,
                     "variadic element observation needs an accessible concept and conformance for every element pattern"))
@@ -84,7 +85,6 @@ fn pack_proof_method(context Context, node Node, source Node, receiver Expr, enc
         }
         field = field + 1
     }
-    var scope = context
     var index = 0
     while index < length(options) {
         let method = get(context.env.signatures, get(options, index)).symbol
