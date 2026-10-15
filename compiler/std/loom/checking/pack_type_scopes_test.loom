@@ -1,0 +1,49 @@
+test fn pack_header_scopes_reject_unexpanded_words_before_contract_erasure() {
+    let invalid = """
+        fn symbolic[As..., Bs...](values (As, (Bs...))) Int
+        ensures result == 0 {
+            0
+        }
+        """
+    rejects(invalid)
+    let valid = std.text.join(std.text.split(invalid, "(As, (Bs...))"), "(As..., (Bs...))")
+    discard accepted(valid)
+    let cache = definition_cache()
+    assert match cached_source(cache, valid) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match cached_source(restored_definition_cache(cache), invalid) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    rejects("fn unused[As...](value As) {}")
+    rejects("fn unused[As..., Bs...](value (fn(As...) Bs,)) {}")
+    discard accepted("fn unused[As..., Bs...](value (fn(As...) (Bs...),)) {}")
+    discard accepted("fn unused[As...](values fn(As) As...) {}")
+}
+
+test fn pack_header_scopes_validate_unused_record_and_enum_fields() {
+    rejects("record Invalid[As...] { value As }")
+    rejects("enum Invalid[As...] { Value(As) }")
+    discard accepted("record Valid[As...] { value (As...) }")
+    discard accepted("enum Valid[As...] { Value(As...) }")
+}
+
+test fn implementation_members_inherit_their_headers_pack_scope() {
+    let valid = """
+        concept Collection {
+            type Items
+            fn items(self Self) Self.Items
+        }
+        impl[As...] Collection for (As...) {
+            type Items = (As...)
+            fn items(self Self) Self.Items {
+                self
+            }
+        }
+        """
+    discard accepted(valid)
+    rejects(std.text.join(std.text.split(valid, "type Items = (As...)"), "type Items = As"))
+    rejects(std.text.join(std.text.split(valid, "fn items(self Self) Self.Items {"), "fn items(self Self) As {"))
+}
