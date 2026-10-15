@@ -3,6 +3,14 @@ import std.bytes.length
 import std.bytes.get
 import std.bytes.set
 import std.bytes.push
+import std.text.to_bytes
+import std.text.length
+import std.text.concat
+
+fn encoded(value Text) Bytes
+ensures std.bytes.length(result) == std.text.length(value) {
+    to_bytes(value)
+}
 
 fn count(value Bytes) Int
 ensures result >= 0 && result == length(value)
@@ -65,6 +73,16 @@ fn exercise() {
     write(alias, 0, 9)
     assert read(value, 0) == 9 && read(copied, 0) == 7
     assert literal() == 255
+    let text = "Aé中😀\0"
+    let bytes = encoded(text)
+    assert std.bytes.length(bytes) == std.text.length(text)
+    write(bytes, 0, 66)
+    append(bytes, 0)
+    assert text == "Aé中😀\0" && std.bytes.length(bytes) == std.text.length(text) + 1
+    assert std.bytes.length(encoded("")) == 0
+    assert comptime {
+        std.bytes.length(encoded("é😀"))
+    } == 6
 }
 
 fn main() {

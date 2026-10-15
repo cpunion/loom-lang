@@ -811,8 +811,10 @@ replacement and append, helper calls, scalar entry snapshots and bounded copy
 loops compose with the same alias invalidation and fault/cleanup rules as Lists.
 Normal byte reads and writes establish 0–255; hypothetical reads still prove
 their own bounds. Checked byte blobs have exact lengths and at most 64 initial
-cell observations. This does not add UTF-8/content conversion laws or complete
-constrained shared-graph publication. JSON range feeding now uses an ordinary
+cell observations. `std.text.to_bytes` now declares its byte-length guarantee,
+proved from its ordinary source copy loop with the same rules and reusable by
+callers, including shared-worker builds. General UTF-8/content conversion laws
+and constrained shared-graph publication remain open. JSON range feeding uses an ordinary
 `requires` boundary instead of an internal assertion workaround.
 List lengths belong to the current proof state: exact aliases share extent
 updates, while unknown overlap and opaque calls forget current-length facts.
