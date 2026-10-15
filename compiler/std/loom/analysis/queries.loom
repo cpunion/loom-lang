@@ -760,7 +760,7 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int) Option[Inspection] 
         let header = get(analysis.headers, index)
         let declaration = get(analysis.bindings.symbols, header.symbol)
         if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
-            inspect_signature_header(analysis, report, header.symbol, header.params, header.output, target)
+            inspect_signature_header(analysis, report, header.symbol, header.params, header.output, target, true)
         }
         index = index + 1
     }

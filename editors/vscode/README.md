@@ -126,9 +126,12 @@ with the same snapshots.
 Diagnostics can coexist with checked query results: an unrelated non-generic
 function-body error, even in the same file, need not hide an independently checked
 concrete function and its dependencies. Parameter declarations and nested
-parameter/return annotations in ordinary functions and concrete non-generic
-`impl` methods also retain checked declaration types when their own body is
-invalid. Generic/static declarations do not use generated instances for recovery.
+parameter/return annotations in ordinary and generic functions and `impl` methods
+also retain checked declaration types when their own body is invalid. Original
+headers supply lexical type-parameter declarations and static value/callback
+slots, without evaluating the body, inventing static arguments or borrowing a
+generated instance's identity. A checked type-parameter binding can distinguish
+a shadowed name during nominal rename; unaccounted body occurrences still reject.
 These query-only headers contain no executable body
 or proof-success claim. Body/call queries still require the selected function
 and its dependencies to check, including generic/comptime template legality.

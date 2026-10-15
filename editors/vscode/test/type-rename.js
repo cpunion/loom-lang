@@ -124,14 +124,21 @@ fn main() {
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...token, newName: 'Envelope' }), /conflict/);
 
     // A specialization does not turn a same-spelled type parameter into Token.
-    await client.change(library, `${original}\nfn identity[Token](value Token) Token {\n    value\n}\n`, 2);
+    const lexical = `${original}\nfn identity[Token](value Token) Token {\n    value\n}\n`;
+    await client.change(library, lexical, 2);
+    const lexicalEdit = await client.rpc.sendRequest('textDocument/rename', { ...token, newName: 'Entry' });
+    const renamedLibrary = TextDocument.applyEdits(TextDocument.create(URI.file(library).toString(), 'loom', 2, lexical), lexicalEdit.changes[URI.file(library).toString()]);
+    assert.ok(renamedLibrary.includes('pub record Entry'));
+    assert.ok(renamedLibrary.includes('fn identity[Token](value Token) Token'));
+    // Source header evidence is not evidence for an uninstantiated body use.
+    await client.change(library, lexical.replace('fn identity[Token](value Token) Token {\n    value', 'fn identity[Token](value Token) Token {\n    let hidden Token = value\n    hidden'), 3);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...token, newName: 'Entry' }), /every occurrence/);
-    await client.change(library, original, 3);
+    await client.change(library, original, 4);
 
     const shadowed = `${original}\nfn typed(comptime Token type, value Token) Token {\n    value\n}\ntest fn alias_test() {\n    assert typed(Token, Token { value = 7 }).value == 7\n}\n`;
-    await client.change(library, shadowed, 4);
+    await client.change(library, shadowed, 5);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...token, newName: 'Entry' }), /every occurrence/);
-    await client.change(library, original, 5);
+    await client.change(library, original, 6);
 
     const privateFile = path.join(folder, 'private/main.loom'), privateSource = sources.get('private/main.loom');
     await client.open(privateFile, privateSource);
