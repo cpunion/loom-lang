@@ -418,6 +418,8 @@ Within one check, each saved body's eligibility is computed once, and each
 replayed concrete callee is validated and scheduled once in the current
 environment. These lookup tables are rebuilt after every edit, never persisted
 as evidence or reused across checking environments.
+Type-support queries also reuse completed graph traversals within that check;
+recursive provisional visits and stored-only permissions supply no runtime evidence.
 Declaration generation reruns before matching, using current build inputs.
 Snapshots retain raw source and private expanded trees separately; unchanged
 generated bodies use the current generating block's location and extent.
@@ -460,6 +462,8 @@ finishes before the mutable result escapes, then temporary cache references are
 retired. Resident editor hosts use `check_project_cached`, whose private source
 and body copies remain isolated from returned ASTs and programs. Both paths
 keep the same invalidation, source-backed export and host trust checks.
+After a successful check, replaced source/body bases retire before the new
+snapshot metadata is copied. Failed checks retain the last successful basis.
 
 Hashing has a fixed cost, so this remains opt-in. Measure a project with
 `node scripts/benchmark-compiler.mjs --compare-frontend --check-only`; the harness

@@ -47,17 +47,17 @@ fn body_copy_constants(env Environment, constants List[StaticValue]) List[BodyCo
     copied
 }
 
-fn body_value_supported(reuse BodyReuse, value Value, seen List[Int]) Bool {
+fn body_value_supported(reuse BodyReuse, value Value) Bool {
     let kind = get(get(reuse.prior, 0).types, value.ty).kind
     if kind == TypeKind.Meta {
-        return body_type_supported(reuse, value.number, seen)
+        return body_type_supported(reuse, value.number)
     }
-    if !body_type_shape_supported(reuse, value.ty, seen, true) {
+    if !body_type_shape_supported(reuse, value.ty, true) {
         return false
     }
     var index = 0
     while index < length(value.items) {
-        if !body_value_supported(reuse, get(value.items, index), seen) {
+        if !body_value_supported(reuse, get(value.items, index)) {
             return false
         }
         index = index + 1
@@ -65,7 +65,7 @@ fn body_value_supported(reuse BodyReuse, value Value, seen List[Int]) Bool {
     true
 }
 
-fn body_constants_supported(reuse BodyReuse, values List[BodyConstant], seen List[Int]) Bool {
+fn body_constants_supported(reuse BodyReuse, values List[BodyConstant]) Bool {
     var index = 0
     while index < length(values) {
         let saved = get(values, index)
@@ -75,10 +75,10 @@ fn body_constants_supported(reuse BodyReuse, values List[BodyConstant], seen Lis
         }
         let kind = get(get(reuse.prior, 0).types, value.ty).kind
         if kind == TypeKind.Meta {
-            if !body_type_supported(reuse, value.number, seen) {
+            if !body_type_supported(reuse, value.number) {
                 return false
             }
-        } else if !body_type_shape_supported(reuse, value.ty, seen, true) {
+        } else if !body_type_shape_supported(reuse, value.ty, true) {
             return false
         }
         if kind == TypeKind.Function && !body_source_supported(reuse, value.number) {
@@ -86,12 +86,12 @@ fn body_constants_supported(reuse BodyReuse, values List[BodyConstant], seen Lis
         }
         var argument = 0
         while argument < length(value.arguments) {
-            if !body_type_supported(reuse, get(value.arguments, argument), seen) {
+            if !body_type_supported(reuse, get(value.arguments, argument)) {
                 return false
             }
             argument = argument + 1
         }
-        if value.storage < -1 && !body_value_supported(reuse, get(saved.stored, 0), seen) {
+        if value.storage < -1 && !body_value_supported(reuse, get(saved.stored, 0)) {
             return false
         }
         index = index + 1

@@ -476,7 +476,11 @@ fn check_project_reusing(project Project, tests Bool, inputs BuildInputs, cache 
     if has_declaration_stages(original, tests) {
         // Resident caches detach public mutable source; one-shot hosts serialize
         // and retire the basis before returning it to their caller.
-        push(basis.original, if detach { snapshot(original) } else { original })
+        push(basis.original, if detach {
+                snapshot(original)
+            } else {
+                original
+            })
     }
     reuse_source_selection(basis, cache)
     // Expansion always reruns with current tracked inputs before matching. The
@@ -485,13 +489,19 @@ fn check_project_reusing(project Project, tests Bool, inputs BuildInputs, cache 
     let env = prepare_with_inputs(source, inputs)?
     let bodies = body_reuse(cache, basis, reuse.bodies)
     let program = checked_program_reusing(env, reuse.checks, basis.reusable, definition_state(cache).hits, bodies)?
+    // Checking has succeeded; the remaining snapshot copies cannot report a
+    // source failure. Retire both old bases before allocating their replacement,
+    // not after copying new type/body metadata alongside the previous project.
+    let previous = definition_state(cache)
+    let saved = new[DefinitionBasis]()
+    push(saved, basis)
+    set(cache.state, 0, DefinitionCacheState {
+            basis = saved
+            hits = previous.hits
+            bodies = new[BodyBasis]()
+            body_hits = previous.body_hits
+        })
     save_bodies(cache, basis, env, program, detach)
-    if length(definition_state(cache).basis) == 0 {
-        push(definition_state(cache).basis, basis)
-    }
-    else {
-        set(definition_state(cache).basis, 0, basis)
-    }
     Result.Ok(CachedCheck {
             source = original
             bindings = source

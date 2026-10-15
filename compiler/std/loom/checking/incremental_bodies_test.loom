@@ -25,6 +25,75 @@ fn cached_answer(value CachedCheck) Int {
     }
 }
 
+test fn body_type_support_memoizes_complete_roots_and_separates_stored_permissions() {
+    let cache = definition_cache()
+    assert match cached_source(cache, """
+        record Left {
+            next List[Right]
+        }
+        record Right {
+            next List[Left]
+        }
+        pub fn keep(value Left) Int {
+            7
+        }
+        """) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let prior = get(definition_state(cache).bodies, 0)
+    let allowed = new[Bool]()
+    var index = 0
+    while index < length(prior.definitions.entries) {
+        push(allowed, true)
+        index = index + 1
+    }
+    var left = -1
+    var right = -1
+    index = 0
+    while index < length(prior.types) {
+        let shape = get(prior.types, index)
+        if shape.kind == TypeKind.Record {
+            let name = get(prior.definitions.entries, shape.symbol).node.value
+            if name == "Left" {
+                left = index
+            }
+            if name == "Right" {
+                right = index
+            }
+        }
+        index = index + 1
+    }
+    assert left >= 0 && right >= 0
+    let reuse = body_reuse(cache, prior.definitions, allowed)
+    assert body_type_supported(reuse, left) && body_type_supported(reuse, left)
+    assert get(reuse.type_support, right * 2) == 1
+
+    // Exercise a cyclic private type graph with a later unsupported leaf. A
+    // provisional child visit must not escape as a cached successful closure.
+    let meta = length(prior.types)
+    push(prior.types, Type {
+            kind = TypeKind.Meta
+            symbol = -1
+            arguments = new[Int]()
+            pack_widths = new[Int]()
+            fields = new[Field]()
+            variants = new[Variant]()
+            constraint = new[Expr]()
+        })
+    push(get(prior.types, left).fields, Field {
+            name = "unsupported"
+            ty = meta
+        })
+    let fresh = body_reuse(cache, prior.definitions, allowed)
+    assert !body_type_supported(fresh, left)
+    assert get(fresh.type_support, right * 2) == 0
+    assert !body_type_supported(fresh, right)
+    assert body_type_shape_supported(fresh, meta, true)
+    assert !body_type_supported(fresh, meta)
+    assert body_type_shape_supported(fresh, left, true)
+}
+
 test fn concrete_bodies_rekey_nominals_calls_and_generic_instances() {
     let cache = definition_cache()
     let source = """
