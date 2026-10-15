@@ -19,8 +19,6 @@ record BodyBasis {
     types List[Type]
     targets List[BodyTarget]
     functions List[Function]
-    encoded Text
-    offsets List[Int]
     interfaces List[BodyInterface]
 }
 
@@ -30,6 +28,7 @@ record BodyReuse {
     allowed List[Bool]
     symbols List[Int]
     types List[Int]
+    type_support List[Int]
     eligibility List[Int]
     targets List[Int]
     functions Map[Int, List[Int]]
@@ -44,6 +43,7 @@ fn no_body_reuse() BodyReuse {
         allowed = new[Bool]()
         symbols = new[Int]()
         types = new[Int]()
+        type_support = new[Int]()
         eligibility = new[Int]()
         targets = new[Int]()
         functions = std.map.new[Int, List[Int]]()
@@ -108,16 +108,19 @@ fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) 
         index = index + 1
     }
     let types = new[Int]()
+    let type_support = new[Int]()
     index = 0
     while index < length(prior.types) {
         push(types, -1)
+        push(type_support, 0)
+        push(type_support, 0)
         index = index + 1
     }
     let functions = std.map.new[Int, List[Int]]()
     let eligibility = new[Int]()
     let targets = new[Int]()
     index = 0
-    while index < length(prior.targets) {
+    while index < length(prior.functions) {
         push(eligibility, 0)
         push(targets, -1)
         let owner = get(prior.targets, index).symbol
@@ -140,6 +143,7 @@ fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) 
         allowed = allowed
         symbols = symbols
         types = types
+        type_support = type_support
         eligibility = eligibility
         targets = targets
         functions = functions
@@ -156,11 +160,33 @@ fn body_symbol(reuse BodyReuse, previous Int) Int {
     }
 }
 
-fn body_type_supported(reuse BodyReuse, ty Int, seen List[Int]) Bool {
-    body_type_shape_supported(reuse, ty, seen, false)
+fn body_type_supported(reuse BodyReuse, ty Int) Bool {
+    body_type_shape_supported(reuse, ty, false)
 }
 
-fn body_type_shape_supported(reuse BodyReuse, ty Int, seen List[Int], stored Bool) Bool {
+// Cache only a completed root traversal. A recursive child's provisional visit
+// cannot establish its closure if an ancestor later reaches an unsupported leaf.
+// Stored compile-time values and executable types retain distinct permissions.
+fn body_type_shape_supported(reuse BodyReuse, ty Int, stored Bool) Bool {
+    let slot = ty * 2 + if stored {
+        1
+    } else {
+        0
+    }
+    let known = get(reuse.type_support, slot)
+    if known != 0 {
+        return known > 0
+    }
+    let supported = body_type_shape_walk(reuse, ty, new[Int](), stored)
+    set(reuse.type_support, slot, if supported {
+            1
+        } else {
+            -1
+        })
+    supported
+}
+
+fn body_type_shape_walk(reuse BodyReuse, ty Int, seen List[Int], stored Bool) Bool {
     if resource_seen(seen, ty) {
         return true
     }
@@ -179,14 +205,14 @@ fn body_type_shape_supported(reuse BodyReuse, ty Int, seen List[Int], stored Boo
     }
     var index = 0
     while index < length(shape.arguments) {
-        if !body_type_shape_supported(reuse, get(shape.arguments, index), seen, stored) {
+        if !body_type_shape_walk(reuse, get(shape.arguments, index), seen, stored) {
             return false
         }
         index = index + 1
     }
     index = 0
     while index < length(shape.fields) {
-        if !body_type_shape_supported(reuse, get(shape.fields, index).ty, seen, stored) {
+        if !body_type_shape_walk(reuse, get(shape.fields, index).ty, seen, stored) {
             return false
         }
         index = index + 1
@@ -196,7 +222,7 @@ fn body_type_shape_supported(reuse BodyReuse, ty Int, seen List[Int], stored Boo
         let fields = get(shape.variants, index).fields
         var field = 0
         while field < length(fields) {
-            if !body_type_shape_supported(reuse, get(fields, field), seen, stored) {
+            if !body_type_shape_walk(reuse, get(fields, field), seen, stored) {
                 return false
             }
             field = field + 1
@@ -226,48 +252,48 @@ fn body_source_supported(reuse BodyReuse, previous Int) Bool {
     true
 }
 
-fn body_target_supported(reuse BodyReuse, target Int, seen List[Int]) Bool {
+fn body_target_supported(reuse BodyReuse, target Int) Bool {
     let targets = get(reuse.prior, 0).targets
     if target < 0 || target >= length(targets) {
         return false
     }
     let instance = get(targets, target)
-    body_instance_supported(reuse, instance, seen)
+    body_instance_supported(reuse, instance)
 }
 
-fn body_instance_supported(reuse BodyReuse, instance BodyTarget, seen List[Int]) Bool {
+fn body_instance_supported(reuse BodyReuse, instance BodyTarget) Bool {
     if !body_source_supported(reuse, instance.symbol) {
         return false
     }
     var index = 0
     while index < length(instance.arguments) {
-        if !body_type_supported(reuse, get(instance.arguments, index), seen) {
+        if !body_type_supported(reuse, get(instance.arguments, index)) {
             return false
         }
         index = index + 1
     }
-    body_constants_supported(reuse, instance.constants, seen)
+    body_constants_supported(reuse, instance.constants)
 }
 
-fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[Int]) Bool {
+fn body_expression_supported(reuse BodyReuse, value Expr, span Span) Bool {
     let kind = value.kind
     if kind == ExprKind.Deferred ||
     kind == ExprKind.FrameNew || kind == ExprKind.FrameStore ||
     kind == ExprKind.TypeValue {
         return false
     }
-    if !body_type_supported(reuse, value.ty, seen) || value.span.start < span.start || value.span.end > span.end {
+    if !body_type_supported(reuse, value.ty) || value.span.start < span.start || value.span.end > span.end {
         return false
     }
-    if (kind == ExprKind.Call || kind == ExprKind.TaskCall || kind == ExprKind.FunctionRef) && !body_target_supported(reuse, value.index, seen) {
+    if (kind == ExprKind.Call || kind == ExprKind.TaskCall || kind == ExprKind.FunctionRef) && !body_target_supported(reuse, value.index) {
         return false
     }
-    if kind == ExprKind.DynCall && !body_instance_supported(reuse, body_dynamic_slot(reuse, value), seen) {
+    if kind == ExprKind.DynCall && !body_instance_supported(reuse, body_dynamic_slot(reuse, value)) {
         return false
     }
     var index = 0
     while index < length(value.children) {
-        if !body_expression_supported(reuse, get(value.children, index), span, seen) {
+        if !body_expression_supported(reuse, get(value.children, index), span) {
             return false
         }
         index = index + 1
@@ -277,7 +303,7 @@ fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[I
         let arm = get(value.arms, index)
         var member = 0
         while member < length(arm.body) {
-            if !body_expression_supported(reuse, get(arm.body, member), span, seen) {
+            if !body_expression_supported(reuse, get(arm.body, member), span) {
                 return false
             }
             member = member + 1
@@ -291,20 +317,19 @@ fn body_supported(reuse BodyReuse, target BodyTarget, value Function) Bool {
     if target.prototype >= 0 && body_symbol(reuse, target.prototype) < 0 {
         return false
     }
-    let seen = new[Int]()
-    if !body_type_supported(reuse, value.result, seen) {
+    if !body_type_supported(reuse, value.result) {
         return false
     }
     var index = 0
     while index < length(value.arguments) {
-        if !body_type_supported(reuse, get(value.arguments, index), seen) {
+        if !body_type_supported(reuse, get(value.arguments, index)) {
             return false
         }
         index = index + 1
     }
     index = 0
     while index < length(value.locals) {
-        if !body_type_supported(reuse, get(value.locals, index).ty, seen) {
+        if !body_type_supported(reuse, get(value.locals, index).ty) {
             return false
         }
         index = index + 1
@@ -312,7 +337,7 @@ fn body_supported(reuse BodyReuse, target BodyTarget, value Function) Bool {
     index = 0
     while index < length(value.preconditions) {
         let owner = body_contract_source(reuse, target, NodeKind.Requires, index)
-        if !body_expression_supported(reuse, get(value.preconditions, index), get(get(reuse.prior, 0).definitions.entries, owner).span, seen) {
+        if !body_expression_supported(reuse, get(value.preconditions, index), get(get(reuse.prior, 0).definitions.entries, owner).span) {
             return false
         }
         index = index + 1
@@ -320,32 +345,32 @@ fn body_supported(reuse BodyReuse, target BodyTarget, value Function) Bool {
     index = 0
     while index < length(value.postconditions) {
         let owner = body_contract_source(reuse, target, NodeKind.Ensures, index)
-        if !body_expression_supported(reuse, get(value.postconditions, index), get(get(reuse.prior, 0).definitions.entries, owner).span, seen) {
+        if !body_expression_supported(reuse, get(value.postconditions, index), get(get(reuse.prior, 0).definitions.entries, owner).span) {
             return false
         }
         index = index + 1
     }
     index = 0
     while index < length(value.result_cleanup) {
-        if !body_expression_supported(reuse, get(value.result_cleanup, index), value.span, seen) {
+        if !body_expression_supported(reuse, get(value.result_cleanup, index), value.span) {
             return false
         }
         index = index + 1
     }
-    body_expression_supported(reuse, value.body, value.span, seen)
+    body_expression_supported(reuse, value.body, value.span)
 }
 
 // Eligibility depends only on this check's fixed source correspondence, not on
 // which specialization is looking for a match. Inspect each saved body once.
-fn body_eligible(reuse BodyReuse, candidate Int, value Function) Bool {
+fn body_eligible(reuse BodyReuse, candidate Int) Bool {
     let known = get(reuse.eligibility, candidate)
     if known != 0 {
         return known > 0
     }
     let prior = get(reuse.prior, 0)
     let target = get(prior.targets, candidate)
-    let supported = body_supported(reuse, target, value) &&
-    body_constants_supported(reuse, target.constants, new[Int]())
+    let supported = body_supported(reuse, target, get(prior.functions, candidate)) &&
+    body_constants_supported(reuse, target.constants)
     set(reuse.eligibility, candidate, if supported {
             1
         } else {
@@ -387,23 +412,6 @@ fn body_types(env Environment, reuse BodyReuse, types List[Int]) Result[List[Int
         index = index + 1
     }
     Result.Ok(mapped)
-}
-
-// Reject only identities already rekeyed by this check. Unknown mappings still
-// decode and take the full eligibility path; they supply no guessed equality.
-fn body_arguments_differ(reuse BodyReuse, previous List[Int], current List[Int]) Bool {
-    if length(previous) != length(current) {
-        return true
-    }
-    var index = 0
-    while index < length(previous) {
-        let mapped = get(reuse.types, get(previous, index))
-        if mapped >= 0 && mapped != get(current, index) {
-            return true
-        }
-        index = index + 1
-    }
-    false
 }
 
 fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure] {
@@ -535,21 +543,11 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
     var index = 0
     while index < length(candidates) {
         let candidate = get(candidates, index)
+        let value = get(prior.functions, candidate)
         let target = get(prior.targets, candidate)
-        if !same(target.widths, widths) || !same(target.implementation_widths, implementation_widths) ||
-        body_symbol(reuse, target.symbol) != owner || body_arguments_differ(reuse, target.arguments, instance.arguments) ||
-        (!std.loom.ast.has(current.node, NodeKind.ExpansionId) &&
-            (current.text == "" || current.text != get(prior.definitions.entries, target.symbol).text)) {
-            index = index + 1
-            continue
-        }
-        let value = match body_function(prior, candidate) {
-            Result.Ok(value) => value
-            Result.Err(_) => {
-                return Result.Ok(Option.None)
-            }
-        }
-        if body_eligible(reuse, candidate, value) &&
+        if same(target.widths, widths) && same(target.implementation_widths, implementation_widths) && body_symbol(reuse, target.symbol) == owner &&
+        (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
+            (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_eligible(reuse, candidate) &&
         same(body_types(env, reuse, value.arguments)?, instance.arguments) &&
         same_constants(body_constants(env, reuse, target.constants, owner)?, instance.constants) {
             if length(widths) != 0 {

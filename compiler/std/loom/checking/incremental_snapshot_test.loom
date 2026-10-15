@@ -16,9 +16,6 @@ test fn restored_private_empty_lists_do_not_alias_public_replayed_expressions() 
         Result.Err(_) => false
     }
     let cache = restored_definition_cache(initial)
-    let imported = get(definition_state(cache).bodies, 0)
-    assert length(imported.functions) == 0
-    assert length(imported.offsets) == length(imported.targets) && length(imported.offsets) == 2
     let checked = match cached_source(cache, concat("fn unrelated() {}\n", source)) {
         Result.Ok(value) => value
         Result.Err(_) => {
@@ -45,47 +42,6 @@ test fn restored_private_empty_lists_do_not_alias_public_replayed_expressions() 
     let replayed = get(next.program.functions, cached_function(next, "left"))
     assert length(replayed.preconditions) == 0
     assert length(get(replayed.body.children, 0).children) == 0
-}
-
-test fn lazy_disk_bodies_survive_a_failed_edit_without_publishing_mutable_ir() {
-    let source = """
-        pub fn answer() Int
-        ensures result == 7 {
-            match true {
-                true => 7
-                false => 7
-            }
-        }
-        """
-    let cache = definition_cache()
-    discard match cached_source(cache, source) {
-        Result.Ok(value) => value
-        Result.Err(_) => {
-            assert false
-            return
-        }
-    }
-    let restored = restored_definition_cache(cache)
-    let before = match export_definition_cache(restored) {
-        Result.Ok(value) => value
-        Result.Err(_) => {
-            assert false
-            return
-        }
-    }
-    assert match cached_source(restored, std.text.join(std.text.split(source, "=> 7"), "=> 8")) {
-        Result.Err(_) => true
-        Result.Ok(_) => false
-    }
-    assert match export_definition_cache(restored) {
-        Result.Ok(value) => value == before
-        Result.Err(_) => false
-    }
-    assert length(get(definition_state(restored).bodies, 0).functions) == 0
-    assert match cached_source(restored, concat("fn unrelated() {}\n", source)) {
-        Result.Ok(_) => bodies_reused(restored) == 1
-        Result.Err(_) => false
-    }
 }
 
 test fn one_shot_snapshots_serialize_before_public_mutation_and_retire_body_aliases() {

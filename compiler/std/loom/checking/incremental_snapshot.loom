@@ -234,9 +234,9 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
         cache_type(output, get(saved.types, index))
         index = index + 1
     }
-    cache_int(output, length(saved.targets))
+    cache_int(output, length(saved.functions))
     index = 0
-    while index < length(saved.targets) {
+    while index < length(saved.functions) {
         let target = get(saved.targets, index)
         cache_int(output, target.symbol)
         cache_ints(output, target.widths)
@@ -244,7 +244,7 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
         cache_int(output, target.prototype)
         cache_ints(output, target.arguments)
         discard cache_constants(output, target.constants)?
-        discard cache_function(output, body_function(saved, index)?)?
+        discard cache_function(output, get(saved.functions, index))?
         index = index + 1
     }
     discard cache_interfaces(output, saved.interfaces)?
@@ -303,16 +303,8 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         index = index + 1
     }
     let function_count = cache_read_count(reader)?
-    let offsets = new[Int](cache_capacity(function_count))
+    let functions = new[Function](cache_capacity(function_count))
     let targets = new[BodyTarget](cache_capacity(function_count))
-    let scanning = CacheReader {
-        text = reader.text
-        capture = false
-        cursor = reader.cursor
-        integers = reader.integers
-        expressions = reader.expressions
-        arms = reader.arms
-    }
     index = 0
     while index < function_count {
         push(targets, BodyTarget {
@@ -323,8 +315,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
                 arguments = cache_read_ints(reader)?
                 constants = cache_read_constants(reader)?
             })
-        push(offsets, get(reader.cursor, 0))
-        discard cache_read_function(scanning)?
+        push(functions, cache_read_function(reader)?)
         index = index + 1
     }
     let interfaces = cache_read_interfaces(reader)?
@@ -337,22 +328,8 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
             definitions = basis
             types = types
             targets = targets
-            functions = new[Function]()
-            encoded = text
-            offsets = offsets
+            functions = functions
             interfaces = interfaces
         })
     Result.Ok(cache)
-}
-
-// Disk bodies stay in their authenticated encoding until selected. Import scans
-// the complete grammar using the same decoder, but does not retain a second IR
-// tree while replay builds fresh, independently mutable current expressions.
-fn body_function(basis BodyBasis, index Int) Result[Function, Text] {
-    if length(basis.offsets) == 0 {
-        return Result.Ok(get(basis.functions, index))
-    }
-    let reader = cache_reader(basis.encoded)
-    set(reader.cursor, 0, get(basis.offsets, index))
-    cache_read_function(reader)
 }
