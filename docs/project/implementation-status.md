@@ -78,10 +78,12 @@ it supplies neither build success nor proof evidence.
 Runtime parameter declarations and match payload/whole bindings retain exact
 checked definition locations. Implicit contract `result` uses a zero-width
 return-annotation anchor, distinct from named function/type declarations.
-Parameter declarations and nested signature annotations in fully resolved
-ordinary functions and concrete non-generic `impl` methods can also be inspected
-when their owner's body is invalid, using query-only checked declaration headers.
-Generic/static declarations do not borrow a generated instance's types.
+Parameter declarations and nested signature annotations in ordinary and generic
+functions and `impl` methods can also be inspected when their owner's body is
+invalid, using query-only checked declaration headers. Generic headers retain
+abstract types and lexical parameter names, including independent impl/method
+parameters; they never borrow a generated instance's concrete identity. Static
+inputs and unexpanded packs still need their existing checked query paths.
 Body queries, template legality and build/proof checks remain separate.
 Renames include contracts, preserve shadowing and
 recheck the virtual package. Runtime-local renames also cover selected compile-time

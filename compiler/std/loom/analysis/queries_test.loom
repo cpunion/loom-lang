@@ -470,7 +470,10 @@ test fn inspections_do_not_invent_results_for_comments_punctuation_or_unchecked_
     absent(analysis, query_offset(text, "=="))
     absent(analysis, query_offset(text, "let 数量") + 3)
     absent(analysis, query_offset(text, "value }"))
-    absent(analysis, query_offset(text, "value T"))
+    let parameter = inspection(analysis, text, "value T")
+    only_type(parameter, "T")
+    let declared = query_offset(text, "value T")
+    only_definition(parameter, declared, declared + 5)
     absent(analysis, length(text))
 }
 

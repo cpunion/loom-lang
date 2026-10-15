@@ -132,6 +132,56 @@ fn main() {
   }
 }
 
+async function genericHeaderSmoke(executable, stdRoot) {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'loom-generic-header-'));
+  const folder = await fs.realpath(temporary);
+  const file = path.join(folder, 'main.loom'), uri = URI.file(file).toString();
+  const source = `record Item {
+    count Int
+}
+record Box[T] {
+    value T
+}
+concept Echo {
+    fn echo[Other](self Self, value Other) Self
+}
+impl[Item] Echo for Box[Item] {
+    fn echo[Other](self Box[Item], value Other) Box[Item] {
+        true
+    }
+}
+fn main() {}
+`;
+  const client = await session({ executable, stdRoot }, folder);
+  try {
+    await client.open(file, source);
+    assert.ok((await client.wait(file, 1)).diagnostics.length > 0);
+    for (const [text, version] of [[source, 1], [source.replace('        true', '        self'), 2]]) {
+      if (version === 2) {
+        await client.change(file, text, version);
+        assert.deepEqual((await client.wait(file, version)).diagnostics, []);
+      }
+      const document = TextDocument.create(uri, 'loom', version, text);
+      for (const [fragment, declaration, label] of [
+        ['Item], value', 'Item] Echo', 'Item'],
+        ['Other) Box', 'Other](self Box', 'Other'],
+      ]) {
+        const params = { textDocument: { uri }, position: document.positionAt(text.indexOf(fragment)) };
+        const hover = await client.rpc.sendRequest('textDocument/hover', params);
+        assert.ok(hover.contents.some(item => item.value === label), JSON.stringify(hover));
+        const definitions = await client.rpc.sendRequest('textDocument/definition', params);
+        assert.equal(definitions.length, 1);
+        assert.equal(definitions[0].uri, uri);
+        assert.deepEqual(definitions[0].range.start, document.positionAt(text.indexOf(declaration)));
+      }
+    }
+    await assert.rejects(fs.access(file), { code: 'ENOENT' });
+  } finally {
+    await client.close();
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+
 async function autoImportSmoke(executable, stdRoot) {
   const folder = path.join(__dirname, 'fixtures/import_project');
   const file = path.join(folder, 'main.loom');
@@ -675,6 +725,7 @@ fn main() {
     await require('./binding-rename').bindingRenameSmoke(executable, stdRoot);
     await buildInputSmoke(executable, stdRoot);
     await buildOptionSmoke(executable, stdRoot);
+    await genericHeaderSmoke(executable, stdRoot);
     await require('./resident').residentSmoke(executable, stdRoot);
     console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local and private cross-file rename, name/member/qualified/import completion, verified qualified and bare-name auto-import actions, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }

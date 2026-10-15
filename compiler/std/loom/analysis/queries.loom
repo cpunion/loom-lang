@@ -700,7 +700,12 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
     }
     match inspect_view(view, file, offset) {
         Option.Some(found) => Option.Some(found)
-        Option.None => inspect_declaration_at(analysis, view, file, offset)
+        Option.None => {
+            match inspect_source_header(analysis, file, offset) {
+                Option.Some(found) => Option.Some(found)
+                Option.None => inspect_declaration_at(analysis, view, file, offset)
+            }
+        }
     }
 }
 

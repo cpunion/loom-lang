@@ -53,7 +53,7 @@ test fn concrete_impl_headers_remain_queryable_without_checking_the_method_body(
     assert length(bindings.symbols) == before
 }
 
-test fn generic_impl_headers_do_not_borrow_a_concrete_instances_type_identity() {
+test fn generic_impl_headers_use_abstract_parameters_not_a_concrete_instances_identity() {
     let text = """
         record Item {
             count Int
@@ -64,23 +64,26 @@ test fn generic_impl_headers_do_not_borrow_a_concrete_instances_type_identity() 
         }
 
         concept Echo {
-            fn echo(self Self) Self
+            fn echo[Other](self Self, value Other) Self
         }
 
         impl[Item] Echo for Box[Item] {
-            fn echo(self Box[Item]) Box[Item] {
-                self
+            fn echo[Other](self Box[Item], value Other) Box[Item] {
+                true
             }
         }
 
         fn main() {
             let box = Box { value = Item { count = 1 } }
-            discard box.echo()
+            discard box.echo(false)
         }
         """
-    discard accepted(input(text))
+    assert match analyze(input(text), false) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
     let bindings = query_bindings(input(text))
-    let offset = query_offset(text, "Item]) Box")
+    let offset = query_offset(text, "Item], value")
     let header = match check_query(bindings, 0, offset) {
         Result.Ok(value) => value
         Result.Err(_) => {
@@ -88,9 +91,14 @@ test fn generic_impl_headers_do_not_borrow_a_concrete_instances_type_identity() 
             return
         }
     }
-    assert length(header.headers) == 0
-    assert match inspect_independent(bindings, 0, offset) {
-        Option.None => true
-        Option.Some(found) => length(found.definitions) == 0
-    }
+    assert length(header.headers) == 1 && length(header.functions) == 0
+    let found = independent_found(bindings, text, "Item], value")
+    only_type(found, "Item")
+    let parameter = query_offset(text, "Item] Echo")
+    only_definition(found, parameter, parameter + 4)
+    only_type(independent_found(bindings, text, "self Box[Item]"), "app.Box[Item]")
+    let other = independent_found(bindings, text, "Other) Box")
+    only_type(other, "Other")
+    let local_parameter = query_offset(text, "Other](self Box")
+    only_definition(other, local_parameter, local_parameter + 5)
 }

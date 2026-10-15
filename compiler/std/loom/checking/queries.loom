@@ -66,7 +66,7 @@ fn query_header_owner(env Environment, declarations Int, file Int, offset Int) I
             let id = source_signature_id(env, index)
             if id >= 0 {
                 let current = get(env.signatures, id)
-                if current.parameters == 0 && !has_static(current) {
+                if !has_static(current) {
                     return id
                 }
             }
@@ -95,7 +95,8 @@ fn query_templates(env Environment) Result[Bool, Failure] {
 // validate every generic/comptime template: a concrete instance must not substitute for
 // its declaration's abstract legality, including helpers reached only by CTFE.
 // Consequently an unrelated invalid template still prevents body queries.
-// Generic/comptime source owners have no concrete query instance and return an
+// Generic headers retain their original abstract types, not concrete instances.
+// Generic/comptime body owners have no concrete query instance and return an
 // empty function list; no arbitrary type or static arguments are invented.
 pub fn check_query(source std.loom.binding.Program, file Int, offset Int) Result[CheckedQuery, Failure] {
     check_query(source, file, offset, build_inputs(no_input_reader))

@@ -44,10 +44,16 @@ test fn specialized_header_parameters_do_not_guess_same_spelled_nominal_definiti
     let locations = ["Item) Item", "Item {\n    value"]
     var index = 0
     while index < length(locations) {
-        assert match inspect_at(analysis, 0, query_offset(text, get(locations, index))) {
-            Option.None => true
-            Option.Some(found) => length(found.definitions) == 0
+        let found = match inspect_at(analysis, 0, query_offset(text, get(locations, index))) {
+            Option.Some(value) => value
+            Option.None => {
+                assert false
+                return
+            }
         }
+        let parameter = query_offset(text, "Item](value")
+        only_type(found, "Item")
+        only_definition(found, parameter, parameter + 4)
         index = index + 1
     }
 }
