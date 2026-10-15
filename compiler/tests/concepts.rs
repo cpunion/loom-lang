@@ -25,7 +25,11 @@ fn transparent_dyn_projections_keep_gc_roots_and_explicit_adapter_work() {
         );
         success(&common::run_tasks(&executable));
         if level == "0" {
-            assert!(fs::read_to_string(ir).unwrap().contains("dyn.project.witness"));
+            assert!(
+                fs::read_to_string(ir)
+                    .unwrap()
+                    .contains("dyn.project.witness")
+            );
         }
     }
 }

@@ -343,6 +343,7 @@ fn transparent_witness_slices_emit_without_a_second_box() {
     let ir = std::fs::read_to_string(ir).unwrap();
     assert!(ir.contains("dyn.project.witness"));
     assert!(!ir.contains("@loom_rt_box_new"));
+    assert!(!ir.contains("@loom.witness.0"));
 
     // Even a redundant guard remains work unless separately proved removable.
     program.functions[0]

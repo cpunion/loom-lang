@@ -100,6 +100,9 @@ pub(super) fn emit_witnesses<'ctx>(
     let builder = context.create_builder();
     let mut tables = vec![None; program.witnesses.len()];
     for &id in live {
+        if projection_offset(program, id).is_some() {
+            continue;
+        }
         let witness = &program.witnesses[id];
         let interface = &program.interfaces[witness.interface];
         let mut slots = Vec::new();
