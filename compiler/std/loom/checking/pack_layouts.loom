@@ -1,0 +1,53 @@
+// A closed nested word is one unknown type, not a sampled tuple width or a
+// pack element. Generic constructors may use it without knowing its layout.
+// Free element occurrences must stay separate from the whole-word identity.
+fn pack_closed_layout(node Node, names List[Text]) Bool {
+    (node.kind == NodeKind.TupleType || node.kind == NodeKind.FunctionType) &&
+    has_type_expansion(node) && length(expansion_packs(node, names)) == 0
+}
+
+fn collect_pack_layouts(node Node, names List[Text], layouts List[Node], depth Int) {
+    if depth >= 64 {
+        return
+    }
+    if pack_closed_layout(node, names) {
+        var index = 0
+        while index < length(layouts) && !pack_schema_equal(get(layouts, index), node) {
+            index = index + 1
+        }
+        if index == length(layouts) {
+            push(layouts, node)
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        collect_pack_layouts(child(node, index), names, layouts, depth + 1)
+        index = index + 1
+    }
+}
+
+fn pack_proof_layouts(declaration Node) List[Node] {
+    let layouts = new[Node]()
+    let names = pack_names(declared_packs(declaration))
+    let parameters = group(declaration, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let ty = child(get(parameters, index), 0)
+        // The outer tuple/spread is the iteration domain, not one element.
+        if ty.kind == NodeKind.TupleType {
+            var member = 0
+            while member < length(ty.children) {
+                collect_pack_layouts(child(ty, member), names, layouts, 0)
+                member = member + 1
+            }
+        } else {
+            collect_pack_layouts(ty, names, layouts, 0)
+        }
+        index = index + 1
+    }
+    layouts
+}
+
+fn pack_proof_layout_type(index Int) Text {
+    concat("$packlayout#", std.int.to_text(index))
+}
