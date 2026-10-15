@@ -1,18 +1,23 @@
 // Select a fresh allocation's iteration, not the whole loop as one execution.
-// Both the unique allocation binding and publication must belong to this body.
+// Both the unique allocation binding and publication must belong to this epoch.
+// A condition block is a separate epoch, including its final false evaluation.
 // A header created outside a repeated publication never gains epoch isolation.
 fn draft_epochs(env Environment, value Expr, candidate Expr, root Int, bodies List[Expr], depth Int) Bool {
     if depth >= 256 {
         return false
     }
     if value.kind == ExprKind.While && length(value.children) == 2 {
-        let body = get(value.children, 1)
-        let definitions = new[Expr]()
-        if !draft_definitions(body, root, definitions, 0) {
-            return false
-        }
-        if length(definitions) == 1 && draft_occurrences(env, body, candidate, 0) == 1 {
-            push(bodies, body)
+        var part = 0
+        while part < length(value.children) {
+            let epoch = get(value.children, part)
+            let definitions = new[Expr]()
+            if !draft_definitions(epoch, root, definitions, 0) {
+                return false
+            }
+            if length(definitions) == 1 && draft_occurrences(env, epoch, candidate, 0) == 1 {
+                push(bodies, epoch)
+            }
+            part = part + 1
         }
     }
     if value.kind == ExprKind.Block && value.text == "checked list" {

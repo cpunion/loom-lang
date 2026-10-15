@@ -55,3 +55,61 @@ test fn signature_queries_keep_checked_annotations_when_the_owners_body_is_inval
     let invalid_bindings = query_bindings(input(invalid))
     only_definition(independent_found(invalid_bindings, invalid, "Item, callback"), declared, declared + 4)
 }
+
+test fn generic_header_queries_keep_lexical_types_without_checking_the_body() {
+    let text = """
+        record Item {
+            count Int
+        }
+        record Box[T] {
+            value T
+        }
+        fn broken[Item](value Box[Item], callback fn(Item) Item) Item {
+            true
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let before = length(bindings.symbols)
+    assert match analyze(input(text), false) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    let parameter = query_offset(text, "Item](value")
+    let sites = ["Item], callback", "Item) Item", "Item) Item {", "Item {\n    true"]
+    var index = 0
+    while index < length(sites) {
+        let found = independent_found(bindings, text, get(sites, index))
+        only_type(found, "Item")
+        only_definition(found, parameter, parameter + 4)
+        index = index + 1
+    }
+    only_type(independent_found(bindings, text, "value Box"), "app.Box[Item]")
+    only_type(independent_found(bindings, text, "callback fn"), "fn(Item) Item")
+    let box = query_offset(text, "Box[T]")
+    only_definition(independent_found(bindings, text, "Box[Item]"), box, box + 3)
+    assert match check_query(bindings, 0, query_offset(text, "Item], callback")) {
+        Result.Ok(header) => length(header.headers) == 1 && length(header.functions) == 0
+        Result.Err(_) => false
+    }
+    assert match inspect_independent(bindings, 0, query_offset(text, "true")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert length(bindings.symbols) == before
+}
+
+test fn generic_header_queries_reject_invalid_signature_requirements() {
+    let text = """
+        concept Marker {}
+        record Box[T Marker] {
+            value T
+        }
+        fn wrong[T](value Box[T]) {
+        }
+        """
+    let bindings = query_bindings(input(text))
+    assert match check_query(bindings, 0, query_offset(text, "value Box")) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}

@@ -1,6 +1,7 @@
 import std.bytes.new
 import std.bytes.push
 import std.bytes.to_text
+import std.bytes.length
 
 intrinsic fn text_len(value Text) Int
 
@@ -20,7 +21,8 @@ pub fn byte(value Text, index Int) Int {
 }
 
 // An isolated mutable copy of the Text's UTF-8 encoding.
-pub fn to_bytes(value Text) Bytes {
+pub fn to_bytes(value Text) Bytes
+ensures std.bytes.length(result) == length(value) {
     let output = new()
     var index = 0
     while index < length(value) {

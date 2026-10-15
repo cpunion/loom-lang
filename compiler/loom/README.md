@@ -302,7 +302,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | `type_name(analysis, ty)` | Display name for a type in that analysis |
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
-| `inspect_independent(bindings, file, offset)` | Isolated inspection of a concrete function and its checked dependencies; no executable program |
+| `inspect_independent(bindings, file, offset)` | Checked declaration headers or an isolated concrete function closure; no executable program |
 | `complete_names(bindings, file, offset)` | `Option[Completion]`: visible names and declaration signatures, using binding only |
 | `complete_at(bindings, file, offset)` | Names, qualified paths or receiver-type member hints, with a UTF-8 replacement span |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
@@ -424,10 +424,15 @@ identity return no answer. Match bindings currently have hover types only.
 
 `inspect_independent` retains the complete bindings and starts a fresh checker
 session; it does not remove erroneous declarations or reuse a failed check's
-tables. Global declarations and generic/comptime templates must still pass.
-Only a containing non-generic, non-comptime-parameter function can be selected.
-Its concrete dependency closure, contracts and resource flows must pass before
-any facts are returned. Normal `analyze`, `check` and `build` remain whole-package
+tables. Signature queries use original checked declaration headers, including
+generic functions and impl/method parameters with lexical names. An erroneous
+body supplies no executable or proof evidence; a concrete instance cannot replace
+the declaration's abstract type identities. Static parameters and unexpanded
+packs retain their separate checked query paths.
+Body queries still require global declarations and generic/comptime templates to
+pass. Only a containing non-generic, non-comptime-parameter function can be
+selected; its dependency closure, contracts and resource flows must pass before
+body facts are returned. Normal `analyze`, `check` and `build` remain whole-package
 checks. Query tables are a separate `CheckedQuery`, not a partial `typed.Program`.
 
 `Type.constraint` is predicate-template metadata, not executable IR: `self`

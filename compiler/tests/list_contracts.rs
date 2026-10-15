@@ -30,6 +30,7 @@ fn changed_byte_proofs_do_not_reuse_cached_postconditions() {
         program.replace("result <= 255", "result <= 254"),
         program.replace("old(length(value)) + 1", "old(length(value)) + 2"),
         program.replace("set(value, index, byte)", "set(value, index, 0)"),
+        program.replace("to_bytes(value)", "to_bytes(concat(value, \"x\"))"),
     ] {
         assert_ne!(changed, program);
         fs::write(&source, changed).unwrap();

@@ -78,10 +78,12 @@ it supplies neither build success nor proof evidence.
 Runtime parameter declarations and match payload/whole bindings retain exact
 checked definition locations. Implicit contract `result` uses a zero-width
 return-annotation anchor, distinct from named function/type declarations.
-Parameter declarations and nested signature annotations in fully resolved
-ordinary functions and concrete non-generic `impl` methods can also be inspected
-when their owner's body is invalid, using query-only checked declaration headers.
-Generic/static declarations do not borrow a generated instance's types.
+Parameter declarations and nested signature annotations in ordinary and generic
+functions and `impl` methods can also be inspected when their owner's body is
+invalid, using query-only checked declaration headers. Generic headers retain
+abstract types and lexical parameter names, including independent impl/method
+parameters; they never borrow a generated instance's concrete identity. Static
+inputs and unexpanded packs still need their existing checked query paths.
 Body queries, template legality and build/proof checks remain separate.
 Renames include contracts, preserve shadowing and
 recheck the virtual package. Runtime-local renames also cover selected compile-time
@@ -528,8 +530,10 @@ invariant-preserving footprint, including fault-only exits. The
 readers across preserving updates, suspension and cleanup without copying.
 The [raw update example](../../compiler/examples/record_refinement/raw_updates.loom)
 uses those same proofs through raw header aliases and checked failure.
-Loop-body publication now admits a fresh immutable allocation per iteration,
-including nested loops, early exits, cleanup and unrelated waits. Ephemeral
+Loop-body and condition-block publication now admit a fresh immutable allocation
+per evaluation, including nested loops, early exits, cleanup and unrelated waits.
+The final false condition still executes once, including publication and lexical
+cleanup; it is not conflated with the preceding body. Ephemeral
 origin analysis rejects raw aliases retained in outer bindings; typed
 publications may escape without conflating later iteration headers. See the
 [iteration example](../../compiler/examples/record_refinement/epochs.loom).
@@ -555,8 +559,8 @@ fresh replacement does not inherit the old slot's identity. The
 [stable cursor](../../compiler/examples/record_refinement/stable.loom) covers
 record updates, mutual aliases, cleanup, CTFE and suspension without runtime
 copies or identity monitors.
-Publication in loop conditions, repeated publication of an outer allocation,
-changing loop-carried header identities and general nested graph
+Repeated publication of an outer allocation, changing loop-carried header
+identities and general nested graph
 publication remain open. Delayed mutable reads/writes, conditional aliases,
 opaque aggregate paths and captured mutating callbacks without a proved header
 identity remain conservative.
@@ -807,8 +811,10 @@ replacement and append, helper calls, scalar entry snapshots and bounded copy
 loops compose with the same alias invalidation and fault/cleanup rules as Lists.
 Normal byte reads and writes establish 0–255; hypothetical reads still prove
 their own bounds. Checked byte blobs have exact lengths and at most 64 initial
-cell observations. This does not add UTF-8/content conversion laws or complete
-constrained shared-graph publication. JSON range feeding now uses an ordinary
+cell observations. `std.text.to_bytes` now declares its byte-length guarantee,
+proved from its ordinary source copy loop with the same rules and reusable by
+callers, including shared-worker builds. General UTF-8/content conversion laws
+and constrained shared-graph publication remain open. JSON range feeding uses an ordinary
 `requires` boundary instead of an internal assertion workaround.
 List lengths belong to the current proof state: exact aliases share extent
 updates, while unknown overlap and opaque calls forget current-length facts.

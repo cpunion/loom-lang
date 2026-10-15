@@ -43,6 +43,21 @@ fn inspect_declaration_references(view CheckedQuery, report Inspection, target Q
     }
 }
 
+fn analysis_query_inputs(analysis Analysis) BuildInputs {
+    let inputs = with_proof_backend(build_inputs(no_input_reader, analysis.options), analysis.proof_backend)
+    var index = 0
+    while index < length(analysis.inputs) {
+        push(inputs.files, get(analysis.inputs, index))
+        index = index + 1
+    }
+    index = 0
+    while index < length(analysis.targets) {
+        push(inputs.targets, get(analysis.targets, index))
+        index = index + 1
+    }
+    inputs
+}
+
 // A successful analysis lazily records erased bindings per checked scope. Readers
 // replay the analysis's observed input snapshots, never fresh filesystem data.
 // Ordinary body queries and ordinary compilation do not run this extra check.
@@ -88,17 +103,7 @@ fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset
     if !possible {
         return Option.None
     }
-    let inputs = with_proof_backend(build_inputs(no_input_reader, analysis.options), analysis.proof_backend)
-    index = 0
-    while index < length(analysis.inputs) {
-        push(inputs.files, get(analysis.inputs, index))
-        index = index + 1
-    }
-    index = 0
-    while index < length(analysis.targets) {
-        push(inputs.targets, get(analysis.targets, index))
-        index = index + 1
-    }
+    let inputs = analysis_query_inputs(analysis)
     // A successful analysis already checked unrelated bodies. Reuse the query
     // checker for an ordinary source function's closure; static/generic owners
     // still need application instances to account for their selected branches.
