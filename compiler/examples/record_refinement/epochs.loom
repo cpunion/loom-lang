@@ -31,6 +31,72 @@ fn loop_draft_scope() Bool {
     values_sum(values[0]) == 12 && values_sum(values[1]) == 8 && values_sum(values[2]) == 10
 }
 
+fn build_condition_epochs(count Int, events List[Int]) List[PositiveValues] {
+    let output List[PositiveValues] = []
+    var index = 0
+    while {
+        let draft = [1, 2]
+        defer {
+            draft[0] = 4
+            push(events, values_sum(draft))
+        }
+        let published = PositiveValues(draft)
+        draft[1] = 3
+        match published {
+            Result.Ok(value) => push(output, value)
+            Result.Err(_) => {
+                assert false
+            }
+        }
+        index < count
+    } {
+        index = index + 1
+    }
+    output
+}
+
+fn condition_draft_scope() Bool {
+    let events List[Int] = []
+    let values = build_condition_epochs(2, events)
+    // Conditions execute once more than bodies, including lexical cleanup.
+    assert length(values) == 3 && length(events) == 3
+    assert events[0] == 7 && events[1] == 7 && events[2] == 7
+    replace_positive(values[0], 0, PositiveElement(8))
+    assert values_sum(values[0]) == 11 && values_sum(values[1]) == 7 && values_sum(values[2]) == 7
+    let final = build_condition_epochs(0, events)
+    length(final) == 1 && length(events) == 4 && events[3] == 7
+}
+
+test fn condition_headers_are_fresh_even_on_the_final_false_evaluation() {
+    assert condition_draft_scope()
+    assert comptime {
+        condition_draft_scope()
+    }
+}
+
+test async fn condition_publications_survive_suspension_and_continue() {
+    let output List[PositiveValues] = []
+    var index = 0
+    while {
+        let draft = [1, 2]
+        sleep_ms(1).await
+        let published = PositiveValues(draft)
+        sleep_ms(1).await
+        draft[1] = 3
+        match published {
+            Result.Ok(value) => push(output, value)
+            Result.Err(_) => {
+                assert false
+            }
+        }
+        index < 2
+    } {
+        index = index + 1
+        continue
+    }
+    assert length(output) == 3 && values_sum(output[0]) == 4 && values_sum(output[2]) == 4
+}
+
 test fn iteration_headers_remain_distinct_during_compile_time_execution() {
     assert comptime {
         loop_draft_scope()

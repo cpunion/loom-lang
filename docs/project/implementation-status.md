@@ -530,8 +530,10 @@ invariant-preserving footprint, including fault-only exits. The
 readers across preserving updates, suspension and cleanup without copying.
 The [raw update example](../../compiler/examples/record_refinement/raw_updates.loom)
 uses those same proofs through raw header aliases and checked failure.
-Loop-body publication now admits a fresh immutable allocation per iteration,
-including nested loops, early exits, cleanup and unrelated waits. Ephemeral
+Loop-body and condition-block publication now admit a fresh immutable allocation
+per evaluation, including nested loops, early exits, cleanup and unrelated waits.
+The final false condition still executes once, including publication and lexical
+cleanup; it is not conflated with the preceding body. Ephemeral
 origin analysis rejects raw aliases retained in outer bindings; typed
 publications may escape without conflating later iteration headers. See the
 [iteration example](../../compiler/examples/record_refinement/epochs.loom).
@@ -557,8 +559,8 @@ fresh replacement does not inherit the old slot's identity. The
 [stable cursor](../../compiler/examples/record_refinement/stable.loom) covers
 record updates, mutual aliases, cleanup, CTFE and suspension without runtime
 copies or identity monitors.
-Publication in loop conditions, repeated publication of an outer allocation,
-changing loop-carried header identities and general nested graph
+Repeated publication of an outer allocation, changing loop-carried header
+identities and general nested graph
 publication remain open. Delayed mutable reads/writes, conditional aliases,
 opaque aggregate paths and captured mutating callbacks without a proved header
 identity remain conservative.
