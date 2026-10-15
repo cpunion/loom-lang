@@ -1,0 +1,40 @@
+import std.encoding.hex.decode
+import std.bytes.length
+import std.bytes.get
+import std.text.length
+import std.text.slice
+
+fn byte_literal_outcomes(proof Verification, expr Expr, state State) Result[List[Outcome], Text] {
+    let size = std.text.length(expr.text)
+    if size % 2 != 0 {
+        return Result.Err("invalid checked byte literal")
+    }
+    let prefix = if size < 128 {
+        size
+    } else {
+        128
+    }
+    let bytes = match std.encoding.hex.decode(std.text.slice(expr.text, 0, prefix)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("invalid checked byte literal")
+        }
+    }
+    let value = record_parameter_value(proof, expr.ty, 0)
+    let identity = match value {
+        Value.List(identity) => identity
+        _ => {
+            return Result.Err("byte literal proof requires sequence storage")
+        }
+    }
+    var current = with_extent(identity, constant(integer(size / 2)), true, state)
+    var index = 0
+    // Reuse the ordinary bounded cell table; a large blob is not a new proof
+    // budget or a reason to duplicate all of its contents in the proof state.
+    while index < std.bytes.length(bytes) && index < 64 {
+        current = remember_element(identity, constant(integer(index)),
+            Value.Number(constant(integer(std.bytes.get(bytes, index)))), current)?
+        index = index + 1
+    }
+    Result.Ok(outcomes(current, value))
+}

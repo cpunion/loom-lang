@@ -1,0 +1,76 @@
+import std.bytes.new
+import std.bytes.length
+import std.bytes.get
+import std.bytes.set
+import std.bytes.push
+
+fn count(value Bytes) Int
+ensures result >= 0 && result == length(value)
+{
+    length(value)
+}
+
+fn read(value Bytes, index Int) Int
+ensures result >= 0 && result <= 255 && result == get(value, index)
+{
+    get(value, index)
+}
+
+fn write(value Bytes, index Int, byte Int)
+requires byte >= 0 && byte <= 255
+ensures get(value, index) == byte && length(value) == old(length(value))
+{
+    set(value, index, byte)
+}
+
+fn append(value Bytes, byte Int)
+requires byte >= 0 && byte <= 255
+ensures length(value) == old(length(value)) + 1
+{
+    let alias = value
+    push(alias, byte)
+}
+
+fn copy(value Bytes) Bytes
+ensures length(result) == old(length(value)) && length(value) == old(length(value))
+{
+    let output = new()
+    var index = 0
+    while index < length(value) {
+        push(output, get(value, index))
+        index = index + 1
+    }
+    output
+}
+
+fn literal() Int
+ensures result == 255
+{
+    let value = comptime {
+        let output = new()
+        push(output, 0)
+        push(output, 255)
+        output
+    }
+    get(value, 1)
+}
+
+fn exercise() {
+    let value = new()
+    let alias = value
+    append(alias, 7)
+    append(value, 255)
+    assert count(value) == 2 && read(alias, 1) == 255
+    let copied = copy(value)
+    write(alias, 0, 9)
+    assert read(value, 0) == 9 && read(copied, 0) == 7
+    assert literal() == 255
+}
+
+fn main() {
+    exercise()
+}
+
+test fn shared_byte_storage_has_proved_lengths_and_checked_cell_updates() {
+    exercise()
+}

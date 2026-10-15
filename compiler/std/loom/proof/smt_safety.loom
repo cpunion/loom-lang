@@ -77,7 +77,7 @@ fn solver_defined(proof ProofQuery, expr Expr, state State, depth Int) Result[Bo
                 pure(get(expr.children, 1), state)?, pure(get(expr.children, 2), state)?)?, state)
         return Result.Ok(true)
     }
-    if expr.kind == ExprKind.Intrinsic && expr.text == "list_get" {
+    if list_read_expression(expr) {
         let size = list_value_extent(pure(get(expr.children, 0), state)?, state)?
         let index = list_value_index(pure(get(expr.children, 1), state)?)?
         solver_fact(proof, Predicate.Compare(">=", index), state)

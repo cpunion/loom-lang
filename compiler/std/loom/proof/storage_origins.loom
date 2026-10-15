@@ -101,8 +101,9 @@ fn storage_origin(program Program, function Function, value Expr, locals List[Bo
     false
 }
 
-fn storage_operation_origin(program Program, name Text, value Expr, inputs List[Bool],
+fn storage_operation_origin(program Program, primitive Text, value Expr, inputs List[Bool],
     closed Bool, effects List[Bool]) Bool {
+    let name = sequence_operation(primitive)
     let stored = list_stored_index(name)
     let private_target = stored >= 0 && stored < length(inputs) && (closed || get(inputs, 0))
     if !private_target && !storage_operation(program, name, value.ty, value.children, StorageRequirement.Local) {

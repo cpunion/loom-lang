@@ -83,7 +83,7 @@ fn main() {{
             );
             let output = common::run_tasks(&artifact);
             assert!(!output.status.success());
-            assert!(String::from_utf8_lossy(&output.stderr).contains("assertion failed"));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("precondition failed"));
         }
     }
 }

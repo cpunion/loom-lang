@@ -83,7 +83,9 @@ sets and the current output chunk, not a complete serialized document.
 Constrained Lists retain their constrained handle and starting length rather
 than exposing a writable unconstrained view; synchronize mutations while encoding.
 The async writer uses the same cursor. The source Stream adapter also reads
-LF-framed document sequences; other framing and sequence writers remain open.
+LF-framed document sequences. `write_lines` streams typed or Value sequences
+back through the same bounded encoder and checked async sink. Other document
+framing remains open.
 
 `Encoder` implements `std.iter.Iterator` with `Item = Result[Bytes, WriteError]`,
 so normal iterator consumers and `std.stream.from_iter` can use the same cursor.

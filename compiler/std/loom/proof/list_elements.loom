@@ -1,5 +1,5 @@
 fn list_read_expression(value Expr) Bool {
-    value.kind == ExprKind.Intrinsic && value.text == "list_get" && length(value.children) == 2
+    value.kind == ExprKind.Intrinsic && sequence_operation(value.text) == "list_get" && length(value.children) == 2
 }
 
 fn contains_list_read(value Expr) Bool {

@@ -1,7 +1,7 @@
 // A List value denotes a shared handle. Its current length belongs to the
 // execution state, not to an immutable scalar snapshot or a source variable.
 fn list_length_expression(value Expr) Bool {
-    value.kind == ExprKind.Intrinsic && value.text == "list_len" &&
+    value.kind == ExprKind.Intrinsic && sequence_operation(value.text) == "list_len" &&
     value.ty == 1 && length(value.children) == 1
 }
 
@@ -316,7 +316,8 @@ enum StorageRequirement {
     Local
 }
 
-fn storage_operation(program Program, name Text, ty Int, arguments List[Expr], requirement StorageRequirement) Bool {
+fn storage_operation(program Program, primitive Text, ty Int, arguments List[Expr], requirement StorageRequirement) Bool {
+    let name = sequence_operation(primitive)
     let modeled = intrinsic_operation(name, ty, length(arguments)).arity >= 0
     if requirement == StorageRequirement.Local {
         return modeled || local_storage_operation(program, name, arguments)

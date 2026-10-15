@@ -2813,6 +2813,16 @@ Text equality and concrete UTF-8 contents compose through the same SMT byte
 sequence, not a code-point or signed-byte model. See the
 [byte contracts](examples/smt_contracts/text_bytes.loom).
 
+Mutable `Bytes` use the same versioned extent and cell algebra as Lists, not
+immutable Text equations. Exact aliases share writes; possible aliases,
+unknown effects and suspension invalidate observations conservatively. Pure
+length/get helpers, `old` observations, append/replacement and bounded copy loops
+compose without a separate byte-contract engine. Normal byte accesses establish
+0–255, but hypothetical reads must prove their index bounds independently.
+Compile-time byte blobs retain their exact extent and the ordinary bounded
+initial cell table. UTF-8 conversion laws and constrained shared-graph publication
+are not implied. See [mutable byte contracts](examples/byte_contracts/main.loom).
+
 Signed 64-bit `~`, `&`, `|`, `^`, `<<` and `>>` compose in the same proof model.
 Nonnegative mask bounds and XOR factor parity prove locally; other supported
 relationships use exact word operations in SMT, with arithmetic right shift.

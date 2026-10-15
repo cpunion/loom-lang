@@ -1,0 +1,214 @@
+fn byte_sequence_contract(text Text, valid Bool) {
+    let files = source_files(text)
+    push(files, source_file("std.bytes", """
+        intrinsic fn bytes_new() Bytes
+        intrinsic fn bytes_len(value Bytes) Int
+        intrinsic fn bytes_get(value Bytes, index Int) Int
+        intrinsic fn bytes_set(value Bytes, index Int, byte Int)
+        intrinsic fn bytes_push(value Bytes, byte Int)
+        pub fn new() Bytes {
+            bytes_new()
+        }
+        pub fn length(value Bytes) Int {
+            bytes_len(value)
+        }
+        pub fn get(value Bytes, index Int) Int {
+            bytes_get(value, index)
+        }
+        pub fn set(value Bytes, index Int, byte Int) {
+            bytes_set(value, index, byte)
+        }
+        pub fn push(value Bytes, byte Int) {
+            bytes_push(value, byte)
+        }
+        """, true))
+    match checked(files) {
+        Result.Ok(_) => {
+            assert valid
+        }
+        Result.Err(failed) => {
+            if valid {
+                show_failure(fixture_project(files), failed)
+            }
+            assert !valid
+        }
+    }
+}
+
+test fn byte_sequence_extents_compose_through_helpers_aliases_and_old() {
+    byte_sequence_contract("""
+        import std.bytes.new
+        import std.bytes.length
+        import std.bytes.push
+        import std.bytes.get
+        fn count(value Bytes) Int
+        ensures result == length(value) && result >= 0 {
+            length(value)
+        }
+        fn append(value Bytes, byte Int)
+        ensures length(value) == old(count(value)) + 1 {
+            let alias = value
+            push(alias, byte)
+        }
+        fn fresh(value Bytes) Int
+        ensures result == old(length(value)) {
+            let other = new()
+            push(other, 7)
+            count(value)
+        }
+        fn literal() Int
+        ensures result == 7 {
+            let value = comptime {
+                let output = new()
+                push(output, 7)
+                output
+            }
+            std.bytes.get(value, 0)
+        }
+        """, true)
+    byte_sequence_contract("""
+        import std.bytes.length
+        import std.bytes.push
+        fn overlap(left Bytes, right Bytes) Int
+        ensures result == old(length(left)) {
+            push(right, 1)
+            length(left)
+        }
+        """, false)
+}
+
+test fn byte_sequence_reads_writes_and_ranges_share_index_rules() {
+    byte_sequence_contract("""
+        import std.bytes.length
+        import std.bytes.get
+        import std.bytes.set
+        fn read(value Bytes, index Int) Int
+        ensures result >= 0 && result <= 255 && result == get(value, index) {
+            get(value, index)
+        }
+        fn write(value Bytes, index Int, byte Int)
+        ensures get(value, index) == byte && length(value) == old(length(value)) {
+            set(value, index, byte)
+        }
+        fn separated(value Bytes, first Int, second Int) Int
+        requires first != second
+        ensures result == 7 {
+            set(value, first, 7)
+            set(value, second, 9)
+            get(value, first)
+        }
+        fn snapshot(value Bytes) Int
+        requires get(value, 0) == 7
+        ensures result == old(get(value, 0)) && get(value, 0) == 9 {
+            let saved = get(value, 0)
+            set(value, 0, 9)
+            saved
+        }
+        """, true)
+    byte_sequence_contract("""
+        import std.bytes.get
+        import std.bytes.set
+        fn overlap(left Bytes, right Bytes) Int
+        ensures result == 7 {
+            set(left, 0, 7)
+            set(right, 0, 9)
+            get(left, 0)
+        }
+        """, false)
+    byte_sequence_contract("""
+        import std.bytes.get
+        fn too_narrow(value Bytes, index Int) Int
+        ensures result <= 254 {
+            get(value, index)
+        }
+        """, false)
+}
+
+test fn byte_sequence_cleanup_cannot_leave_stale_postcondition_facts() {
+    byte_sequence_contract("""
+        import std.bytes.get
+        import std.bytes.set
+        fn cleanup(value Bytes) Int
+        ensures result == 7 && get(value, 0) == 9 {
+            set(value, 0, 7)
+            defer {
+                set(value, 0, 9)
+            }
+            get(value, 0)
+        }
+        """, true)
+    byte_sequence_contract("""
+        import std.bytes.get
+        import std.bytes.set
+        fn stale(value Bytes) Int
+        ensures get(value, 0) == 7 {
+            set(value, 0, 7)
+            defer {
+                set(value, 0, 9)
+            }
+            get(value, 0)
+        }
+        """, false)
+}
+
+test fn byte_sequence_hypothetical_reads_do_not_assume_their_own_bounds() {
+    byte_sequence_contract("""
+        import std.bytes.length
+        import std.bytes.get
+        fn read(value Bytes, index Int) Bool
+        requires index >= 0 && index < length(value)
+        ensures result && get(value, index) == old(get(value, index)) {
+            let saved = get(value, index)
+            saved >= 0 && saved <= 255
+        }
+        """, true)
+    byte_sequence_contract("""
+        import std.bytes.get
+        fn unsafe(value Bytes, index Int) Bool
+        ensures get(value, index) == get(value, index) {
+            true
+        }
+        """, false)
+    byte_sequence_contract("""
+        import std.bytes.length
+        import std.bytes.get
+        fn unsafe(value Bytes, index Int) Bool
+        requires index >= 0 && index <= length(value)
+        ensures get(value, index) == get(value, index) {
+            true
+        }
+        """, false)
+}
+
+test fn byte_sequence_copy_loops_preserve_lengths_without_assuming_alias_separation() {
+    byte_sequence_contract("""
+        import std.bytes.new
+        import std.bytes.length
+        import std.bytes.get
+        import std.bytes.push
+        fn copy(value Bytes) Bytes
+        ensures length(result) == old(length(value)) && length(value) == old(length(value)) {
+            let output = new()
+            var index = 0
+            while index < length(value) {
+                push(output, get(value, index))
+                index = index + 1
+            }
+            output
+        }
+        """, true)
+    byte_sequence_contract("""
+        import std.bytes.length
+        import std.bytes.push
+        fn wrong(value Bytes, count Int) Int
+        requires count >= 0
+        ensures result == old(length(value)) {
+            var index = 0
+            while index < count {
+                push(value, 1)
+                index = index + 1
+            }
+            length(value)
+        }
+        """, false)
+}

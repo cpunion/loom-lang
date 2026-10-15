@@ -28,7 +28,8 @@ fn unsupported_operation() ProofOperation {
     operation_shape(-1, OperandFlow.Eager, true, false)
 }
 
-fn intrinsic_operation(name Text, ty Int, arity Int) ProofOperation {
+fn intrinsic_operation(primitive Text, ty Int, arity Int) ProofOperation {
+    let name = sequence_operation(primitive)
     if (name == "proof_enum_tag" && ty == 1 && arity == 1) ||
     (name == "proof_enum_payload" && arity == 3) {
         return operation_shape(arity, OperandFlow.Eager, false, true)
@@ -141,6 +142,15 @@ fn runtime_proof_operation(program Program, function Function, value Expr) Bool 
         return false
     }
     let name = function.runtime_name
+    if name == "bytes_len" || name == "bytes_get" {
+        let count = if name == "bytes_len" {
+            1
+        } else {
+            2
+        }
+        return function.result == 1 && length(function.params) == count && get(function.params, 0) == 4 &&
+        (count == 1 || get(function.params, 1) == 1)
+    }
     if name == "text_len" {
         return function.result == 1 && length(function.params) == 1 && get(function.params, 0) == 3
     }

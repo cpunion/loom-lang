@@ -1,6 +1,7 @@
 // Interpret already evaluated operands. Structural traversal, branch guards and
 // eager evaluation belong to the composition layer, not to individual theories.
-fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Value, Text] {
+fn intrinsic_value(primitive Text, ty Int, inputs List[Value], state State) Result[Value, Text] {
+    let name = sequence_operation(primitive)
     if name == "proof_enum_tag" || name == "proof_enum_payload" {
         return enum_projection(name, ty, inputs)
     }
@@ -88,7 +89,7 @@ fn intrinsic_defined(expr Expr, state State) Result[Bool, Text] {
     if count_expression(expr) {
         return Result.Ok(true)
     }
-    if expr.text == "list_get" {
+    if list_read_expression(expr) {
         return element_bounds(expr, state)
     }
     if expr.text == "text_byte" {
@@ -119,7 +120,7 @@ fn intrinsic_defined(expr Expr, state State) Result[Bool, Text] {
         }
         return Result.Ok(true)
     }
-    if expr.text == "text_len" || expr.text == "list_len" {
+    if expr.text == "text_len" || list_length_expression(expr) {
         return Result.Ok(true)
     }
     Result.Err("unsupported or uncaptured intrinsic definedness")

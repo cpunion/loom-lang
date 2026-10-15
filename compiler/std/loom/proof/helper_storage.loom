@@ -1,7 +1,8 @@
 // A finite checked footprint retains private storage across source helpers.
 // No names, unverified purity annotations or external implementation guesses
 // confer locality. Unknown calls, captures and untracked payload stores fail shut.
-fn local_storage_operation(program Program, name Text, arguments List[Expr]) Bool {
+fn local_storage_operation(program Program, primitive Text, arguments List[Expr]) Bool {
+    let name = sequence_operation(primitive)
     if name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" || name == "list_take" {
         return true
     }
@@ -77,7 +78,7 @@ fn private_factory(program Program, function Function) Bool {
 // publication separately; callers still validate purity and element constraints.
 pub fn fresh_list_factory(program Program, target Int) Bool {
     target >= 0 && target < length(program.functions) &&
-    proof_list_type(program, get(program.functions, target).result) &&
+    proof_sequence_type(program, get(program.functions, target).result) &&
     private_factory(program, get(program.functions, target))
 }
 
