@@ -302,3 +302,41 @@ test fn dependent_pack_layouts_do_not_hide_ambiguity_or_invalid_nested_data() {
         }
         """))
 }
+
+test fn symbolic_words_cannot_supply_one_fixed_type_parameter() {
+    let cases = [
+        ("(Ts...)", "(T,)", "((Bs...),)"),
+        ("fn(Ts...) Int", "fn(T) Int", "(fn(Bs...) Int,)"),
+    ]
+    var index = 0
+    while index < length(cases) {
+        let sample = get(cases, index)
+        let template = concat(composed_bounds_header(), """
+            impl[Ts...] Value for Layout {
+                fn value(self Self) Int {
+                    1
+                }
+            }
+            fn symbolic[Bs...](values Input) Int
+            ensures result >= 0 {
+                bounded(values...)
+            }
+            """)
+        let source = std.text.join(std.text.split(std.text.join(std.text.split(template,
+                        "Layout"), sample.0), "Input"), sample.2)
+        let cache = definition_cache()
+        assert match cached_source(cache, source) {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        }
+        let restored = restored_definition_cache(cache)
+        let fixed = std.text.join(std.text.split(std.text.join(std.text.split(source,
+                        "impl[Ts...]"), "impl[T]"), sample.0), sample.1)
+        rejects(fixed)
+        assert match cached_source(restored, fixed) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}

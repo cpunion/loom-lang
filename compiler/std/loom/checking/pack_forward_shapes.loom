@@ -103,6 +103,12 @@ fn pack_forward_search(parameters List[Node], sources List[Node], work List[Pack
             return
         }
         var value = pack_forward_schema(pair.actual)
+        // An unknown word may be empty or contain several types. A fixed
+        // parameter cannot consume it as one type; a tuple containing that
+        // word is still one type and remains a valid fixed binding.
+        if get(parameters, parameter).kind != NodeKind.TypePack && value.kind == NodeKind.Spread {
+            return
+        }
         if get(parameters, parameter).kind == NodeKind.TypePack {
             let source = pack_schema_parameter(value)
             if !pair.element || source < 0 || get(sources, source).kind != NodeKind.TypePack {
