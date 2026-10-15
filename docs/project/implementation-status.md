@@ -82,8 +82,11 @@ Parameter declarations and nested signature annotations in ordinary and generic
 functions and `impl` methods can also be inspected when their owner's body is
 invalid, using query-only checked declaration headers. Generic headers retain
 abstract types and lexical parameter names, including independent impl/method
-parameters; they never borrow a generated instance's concrete identity. Static
-inputs and unexpanded packs still need their existing checked query paths.
+parameters; they never borrow a generated instance's concrete identity. Function
+type-parameter declarations and static value/callback parameter signatures also
+use the original checked header, without evaluating the body or erasing source
+slots. Unexpanded packs and dependent compile-time type values remain on their
+existing conservative query paths.
 Body queries, template legality and build/proof checks remain separate.
 Renames include contracts, preserve shadowing and
 recheck the virtual package. Runtime-local renames also cover selected compile-time

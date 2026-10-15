@@ -75,6 +75,9 @@ test fn generic_header_queries_keep_lexical_types_without_checking_the_body() {
         Result.Err(_) => true
     }
     let parameter = query_offset(text, "Item](value")
+    let declared_parameter = independent_found(bindings, text, "Item](value")
+    only_type(declared_parameter, "Item")
+    only_definition(declared_parameter, parameter, parameter + 4)
     let sites = ["Item], callback", "Item) Item", "Item) Item {", "Item {\n    true"]
     var index = 0
     while index < length(sites) {
@@ -109,6 +112,61 @@ test fn generic_header_queries_reject_invalid_signature_requirements() {
         """
     let bindings = query_bindings(input(text))
     assert match check_query(bindings, 0, query_offset(text, "value Box")) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
+
+test fn static_headers_recover_source_slots_without_evaluating_or_erasing_them() {
+    let text = """
+        record Item {
+            count Int
+        }
+        fn broken[T](comptime enabled Bool, value T, comptime callback fn(T) T) T {
+            true
+        }
+        """
+    let bindings = query_bindings(input(text))
+    assert match analyze(input(text), false) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    let declared = query_offset(text, "T](comptime")
+    let sites = ["T](comptime", "T, comptime", "T) T", "T) T) T", "T {\n    true"]
+    var index = 0
+    while index < length(sites) {
+        let found = independent_found(bindings, text, get(sites, index))
+        only_type(found, "T")
+        only_definition(found, declared, declared + 1)
+        index = index + 1
+    }
+    let enabled = independent_found(bindings, text, "enabled Bool")
+    only_type(enabled, "Bool")
+    let enabled_offset = query_offset(text, "enabled Bool")
+    only_definition(enabled, enabled_offset, enabled_offset + 7)
+    let callback = independent_found(bindings, text, "callback fn")
+    only_type(callback, "fn(T) T")
+    let callback_offset = query_offset(text, "callback fn")
+    only_definition(callback, callback_offset, callback_offset + 8)
+    assert match check_query(bindings, 0, callback_offset) {
+        Result.Ok(header) => length(header.headers) == 1 && length(header.functions) == 0 &&
+        length(get(header.headers, 0).params) == 3
+        Result.Err(_) => false
+    }
+    assert match inspect_independent(bindings, 0, query_offset(text, "true")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
+
+test fn static_header_queries_do_not_relax_parameter_type_legality() {
+    let text = """
+        fn wrong(comptime values List[Int]) Int {
+            0
+        }
+        """
+    let bindings = query_bindings(input(text))
+    assert match check_query(bindings, 0, query_offset(text, "values List")) {
         Result.Ok(_) => false
         Result.Err(_) => true
     }

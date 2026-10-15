@@ -65,7 +65,7 @@ fn inspect_source_header(analysis Analysis, file Int, offset Int) Option[Inspect
             var group = 0
             while group < length(item.node.children) {
                 let node = get(item.node.children, group)
-                if (node.kind == NodeKind.Parameters || node.kind == NodeKind.ReturnType) && inside(node.span, offset) {
+                if (node.kind == NodeKind.TypeParameters || node.kind == NodeKind.Parameters || node.kind == NodeKind.ReturnType) && inside(node.span, offset) {
                     return inspect_independent(analysis.bindings, file, offset, analysis_query_inputs(analysis))
                 }
                 group = group + 1
@@ -172,11 +172,24 @@ fn inspect_header_type(analysis CheckedQuery, report Inspection, target Query,
 }
 
 fn inspect_function_header(analysis CheckedQuery, report Inspection, function Function, target Query) {
-    inspect_signature_header(analysis, report, function.symbol, function.params, function.result, target)
+    inspect_signature_header(analysis, report, function.symbol, function.params, function.result, target, false)
 }
 
 fn inspect_signature_header(analysis CheckedQuery, report Inspection, symbol_id Int,
-    params List[Int], output Int, target Query) {
+    params List[Int], output Int, target Query, original Bool) {
+    if original && target.node.kind == NodeKind.Name {
+        let parameters = header_parameters(analysis, symbol_id)
+        var index = 0
+        while index < length(parameters) {
+            let parameter = get(parameters, index)
+            if parameter.kind == NodeKind.Name && parameter.value != "Self" &&
+            parameter.value == target.token.value && same_span(parameter.span, target.node.span) {
+                add_type(report, parameter.value)
+                declaration(analysis, report, get(analysis.bindings.symbols, symbol_id).file, parameter)
+            }
+            index = index + 1
+        }
+    }
     if target.node.kind != NodeKind.Type && target.node.kind != NodeKind.Parameter {
         return
     }
@@ -213,7 +226,7 @@ fn inspect_signature_header(analysis CheckedQuery, report Inspection, symbol_id 
             var item = 0
             while item < length(group.children) {
                 let parameter = get(group.children, item)
-                if length(parameter.children) > 0 && !has(parameter, NodeKind.Comptime) {
+                if length(parameter.children) > 0 && (original || !has(parameter, NodeKind.Comptime)) {
                     if target.node.kind == NodeKind.Parameter && same_span(parameter.span, target.node.span) &&
                     target.token.value == parameter.value {
                         add_type(report, header_type_name(analysis, symbol_id, get(params, item)))

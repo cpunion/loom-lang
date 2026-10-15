@@ -41,7 +41,7 @@ test fn specialized_header_parameters_do_not_guess_same_spelled_nominal_definiti
         }
         """
     let analysis = accepted(input(text))
-    let locations = ["Item) Item", "Item {\n    value"]
+    let locations = ["Item](value", "Item) Item", "Item {\n    value"]
     var index = 0
     while index < length(locations) {
         let found = match inspect_at(analysis, 0, query_offset(text, get(locations, index))) {

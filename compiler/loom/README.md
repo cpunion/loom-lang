@@ -116,14 +116,18 @@ Compile-time parameter hover/navigation/references/rename record bindings and
 checked parameter types before erasure during an on-demand check, without changing
 executable IR. Callback navigation points to the parameter declaration rather than
 its specialized target. For rename every occurrence must be accounted for;
-unobserved branches, packs and untracked captures still reject. Public/API rename
-remains open. Completion
+unobserved branches, packs and untracked captures still reject. Checked public
+renames cover loaded module consumers and independent test roots; external
+consumers and unaccounted/generated references still reject. Completion
 can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently
 checked ordinary function can still provide hover and navigation; its own errors
 or a failing dependency suppress the result. Syntax, global declaration, and
-generic/comptime template errors can still block queries.
+generic/comptime template errors can still block body queries. Original checked
+function headers separately retain generic type-parameter declarations and
+static value/callback signatures even when their owner's body is invalid; they
+carry no executable body or proof-success claim.
 Queries retain explicit overlay/source spellings and otherwise resolve physical
 file identity, including macOS path aliases and Windows verbatim paths. A physical
 file with multiple loaded package identities needs an explicit loaded source path.
@@ -427,8 +431,10 @@ session; it does not remove erroneous declarations or reuse a failed check's
 tables. Signature queries use original checked declaration headers, including
 generic functions and impl/method parameters with lexical names. An erroneous
 body supplies no executable or proof evidence; a concrete instance cannot replace
-the declaration's abstract type identities. Static parameters and unexpanded
-packs retain their separate checked query paths.
+the declaration's abstract type identities. Type-parameter declarations and
+static value/callback slots retain their original checked source positions,
+without evaluating the body. Unexpanded packs and dependent compile-time type
+values retain their conservative query paths.
 Body queries still require global declarations and generic/comptime templates to
 pass. Only a containing non-generic, non-comptime-parameter function can be
 selected; its dependency closure, contracts and resource flows must pass before

@@ -150,13 +150,16 @@ impl[Item] Echo for Box[Item] {
         true
     }
 }
+fn static_header[Item](comptime enabled Bool, value Item) Item {
+    true
+}
 fn main() {}
 `;
   const client = await session({ executable, stdRoot }, folder);
   try {
     await client.open(file, source);
     assert.ok((await client.wait(file, 1)).diagnostics.length > 0);
-    for (const [text, version] of [[source, 1], [source.replace('        true', '        self'), 2]]) {
+    for (const [text, version] of [[source, 1], [source.replace('        true', '        self').replace('    true', '    value'), 2]]) {
       if (version === 2) {
         await client.change(file, text, version);
         assert.deepEqual((await client.wait(file, version)).diagnostics, []);
@@ -165,6 +168,10 @@ fn main() {}
       for (const [fragment, declaration, label] of [
         ['Item], value', 'Item] Echo', 'Item'],
         ['Other) Box', 'Other](self Box', 'Other'],
+        ['Other](self Box', 'Other](self Box', 'Other'],
+        ['Item](comptime', 'Item](comptime', 'Item'],
+        ['Item) Item {', 'Item](comptime', 'Item'],
+        ['enabled Bool', 'enabled Bool', 'Bool'],
       ]) {
         const params = { textDocument: { uri }, position: document.positionAt(text.indexOf(fragment)) };
         const hover = await client.rpc.sendRequest('textDocument/hover', params);
