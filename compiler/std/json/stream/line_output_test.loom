@@ -1,0 +1,132 @@
+import std.iter.from_list
+import std.stream.from_iter
+import std.text.to_bytes
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.Outcome
+
+test async fn json_line_output_round_trips_typed_records_with_serial_backpressure() {
+    let values = [StreamEntry {
+            name = "hé中😀\n"
+            values = [1, 2]
+        }, StreamEntry {
+            name = "second"
+            values = []
+        }]
+    let input = from_iter(from_list(values))
+    let output = std.bytes.new()
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        assert std.bytes.length(chunk) == 1
+        sleep_ms(0).await
+        std.bytes.push(output, std.bytes.get(chunk, 0))
+        Result.Ok(1)
+    }
+    assert match write_lines(input, 1, sink).await {
+        Result.Ok(count) => count == std.bytes.length(output)
+        _ => false
+    }
+    let source = lines(from_iter(from_list([output])), raw)
+    var index = 0
+    while index < 2 {
+        assert match source.next().await {
+            Option.Some(Result.Ok(value)) => match std.json.from_value[StreamEntry](value) {
+                Result.Ok(value) => value.name == values[index].name && std.list.length(value.values) == std.list.length(values[index].values)
+                _ => false
+            }
+            _ => false
+        }
+        index = index + 1
+    }
+    assert match source.next().await {
+        Option.None => true
+        _ => false
+    }
+    let empty = from_iter(from_list(std.list.new[Value]()))
+    let forbidden = async fn(chunk Bytes) Result[Int, Text] {
+        assert false
+        Result.Ok(std.bytes.length(chunk))
+    }
+    assert match write_lines(empty, 1, forbidden).await {
+        Result.Ok(count) => count == 0
+        _ => false
+    }
+}
+
+test async fn json_line_output_errors_stop_before_pulling_the_next_record() {
+    let input = from_iter(from_list([Value.Boolean(true), Value.Null]))
+    let partial = std.bytes.new()
+    let short_newline = async fn(chunk Bytes) Result[Int, Text] {
+        if std.bytes.get(chunk, 0) == 10 {
+            return Result.Ok(0)
+        }
+        var index = 0
+        while index < std.bytes.length(chunk) {
+            std.bytes.push(partial, std.bytes.get(chunk, index))
+            index = index + 1
+        }
+        Result.Ok(index)
+    }
+    assert match write_lines(input, 10, short_newline).await {
+        Result.Err(OutputError.Count(expected, actual)) => expected == 1 && actual == 0
+        _ => false
+    }
+    assert std.bytes.to_text(partial) == "true"
+    assert match input.next().await {
+        Option.Some(Value.Null) => true
+        _ => false
+    }
+    let invalid = from_iter(from_list([Value.Number("01"), Value.Null]))
+    let forbidden = async fn(chunk Bytes) Result[Int, Text] {
+        assert false
+        Result.Ok(std.bytes.length(chunk))
+    }
+    assert match write_lines(invalid, 1, forbidden).await {
+        Result.Err(OutputError.Encoding(WriteError.InvalidNumber)) => true
+        _ => false
+    }
+    assert match invalid.next().await {
+        Option.Some(Value.Null) => true
+        _ => false
+    }
+    let failed = from_iter(from_list([Value.Null, Value.Boolean(true)]))
+    let fail = async fn(chunk Bytes) Result[Int, Text] {
+        Result.Err("sink failed")
+    }
+    assert match write_lines(failed, 1, fail).await {
+        Result.Err(OutputError.Sink(message)) => message == "sink failed"
+        _ => false
+    }
+    assert match failed.next().await {
+        Option.Some(Value.Boolean(value)) => value
+        _ => false
+    }
+}
+
+test async fn cancelling_json_line_output_drains_the_sink_without_reading_a_suffix() {
+    let input = from_iter(from_list([Value.Boolean(true), Value.Null]))
+    let drained = [0]
+    let newline_started = [false]
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        if std.bytes.get(chunk, 0) == 10 {
+            newline_started[0] = true
+            defer {
+                drained[0] = drained[0] + 1
+            }
+            sleep_ms(60000).await
+        }
+        Result.Ok(std.bytes.length(chunk))
+    }
+    let pending = write_lines(input, 10, sink)
+    while !newline_started[0] {
+        sleep_ms(1).await
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert drained[0] == 1
+    assert match input.next().await {
+        Option.Some(Value.Null) => true
+        _ => false
+    }
+}

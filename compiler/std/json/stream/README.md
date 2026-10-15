@@ -38,7 +38,7 @@ closure of a borrowed producer. Its pending child still drains normally.
 factory, including a fallible one. The returned adapter is then a scoped owner;
 early exit and cancellation drain pending pulls before ordinary source disposal.
 It cannot retain a borrow of an already scoped producer. Other document framing
-and sequence writers remain open.
+remains open.
 
 `decode(source, bytes).await` constructs a visible typed shape after the same
 EOF check, using `std.json.from_value`. Infer the target from the result type:
@@ -66,6 +66,17 @@ excessive success counts, without pulling another chunk or guessing a retry.
 Already-emitted bytes are not undone, and cancellation drains the pending sink
 without closing the caller's resource. Neither operation freezes shared input
 data.
+
+`write_lines(source, chunk_size, sink).await` writes a Stream of supported typed
+values or `Value` documents as compact LF-framed JSON. Each document and its
+final LF finish before the next producer pull, providing record-level
+backpressure. Empty input writes nothing. The result uses `OutputError` and
+counts all emitted bytes, including each LF; delimiters obey the same checked
+full-chunk sink contract. An error or cancellation stops without requesting a
+later record or retrying bytes that may already have escaped. There is no
+implicit EOF/flush/close operation on the sink and no full-sequence buffer.
+Producer error values require explicit handling before encoding, not an
+implicit JSON representation of `Result`.
 
 The [TCP example](../../../examples/json_stream/main.loom) sends UTF-8 and escapes
 one byte at a time, exercises cancellation followed by a fresh parse, then

@@ -1075,7 +1075,11 @@ Source `std.json.stream.lines` now yields LF-framed documents before producer
 EOF, including split UTF-8/escapes, CRLF and a final record without LF. The
 existing decoder consumes chunk ranges without copies. Input/syntax errors and
 cancelled pulls are terminal; fresh resource factories retain scoped ownership.
-Other framing, sequence writers, general borrow-retaining adapters and
+Source `write_lines` encodes typed or Value Streams as LF-framed documents with
+serial document/delimiter backpressure and checked full-chunk counts. Empty
+input emits nothing; errors and cancellation stop before pulling a later record,
+without retrying partial output or closing caller-managed resources.
+Other framing, general borrow-retaining adapters and
 application-grade networking remain open. Fresh async resource acquisition uses
 the Task result ownership described below.
 
