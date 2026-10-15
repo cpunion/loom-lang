@@ -1,0 +1,45 @@
+name: draft-development-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run:
+        description: Successful compiler-ci run on main
+        required: true
+        type: string
+      tag:
+        description: Explicit SemVer prerelease tag (for example v0.1.0-dev.1)
+        required: true
+        type: string
+      dry_run:
+        description: Verify archives without creating a release draft
+        type: boolean
+        default: true
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: development-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    if: github.repository == 'cpunion/loom-lang' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify and prepare existing CI archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOOM_RELEASE_RUN: ${{ inputs.ci_run }}
+          LOOM_RELEASE_TAG: ${{ inputs.tag }}
+          LOOM_RELEASE_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=("$LOOM_RELEASE_RUN" "$LOOM_RELEASE_TAG")
+          if [[ "$LOOM_RELEASE_DRY_RUN" == true ]]; then args+=(--dry-run); fi
+          node scripts/draft-toolchain-release.mjs "${args[@]}"

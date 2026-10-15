@@ -1386,7 +1386,11 @@ as unknown and cannot execute a hotfix. General migration packages, application
 mapping proof, online coexistence and generalized recovery remain goals.
 
 CI packages relocatable development archives for macOS/Linux/Windows and tests
-them outside the checkout. Host LLVM/linker dependencies remain external; these
+them outside the checkout. An explicit [draft release workflow](../../distribution/README.md)
+promotes successful main CI archives after checking all host gates, actual
+archive checksums and embedded commit/platform identities. It defaults to
+dry-run, accepts explicit SemVer prerelease tags and never publishes a release.
+Host LLVM/linker dependencies remain external; these
 are not self-contained published releases or evidence for other targets.
 
 New status updates should replace the relevant boundary above, not append a
