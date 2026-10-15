@@ -297,9 +297,15 @@ same completion summaries. A fixed nested tuple counts as one member. Closed
 nested tuple/function words, such as `Pair[As, (Bs...)]...`, have separate opaque
 layout identities in family proofs. Ordinary generic constructors can establish
 receiver-independent capabilities for any such layout; forwarding, async and
-CTFE reuse those summaries. This is not a sampled width, element-type bound or
-concrete layout observation. Layout-dependent conformance and nested words with
-free iteration-element occurrences remain conservative.
+CTFE reuse those summaries. Structural impl headers can also establish a closed
+layout's capabilities by matching symbolic words and recursively proving every
+prerequisite. Repeated words must have the same binding; independent words keep
+their own bounds. Tuple/function and nested nominal-group schemas use the same
+matcher, without specializing a width or introducing runtime witnesses. This
+local evidence neither qualifies raw element types nor exports private proof
+parameters. Ambiguous, cyclic and exhausted entailment rejects. Nested words
+with free iteration-element occurrences and concrete layout observations remain
+conservative. See the [nested layout example](../../compiler/examples/variadics/nested_layouts.loom).
 Element-independent induction also accepts pack-bearing structural tuples: their
 extent composes fixed fields, repeated widths and independent expansion groups
 through ordinary affine arithmetic. A nested fixed field contributes one element;

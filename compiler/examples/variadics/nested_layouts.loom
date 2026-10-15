@@ -3,6 +3,64 @@ record NestedLayout[A, B] {
     context B
 }
 
+record MeasuredLayout[A, B Measurement] {
+    value A
+    context B
+}
+
+impl[A, B Measurement] Measurement for MeasuredLayout[A, B] {
+    fn measure(self Self) Int {
+        self.context.measure()
+    }
+}
+
+impl[Ts...Measurement] Measurement for (Ts...) {
+    fn measure(self Self) Int {
+        var total = 0
+        comptime for item in self {
+            total = total + item.measure()
+        }
+        total
+    }
+}
+
+impl[Ts...] Measurement for fn(Ts...) Int {
+    fn measure(self Self) Int {
+        1
+    }
+}
+
+impl Measurement for List[Int] {
+    fn measure(self Self) Int {
+        std.list.length(self)
+    }
+}
+
+fn structured_measurement[As..., Bs...Measurement](values (MeasuredLayout[As, (Bs...)]...)) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        total = total + item.measure()
+    }
+    total
+}
+
+fn structured_forward[As..., Bs...Measurement](values (MeasuredLayout[As, (Bs...)]...)) Int
+ensures result >= 0 {
+    structured_measurement(values) + measured(values...)
+}
+
+fn structured_callbacks[As..., Bs...](values (MeasuredLayout[As, fn(Bs...) Int]...)) Int
+ensures result >= 0 {
+    measured(values...)
+}
+
+async fn structured_async[As..., Bs...Measurement](values (MeasuredLayout[As, (Bs...)]...)) Int
+ensures result >= 0 {
+    discard item(0).await
+    structured_forward(values)
+}
+
 impl[A, B] Measurement for NestedLayout[A, B] {
     fn measure(self NestedLayout[A, B]) Int {
         1
@@ -77,6 +135,39 @@ fn exercise_nested_layouts() {
                 value = "function",
                 context = nested_callback
             },)) == 1
+    let structured = (
+        MeasuredLayout {
+            value = true,
+            context = (shared, 2)
+        },
+        MeasuredLayout {
+            value = "shared",
+            context = (shared, 3)
+        },
+    )
+    assert structured_measurement(structured) == 7
+    assert structured_forward(structured) == 14
+    std.list.push(shared, 9)
+    assert structured_measurement(structured) == 9
+    assert structured_measurement((MeasuredLayout {
+                value = true,
+                context = pack()
+            },)) == 0
+    assert comptime {
+        structured_forward((MeasuredLayout {
+                    value = 1,
+                    context = (true, 2)
+                },))
+    } == 6
+    let structured_callback fn((MeasuredLayout[Bool, (Int, Bool)],)) Int = structured_forward
+    assert structured_callback((MeasuredLayout {
+                value = false,
+                context = (2, true)
+            },)) == 6
+    assert structured_callbacks((MeasuredLayout {
+                value = true,
+                context = nested_callback
+            },)) == 1
 }
 
 async fn exercise_nested_async() {
@@ -84,4 +175,8 @@ async fn exercise_nested_async() {
                 value = true,
                 context = (42, "async")
             },)).await == 2
+    assert structured_async((MeasuredLayout {
+                value = false,
+                context = (2, true)
+            },)).await == 6
 }

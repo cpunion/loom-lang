@@ -1294,10 +1294,17 @@ Selection retains competing overloads, so a common method cannot hide an
 ambiguity on one member. Raw `Us` need their own declared bounds; they cannot
 borrow evidence from `Wrapped[Vs]`. The loop stays one ordered sequence with
 global indices, including empty expansions and repeated/independent groups.
-A fixed nested tuple counts as one element. An element pattern whose own layout
-still contains an unexpanded whole pack needs further schema reasoning and
-remains unsupported. An override's private proof auxiliaries do not become
-parameters of its inherited public contract.
+A fixed nested tuple counts as one element. Closed nested tuple/function words
+have independent opaque layout identities, not a representative element type.
+Their conformance follows from structural impl-header matching and recursive
+prerequisite proofs, including repeated words and nested nominal pack groups.
+For example, `impl[Ts... Measurement] Measurement for (Ts...)` can establish the
+tuple capability in `MeasuredLayout[As, (Bs...)]...` when every `Bs` declares
+`Measurement`. It does not qualify raw `As` or reveal a tuple width. Ambiguous,
+cyclic or exhausted matching supplies no evidence; free iteration-element
+occurrences inside a nested word still reject. An override's private proof
+auxiliaries do not become parameters of its inherited public contract. See the
+[nested layout example](examples/variadics/nested_layouts.loom).
 The [composed bounds example](examples/variadics/composed_bounds.loom) exercises
 direct constructed and mixed receivers, generic/variadic methods, CTFE,
 callbacks and dyn overrides.
@@ -2465,8 +2472,9 @@ executions, and a return ends its path. Unrelated awaits do not expose a private
 arguments/initializers still cannot transport raw aliases across publication.
 Active lexical cleanup must satisfy the same non-publishing and preservation rules,
 including fault-only exits. Loop-body publication uses a separate allocation
-epoch when its fresh immutable binding is inside the iteration.
-Raw aliases cannot flow into bindings outside that body or otherwise
+epoch when its fresh immutable binding is inside the condition or body.
+Every condition evaluation has a fresh epoch, including the final false result.
+Raw aliases cannot flow into bindings outside that evaluation or otherwise
 escape; previously published headers are not the next iteration's draft.
 Nested iteration bodies, early exits, cleanup and unrelated waits retain these
 same rules. Loop-carried or cleanup-delayed mutable bindings may retain a header
@@ -2475,8 +2483,8 @@ also applies to one record/tuple projection while other fields change. The
 original alias fixed point still tracks references propagated across iterations;
 identity induction does not unroll a loop or identify fresh replacements. See the
 [stable cursor](examples/record_refinement/stable.loom). Changing loop-carried
-header identities, headers allocated outside a repeating publication, publication in
-loop conditions and unsupported draft operations remain conservative.
+header identities, headers allocated outside a repeating publication and
+unsupported draft operations remain conservative.
 Unknown predicates keep the ordinary `Result` boundary.
 The [structural builder example](examples/record_refinement/structural_drafts.loom)
 uses a generic record with a tuple field and an independently writable notes List.

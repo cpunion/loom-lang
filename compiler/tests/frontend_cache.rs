@@ -138,6 +138,11 @@ record Wrapped[T] {
     value T
 }
 impl[T] Amount for Wrapped[T] {}
+record Structured[T Amount] {
+    value T
+}
+impl[T Amount] Amount for Structured[T] {}
+impl[Ts... Amount] Amount for (Ts...) {}
 concept Missing {}
 fn total[Ts... Amount](values Ts...) Int
 ensures result >= 0 {
@@ -167,6 +172,10 @@ fn nested[Us..., Vs...](values (Wrapped[(Us...)], Wrapped[Vs]...)) Int
 ensures result >= 0 {
     total(values...)
 }
+fn structured[Us... Amount](values (Structured[(Us...)],)) Int
+ensures result >= 0 {
+    total(values...)
+}
 fn mixed[Us... Amount, Vs...](left (Us...), right (Vs...), values (Bool, Us..., Wrapped[Vs]..., Bool)) Int
 ensures result >= 0 {
     var sum = 0
@@ -181,6 +190,7 @@ fn main() {
     assert total(true, false) == 2
     assert forwarded((Wrapped { value = "text" }, Wrapped { value = true })) == 2
     assert nested((Wrapped { value = (true, "nested") }, Wrapped { value = 1 })) == 2
+    assert structured((Structured { value = (true, false) },)) == 1
     assert mixed((false,), ("text",), (true, false, Wrapped { value = "text" }, false)) == 4
 }
 "#;
@@ -215,6 +225,18 @@ fn main() {
     assert!(!narrowed.status.success());
     let diagnostic = String::from_utf8_lossy(&narrowed.stderr);
     assert!(diagnostic.contains("conformance"), "{diagnostic}");
+    // Symbolically inferred layout evidence must be re-established too. No
+    // concrete width or an earlier checked template can satisfy the new bound.
+    fs::write(
+        &path,
+        source.replace(
+            "impl[Ts... Amount] Amount for (Ts...) {}",
+            "impl[Ts... Missing] Amount for (Ts...) {}",
+        ),
+    )
+    .unwrap();
+    let layout = cached("check", &package, &cache, &[]);
+    assert!(!layout.status.success());
     // Required guarantees do not remove a callee's runtime entry guard.
     fs::write(
         &path,
