@@ -1301,8 +1301,13 @@ prerequisite proofs, including repeated words and nested nominal pack groups.
 For example, `impl[Ts... Measurement] Measurement for (Ts...)` can establish the
 tuple capability in `MeasuredLayout[As, (Bs...)]...` when every `Bs` declares
 `Measurement`. It does not qualify raw `As` or reveal a tuple width. Ambiguous,
-cyclic or exhausted matching supplies no evidence; free iteration-element
-occurrences inside a nested word still reject. An override's private proof
+cyclic or exhausted matching supplies no evidence. Nested words containing a free
+iteration element, such as `MeasuredLayout[As, (As, Bs...)]...`, derive their
+capabilities directly from the complete symbolic schema; they are not erased to
+one fixed layout or type shared by every iteration. Method observations, generic
+element helpers and whole-word forwarding reuse this rule and validate nested
+data arguments. Concrete layout and cross-iterator type equality are not inferred.
+An override's private proof
 auxiliaries do not become parameters of its inherited public contract. See the
 [nested layout example](examples/variadics/nested_layouts.loom).
 The [composed bounds example](examples/variadics/composed_bounds.loom) exercises

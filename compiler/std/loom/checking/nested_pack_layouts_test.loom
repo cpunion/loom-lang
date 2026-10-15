@@ -237,3 +237,68 @@ test fn structural_layout_conformance_is_not_receiver_equality_or_a_pure_effect(
         }
         """), false)
 }
+
+test fn dependent_pack_layouts_derive_only_whole_pattern_capabilities() {
+    discard accepted(concat(structural_layout_header(), """
+        fn observe[T Value](value T) Int
+        ensures result >= 0 { value.value() }
+        fn direct[As... Value, Bs... Value](values (Pair[As, (As, Bs...)]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values { total = total + item.value() }
+            total
+        }
+        fn forwarded[As... Value, Bs... Value](values (Pair[As, (As, Bs...)]...)) Int
+        ensures result >= 0 { bounded(values...) }
+        fn helpers[As... Value, Bs... Value](values (Pair[As, (As, Bs...)]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values { total = total + observe(item) }
+            total
+        }
+        fn transitive[As... Value, Bs... Value](values (Pair[As, (As, Bs...)]...)) Int
+        ensures result >= 0 { direct(values) + forwarded(values) + helpers(values) }
+        """))
+    rejects(concat(structural_layout_header(), """
+        fn missing[As..., Bs... Value](values (Pair[As, (As, Bs...)]...)) Int
+        ensures result >= 0 { bounded(values...) }
+        """))
+}
+
+test fn dependent_pack_layouts_do_not_hide_ambiguity_or_invalid_nested_data() {
+    rejects(concat(structural_layout_header(), """
+        concept Alternative { fn value(self Self) Int ensures result >= 0 }
+        impl[A, B] Alternative for Pair[A, B] { fn value(self Self) Int { 1 } }
+        fn ambiguous[As... Value, Bs... Value](values (Pair[As, (As, Bs...)]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values { total = total + item.value() }
+            total
+        }
+        """))
+    let invalid = concat(structural_layout_header(), """
+        record Bounded[Bounded Value] { value Bounded }
+        concept Marked { fn marker(self Self) Int ensures result >= 0 }
+        impl[T] Marked for T { fn marker(self T) Int { 0 } }
+        fn check[As..., Bs...](values ((Bounded[As], Bs...)...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values { total = total + item.marker() }
+            total
+        }
+        """)
+    rejects(invalid)
+    discard accepted(std.text.join(std.text.split(invalid, "check[As..., Bs...]"), "check[As... Value, Bs...]"))
+    rejects(concat(structural_layout_header(), """
+        fn same[T Value](first T, second T) Int
+        ensures result >= 0 { first.value() + second.value() }
+        fn wrong[As... Value, Bs... Value](values (Pair[As, (As, Bs...)]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for first in values {
+                comptime for second in values { total = total + same(first, second) }
+            }
+            total
+        }
+        """))
+}

@@ -1,8 +1,6 @@
 import std.text.split
 
-// Resolve every member pattern in header scope. This list carries capability
-// evidence, not representative values or a common concrete element layout.
-fn pack_observation_types(context Context, parameter Int, node Node) Result[List[Int], Failure] {
+fn pack_observation_patterns(context Context, parameter Int) List[Node] {
     let declaration = symbol(context.env, pack_proof_caller(context)).node
     let input = get(group(declaration, NodeKind.Parameters), parameter)
     let ty = child(input, 0)
@@ -11,7 +9,7 @@ fn pack_observation_types(context Context, parameter Int, node Node) Result[List
     } else {
         source_nodes(ty)
     }
-    let types = new[Int]()
+    let output = new[Node]()
     var index = 0
     while index < length(patterns) {
         let item = get(patterns, index)
@@ -20,15 +18,69 @@ fn pack_observation_types(context Context, parameter Int, node Node) Result[List
         } else {
             item
         }
-        let fixed = pack_forward_fixed_node(context, declaration, pattern, 0)?
-        let actual = resolve_bound(context.env, context.signature.symbol, fixed,
-            context.arguments, context.signature.requirements, 0)?
-        discard well_formed(context.env, context.signature.symbol, actual,
-            context.signature.requirements, node, 0)?
-        push(types, actual)
+        push(output, pattern)
         index = index + 1
     }
-    Result.Ok(types)
+    output
+}
+
+fn pack_observation_type(context Context, pattern Node, node Node) Result[Int, Failure] {
+    let caller = symbol(context.env, pack_proof_caller(context)).node
+    let fixed = pack_forward_fixed_node(context, caller, pattern, 0)?
+    let actual = resolve_bound(context.env, context.signature.symbol, fixed,
+        context.arguments, context.signature.requirements, 0)?
+    discard well_formed(context.env, context.signature.symbol, actual,
+        context.signature.requirements, node, 0)?
+    Result.Ok(actual)
+}
+
+fn pack_pattern_admitted(context Context, pattern Node, capability Int, node Node) Result[Bool, Failure] {
+    let caller = symbol(context.env, pack_proof_caller(context)).node
+    match pack_forward_source_schema(context, caller, pattern) {
+        Result.Ok(schema) => {
+            if !pack_layout_well_formed(context, caller, schema, ints(512), 0)? {
+                return Result.Ok(false)
+            }
+            if pack_layout_admitted(context, caller, schema, capability, new[PackLayoutRequirement](), ints(512), 0)? {
+                return Result.Ok(true)
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    satisfies(context, pack_observation_type(context, pattern, node)?, capability)
+}
+
+// An element-dependent layout is not one fixed private type. Derive each
+// visible capability from the complete schema, then select its methods on the
+// independent entry. No layout, type equality or raw-element bound escapes.
+fn pack_symbolic_options(context Context, node Node, source Node, receiver Expr,
+    pattern Node, member Text, types List[Node], inputs CallInputs, expected Int) Result[List[Int], Failure] {
+    let caller = symbol(context.env, pack_proof_caller(context)).node
+    let schema = pack_forward_source_schema(context, caller, pattern)?
+    if !pack_layout_well_formed(context, caller, schema, ints(512), 0)? {
+        return Result.Err(error(context, pattern, "variadic element pattern needs well-formed data arguments for every member"))
+    }
+    let options = new[Int]()
+    var index = 0
+    while index < length(context.env.concepts) {
+        let capability = get(context.env.concepts, index).symbol
+        if visible_concept(context, capability) &&
+        pack_layout_admitted(context, caller, schema, capability, new[PackLayoutRequirement](), ints(512), 0)? {
+            let scope = with_evidence(context, receiver.ty, capability)
+            let choices = method_options(scope, node, source, receiver, member, types, inputs, capability, expected)?
+            var choice = 0
+            while choice < length(choices) {
+                let id = get(choices, choice)
+                if !resource_seen(options, id) {
+                    push(options, id)
+                }
+                choice = choice + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(options)
 }
 
 // Resolve capabilities on the full element pattern, but invoke their declared
@@ -49,14 +101,26 @@ fn pack_proof_method(context Context, node Node, source Node, receiver Expr, enc
     }
     let member = get(parts, 1)
     var scope = pack_layout_evidence(context, symbol(context.env, owner).node)?
-    let patterns = pack_observation_types(scope, parameter, node)?
+    let patterns = pack_observation_patterns(scope, parameter)
     let options = new[Int]()
     var common = new[Int]()
     var field = 0
     while field < length(patterns) {
         // A shape participates only in selection, never as a proof value.
-        let shape = expression(ExprKind.Deferred, get(patterns, field), node, "", -1, new[Expr](), true)
-        let choices = method_options(scope, node, source, shape, member, types, inputs, -1, expected)?
+        let pattern = get(patterns, field)
+        let choices = match pack_observation_type(scope, pattern, node) {
+            Result.Ok(ty) => {
+                let shape = expression(ExprKind.Deferred, ty, node, "", -1, new[Expr](), true)
+                method_options(scope, node, source, shape, member, types, inputs, -1, expected)?
+            }
+            Result.Err(failed) => {
+                if !has_type_expansion(pattern) ||
+                length(expansion_packs(pattern, pack_names(declared_packs(symbol(context.env, owner).node)))) == 0 {
+                    return Result.Err(failed)
+                }
+                pack_symbolic_options(scope, node, source, receiver, pattern, member, types, inputs, expected)?
+            }
+        }
         if length(choices) == 0 {
             return Result.Err(error(context, node,
                     "variadic element observation needs an accessible concept and conformance for every element pattern"))
