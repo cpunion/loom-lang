@@ -210,6 +210,19 @@ pub fn start_sqlite_migration(tool Text, database Text,
     discard dry_run(tool, database, value.from_schema, value.to_schema, value.catalog)?
     let attempt = prepare_plan(value.operation.attempt_id, value.from_schema.basis,
         value.to_schema.basis, value.policy, identity)?
+    match latest(tool, database)? {
+        Option.Some(previous) => {
+            if previous.attempt.id == attempt.id &&
+            previous.attempt.state == DeploymentState.NotDeployed {
+                if !same_attempt_plan(previous.attempt, attempt) {
+                    return Result.Err("registered deployment plan differs from this SQLite package")
+                }
+                return start_attempt(tool, database, attempt.id)
+            }
+        }
+        Option.None => {
+        }
+    }
     discard register(tool, database, attempt)?
     start_attempt(tool, database, attempt.id)
 }

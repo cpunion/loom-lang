@@ -143,10 +143,14 @@ fn stored_line(line Text) Result[Stored, Text] {
         })
 }
 
+fn same_attempt_plan(before Attempt, after Attempt) Bool {
+    before.id == after.id && before.from_basis == after.from_basis &&
+    before.to_basis == after.to_basis && before.plan_digest == after.plan_digest &&
+    before.policy == after.policy
+}
+
 fn next_state(before Attempt, after Attempt) Bool {
-    if before.id != after.id || before.from_basis != after.from_basis ||
-    before.to_basis != after.to_basis || before.plan_digest != after.plan_digest ||
-    before.policy != after.policy {
+    if !same_attempt_plan(before, after) {
         return false
     }
     match before.state {

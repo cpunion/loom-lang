@@ -52,6 +52,10 @@ named plan without treating its unused target as deployed; the obsolete identity
 cannot be started or reused. Started, failed and rollback-in-progress attempts
 remain unresolved. The [ledger trial](../sqlite_trial/main.loom) exercises this
 planning lifecycle against SQLite without changing application data.
+`start_sqlite_migration` can start an already registered package plan only when
+its identity, bases, digest and failure policy match. The migration trial replaces
+an unused proposal, rejects a same-ID different package without appending an
+event, then starts the selected package and runs the data migration.
 
 `inspect_live_sqlite_downgrade` is the matching read-only preflight for the
 fixed v2-to-v1 rollback. It requires the same verified package and a matching
