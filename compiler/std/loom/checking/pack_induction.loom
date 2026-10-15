@@ -584,6 +584,7 @@ fn pack_proof_tree(env Environment, owner Int, declaration Node, node Node, eras
 fn pack_contract_declaration(env Environment, owner Int) Result[Node, Failure] {
     let node = symbol(env, owner).node
     let packs = declared_packs(node)
+    let layouts = pack_proof_layouts(node)
     let domains = new[PackProofDomain]()
     discard pack_contract_domains(env, owner, node, new[Int](), domains, 0)?
     let erased = pack_proof_sources(node)
@@ -613,6 +614,14 @@ fn pack_contract_declaration(env Environment, owner Int) Result[Node, Failure] {
                     push(members, pack_node(member, NodeKind.Parameter, pack_proof_width(selected), source_nodes(pack_node(member, NodeKind.Type, "Int", new[Node]()))))
                 }
                 selected = selected + 1
+            }
+            if member.kind == NodeKind.TypeParameters {
+                selected = 0
+                while selected < length(layouts) {
+                    push(members, pack_node(get(layouts, selected), NodeKind.Name,
+                            pack_proof_layout_type(selected), new[Node]()))
+                    selected = selected + 1
+                }
             }
             selected = 0
             while selected < length(domains) {

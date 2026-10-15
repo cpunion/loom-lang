@@ -291,8 +291,13 @@ one member's ambiguity cannot be hidden by taking an intersection. The
 [composed bounds example](../../compiler/examples/variadics/composed_bounds.loom)
 includes repeated/independent groups, global indices, CTFE, callbacks and dyn
 overrides with different private proof closures. Async mixed receivers use the
-same completion summaries. A fixed nested tuple counts as one member; patterns
-whose own layout still contains an unexpanded whole pack remain unsupported.
+same completion summaries. A fixed nested tuple counts as one member. Closed
+nested tuple/function words, such as `Pair[As, (Bs...)]...`, have separate opaque
+layout identities in family proofs. Ordinary generic constructors can establish
+receiver-independent capabilities for any such layout; forwarding, async and
+CTFE reuse those summaries. This is not a sampled width, element-type bound or
+concrete layout observation. Layout-dependent conformance and nested words with
+free iteration-element occurrences remain conservative.
 Element-independent induction also accepts pack-bearing structural tuples: their
 extent composes fixed fields, repeated widths and independent expansion groups
 through ordinary affine arithmetic. A nested fixed field contributes one element;

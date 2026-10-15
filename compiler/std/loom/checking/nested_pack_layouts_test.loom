@@ -1,0 +1,99 @@
+fn nested_layout_header() Text {
+    concat(composed_bounds_header(), """
+        record Pair[A, B] {
+            first A
+            second B
+        }
+        impl[A, B] Value for Pair[A, B] {
+            fn value(self Pair[A, B]) Int {
+                1
+            }
+        }
+        """)
+}
+
+test fn nested_pack_layouts_support_universal_constructor_bounds_and_forwarding() {
+    // No concrete caller supplies a width or layout to these family proofs.
+    discard accepted(concat(nested_layout_header(), """
+        fn direct[As..., Bs...](values (Pair[As, (Bs...)]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        fn forwarded[As..., Bs...](values (Pair[As, (Bs...)]...)) Int
+        ensures result >= 0 {
+            bounded(values...)
+        }
+        fn transitive[As..., Bs...](values (Pair[As, (Bs...)]...)) Int
+        ensures result >= 0 {
+            direct(values) + forwarded(values)
+        }
+        fn callbacks[As..., Bs...](values (Pair[As, fn(Bs...) Int]...)) Int
+        ensures result >= 0 {
+            bounded(values...)
+        }
+        fn fixed[As..., Bs...](values (Pair[Bool, (Bs...)], Pair[As, Bool]...)) Int
+        ensures result >= 0 {
+            var total = 0
+            comptime for item in values {
+                total = total + item.value()
+            }
+            total
+        }
+        """))
+}
+
+test fn nested_pack_layouts_do_not_inherit_element_bounds_or_concrete_results() {
+    rejects(concat(nested_layout_header(), """
+        fn wrong[As..., Bs... Value](values (Pair[As, (Bs...)]...)) Bool
+        ensures result {
+            var same = true
+            comptime for item in values {
+                same = same && item.value() == item.value()
+            }
+            same
+        }
+        """))
+    rejects(concat(composed_bounds_header(), """
+        record Bounded[T] {
+            value T
+        }
+        impl[T Value] Value for Bounded[T] {
+            fn value(self Bounded[T]) Int {
+                1
+            }
+        }
+        fn wrong[As... Value](values (Bounded[(As...)], As...)) Int
+        ensures result >= 0 {
+            bounded(values...)
+        }
+        """))
+}
+
+test fn nested_pack_layouts_preserve_unknown_shared_effects() {
+    let source = concat(composed_bounds_header(), """
+        import std.list.push
+        import std.list.length
+        record Pair[A, B] {
+            first A
+            second B
+            log List[Int]
+        }
+        impl[A, B] Value for Pair[A, B] {
+            fn value(self Pair[A, B]) Int {
+                push(self.log, 1)
+                0
+            }
+        }
+        fn wrong[As..., Bs...](log List[Int], values (Pair[As, (Bs...)]...)) Int
+        ensures length(log) == old(length(log)) {
+            bounded(values...)
+        }
+        """)
+    list_length_contract(std.text.join(std.text.split(source,
+                "ensures length(log) == old(length(log))"), "ensures result >= 0"), true)
+    list_length_contract(source, false)
+}

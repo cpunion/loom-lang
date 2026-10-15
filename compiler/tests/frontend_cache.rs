@@ -163,6 +163,10 @@ fn forwarded[Us...](values (Wrapped[Us]...)) Int
 ensures result >= 0 {
     constructed(values)
 }
+fn nested[Us..., Vs...](values (Wrapped[(Us...)], Wrapped[Vs]...)) Int
+ensures result >= 0 {
+    total(values...)
+}
 fn mixed[Us... Amount, Vs...](left (Us...), right (Vs...), values (Bool, Us..., Wrapped[Vs]..., Bool)) Int
 ensures result >= 0 {
     var sum = 0
@@ -176,6 +180,7 @@ ensures result >= 0 {
 fn main() {
     assert total(true, false) == 2
     assert forwarded((Wrapped { value = "text" }, Wrapped { value = true })) == 2
+    assert nested((Wrapped { value = (true, "nested") }, Wrapped { value = 1 })) == 2
     assert mixed((false,), ("text",), (true, false, Wrapped { value = "text" }, false)) == 4
 }
 "#;

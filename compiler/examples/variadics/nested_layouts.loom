@@ -1,0 +1,87 @@
+record NestedLayout[A, B] {
+    value A
+    context B
+}
+
+impl[A, B] Measurement for NestedLayout[A, B] {
+    fn measure(self NestedLayout[A, B]) Int {
+        1
+    }
+}
+
+fn nested_measurement[As..., Bs...](values (NestedLayout[As, (Bs...)]...)) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        total = total + item.measure()
+    }
+    total
+}
+
+fn nested_forward[As..., Bs...](values (NestedLayout[As, (Bs...)]...)) Int
+ensures result >= 0 {
+    nested_measurement(values) + measured(values...)
+}
+
+fn nested_callbacks[As..., Bs...](values (NestedLayout[As, fn(Bs...) Int]...)) Int
+ensures result >= 0 {
+    measured(values...)
+}
+
+async fn nested_async[As..., Bs...](values (NestedLayout[As, (Bs...)]...)) Int
+ensures result >= 0 {
+    discard item(0).await
+    nested_forward(values)
+}
+
+fn nested_callback(value Int, enabled Bool) Int {
+    if enabled {
+        value
+    } else {
+        0
+    }
+}
+
+fn exercise_nested_layouts() {
+    let shared = [7]
+    let values = (
+        NestedLayout {
+            value = true,
+            context = (shared, "context")
+        },
+        NestedLayout {
+            value = 42,
+            context = (shared, "other")
+        },
+    )
+    assert nested_measurement(values) == 2
+    assert nested_forward(values) == 4
+    values.0.context.0[0] = 8
+    assert values.1.context.0[0] == 8 && shared[0] == 8
+    assert nested_measurement((NestedLayout {
+                value = true,
+                context = pack()
+            },)) == 1
+    assert comptime {
+        nested_forward((NestedLayout {
+                    value = 1,
+                    context = (true, "ctfe")
+                },))
+    } == 2
+    let callback fn((NestedLayout[Bool, (Int, Text)],)) Int = nested_forward
+    assert callback((NestedLayout {
+                value = false,
+                context = (1, "callback")
+            },)) == 2
+    assert nested_callbacks((NestedLayout {
+                value = "function",
+                context = nested_callback
+            },)) == 1
+}
+
+async fn exercise_nested_async() {
+    assert nested_async((NestedLayout {
+                value = true,
+                context = (42, "async")
+            },)).await == 2
+}
