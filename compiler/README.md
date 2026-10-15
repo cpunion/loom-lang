@@ -414,6 +414,9 @@ Fresh bindings rekey types, static
 arguments, calls and source locations;
 changed definitions and overloads invalidate transitive consumers. Nominal/import
 changes and syntax-producing macro or unsupported bodies recheck conservatively.
+Disk import validates the complete snapshot grammar without retaining its body
+trees. Selected bodies decode on demand before ordinary eligibility checks and
+rekeying; replayed public lists remain independent of the private snapshot.
 Within one check, each saved body's eligibility is computed once, and each
 replayed concrete callee is validated and scheduled once in the current
 environment. These lookup tables are rebuilt after every edit, never persisted

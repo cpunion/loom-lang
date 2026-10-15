@@ -1,9 +1,11 @@
 import std.bytes.to_text
+import std.text.is_boundary
 
 // Counted UTF-8 fields keep the private snapshot independent of JSON policy and
 // the native backend format. The host authenticates its compiler/cache boundary.
 record CacheReader {
     text Text
+    capture Bool
     cursor List[Int]
     integers List[Int]
     expressions List[Expr]
@@ -11,8 +13,13 @@ record CacheReader {
 }
 
 fn cache_reader(text Text) CacheReader {
+    cache_reader(text, true)
+}
+
+fn cache_reader(text Text, capture Bool) CacheReader {
     CacheReader {
         text = text
+        capture = capture
         cursor = ints(0)
         integers = new[Int]()
         expressions = new[Expr]()
@@ -114,6 +121,12 @@ fn cache_field(reader CacheReader) Result[Span, Text] {
 
 fn cache_read_text(reader CacheReader) Result[Text, Text] {
     let span = cache_field(reader)?
+    if !std.text.is_boundary(reader.text, span.start) || !std.text.is_boundary(reader.text, span.end) {
+        return Result.Err("invalid cache text boundary")
+    }
+    if !reader.capture {
+        return Result.Ok("")
+    }
     if span.start == span.end {
         return Result.Ok("")
     }
@@ -165,7 +178,12 @@ fn cache_read_span(reader CacheReader) Result[Span, Text] {
 
 fn cache_read_ints(reader CacheReader) Result[List[Int], Text] {
     let count = cache_read_count(reader)?
-    if count == 0 {
+    if count == 0 || !reader.capture {
+        var index = 0
+        while index < count {
+            discard cache_read_int(reader)?
+            index = index + 1
+        }
         return Result.Ok(reader.integers)
     }
     let values = new[Int](cache_capacity(count))
@@ -272,7 +290,12 @@ fn cache_expression(output Bytes, value Expr, depth Int) Result[Bool, Text] {
 
 fn cache_read_expressions(reader CacheReader, depth Int) Result[List[Expr], Text] {
     let count = cache_read_count(reader)?
-    if count == 0 {
+    if count == 0 || !reader.capture {
+        var index = 0
+        while index < count {
+            discard cache_read_expression(reader, depth)?
+            index = index + 1
+        }
         return Result.Ok(reader.expressions)
     }
     let values = new[Expr](cache_capacity(count))
@@ -296,7 +319,7 @@ fn cache_read_expression(reader CacheReader, depth Int) Result[Expr, Text] {
     let falls = cache_read_bool(reader)?
     let children = cache_read_expressions(reader, depth + 1)?
     let count = cache_read_count(reader)?
-    let arms = if count == 0 {
+    let arms = if count == 0 || !reader.capture {
         reader.arms
     } else {
         new[Arm](cache_capacity(count))
@@ -306,12 +329,15 @@ fn cache_read_expression(reader CacheReader, depth Int) Result[Expr, Text] {
         let variant = cache_read_int(reader)?
         let bindings = cache_read_ints(reader)?
         let whole = cache_read_int(reader)?
-        push(arms, Arm {
-                variant = variant
-                bindings = bindings
-                whole = whole
-                body = cache_read_expressions(reader, depth + 1)?
-            })
+        let arm = Arm {
+            variant = variant
+            bindings = bindings
+            whole = whole
+            body = cache_read_expressions(reader, depth + 1)?
+        }
+        if reader.capture {
+            push(arms, arm)
+        }
         index = index + 1
     }
     Result.Ok(Expr {
@@ -359,15 +385,22 @@ fn cache_read_function(reader CacheReader) Result[Function, Text] {
     let params = cache_read_ints(reader)?
     let return_type = cache_read_int(reader)?
     let count = cache_read_count(reader)?
-    let locals = new[Local](cache_capacity(count))
+    let locals = new[Local](if reader.capture {
+            cache_capacity(count)
+        } else {
+            0
+        })
     var index = 0
     while index < count {
-        push(locals, Local {
-                name = cache_read_text(reader)?
-                ty = cache_read_int(reader)?
-                mutable = cache_read_bool(reader)?
-                is_scoped = cache_read_bool(reader)?
-            })
+        let local = Local {
+            name = cache_read_text(reader)?
+            ty = cache_read_int(reader)?
+            mutable = cache_read_bool(reader)?
+            is_scoped = cache_read_bool(reader)?
+        }
+        if reader.capture {
+            push(locals, local)
+        }
         index = index + 1
     }
     let preconditions = cache_read_expressions(reader, 0)?

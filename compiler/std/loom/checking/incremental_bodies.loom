@@ -19,6 +19,8 @@ record BodyBasis {
     types List[Type]
     targets List[BodyTarget]
     functions List[Function]
+    encoded Text
+    offsets List[Int]
     interfaces List[BodyInterface]
 }
 
@@ -115,7 +117,7 @@ fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) 
     let eligibility = new[Int]()
     let targets = new[Int]()
     index = 0
-    while index < length(prior.functions) {
+    while index < length(prior.targets) {
         push(eligibility, 0)
         push(targets, -1)
         let owner = get(prior.targets, index).symbol
@@ -335,14 +337,14 @@ fn body_supported(reuse BodyReuse, target BodyTarget, value Function) Bool {
 
 // Eligibility depends only on this check's fixed source correspondence, not on
 // which specialization is looking for a match. Inspect each saved body once.
-fn body_eligible(reuse BodyReuse, candidate Int) Bool {
+fn body_eligible(reuse BodyReuse, candidate Int, value Function) Bool {
     let known = get(reuse.eligibility, candidate)
     if known != 0 {
         return known > 0
     }
     let prior = get(reuse.prior, 0)
     let target = get(prior.targets, candidate)
-    let supported = body_supported(reuse, target, get(prior.functions, candidate)) &&
+    let supported = body_supported(reuse, target, value) &&
     body_constants_supported(reuse, target.constants, new[Int]())
     set(reuse.eligibility, candidate, if supported {
             1
@@ -516,11 +518,21 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
     var index = 0
     while index < length(candidates) {
         let candidate = get(candidates, index)
-        let value = get(prior.functions, candidate)
         let target = get(prior.targets, candidate)
-        if same(target.widths, widths) && same(target.implementation_widths, implementation_widths) && body_symbol(reuse, target.symbol) == owner &&
-        (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
-            (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_eligible(reuse, candidate) &&
+        if !same(target.widths, widths) || !same(target.implementation_widths, implementation_widths) ||
+        body_symbol(reuse, target.symbol) != owner ||
+        (!std.loom.ast.has(current.node, NodeKind.ExpansionId) &&
+            (current.text == "" || current.text != get(prior.definitions.entries, target.symbol).text)) {
+            index = index + 1
+            continue
+        }
+        let value = match body_function(prior, candidate) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Ok(Option.None)
+            }
+        }
+        if body_eligible(reuse, candidate, value) &&
         same(body_types(env, reuse, value.arguments)?, instance.arguments) &&
         same_constants(body_constants(env, reuse, target.constants, owner)?, instance.constants) {
             if length(widths) != 0 {

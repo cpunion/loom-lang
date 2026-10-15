@@ -23,3 +23,50 @@ test fn snapshot_numbers_keep_the_canonical_counted_encoding() {
     }
     assert get(reader.cursor, 0) == std.text.length(reader.text)
 }
+
+test fn snapshot_scanning_uses_the_decoders_full_grammar_without_retaining_trees() {
+    let checked = accepted("pub fn select(value Bool) Text { match value { true => \"λ\"\nfalse => \"kept\" } }")
+    let value = get(checked.functions, 0)
+    let output = std.bytes.new()
+    assert match cache_function(output, value) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let text = std.bytes.to_text(output)
+    let reader = cache_reader(text, false)
+    assert match cache_read_function(reader) {
+        Result.Ok(scanned) => length(scanned.locals) == 0 && length(scanned.body.children) == 0 &&
+        length(scanned.body.arms) == 0 && length(reader.expressions) == 0 && length(reader.arms) == 0
+        Result.Err(_) => false
+    }
+    assert get(reader.cursor, 0) == std.text.length(text)
+    let normal = cache_reader(text)
+    let encoded = std.bytes.new()
+    assert match cache_read_function(normal) {
+        Result.Ok(decoded) => match cache_function(encoded, decoded) {
+            Result.Ok(_) => std.bytes.to_text(encoded) == text
+            Result.Err(_) => false
+        }
+        Result.Err(_) => false
+    }
+    var capture = 0
+    while capture < 2 {
+        assert match cache_read_function(cache_reader("1\n2", capture == 1)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        assert match cache_read_expression(cache_reader("3\n999", capture == 1), 0) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        assert match cache_read_function(cache_reader(std.text.slice(text, 0, std.text.length(text) - 1), capture == 1)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        assert match cache_read_text(cache_reader("1\nλ", capture == 1)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        capture = capture + 1
+    }
+}

@@ -103,6 +103,8 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
         types = types
         targets = targets
         functions = functions
+        encoded = ""
+        offsets = new[Int]()
         interfaces = body_copy_interfaces(env)
     }
     if length(definition_state(cache).bodies) == 0 {
