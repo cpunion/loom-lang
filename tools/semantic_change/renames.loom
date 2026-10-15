@@ -281,7 +281,7 @@ fn compare_renamed(before Analysis, original Indexed, after Analysis, updated In
     var index = 0
     while index < length(original.entries) {
         let entry = get(original.entries, index)
-        if !before.bindings.tests && ends_with(entry.path, "_test.loom") {
+        if !package_entry_active(before, before.bindings.root, entry)? {
             index = index + 1
             continue
         }
