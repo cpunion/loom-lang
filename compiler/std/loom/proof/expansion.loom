@@ -57,7 +57,7 @@ fn helper_type(program Program, ty Int, depth Int) Bool {
     // Inline aggregate leaves may be opaque. Projection does not establish
     // facts about their shared storage or permit operations on that storage.
     shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple || shape.kind == TypeKind.Enum ||
-    shape.kind == TypeKind.List || shape.kind == TypeKind.Task
+    shape.kind == TypeKind.List || shape.kind == TypeKind.Bytes || shape.kind == TypeKind.Task
 }
 
 fn expanded_field(context Expansion, field Expr, value Expr, depth Int) Result[Expr, Text] {
@@ -207,7 +207,7 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
     // helper's own short circuit would omit their substituted expressions.
     while index < length(function.params) {
         let ty = get(function.params, index)
-        if !helper_type(context.program, ty, 0) && !(context.list_lengths && proof_list_type(context.program, ty)) {
+        if !helper_type(context.program, ty, 0) && !(context.list_lengths && proof_sequence_type(context.program, ty)) {
             return Result.Err("helper parameters must be scalars or inline aggregates")
         }
         let argument = expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?
@@ -309,7 +309,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         }
         if self && value.index == 0 {
             return Result.Ok(proof_expr(value, ExprKind.Local,
-                    if context.list_lengths && proof_list_type(context.program, value.ty) {
+                    if context.list_lengths && proof_sequence_type(context.program, value.ty) {
                         1
                     } else {
                         value.ty
@@ -324,7 +324,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     if value.kind == ExprKind.Call {
         return expanded_call(context, value, guard, bindings, locals, self, calls, depth + 1)
     }
-    if context.list_lengths && value.kind == ExprKind.Intrinsic && value.text == "list_len" && length(value.children) == 1 {
+    if context.list_lengths && list_length_expression(value) {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
     }
     if value.kind == ExprKind.Coerce {

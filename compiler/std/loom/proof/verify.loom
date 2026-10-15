@@ -99,7 +99,7 @@ fn record_outcomes(proof Verification, expr Expr, state State, depth Int) Result
 }
 
 fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
-    if ty == 0 || ty == 4 {
+    if ty == 0 {
         return Value.Empty
     }
     if ty == 1 || ty == 2 || ty == 3 || ty == 5 {
@@ -109,7 +109,7 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
         return Value.Empty
     }
     let shape = get(proof.program.types, ty)
-    if shape.kind == TypeKind.List {
+    if shape.kind == TypeKind.List || shape.kind == TypeKind.Bytes {
         let identity = get(proof.fresh, 0)
         std.list.set(proof.fresh, 0, identity + 1)
         return Value.List(identity)
@@ -156,15 +156,12 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     if ty == 3 {
         return Result.Ok(Value.Text(TextValue.Variable(id)))
     }
-    if ty == 4 {
-        return Result.Ok(Value.Empty)
-    }
     if ty < 0 || ty >= length(proof.program.types) {
         return Result.Err("required proof currently needs scalar parameters")
     }
     let shape = get(proof.program.types, ty)
     if proof_enum_type(proof.program, ty, 0) >= 0 || shape.kind == TypeKind.List || (shape.kind == TypeKind.Refined &&
-        length(shape.fields) == 1 && proof_list_type(proof.program, get(shape.fields, 0).ty)) {
+        length(shape.fields) == 1 && proof_sequence_type(proof.program, get(shape.fields, 0).ty)) {
         return Result.Ok(record_parameter_value(proof, ty, 0))
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
@@ -480,7 +477,7 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
         return Result.Ok(outcomes(state, pure(expr, state)?))
     }
     if expr.kind == ExprKind.Bytes {
-        return Result.Ok(outcomes(state, Value.Empty))
+        return byte_literal_outcomes(proof, expr, state)
     }
     if expr.kind == ExprKind.Cleanup {
         // Cleanup may contain its own loops, but cannot jump to an outer loop.

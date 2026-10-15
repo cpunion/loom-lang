@@ -108,7 +108,9 @@ loop candidates now prove ordering and permutation for an ordinary in-place sort
 including contracts over its returned List rather than only its input handle.
 Fresh-output copy loops now preserve disjoint input observations, and pointwise
 prefix equality supplies histogram equality for copy/sort contract composition.
-General content induction and constrained shared-alias preservation remain open.
+Mutable Bytes now share these versioned extent/cell rules, including helper
+composition, entry observations and bounded copy loops. General content
+induction and constrained shared-alias preservation remain open.
 
 Use these complete acceptance stories, rather than a count of syntax features:
 

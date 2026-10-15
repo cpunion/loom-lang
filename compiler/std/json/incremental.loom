@@ -308,8 +308,9 @@ pub fn feed(decoder Decoder, chunk Bytes) Result[Int, ParseError] {
 
 // A byte range avoids copying framed input. Offsets remain relative to the
 // document, and success reports only the number of bytes in this range.
-pub fn feed(decoder Decoder, chunk Bytes, start Int, end Int) Result[Int, ParseError] {
-    assert start >= 0 && start <= end && end <= std.bytes.length(chunk)
+pub fn feed(decoder Decoder, chunk Bytes, start Int, end Int) Result[Int, ParseError]
+requires start >= 0 && start <= end && end <= std.bytes.length(chunk)
+{
     var state = get(decoder.state, 0)
     match state.failure {
         Option.Some(failed) => {

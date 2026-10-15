@@ -1,10 +1,33 @@
-fn list_operation(name Text) Bool {
+// Bytes and Lists share the same versioned sequence algebra. Only checked
+// primitive names enter here; source helper names never grant storage laws.
+fn sequence_operation(name Text) Text {
+    if name == "bytes_new" {
+        return "list_new"
+    }
+    if name == "bytes_len" {
+        return "list_len"
+    }
+    if name == "bytes_get" {
+        return "list_get"
+    }
+    if name == "bytes_set" {
+        return "list_set"
+    }
+    if name == "bytes_push" {
+        return "list_push"
+    }
+    name
+}
+
+fn list_operation(primitive Text) Bool {
+    let name = sequence_operation(primitive)
     name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" ||
     name == "list_set" || name == "list_push" || name == "list_retain_range" ||
     name == "list_append" || name == "list_take" || name == "list_replace"
 }
 
-fn list_stored_index(name Text) Int {
+fn list_stored_index(primitive Text) Int {
+    let name = sequence_operation(primitive)
     if name == "list_push" || name == "list_append" {
         1
     } else if name == "list_set" || name == "list_replace" {
@@ -64,17 +87,25 @@ pub fn single_list_write(functions List[Function], value Expr) Int {
     } else {
         ""
     }
-    if operation == "list_set" && length(value.children) == 3 {
+    let name = sequence_operation(operation)
+    if name == "list_set" && length(value.children) == 3 {
         1
-    } else if operation == "list_push" && length(value.children) == 2 {
+    } else if name == "list_push" && length(value.children) == 2 {
         2
     } else {
         0
     }
 }
 
-fn list_operation_outcomes(proof Verification, name Text, ty Int, receiver_type Int, inputs CallArguments) Result[List[Outcome], Text] {
+fn list_operation_outcomes(proof Verification, primitive Text, ty Int, receiver_type Int, inputs CallArguments) Result[List[Outcome], Text] {
+    let name = sequence_operation(primitive)
     var state = inputs.state
+    if primitive == "bytes_push" || primitive == "bytes_set" {
+        // Native validation faults before mutation. These are continuation
+        // facts, never permissions for a hypothetical write or argument replay.
+        let byte = integer_term(get(inputs.values, list_stored_index(name)))?
+        state = assume(assume(state, integer_limit(">=", byte, 0)), integer_limit("<=", byte, 255))
+    }
     if name == "list_retain_range" && length(inputs.values) == 4 {
         let start = list_value_index(get(inputs.values, 2))?
         let end = list_value_index(get(inputs.values, 3))?
@@ -135,7 +166,7 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, receiver_type 
         let output = new[Outcome]()
         var path = 0
         while path < length(entries) {
-            discard append(output, list_operation_outcomes(atomic, name, ty, receiver_type, CallArguments {
+            discard append(output, list_operation_outcomes(atomic, primitive, ty, receiver_type, CallArguments {
                         state = get(entries, path).state
                         values = inputs.values
                     })?)?
@@ -222,6 +253,18 @@ fn execute_list_operation(proof Verification, expr Expr, name Text, state State,
             -1
         }
         let written = list_operation_outcomes(proof, name, expr.ty, receiver_type, get(inputs, index))?
+        if name == "bytes_get" {
+            var path = 0
+            while path < length(written) {
+                let read = get(written, path)
+                let byte = integer_term(read.value)?
+                set(written, path, Outcome {
+                        state = assume(assume(read.state, integer_limit(">=", byte, 0)), integer_limit("<=", byte, 255))
+                        value = read.value
+                    })
+                path = path + 1
+            }
+        }
         if length(proof.preservation) != 0 && list_mutation(name) {
             let atomic = preservation_snapshot(proof)
             var path = 0

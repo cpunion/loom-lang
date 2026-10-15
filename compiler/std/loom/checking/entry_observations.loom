@@ -4,7 +4,7 @@ fn old_list_type(env Environment, ty Int) Bool {
     let shape = get(env.types, base_type(env, ty))
     // Capture the outer shape/version. Projection theories decide which
     // contents are observable; shared payloads do not become graph snapshots.
-    shape.kind == TypeKind.List && length(shape.arguments) == 1
+    (shape.kind == TypeKind.List && length(shape.arguments) == 1) || shape.kind == TypeKind.Bytes
 }
 
 fn old_observation(context Context, node Node) Result[Expr, Failure] {

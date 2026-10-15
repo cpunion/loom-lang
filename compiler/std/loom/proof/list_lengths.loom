@@ -6,6 +6,11 @@ fn proof_list_type(program Program, ty Int) Bool {
     ty >= 0 && ty < length(program.types) && get(program.types, ty).kind == TypeKind.List
 }
 
+fn proof_sequence_type(program Program, ty Int) Bool {
+    ty >= 0 && ty < length(program.types) &&
+    (get(program.types, ty).kind == TypeKind.List || get(program.types, ty).kind == TypeKind.Bytes)
+}
+
 fn appended_self(value Expr, next Expr, depth Int) Result[Expr, Text] {
     if depth >= 64 || length(value.arms) != 0 {
         return Result.Err("unsupported List predicate")

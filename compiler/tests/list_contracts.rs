@@ -3,9 +3,44 @@ mod common;
 use common::success;
 
 #[test]
-fn list_lengths_track_shared_state_without_runtime_postconditions() {
+fn sequence_lengths_track_shared_state_without_runtime_postconditions() {
     list_contract_package("compiler/examples/list_contracts");
     list_contract_package("compiler/examples/list_elements");
+    list_contract_package("compiler/examples/byte_contracts");
+}
+
+#[test]
+fn changed_byte_proofs_do_not_reuse_cached_postconditions() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("main.loom");
+    let cache = temporary.path().join("cache");
+    let program = include_str!("../examples/byte_contracts/main.loom");
+    let check = || {
+        common::loom(&[
+            "check",
+            temporary.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace("result <= 255", "result <= 254"),
+        program.replace("old(length(value)) + 1", "old(length(value)) + 2"),
+        program.replace("set(value, index, byte)", "set(value, index, 0)"),
+    ] {
+        assert_ne!(changed, program);
+        fs::write(&source, changed).unwrap();
+        let output = check();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "{error}"
+        );
+    }
 }
 
 fn list_contract_package(package: &str) {
