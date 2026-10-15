@@ -1,0 +1,82 @@
+// Transparent explicit adapters can reuse the original payload and witness.
+impl Source for dyn Numbered[Value = Int] {
+    fn value(self dyn Numbered[Value = Int]) Int {
+        self.number()
+    }
+}
+
+concept Incremented {
+    fn incremented(self Self) Int
+}
+
+impl Incremented for dyn Numbered[Value = Int] {
+    fn incremented(self dyn Numbered[Value = Int]) Int {
+        self.number() + 1
+    }
+}
+
+impl Source for dyn Incremented {
+    fn value(self dyn Incremented) Int {
+        self.incremented()
+    }
+}
+
+concept Choices {
+    fn before(self Self) Bool
+    fn chosen(self Self, amount Int) Int
+    fn after(self Self) Text
+}
+
+concept Chosen {
+    fn choose(self Self, amount Int) Int
+}
+
+impl Choices for Int {
+    fn before(self Int) Bool {
+        true
+    }
+    fn chosen(self Int, amount Int) Int {
+        self + amount
+    }
+    fn after(self Int) Text {
+        "unused"
+    }
+}
+
+impl Chosen for dyn Choices {
+    fn choose(self dyn Choices, amount Int) Int {
+        self.chosen(amount)
+    }
+}
+
+test fn transparent_dynamic_cycles_keep_the_original_payload_and_behavior() {
+    var source dyn Source = Labeled {
+        label = concat("hel", "lo")
+    }
+    var index = 0
+    while index < 64 {
+        let numbered dyn Numbered[Value = Int] = source
+        source = numbered
+        discard concat("temporary", " text")
+        index = index + 1
+    }
+    assert source.value() == 42
+}
+
+test fn dynamic_adapters_with_work_preserve_every_composition() {
+    var source dyn Source = 42
+    var index = 0
+    while index < 64 {
+        let numbered dyn Numbered[Value = Int] = source
+        let incremented dyn Incremented = numbered
+        source = incremented
+        index = index + 1
+    }
+    assert source.value() == 106
+}
+
+test fn dynamic_projection_selects_the_right_nonzero_witness_slot() {
+    let choices dyn Choices = 40
+    let chosen dyn Chosen = choices
+    assert chosen.choose(2) == 42
+}

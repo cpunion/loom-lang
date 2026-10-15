@@ -176,6 +176,10 @@ fn structured[Us... Amount](values (Structured[(Us...)],)) Int
 ensures result >= 0 {
     total(values...)
 }
+fn dependent[Us... Amount, Vs... Amount](values (Structured[(Us, Vs...)]...)) Int
+ensures result >= 0 {
+    total(values...)
+}
 fn mixed[Us... Amount, Vs...](left (Us...), right (Vs...), values (Bool, Us..., Wrapped[Vs]..., Bool)) Int
 ensures result >= 0 {
     var sum = 0
@@ -191,6 +195,7 @@ fn main() {
     assert forwarded((Wrapped { value = "text" }, Wrapped { value = true })) == 2
     assert nested((Wrapped { value = (true, "nested") }, Wrapped { value = 1 })) == 2
     assert structured((Structured { value = (true, false) },)) == 1
+    assert dependent((Structured { value = (true, false) }, Structured { value = (false, true) })) == 2
     assert mixed((false,), ("text",), (true, false, Wrapped { value = "text" }, false)) == 4
 }
 "#;

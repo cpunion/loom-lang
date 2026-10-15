@@ -26,6 +26,68 @@ fn table_type<'ctx>(context: &'ctx Context, methods: usize) -> StructType<'ctx> 
     )
 }
 
+// A transparent adapter can reuse a contiguous slice of its source witness.
+// All retained slots must forward exactly the receiver and arguments, with the
+// same checked ABI and no guard/cleanup/other work. This also composes through
+// repeated projections without discovering the hidden concrete type.
+pub(super) fn projection_offset(program: &checked::Program, witness: usize) -> Option<u32> {
+    let witness = &program.witnesses[witness];
+    let Type::Dyn(source) = witness.concrete else {
+        return None;
+    };
+    let source = &program.interfaces[source];
+    let destination = &program.interfaces[witness.interface];
+    let mut offset = None;
+    for (slot, target) in witness.methods.iter().enumerate() {
+        let Some(target) = target else { continue };
+        let function = &program.functions[*target];
+        if !function.requires.is_empty() || function.params.first() != Some(&witness.concrete) {
+            return None;
+        }
+        let value = match (function.body.statements.as_slice(), &function.body.tail) {
+            ([], Some(value)) => value.as_ref(),
+            ([statement], None) => match &statement.kind {
+                checked::StmtKind::Return(Some(value)) | checked::StmtKind::Expr(value) => value,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let checked::ExprKind::DynCall {
+            receiver,
+            slot: source_slot,
+            arguments,
+        } = &value.kind
+        else {
+            return None;
+        };
+        let method = source.methods.get(*source_slot)?;
+        let expected = &destination.methods[slot];
+        let next = source_slot.checked_sub(slot)?;
+        if offset.is_some_and(|offset| offset != next)
+            || receiver.ty != witness.concrete
+            || !matches!(receiver.kind, checked::ExprKind::Local(0))
+            || method.params != expected.params
+            || method.result != expected.result
+            || function.params[1..] != expected.params
+            || function.result != expected.result
+            || value.ty != expected.result
+            || arguments.len() != method.params.len()
+            || !arguments.iter().enumerate().all(|(index, argument)| {
+                argument.ty == method.params[index]
+                    && matches!(argument.kind, checked::ExprKind::Local(local) if local == index + 1)
+            })
+        {
+            return None;
+        }
+        offset = Some(next);
+    }
+    let offset = offset.unwrap_or(0);
+    if offset.checked_add(destination.methods.len())? > source.methods.len() {
+        return None;
+    }
+    u32::try_from(offset).ok()
+}
+
 pub(super) fn emit_witnesses<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -38,6 +100,9 @@ pub(super) fn emit_witnesses<'ctx>(
     let builder = context.create_builder();
     let mut tables = vec![None; program.witnesses.len()];
     for &id in live {
+        if projection_offset(program, id).is_some() {
+            continue;
+        }
         let witness = &program.witnesses[id];
         let interface = &program.interfaces[witness.interface];
         let mut slots = Vec::new();
@@ -108,6 +173,34 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             return Ok(None);
         };
         let shape = &self.program.witnesses[witness];
+        if let Some(offset) = projection_offset(self.program, witness) {
+            if offset == 0 {
+                return Ok(Some(value));
+            }
+            let Type::Dyn(interface) = shape.concrete else {
+                unreachable!("a witness projection has a dynamic source")
+            };
+            let value = value.into_struct_value();
+            let table = self
+                .builder
+                .build_extract_value(value, 1, "dyn.source.witness")?
+                .into_pointer_value();
+            let table = self.builder.build_struct_gep(
+                table_type(
+                    self.context,
+                    self.program.interfaces[interface].methods.len(),
+                ),
+                table,
+                offset,
+                "dyn.project.witness",
+            )?;
+            return Ok(Some(
+                self.builder
+                    .build_insert_value(value, table, 1, "dyn.project")?
+                    .into_struct_value()
+                    .into(),
+            ));
+        }
         let native = native_type(self.context, self.program, shape.concrete)?;
         let pointer = self.context.ptr_type(AddressSpace::default());
         let trace = if gc::managed(self.program, shape.concrete) {

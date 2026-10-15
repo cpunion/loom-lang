@@ -44,7 +44,8 @@ impl Readable for ReadableView {
 }
 
 // A second explicit adapter can target the erased source type directly.
-// Its witness wraps dyn Source; it never asks for the hidden concrete type.
+// A transparent method can reuse the payload/witness; it never asks for the
+// hidden concrete type. Adapters with their own work retain their snapshot.
 impl Numbered for dyn Source {
     type Value = Int
     fn number(self dyn Source) Int {

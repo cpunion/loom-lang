@@ -1301,8 +1301,13 @@ prerequisite proofs, including repeated words and nested nominal pack groups.
 For example, `impl[Ts... Measurement] Measurement for (Ts...)` can establish the
 tuple capability in `MeasuredLayout[As, (Bs...)]...` when every `Bs` declares
 `Measurement`. It does not qualify raw `As` or reveal a tuple width. Ambiguous,
-cyclic or exhausted matching supplies no evidence; free iteration-element
-occurrences inside a nested word still reject. An override's private proof
+cyclic or exhausted matching supplies no evidence. Nested words containing a free
+iteration element, such as `MeasuredLayout[As, (As, Bs...)]...`, derive their
+capabilities directly from the complete symbolic schema; they are not erased to
+one fixed layout or type shared by every iteration. Method observations, generic
+element helpers and whole-word forwarding reuse this rule and validate nested
+data arguments. Concrete layout and cross-iterator type equality are not inferred.
+An override's private proof
 auxiliaries do not become parameters of its inherited public contract. See the
 [nested layout example](examples/variadics/nested_layouts.loom).
 The [composed bounds example](examples/variadics/composed_bounds.loom) exercises
@@ -2053,6 +2058,15 @@ there is no runtime specialization or type registry. This remains a source-packa
 selected-build model: native objects do not promise arbitrary new generic
 instances to a separately compiled consumer. `Self` outside the receiver remains
 invalid for dynamic methods; method-local parameters are allowed.
+
+An explicit impl for an erased receiver still defines the conversion's behavior.
+When every retained method simply forwards the same receiver and arguments,
+with identical checked ABI and no guard or other work, native lowering can reuse
+the original payload and a contiguous slice of its witness table. This includes
+nonzero slots and repeated transparent conversions; it needs no runtime type
+discovery or additional box. Calculating, guarded, cleanup-bearing and
+noncontiguous adapters retain their ordinary snapshot boxes. Arbitrary adapter
+chains are never flattened. See the [adapter tests](examples/dyn_adapter/projections.loom).
 
 The representation is a GC-owned concrete snapshot plus a read-only witness
 table; copying a dyn value does not allocate another box. Contained lists retain

@@ -82,7 +82,7 @@ fn pack_helper_scope(context Context, node Node, options List[Int], values List[
             }
         }
         if parameter >= 0 {
-            let actual = pack_observation_types(context, parameter, node)?
+            let actual = pack_observation_patterns(context, parameter)
             var option = 0
             while option < length(options) {
                 let signature = get(context.env.signatures, get(options, option))
@@ -93,7 +93,7 @@ fn pack_helper_scope(context Context, node Node, options List[Int], values List[
                         var admitted = true
                         var member = 0
                         while member < length(actual) && admitted {
-                            admitted = satisfies(context, get(actual, member), required.capability)?
+                            admitted = pack_pattern_admitted(context, get(actual, member), required.capability, node)?
                             member = member + 1
                         }
                         if admitted {

@@ -3,6 +3,93 @@ record PackLayoutRequirement {
     capability Int
 }
 
+fn pack_layout_bindings(context Context, caller Node, owner Int, target Node, schema Node,
+    budget List[Int]) Option[PackForwardMatch] {
+    let pattern = match type_pattern_schema(context.env, owner, target, false, 0, true) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    pack_schema_bindings(caller, group(symbol(context.env, owner).node, NodeKind.TypeParameters), pattern, schema, budget)
+}
+
+fn pack_schema_bindings(caller Node, parameters List[Node], pattern Node, schema Node,
+    budget List[Int]) Option[PackForwardMatch] {
+    let bindings = PackForwardMatch {
+        values = new[List[Node]](),
+        known = new[Bool]()
+    }
+    var index = 0
+    while index < length(parameters) {
+        push(bindings.values, new[Node]())
+        push(bindings.known, false)
+        index = index + 1
+    }
+    let work = [PackForwardShape {
+            pattern = pattern,
+            actual = schema,
+            element = false
+        }]
+    let solutions = new[PackForwardMatch]()
+    pack_forward_search(parameters, group(caller, NodeKind.TypeParameters), work, bindings, solutions, budget, 0)
+    if get(budget, 0) > 0 && length(solutions) == 1 {
+        Option.Some(get(solutions, 0))
+    } else {
+        Option.None
+    }
+}
+
+// A symbolic capability cannot hide an ill-formed nested data argument. Match
+// nominal slots with the same word rules and discharge their declared bounds.
+fn pack_layout_well_formed(context Context, caller Node, schema Node, budget List[Int], depth Int) Result[Bool, Failure] {
+    if depth >= 64 || get(budget, 0) == 0 {
+        return Result.Ok(false)
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    var index = 0
+    while index < length(schema.children) {
+        if !pack_layout_well_formed(context, caller, child(schema, index), budget, depth + 1)? {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    if schema.kind != NodeKind.Type || !std.text.starts_with(schema.value, "nominal#") {
+        return Result.Ok(true)
+    }
+    let owner = match std.int.parse(slice(schema.value, 8, length(schema.value))) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Ok(false)
+        }
+    }
+    let declaration = symbol(context.env, owner)
+    let parameters = group(declaration.node, NodeKind.TypeParameters)
+    let arguments = new[Node]()
+    index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        let ty = pack_node(parameter, NodeKind.Type, concat("$parameter#", std.int.to_text(index)), new[Node]())
+        push(arguments, if parameter.kind == NodeKind.TypePack {
+                let spread = pack_node(parameter, NodeKind.Spread, "", source_nodes(ty))
+                if type_pack_count(declaration.node) > 1 {
+                    pack_node(parameter, NodeKind.TupleType, "tuple", source_nodes(spread))
+                } else {
+                    spread
+                }
+            } else {
+                ty
+            })
+        index = index + 1
+    }
+    let target = pack_node(declaration.node, NodeKind.Type, concat("nominal#", std.int.to_text(owner)), arguments)
+    match pack_schema_bindings(caller, parameters, target, schema, budget) {
+        Option.Some(bindings) => pack_layout_prerequisites(context, caller, owner, parameters,
+            bindings, new[PackLayoutRequirement](), budget, 0)
+        Option.None => Result.Ok(false)
+    }
+}
+
 // Establish capabilities of a whole symbolic type word by matching source impl
 // headers. This is entailment, not overlap testing or arity specialization.
 fn pack_layout_admitted(context Context, caller Node, schema Node, capability Int,
@@ -71,35 +158,14 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
         if length(header.widths) == 0 &&
         (!declaration.test_only || symbol(context.env, pack_proof_caller(context)).test_only) {
             let parameters = group(declaration.node, NodeKind.TypeParameters)
-            let bindings = PackForwardMatch {
-                values = new[List[Node]](),
-                known = new[Bool]()
-            }
-            var bound = 0
-            while bound < length(parameters) {
-                push(bindings.values, new[Node]())
-                push(bindings.known, false)
-                bound = bound + 1
-            }
-            let pattern = match type_pattern_schema(context.env, owner, child(declaration.node, 1), false, 0, true) {
-                Result.Ok(value) => value
-                Result.Err(_) => {
-                    // Optional structural inference cannot reject an otherwise
-                    // valid, unrelated target outside this schema fragment.
-                    index = index + 1
-                    continue
+            match pack_layout_bindings(context, caller, owner, child(declaration.node, 1), schema, budget) {
+                Option.Some(bindings) => {
+                    if pack_layout_prerequisites(context, caller, owner, parameters, bindings, path, budget, depth + 1)? {
+                        return Result.Ok(true)
+                    }
                 }
-            }
-            let work = [PackForwardShape {
-                    pattern = pattern,
-                    actual = schema,
-                    element = false
-                }]
-            let solutions = new[PackForwardMatch]()
-            pack_forward_search(parameters, source, work, bindings, solutions, budget, 0)
-            if get(budget, 0) > 0 && length(solutions) == 1 &&
-            pack_layout_prerequisites(context, caller, owner, parameters, get(solutions, 0), path, budget, depth + 1)? {
-                return Result.Ok(true)
+                Option.None => {
+                }
             }
         }
         index = index + 1
@@ -148,6 +214,9 @@ fn pack_layout_evidence(context Context, caller Node) Result[Context, Failure] {
     while index < length(layouts) {
         let layout = get(layouts, index)
         let schema = pack_forward_source_schema(context, caller, layout)?
+        if !pack_layout_well_formed(context, caller, schema, ints(512), 0)? {
+            return Result.Err(error(context, layout, "variadic nested layout needs well-formed data arguments for every member"))
+        }
         let ty = resolve_bound(context.env, context.signature.symbol,
             pack_node(layout, NodeKind.Type, pack_proof_layout_type(index), new[Node]()),
             context.arguments, context.signature.requirements, 0)?

@@ -179,7 +179,12 @@ Concepts require explicit conformances. Static/default/generic methods,
 associated bounds/defaults/families and exact dyn bindings are implemented.
 Dynamic calls use statically established evidence and sparse used slots, not
 `any`-based runtime discovery. Explicit `impl D for dyn C` adapters work;
-dynamic associated families and zero-allocation witness upcasts do not.
+dynamic associated families remain open. Transparent explicit dyn adapters can
+reuse the original GC-owned payload and a contiguous witness slice, including
+nonzero slots and repeated projections. Every retained method must forward the
+same receiver/arguments with identical checked ABI and no guard or other work.
+Adapters with computation, cleanup, checks or noncontiguous slot maps still keep
+their snapshot box; arbitrary composition is not flattened.
 Named/captured callbacks retain typed environments; closures cannot conceal
 live Task or scoped-resource obligations.
 Generic instances retain nominal type domains and prerequisites of supplied
@@ -306,9 +311,13 @@ prerequisite. Repeated words must have the same binding; independent words keep
 their own bounds. Tuple/function and nested nominal-group schemas use the same
 matcher, without specializing a width or introducing runtime witnesses. This
 local evidence neither qualifies raw element types nor exports private proof
-parameters. Ambiguous, cyclic and exhausted entailment rejects. Nested words
-with free iteration-element occurrences and concrete layout observations remain
-conservative. See the [nested layout example](../../compiler/examples/variadics/nested_layouts.loom).
+parameters. Element-dependent nested words such as `(As, Bs...)` use the complete
+schema instead of one fixed private layout. Method observations, generic element
+helpers and whole-word forwarding derive only proved capabilities, checking nested
+nominal argument bounds as well. Independent iterators remain distinct even when
+their schemas agree. Ambiguous, cyclic and exhausted entailment rejects; concrete
+layout/type-identity observations remain conservative. See the
+[nested layout example](../../compiler/examples/variadics/nested_layouts.loom).
 Element-independent induction also accepts pack-bearing structural tuples: their
 extent composes fixed fields, repeated widths and independent expansion groups
 through ordinary affine arithmetic. A nested fixed field contributes one element;

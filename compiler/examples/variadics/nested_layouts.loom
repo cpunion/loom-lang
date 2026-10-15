@@ -55,6 +55,34 @@ ensures result >= 0 {
     measured(values...)
 }
 
+fn dependent_measurement[As...Measurement, Bs...Measurement](values (MeasuredLayout[As, (As, Bs...)]...)) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        total = total + item.measure()
+    }
+    total
+}
+
+fn dependent_element[T Measurement](value T) Int
+ensures result >= 0 {
+    value.measure()
+}
+
+fn dependent_helpers[As...Measurement, Bs...Measurement](values (MeasuredLayout[As, (As, Bs...)]...)) Int
+ensures result >= 0 {
+    var total = 0
+    comptime for item in values {
+        total = total + dependent_element(item)
+    }
+    total
+}
+
+fn dependent_forward[As...Measurement, Bs...Measurement](values (MeasuredLayout[As, (As, Bs...)]...)) Int
+ensures result >= 0 {
+    dependent_measurement(values) + measured(values...) + dependent_helpers(values)
+}
+
 async fn structured_async[As..., Bs...Measurement](values (MeasuredLayout[As, (Bs...)]...)) Int
 ensures result >= 0 {
     discard item(0).await
@@ -168,9 +196,42 @@ fn exercise_nested_layouts() {
                 value = true,
                 context = nested_callback
             },)) == 1
+    let dependent = (
+        MeasuredLayout {
+            value = true,
+            context = (false, shared)
+        },
+        MeasuredLayout {
+            value = 42,
+            context = (2, shared)
+        },
+    )
+    assert dependent_measurement(dependent) == 6
+    assert dependent_forward(dependent) == 18
+    assert comptime {
+        dependent_forward((MeasuredLayout {
+                    value = true,
+                    context = (true, 2)
+                },))
+    } == 9
+    let dependent_callback fn((MeasuredLayout[Bool, (Bool, Int)],)) Int = dependent_forward
+    assert dependent_callback((MeasuredLayout {
+                value = false,
+                context = (true, 2)
+            },)) == 9
+}
+
+async fn dependent_async[As...Measurement, Bs...Measurement](values (MeasuredLayout[As, (As, Bs...)]...)) Int
+ensures result >= 0 {
+    discard item(0).await
+    dependent_forward(values)
 }
 
 async fn exercise_nested_async() {
+    assert dependent_async((MeasuredLayout {
+                value = false,
+                context = (true, 2)
+            },)).await == 9
     assert nested_async((NestedLayout {
                 value = true,
                 context = (42, "async")

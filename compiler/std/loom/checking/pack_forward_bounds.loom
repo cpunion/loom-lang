@@ -12,11 +12,12 @@ fn pack_forward_evidence(context Context, caller Node, parameter Node, sequence 
         } else {
             item
         }
-        let ty = pack_forward_type(scope, caller, schema, types, inputs)?
         var bound = 0
         while bound < length(parameter.children) {
             let capability = required_concept(context.env, owner, child(parameter, bound))?
-            if !satisfies(scope, ty, capability)? {
+            let symbolic = pack_layout_well_formed(scope, caller, schema, ints(512), 0)? &&
+            pack_layout_admitted(scope, caller, schema, capability, new[PackLayoutRequirement](), ints(512), 0)?
+            if !symbolic && !satisfies(scope, pack_forward_type(scope, caller, schema, types, inputs)?, capability)? {
                 return Result.Err(error(context, item,
                         "forwarded elements need an explicit implementation or declared concept requirement"))
             }
