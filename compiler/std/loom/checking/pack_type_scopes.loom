@@ -1,0 +1,70 @@
+// Validate type-word scope before erasure or arity specialization. Entering a
+// spread selects its free pack elements; selections do not leak to siblings.
+// Nested whole-word spreads and explicit nominal groups use the same traversal.
+fn pack_type_scope(env Environment, owner Int, node Node, names List[Text], elements List[Int], depth Int) Result[Bool, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, node, "type pack expansion nesting limit exceeded"))
+    }
+    var active = elements
+    if node.kind == NodeKind.Spread {
+        active = std.list.clone(elements)
+        let selected = expansion_packs(child(node, 0), names)
+        var index = 0
+        while index < length(selected) {
+            let pack = get(selected, index)
+            if !resource_seen(active, pack) {
+                push(active, pack)
+            }
+            index = index + 1
+        }
+    }
+    let pack = pack_root_index(node, names)
+    if pack >= 0 && !resource_seen(active, pack) {
+        return Result.Err(failure(env, owner, node, "expand a type pack with ...; it is not one type"))
+    }
+    var index = 0
+    while index < length(node.children) {
+        discard pack_type_scope(env, owner, child(node, index), names, active, depth + 1)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn pack_header_scopes(env Environment, owner Int, parameters List[Node]) Result[Bool, Failure] {
+    let names = new[Text]()
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if parameter.kind == NodeKind.TypePack {
+            push(names, parameter.value)
+        }
+        index = index + 1
+    }
+    if length(names) == 0 {
+        return Result.Ok(true)
+    }
+    let node = symbol(env, owner).node
+    index = 0
+    while index < length(node.children) {
+        let member = child(node, index)
+        if member.kind == NodeKind.Parameters {
+            var parameter = 0
+            while parameter < length(member.children) {
+                discard pack_type_scope(env, owner, child(child(member, parameter), 0), names, new[Int](), 0)?
+                parameter = parameter + 1
+            }
+        }
+        if member.kind == NodeKind.ReturnType || member.kind == NodeKind.Field || member.kind == NodeKind.Variant {
+            var ty = 0
+            while ty < length(member.children) {
+                discard pack_type_scope(env, owner, child(member, ty), names, new[Int](), 0)?
+                ty = ty + 1
+            }
+        }
+        index = index + 1
+    }
+    if node.kind == NodeKind.AssociatedType && type_part(node) >= 0 {
+        discard pack_type_scope(env, owner, child(node, type_part(node)), names, new[Int](), 0)?
+    }
+    Result.Ok(true)
+}

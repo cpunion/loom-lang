@@ -913,7 +913,10 @@ bounds, before concrete instantiation. Zero-element packs produce an inferred
 empty tuple, not a no-result expression; source `()` and `Unit` remain unavailable.
 
 Pack-independent postconditions use ordinary abstract proofs, without sampling
-arities. The compiler checks that the body, return type and contracts mention
+arities. Declaration headers first check that every pack element occurs inside
+its corresponding `...` expansion, including unused declarations and erased
+proof inputs. Expansion scopes do not leak into neighboring types.
+The compiler checks that the body, return type and contracts mention
 neither the type pack nor any pack-bearing input; it then erases those inputs
 for the required proof. Uncalled families and inherited method contracts are
 checked too. Selected arities retain their normal bounds and resource checks.

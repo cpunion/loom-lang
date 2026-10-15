@@ -208,6 +208,7 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
     if (item.node.kind != NodeKind.Function && !data_pack(item.node)) || (item.owner >= 0 && !member) || has(item.node, NodeKind.Intrinsic) {
         return Result.Err(failure(env, owner, item.node, "type packs belong to functions, concept methods, records or enums"))
     }
+    discard pack_header_scopes(env, owner, declared_packs(item.node))?
     if has(item.node, NodeKind.Ensures) {
         discard validate_pack_contract(env, owner)?
     }
