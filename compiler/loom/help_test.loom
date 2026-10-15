@@ -1,0 +1,48 @@
+import std.text.contains
+import std.text.ends_with
+
+test fn help_covers_public_commands_without_discovery_or_source_loading() {
+    let commands = ["init", "check", "build", "test", "run", "resolve", "fmt", "lex", "parse", "emit-checked"]
+    var index = 0
+    while index < length(commands) {
+        let command = get(commands, index)
+        let args = cli_arguments(command)
+        push(args, "does-not-exist")
+        push(args, "--help")
+        assert help_requested(args)
+        let text = help_text(command)
+        assert contains(text, concat("Usage: loom ", command))
+        assert ends_with(text, "\n")
+        index = index + 1
+    }
+    assert help_requested(cli_arguments("--help"))
+    assert help_requested(cli_arguments("-h"))
+    assert !help_requested(cli_arguments("unknown"))
+    assert !help_requested(cli_arguments("editor-session"))
+    assert contains(help_text("--help"), "loom <command> --help")
+    assert contains(help_text("test"), "--filter")
+    assert contains(help_text("test"), "--recursive")
+    assert contains(help_text("fmt"), "--stdin")
+    assert contains(help_text("resolve"), "--git-credential-tool")
+}
+
+test fn help_does_not_consume_option_values_or_forwarded_program_arguments() {
+    let values = ["--std", "--output", "-o", "--emit-ir", "--native-tool", "--git-tool",
+        "--git-credential-tool", "--object-cache", "--frontend-cache", "--receipt", "--build-option", "--filter"]
+    var index = 0
+    while index < length(values) {
+        let args = cli_arguments("test")
+        push(args, get(values, index))
+        push(args, "--help")
+        assert !help_requested(args)
+        push(args, "-h")
+        assert help_requested(args)
+        index = index + 1
+    }
+    let run = cli_arguments("run")
+    push(run, ".")
+    push(run, "--")
+    push(run, "--help")
+    push(run, "-h")
+    assert !help_requested(run)
+}

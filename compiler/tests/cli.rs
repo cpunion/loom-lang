@@ -6,6 +6,65 @@ mod common;
 use common::{loom, success};
 
 #[test]
+fn command_help_runs_without_loading_packages_or_discovering_tools() {
+    let directory = tempfile::tempdir().unwrap();
+    for mode in [
+        "init",
+        "check",
+        "build",
+        "test",
+        "run",
+        "resolve",
+        "fmt",
+        "lex",
+        "parse",
+        "emit-checked",
+    ] {
+        let output = Command::new(common::compiler())
+            .current_dir(directory.path())
+            .args([mode, "does-not-exist", "--std", "absent", "--help"])
+            .output()
+            .unwrap();
+        success(&output);
+        assert!(output.stderr.is_empty(), "{mode}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).starts_with(&format!("Usage: loom {mode}")),
+            "{mode}: {output:?}"
+        );
+    }
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    for flag in ["--help", "-h"] {
+        success(&loom(&[flag]));
+        success(&loom(&["test", flag]));
+    }
+    let unknown = loom(&["unknown", "--help"]);
+    assert_eq!(unknown.status.code(), Some(2));
+    assert!(unknown.stdout.is_empty());
+
+    fs::write(
+        directory.path().join("main.loom"),
+        r#"import std.process.arguments
+import std.list.get
+import std.list.length
+
+fn main() {
+    let args = arguments()
+    assert length(args) == 3
+    assert get(args, 1) == "--help" && get(args, 2) == "-h"
+}
+"#,
+    )
+    .unwrap();
+    let forwarded = common::command(&["run"])
+        .arg(directory.path())
+        .args(["--", "--help", "-h"])
+        .output()
+        .unwrap();
+    success(&forwarded);
+    assert!(forwarded.stdout.is_empty(), "{forwarded:?}");
+}
+
+#[test]
 fn automatic_execution_is_private_and_preserves_retained_outputs() {
     let package = tempfile::tempdir().unwrap();
     fs::write(
