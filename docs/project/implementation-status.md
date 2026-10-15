@@ -179,7 +179,12 @@ Concepts require explicit conformances. Static/default/generic methods,
 associated bounds/defaults/families and exact dyn bindings are implemented.
 Dynamic calls use statically established evidence and sparse used slots, not
 `any`-based runtime discovery. Explicit `impl D for dyn C` adapters work;
-dynamic associated families and zero-allocation witness upcasts do not.
+dynamic associated families remain open. Transparent explicit dyn adapters can
+reuse the original GC-owned payload and a contiguous witness slice, including
+nonzero slots and repeated projections. Every retained method must forward the
+same receiver/arguments with identical checked ABI and no guard or other work.
+Adapters with computation, cleanup, checks or noncontiguous slot maps still keep
+their snapshot box; arbitrary composition is not flattened.
 Named/captured callbacks retain typed environments; closures cannot conceal
 live Task or scoped-resource obligations.
 Generic instances retain nominal type domains and prerequisites of supplied

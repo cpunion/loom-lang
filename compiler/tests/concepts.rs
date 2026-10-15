@@ -3,6 +3,34 @@ mod common;
 use common::success;
 
 #[test]
+fn transparent_dyn_projections_keep_gc_roots_and_explicit_adapter_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let example = common::root().join("compiler/examples/dyn_adapter");
+    for level in ["0", "2"] {
+        let executable = common::executable(directory.path(), &format!("dyn-projections-{level}"));
+        let ir = directory.path().join(format!("dyn-projections-{level}.ll"));
+        success(
+            &common::command(&[
+                "test",
+                example.to_str().unwrap(),
+                "--no-run",
+                "--output",
+                executable.to_str().unwrap(),
+                "--emit-ir",
+                ir.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+        if level == "0" {
+            assert!(fs::read_to_string(ir).unwrap().contains("dyn.project.witness"));
+        }
+    }
+}
+
+#[test]
 fn associated_defaults_and_bounds_specialize_static_and_dynamic_calls() {
     let source = tempfile::tempdir().unwrap();
     fs::write(

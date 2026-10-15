@@ -2054,6 +2054,15 @@ selected-build model: native objects do not promise arbitrary new generic
 instances to a separately compiled consumer. `Self` outside the receiver remains
 invalid for dynamic methods; method-local parameters are allowed.
 
+An explicit impl for an erased receiver still defines the conversion's behavior.
+When every retained method simply forwards the same receiver and arguments,
+with identical checked ABI and no guard or other work, native lowering can reuse
+the original payload and a contiguous slice of its witness table. This includes
+nonzero slots and repeated transparent conversions; it needs no runtime type
+discovery or additional box. Calculating, guarded, cleanup-bearing and
+noncontiguous adapters retain their ordinary snapshot boxes. Arbitrary adapter
+chains are never flattened. See the [adapter tests](examples/dyn_adapter/projections.loom).
+
 The representation is a GC-owned concrete snapshot plus a read-only witness
 table; copying a dyn value does not allocate another box. Contained lists retain
 their ordinary sharing, while record value fields are copied. Static calls still

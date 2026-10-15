@@ -272,3 +272,87 @@ fn explicit_witnesses_dispatch_and_keep_sparse_reachability() {
             .contains("absent witness method")
     );
 }
+
+#[test]
+fn transparent_witness_slices_emit_without_a_second_box() {
+    let forward = function(
+        vec![Type::Dyn(0), Type::Int],
+        Type::Int,
+        value(
+            Type::Int,
+            E::DynCall {
+                receiver: Box::new(local(Type::Dyn(0), 0)),
+                slot: 1,
+                arguments: vec![local(Type::Int, 1)],
+            },
+        ),
+    );
+    let convert = function(
+        vec![Type::Dyn(0)],
+        Type::Dyn(1),
+        value(
+            Type::Dyn(1),
+            E::DynBox {
+                witness: 0,
+                value: Box::new(local(Type::Dyn(0), 0)),
+            },
+        ),
+    );
+    let signature = || checked::Signature {
+        params: vec![Type::Int],
+        result: Type::Int,
+    };
+    let mut program = checked::Program {
+        types: vec![],
+        lists: vec![],
+        functions: vec![forward, convert],
+        function_types: vec![],
+        entry: None,
+        tests: vec![],
+        test_names: vec![],
+        target_inputs: vec![],
+        exports: vec![1],
+        interfaces: vec![
+            checked::Interface {
+                methods: vec![signature(), signature()],
+            },
+            checked::Interface {
+                methods: vec![signature()],
+            },
+        ],
+        witnesses: vec![checked::Witness {
+            interface: 1,
+            concrete: Type::Dyn(0),
+            methods: vec![Some(0)],
+        }],
+    };
+    assert_eq!(projection_offset(&program, 0), Some(1));
+    let directory = tempfile::tempdir().unwrap();
+    let object = directory.path().join("projection.o");
+    let ir = directory.path().join("projection.ll");
+    Llvm.emit(
+        &program,
+        EmitOptions {
+            object: &object,
+            ir: Some(&ir),
+            test_mode: false,
+            optimization: Optimization::O0,
+        },
+    )
+    .unwrap();
+    let ir = std::fs::read_to_string(ir).unwrap();
+    assert!(ir.contains("dyn.project.witness"));
+    assert!(!ir.contains("@loom_rt_box_new"));
+
+    // Even a redundant guard remains work unless separately proved removable.
+    program.functions[0]
+        .requires
+        .push(value(Type::Bool, E::Bool(true)));
+    assert_eq!(projection_offset(&program, 0), None);
+    program.functions[0].requires.clear();
+    if let E::DynCall { arguments, .. } = &mut program.functions[0].body.tail.as_mut().unwrap().kind
+    {
+        arguments[0] = int(7);
+    }
+    assert_eq!(projection_offset(&program, 0), None);
+}
