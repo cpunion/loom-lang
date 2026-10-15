@@ -48,6 +48,12 @@ export function checkArchiveInfo(info, plan, artifact) {
   }
 }
 
+export function checkUnusedTag(refs, tag) {
+  if (refs.some(item => item.ref === `refs/tags/${tag}`)) {
+    throw new Error("tag already exists; choose a new prerelease tag instead of reusing or moving it");
+  }
+}
+
 function command(program, args) {
   const result = spawnSync(program, args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   if (result.error || result.status !== 0) {
@@ -80,6 +86,8 @@ async function main(args) {
   const jobs = api(`actions/runs/${id}/jobs?per_page=100`).jobs;
   const artifacts = api(`actions/runs/${id}/artifacts?per_page=100`).artifacts;
   const plan = releasePlan(run, jobs, artifacts, tag);
+  const checkTag = () => checkUnusedTag(api(`git/matching-refs/tags/${encodeURIComponent(tag)}`), tag);
+  checkTag();
   const directory = mkdtempSync(join(tmpdir(), "loom-release-"));
   try {
     const assets = [];
@@ -115,6 +123,9 @@ async function main(args) {
       "LLVM 22 shared libraries and the host Clang/linker/SDK remain external requirements.",
       "See the included INSTALL.md and third-party notices. Check each SHA-256 before extraction.",
     ].join("\n");
+    // --target is ignored for an existing tag. Recheck after downloads rather
+    // than silently attaching this build to another commit's version label.
+    checkTag();
     command("gh", ["release", "create", tag, ...assets, "--repo", repository,
       "--target", plan.commit, "--draft", "--prerelease", "--title", `Loom ${tag}`, "--notes", notes]);
     console.log(`Created draft ${tag}; review and publish it explicitly.`);

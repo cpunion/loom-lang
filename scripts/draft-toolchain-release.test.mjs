@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { releasePlan, checkArchiveInfo } from "./draft-toolchain-release.mjs";
+import { releasePlan, checkArchiveInfo, checkUnusedTag } from "./draft-toolchain-release.mjs";
 
 const repository = { full_name: "cpunion/loom-lang" };
 const run = {
@@ -41,6 +41,9 @@ test("failed, fork, PR, wrong workflow, missing and expired evidence cannot rele
 });
 
 test("development release tags are explicit SemVer prereleases, not arbitrary refs", () => {
+  checkUnusedTag([], "v0.1.0-dev.1");
+  checkUnusedTag([{ ref: "refs/tags/v0.1.0-dev.10" }], "v0.1.0-dev.1");
+  assert.throws(() => checkUnusedTag([{ ref: "refs/tags/v0.1.0-dev.1" }], "v0.1.0-dev.1"));
   for (const tag of ["v0.1.0-dev.1", "v1.2.3-rc.0+build.01"]) {
     assert.equal(releasePlan(run, jobs, artifacts, tag).tag, tag);
   }

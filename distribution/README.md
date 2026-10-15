@@ -12,7 +12,9 @@ The GitHub CLI must be authenticated. The first command only reads GitHub and
 checks downloaded archives in a temporary directory. The second creates a
 **draft prerelease**, never a public release. Choose the version explicitly;
 the example does not reserve or publish that tag. An existing release is not
-updated or overwritten. Review and publish the draft separately.
+updated or overwritten. Existing tags also reject, even without a release;
+the helper never reuses or moves a version label. Tags must remain immutable
+during preparation and review. Review and publish the draft separately.
 
 The manual `draft-development-release` workflow exposes the same inputs and
 defaults to dry-run. It runs only on this repository's `main`. Inputs must
