@@ -10,9 +10,8 @@ pub enum OutputError[E] {
     Count(Int, Int)
 }
 
-async fn write_chunk[E](chunk Bytes, sink fn(Bytes) Task[Result[Int, E]]) Result[Int, OutputError[E]] {
-    let expected = std.bytes.length(chunk)
-    let written = match sink(chunk).await {
+fn checked_write[E](expected Int, outcome Result[Int, E]) Result[Int, OutputError[E]] {
+    let written = match outcome {
         Result.Ok(value) => value
         Result.Err(failed) => {
             return Result.Err(OutputError.Sink(failed))
@@ -41,7 +40,9 @@ requires chunk_size > 0
                 return Result.Err(OutputError.Encoding(failed))
             }
             Option.Some(Result.Ok(chunk)) => {
-                count = count + write_chunk(chunk, sink).await?
+                // Snapshot the size before the sink can modify its input.
+                let expected = std.bytes.length(chunk)
+                count = count + checked_write(expected, sink(chunk).await)?
             }
         }
     }
@@ -62,7 +63,7 @@ requires chunk_size > 0
             }
             Option.Some(value) => {
                 count = count + write[S.Item, E](value, chunk_size, sink).await?
-                count = count + write_chunk[E](std.text.to_bytes("\n"), sink).await?
+                count = count + checked_write[E](1, sink(std.text.to_bytes("\n")).await)?
             }
         }
     }

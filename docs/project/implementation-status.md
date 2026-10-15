@@ -1066,7 +1066,8 @@ result tree grow without buffering the full document text. EOF/trailing input,
 producer errors and cancellation use existing library/Task semantics. The
 [real TCP trial](../../compiler/examples/json_stream/main.loom) also runs at
 O0/O2 under moving-GC stress. A source encoder now emits bounded fresh byte chunks;
-the async writer awaits each sink with checked full-chunk counts. JSON errors,
+the async writer directly awaits each sink with pre-await full-chunk counts and
+synchronous count validation, without an extra per-chunk Task. JSON errors,
 sink errors and cancellation preserve partial-output and caller-managed resource
 semantics. Open containers retain fixed-shape views, not deep snapshots.
 Typed streaming encoding uses specialized source callbacks without a complete

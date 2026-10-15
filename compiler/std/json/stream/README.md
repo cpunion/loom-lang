@@ -59,6 +59,8 @@ The positive chunk size bounds fresh output buffers. The
 callback has type `fn(Bytes) Task[Result[Int, E]]`; it must complete each whole
 chunk before returning its byte count, as TCP/TLS `write_bytes` does. Calls run
 serially, providing backpressure. Success returns the total byte count.
+Counts are captured before directly awaiting the sink; checking them is
+synchronous and adds no per-chunk Task wrapper.
 
 `OutputError.Sink(E)` retains a sink error; `Encoding(WriteError)` retains JSON
 validation errors. `Count(expected, reported)` rejects partial, negative or
