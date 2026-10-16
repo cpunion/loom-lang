@@ -8,6 +8,7 @@ import std.loom.project.qualify
 import std.list.get
 import std.list.length
 import std.list.new
+import std.list.push
 import std.text.concat
 import std.int.to_text
 
@@ -36,6 +37,63 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
 // Optional lexical labels affect display only, never checked type identity.
 pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces List[Interface], ty Int,
     parameters List[Text]) Text {
+    scoped_type_name(bindings, types, interfaces, ty, parameters, new[FamilyTypeName]())
+}
+
+record FamilyTypeName {
+    ty Int
+    name Text
+}
+
+fn family_type_label_used(name Text, parameters List[Text], families List[FamilyTypeName]) Bool {
+    var index = 0
+    while index < length(parameters) {
+        if get(parameters, index) == name { return true }
+        index = index + 1
+    }
+    index = 0
+    while index < length(families) {
+        if get(families, index).name == name { return true }
+        index = index + 1
+    }
+    false
+}
+
+fn family_type_name(bindings std.loom.binding.Program, types List[Type], interfaces List[Interface],
+    ty Int, label Text, parameters List[Text], families List[FamilyTypeName]) Text {
+    let family = get(types, ty)
+    let scope = new[FamilyTypeName]()
+    var index = 0
+    while index < length(families) {
+        push(scope, get(families, index))
+        index = index + 1
+    }
+    var output = concat(label, "[")
+    index = 0
+    var next = length(scope)
+    while index < family.symbol {
+        if index > 0 {
+            output = concat(output, ", ")
+        }
+        var name = concat("F", to_text(next))
+        while family_type_label_used(name, parameters, scope) {
+            next = next + 1
+            name = concat("F", to_text(next))
+        }
+        push(scope, FamilyTypeName {
+                ty = get(family.arguments, index)
+                name = name
+            })
+        output = concat(output, name)
+        next = next + 1
+        index = index + 1
+    }
+    concat(output, concat("] = ", scoped_type_name(bindings, types, interfaces,
+                get(family.arguments, family.symbol), parameters, scope)))
+}
+
+fn scoped_type_name(bindings std.loom.binding.Program, types List[Type], interfaces List[Interface], ty Int,
+    parameters List[Text], families List[FamilyTypeName]) Text {
     let value = get(types, ty)
     if value.kind == TypeKind.Unit {
         return "()"
@@ -59,9 +117,17 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
         return "type"
     }
     if value.kind == TypeKind.Family {
-        return "<type family>"
+        return family_type_name(bindings, types, interfaces, ty, "type", parameters, families)
     }
     if value.kind == TypeKind.Rigid {
+        var index = length(families) - 1
+        while index >= 0 {
+            let entry = get(families, index)
+            if entry.ty == ty {
+                return entry.name
+            }
+            index = index - 1
+        }
         return "<bound type>"
     }
     if value.kind == TypeKind.Dyn {
@@ -80,7 +146,12 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
                 if binding > 0 {
                     label = concat(label, ", ")
                 }
-                label = concat(label, concat(member.name, concat(" = ", type_name(bindings, types, interfaces, get(value.arguments, binding), parameters))))
+                let argument = get(value.arguments, binding)
+                label = concat(label, if get(types, argument).kind == TypeKind.Family {
+                        family_type_name(bindings, types, interfaces, argument, member.name, parameters, families)
+                    } else {
+                        concat(member.name, concat(" = ", scoped_type_name(bindings, types, interfaces, argument, parameters, families)))
+                    })
                 binding = binding + 1
             }
             index = index + 1
@@ -100,13 +171,13 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
             if index > 0 {
                 label = concat(label, ", ")
             }
-            label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index), parameters))
+            label = concat(label, scoped_type_name(bindings, types, interfaces, get(value.arguments, index), parameters, families))
             index = index + 1
         }
         label = concat(label, ")")
         let output = get(value.arguments, index)
         if output != 0 {
-            label = concat(label, concat(" ", type_name(bindings, types, interfaces, output, parameters)))
+            label = concat(label, concat(" ", scoped_type_name(bindings, types, interfaces, output, parameters, families)))
         }
         return label
     }
@@ -114,7 +185,7 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
         let member = get(bindings.symbols, value.symbol)
         let capability = get(bindings.symbols, member.owner)
         let projection = qualified_type_name(bindings, capability.file, qualify(capability.name, member.name))
-        var label = concat(type_name(bindings, types, interfaces, get(value.arguments, 0), parameters), concat(".", projection))
+        var label = concat(scoped_type_name(bindings, types, interfaces, get(value.arguments, 0), parameters, families), concat(".", projection))
         if length(value.arguments) > 1 {
             label = concat(label, "[")
             var index = 1
@@ -122,7 +193,7 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
                 if index > 1 {
                     label = concat(label, ", ")
                 }
-                label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index), parameters))
+                label = concat(label, scoped_type_name(bindings, types, interfaces, get(value.arguments, index), parameters, families))
                 index = index + 1
             }
             label = concat(label, "]")
@@ -136,7 +207,7 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
             if index > 0 {
                 label = concat(label, ", ")
             }
-            label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index), parameters))
+            label = concat(label, scoped_type_name(bindings, types, interfaces, get(value.arguments, index), parameters, families))
             index = index + 1
         }
         if length(value.arguments) == 1 {
@@ -171,7 +242,7 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
                     if element > 0 {
                         label = concat(label, ", ")
                     }
-                    label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, offset + element), parameters))
+                    label = concat(label, scoped_type_name(bindings, types, interfaces, get(value.arguments, offset + element), parameters, families))
                     element = element + 1
                 }
                 if width == 1 {
@@ -181,7 +252,7 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
                 offset = offset + width
                 pack = pack + 1
             } else {
-                label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, offset), parameters))
+                label = concat(label, scoped_type_name(bindings, types, interfaces, get(value.arguments, offset), parameters, families))
                 offset = offset + 1
             }
             index = index + 1
@@ -195,7 +266,7 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
             if index > 0 {
                 label = concat(label, ", ")
             }
-            label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index), parameters))
+            label = concat(label, scoped_type_name(bindings, types, interfaces, get(value.arguments, index), parameters, families))
             index = index + 1
         }
         label = concat(label, "]")

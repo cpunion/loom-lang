@@ -8,6 +8,7 @@ record FamilyEquality {
     left Int
     right Int
     scope Int
+    version Int
 }
 
 fn fresh_family_parameters(env Environment, count Int) List[Int] {
@@ -126,6 +127,7 @@ fn family_equal(env Environment, left Int, right Int, scopes List[FamilyAliases]
             left = left
             right = right
             scope = scope
+            version = 0
         })
     true
 }

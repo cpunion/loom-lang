@@ -96,7 +96,8 @@ fn relation_in(types List[Type], left Int, right Int, seen List[TypeComparison],
     }
     if a.symbol != b.symbol {
         // Dyn symbols identify bound interface instances, not just concepts.
-        return if a.kind == TypeKind.Dyn && (!concrete_type(types, left) || !concrete_type(types, right)) {
+        return if a.kind == TypeKind.Dyn && (!concrete_type(types, left) || !concrete_type(types, right) ||
+            family_projection(types, left, new[Int]()) || family_projection(types, right, new[Int]())) {
             -1
         } else {
             0

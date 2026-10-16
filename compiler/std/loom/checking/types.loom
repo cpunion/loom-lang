@@ -382,6 +382,10 @@ fn infer(env Environment, pattern Int, actual Int, arguments List[Int]) Bool {
         return true
     }
     let value = get(env.types, actual)
+    if source.kind == TypeKind.Family {
+        return unify_families(env, pattern, actual, arguments, new[FamilyAliases](), -1,
+            new[FamilyEquality](), false, 0)
+    }
     if !same_constructor(env, source, value) {
         // Preserve a bare T's exact type above. A structural parameter such
         // as View[T] can infer through ordinary implicit refinement weakening;

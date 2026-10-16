@@ -2031,9 +2031,29 @@ input requirements, may rename parameters, and cannot strengthen those requireme
 Defaults and qualified projections follow the same rules as nongeneric members.
 Normalization uses ordinary concrete layouts, with no runtime type functions.
 
-Dynamic values still require explicit bindings for every nongeneric associated
-member, including defaulted members; bindings must satisfy the member requirements.
-Concepts with generic associated members cannot yet be used as `dyn` types.
+Dynamic values require explicit bindings for every associated member, including
+defaulted members. Generic members use a type template:
+
+```loom
+fn keep(value dyn Family[Item[T] = List[T]]) dyn Family[Item[U] = List[U]] {
+    value
+}
+```
+
+Binder spelling does not affect identity. Templates may capture enclosing type
+parameters and nest other dynamic templates. Conversion checks the implementation
+against the template for arbitrary inputs satisfying the member's declared
+requirements, not just the concrete types used by calls. Templates inherit those
+input requirements and must establish the member's result requirements; they
+cannot strengthen the domain. A template-local parameter cannot escape through
+inference into an enclosing parameter.
+
+Templates normalize structural types and associated projections. A `comptime`
+computation that depends on a template-local parameter is not yet a symbolic
+template and rejects. Templates are compile-time metadata, not runtime type
+functions. Bodies containing them currently bypass incremental body reuse.
+The [dynamic family example](examples/dyn_families/main.loom) exercises native
+generic dispatch, outer captures, nested templates and unreachable-slot removal.
 
 ### Dynamic values
 

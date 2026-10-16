@@ -3,6 +3,31 @@ record FamilyScope {
     family Int
 }
 
+// A closed lambda can still contain a projection on its quantified input.
+// Different normalized IDs alone do not prove such functions unequal.
+fn family_projection(types List[Type], ty Int, seen List[Int]) Bool {
+    let shape = get(types, ty)
+    if shape.kind == TypeKind.Associated {
+        return true
+    }
+    var index = 0
+    while index < length(seen) {
+        if get(seen, index) == ty {
+            return false
+        }
+        index = index + 1
+    }
+    push(seen, ty)
+    index = 0
+    while index < length(shape.arguments) {
+        if family_projection(types, get(shape.arguments, index), seen) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
 // Scope is part of the memo key: the same captured rigid variable can be bound
 // under one enclosing lambda and free under another. Completed walks alone are
 // memoized; a provisional visit is not a closedness proof.

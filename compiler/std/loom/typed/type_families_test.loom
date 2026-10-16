@@ -18,6 +18,12 @@ test fn family_closedness_tracks_binders_and_captures_instead_of_concrete_sample
     assert !concrete_type(types, structural_type(types, TypeKind.Family, 1, [u, free]))
     assert type_relation(types, t, 1) == -1
     assert type_relation(types, t, u) == -1
+    let projection = structural_type(types, TypeKind.Associated, 0, [t])
+    let projected = structural_type(types, TypeKind.Family, 1, [t, projection])
+    let constant = structural_type(types, TypeKind.Family, 1, [u, 1])
+    let left = structural_type(types, TypeKind.Dyn, 0, [projected])
+    let right = structural_type(types, TypeKind.Dyn, 1, [constant])
+    assert type_relation(types, left, right) == -1
     // The valid path must not memoize the same captured body as valid under a
     // different binder scope in its sibling path.
     let wrong_scope = structural_type(types, TypeKind.Family, 1, [u, inner])
