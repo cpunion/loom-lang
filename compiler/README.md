@@ -2673,7 +2673,9 @@ variable. This is bounded preservation reasoning, not a promise to prove every
 index relation; unsupported resource/async scopes and outer-function exits reject.
 A separate identity rule admits stores proved to leave the current cell unchanged,
 even when the original pure predicate cannot be expanded. It checks every store
-in argument helpers too, not only the final contents. Float representation identity
+into existing storage in argument helpers too, not only the final contents.
+Fresh, unpublished scratch can be modified using its ordinary sequence laws;
+an allocation label alone does not prove privacy. Float representation identity
 is not IEEE equality; an earlier shared read is not the current store snapshot.
 See the [unchanged-store example](examples/byte_constraints/identity/main.loom).
 Atomic replacement and append also reuse stable caller evidence: `requires`, successful assertions,

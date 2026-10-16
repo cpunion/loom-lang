@@ -249,6 +249,7 @@ test fn single_element_updates_prove_the_complete_content_constraint() {
 test fn unchanged_stores_preserve_unexpanded_pure_constraints_without_restoration() {
     let header = """
     import std.list.length
+    import std.list.push
     fn checksum(values List[Int]) Int {
         var total = 0
         var index = 0
@@ -262,11 +263,21 @@ test fn unchanged_stores_preserve_unexpanded_pure_constraints_without_restoratio
 
     """
     list_constraint_accept(concat(header, """
+        fn copied(input Int) Int {
+            let scratch List[Int] = []
+            push(scratch, input)
+            let containers = [scratch]
+            let alias = containers[0]
+            alias[0] = 0
+            scratch[0] = input
+            alias[0]
+        }
         pub fn unchanged(values Checked) {
             values[0] = {
                 let saved = values[0]
                 saved + 0
             }
+            values[0] = copied(values[0])
         }
         """))
     list_constraint_reject(concat(header, """
@@ -278,6 +289,23 @@ test fn unchanged_stores_preserve_unexpanded_pure_constraints_without_restoratio
         }
         pub fn invalid(values Checked) {
             values[0] = restore(values)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn selected(values List[Int], fresh Bool, saved Int) Int {
+            let scratch = if fresh {
+                let temporary List[Int] = []
+                push(temporary, saved)
+                temporary
+            } else {
+                values
+            }
+            scratch[0] = 0
+            scratch[0] = saved
+            scratch[0]
+        }
+        pub fn invalid(values Checked, fresh Bool) {
+            values[0] = selected(values, fresh, values[0])
         }
         """))
 }

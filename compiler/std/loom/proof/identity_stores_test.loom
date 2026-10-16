@@ -23,6 +23,23 @@ test fn identity_updates_compare_the_current_cell_not_a_previous_shared_read() {
     }
 }
 
+test fn identity_preservation_does_not_treat_every_allocation_as_private_scratch() {
+    let program = atomic_pair_program()
+    let receiver = expression(ExprKind.Local, 6, "", 0, [])
+    let body = expression(ExprKind.Intrinsic, 0, "list_push", -1, [receiver, literal("7")])
+    let function = contract_fixture([6], 0, body, [], [proof_bool(body, true)])
+    assert match verify_preservation(program, function, no_proof_backend(), false, [], [0], []) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+    // This input is known allocated, not known unpublished. Neither a local
+    // allocation label nor successful ordinary verification grants privacy.
+    assert match verify_preservation(program, function, no_proof_backend(), false, [], [0], [], true) {
+        Result.Err(_) => true
+        Result.Ok(proved) => !proved
+    }
+}
+
 test fn stored_identity_is_not_ieee_equality_or_opaque_graph_provenance() {
     let proof = verification(contract_fixture([], 0, expression(ExprKind.Block, 0, "", -1, []), [], []), empty_proof_program())
     let nan = Value.Float(FloatValue.Literal("NaN"))
