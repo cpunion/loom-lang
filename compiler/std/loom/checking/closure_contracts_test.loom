@@ -1,3 +1,5 @@
+import std.text.replace
+
 test fn closure_contracts_keep_immutable_values_and_reject_unproved_mutations() {
     discard accepted("""
         record Capture {
@@ -184,6 +186,6 @@ test fn captured_cells_use_loop_induction_without_freezing_aliases() {
         }
         """
     discard accepted(source)
-    rejects(std.text.join(std.text.split(source, "value = value + 1"), "value = value + 2"))
-    rejects(std.text.join(std.text.split(source, "value = value + 1"), "break"))
+    rejects(std.text.replace(source, "value = value + 1", "value = value + 2"))
+    rejects(std.text.replace(source, "value = value + 1", "break"))
 }

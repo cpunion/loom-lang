@@ -1,0 +1,11 @@
+import std.io.write_text
+import std.text.concat
+import std.text.replace
+
+fn greeting(name Text) Text {
+    replace("Hello, <name>!", "<name>", name)
+}
+
+fn main() {
+    discard write_text(concat(greeting("Loom"), "\n"))
+}

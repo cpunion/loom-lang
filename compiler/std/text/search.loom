@@ -62,12 +62,16 @@ pub fn split(value Text, separator Text) List[Text] {
     parts
 }
 
-fn append_text(buffer Bytes, value Text) {
-    var index = 0
-    while index < length(value) {
+fn append_text_range(buffer Bytes, value Text, start Int, end Int) {
+    var index = start
+    while index < end {
         std.bytes.push(buffer, byte(value, index))
         index = index + 1
     }
+}
+
+fn append_text(buffer Bytes, value Text) {
+    append_text_range(buffer, value, 0, length(value))
 }
 
 // Appends each byte once, then validates/copies the completed UTF-8 buffer.
@@ -79,6 +83,40 @@ pub fn join(values List[Text], separator Text) Text {
         append_text(buffer, get(values, index))
         index = index + 1
     }
+    to_text(buffer)
+}
+
+// Replace all exact, nonoverlapping matches, left to right. An empty pattern
+// inserts at Unicode scalar boundaries, including both ends of the input.
+pub fn replace(value Text, pattern Text, replacement Text) Text {
+    if pattern == replacement {
+        return value
+    }
+    if length(pattern) == 0 {
+        let buffer = std.bytes.new()
+        append_text(buffer, replacement)
+        var start = 0
+        while start < length(value) {
+            let end = start + width(value, start)
+            append_text_range(buffer, value, start, end)
+            append_text(buffer, replacement)
+            start = end
+        }
+        return to_text(buffer)
+    }
+    var next = find_from(value, pattern, 0)
+    if next < 0 {
+        return value
+    }
+    let buffer = std.bytes.new()
+    var start = 0
+    while next >= 0 {
+        append_text_range(buffer, value, start, next)
+        append_text(buffer, replacement)
+        start = next + length(pattern)
+        next = find_from(value, pattern, start)
+    }
+    append_text_range(buffer, value, start, length(value))
     to_text(buffer)
 }
 

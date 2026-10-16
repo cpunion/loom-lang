@@ -620,8 +620,10 @@ timings; local variables remain conservatively rooted for the function.
   underflow follow binary64 rounding. Grammar and errors live in Loom; narrow
   runtime codecs reuse Rust's numeric conversion, not a second source parser.
 - Source Text operations include `starts_with`, `ends_with`, `find`, `contains`,
-  `split`, `join`, and Unicode `trim`. Search offsets are UTF-8 bytes; an empty
-  separator splits Unicode scalars. Join builds bytes once, not repeated concatenation.
+  `split`, `join`, `replace`, and Unicode `trim`. Search offsets are UTF-8 bytes;
+  an empty separator splits Unicode scalars. Replace uses nonoverlapping exact
+  matches; an empty pattern inserts at scalar boundaries, including both ends.
+  Join and replace build bytes once. See the [Text example](examples/text/README.md).
 - Source `std.option.Option[T]` provides `Some(T)` and `None`. List helpers include
   optional `first`/`last`, `is_empty`, shallow `clone`, in-place `reverse`, and
   `append`. Self-append copies the initial source prefix; clone detaches the outer
