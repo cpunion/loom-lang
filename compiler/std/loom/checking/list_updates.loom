@@ -292,13 +292,6 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
     }
 }
 
-fn proved_list_mutation(env Environment, value Expr, shared Bool, writes Int) Bool {
-    match list_mutation_proof(env, value, shared, writes) {
-        Result.Ok(proved) => proved
-        Result.Err(_) => false
-    }
-}
-
 record ListMutationInputs {
     context Context
     node Node
