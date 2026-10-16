@@ -130,9 +130,16 @@ fn main() {
     const renamedLibrary = TextDocument.applyEdits(TextDocument.create(URI.file(library).toString(), 'loom', 2, lexical), lexicalEdit.changes[URI.file(library).toString()]);
     assert.ok(renamedLibrary.includes('pub record Entry'));
     assert.ok(renamedLibrary.includes('fn identity[Token](value Token) Token'));
-    // Source header evidence is not evidence for an uninstantiated body use.
-    await client.change(library, lexical.replace('fn identity[Token](value Token) Token {\n    value', 'fn identity[Token](value Token) Token {\n    let hidden Token = value\n    hidden'), 3);
-    await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...token, newName: 'Entry' }), /every occurrence/);
+    // The checked abstract body distinguishes its Token parameter from the
+    // nominal declaration, including a local type annotation with that name.
+    const bodyShadow = lexical.replace('fn identity[Token](value Token) Token {\n    value', 'fn identity[Token](value Token) Token {\n    let hidden Token = value\n    hidden');
+    await client.change(library, bodyShadow, 3);
+    const bodyEdit = await client.rpc.sendRequest('textDocument/rename', { ...token, newName: 'Entry' });
+    assert.equal(Object.values(bodyEdit.changes).flat().length, 15, JSON.stringify(bodyEdit));
+    const bodyDocument = TextDocument.create(URI.file(library).toString(), 'loom', 3, bodyShadow);
+    const bodyRenamed = TextDocument.applyEdits(bodyDocument, bodyEdit.changes[URI.file(library).toString()]);
+    assert.ok(bodyRenamed.includes('pub record Entry'));
+    assert.ok(bodyRenamed.includes('fn identity[Token](value Token) Token {\n    let hidden Token = value\n    hidden'));
     await client.change(library, original, 4);
 
     const shadowed = `${original}\nfn typed(comptime Token type, value Token) Token {\n    value\n}\ntest fn alias_test() {\n    assert typed(Token, Token { value = 7 }).value == 7\n}\n`;
