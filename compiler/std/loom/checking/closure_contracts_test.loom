@@ -1,0 +1,90 @@
+test fn closure_contracts_use_immutable_captures_and_keep_mutable_cells_opaque() {
+    discard accepted("""
+        record Capture {
+            count Int
+            values List[Int]
+        }
+        fn make(value Capture) fn() Int {
+            fn() Int
+            ensures result == value.count {
+                value.count
+            }
+        }
+        fn nested(value Int) fn() fn() Int {
+            fn() fn() Int {
+                fn() Int
+                ensures result == value {
+                    value
+                }
+            }
+        }
+        fn with_argument(limit Int) fn(Int) Int {
+            fn(value Int) Int
+            requires value == limit
+            ensures result == value {
+                limit
+            }
+        }
+        fn equal(left Int, right Int) Bool {
+            left == right
+        }
+        fn with_helper(limit Int) fn(Int) Int {
+            fn(value Int) Int
+            requires equal(value, limit)
+            ensures result == value {
+                limit
+            }
+        }
+        fn main() {
+            let values = [1]
+            let read = make(Capture {
+                    count = 7
+                    values = values
+                })
+            values[0] = 9
+            assert read() == 7 && nested(8)()() == 8
+            assert with_argument(4)(4) == 4
+            assert with_helper(5)(5) == 5
+        }
+        """)
+    rejects("""
+        fn make(value Int) fn() Int {
+            fn() Int
+            ensures result > value {
+                value
+            }
+        }
+        """)
+    rejects("""
+        fn main() {
+            var value = 1
+            let read = fn() Int
+            ensures result == 1 {
+                value
+            }
+            value = 2
+            discard read()
+        }
+        """)
+    rejects("""
+        fn invoke(action fn())
+        ensures true {
+            action()
+        }
+        fn make() fn() Int {
+            var value = 1
+            let change = fn() {
+                    value = 3
+                }
+            fn() Int
+            ensures result == 2 {
+                value = 2
+                invoke(change)
+                value
+            }
+        }
+        fn main() {
+            discard make()()
+        }
+        """)
+}

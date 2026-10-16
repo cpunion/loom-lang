@@ -2364,6 +2364,12 @@ factories, compile-time results and lexical cleanup. Anonymous parameters must
 have explicit runtime types; these literals do not declare their own generic or
 compile-time parameters.
 
+Required contracts can use immutable captured values and their established type
+constraints. The proof models only complete closure environments with a checked
+read-only slot footprint. Mutable captured cells remain opaque; capturing a
+List/Bytes handle does not freeze its contents or supply a non-aliasing promise.
+Worker contracts use the same interference and per-store preservation rules.
+
 Pure compile-time calls and returned named function values use the same checked
 signatures and contracts. Reification schedules the source declaration and its
 type arguments in the destination program, not an evaluation-local function ID.

@@ -16,6 +16,8 @@ element retains its type's continuing predicate, not equality with a later read.
 The `Header` example combines UTF-8 validity with a constant leading byte.
 Workers may store that same byte and prove sampled/entry values without assuming
 that all mutable reads are stable or expanding the UTF-8 predicate.
+The store can be written directly in a captured worker closure, including a
+closure with an explicit `ensures result == 35` contract.
 
 `Utf8` uses the non-copying `std.bytes.is_utf8` predicate. Its admitted reads do
 not grant arbitrary writes: an unknown UTF-8 preservation proof still rejects.

@@ -56,7 +56,7 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
         }
         return known
     }
-    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+    if record_input_shape(shape) {
         match observed {
             Value.Record(fields) => {
                 var known = state
