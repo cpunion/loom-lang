@@ -206,7 +206,8 @@ fn constraint_operation(env Environment, functions List[Function], value Expr, e
             } else {
                 "list_push"
             }, inputs) &&
-        (established || proved_list_update(env, value, store)) {
+        (established || proved_list_update(env, value, store) ||
+            proved_update_expression(env, functions, value)) {
             return true
         }
     }

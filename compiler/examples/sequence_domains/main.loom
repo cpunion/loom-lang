@@ -67,7 +67,7 @@ fn set_last(values List[Int]) {
 
 fn extend_endpoints(values Sorted) {
     values[0] = -9223372036854775808
-    set_last(values)
+    values[length(values) - 1] = 9223372036854775807
 }
 
 fn exercise() {
@@ -87,6 +87,9 @@ fn exercise() {
     let alias = sorted
     extend_endpoints(sorted)
     assert alias[0] == -9223372036854775808 && alias[2] == 9223372036854775807
+    let forwarded = Sorted([-1, 0, 1])
+    set_last(forwarded)
+    assert forwarded[2] == 9223372036854775807
 }
 
 fn main() {

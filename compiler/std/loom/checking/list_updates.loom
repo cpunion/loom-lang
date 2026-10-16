@@ -1,5 +1,74 @@
 import std.loom.proof.verify_preservation
 import std.loom.proof.sequence_operation
+import std.loom.proof.preserves_update_expression
+
+fn proved_update_expression(env Environment, functions List[Function], value Expr) Bool {
+    if env.expanding_helpers || env.stage_depth >= 32 {
+        return false
+    }
+    // Shared builds must prove the same expression with interference between
+    // argument reads and the atomic store; sequential evidence cannot waive it.
+    var shared = false
+    var index = 0
+    while index < length(functions) && !shared {
+        shared = worker_expression(get(functions, index).body)
+        index = index + 1
+    }
+    match update_expression_proof(env, functions, value, shared) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}
+
+fn update_expression_proof(env Environment, functions List[Function], value Expr, shared Bool) Result[Bool, Failure] {
+    let receiver = get(value.children, 0)
+    let ty = get(receiver.children, 0).ty
+    let node = predicate_node(env, get(env.types, ty).symbol)
+    let stage = staging(predicate_scope(env, ty)?, node)?
+    let predicate = refinement_expression(stage, ty)?
+    let isolated = prepared_in(stage, true)?
+    // Optional expanded type facts may be partial. A preservation obligation
+    // must instead expand the entire predicate successfully, including every
+    // conjunct and its safety conditions; opaque parts cannot be omitted.
+    let predicates = match std.loom.proof.invariant_predicates(isolated, receiver.ty, predicate) {
+        Result.Ok(predicates) => predicates
+        Result.Err(_) => {
+            return Result.Ok(false)
+        }
+    }
+    let inputs = [receiver.ty]
+    let probe = Function {
+        is_async = false
+        symbol = -1
+        arguments = []
+        params = inputs
+        result = 0
+        locals = []
+        preconditions = []
+        postconditions = []
+        result_cleanup = []
+        result_local = -1
+        body = value
+        runtime_name = ""
+        span = value.span
+    }
+    let types = expanded_invariant_types(env, probe)?
+    let program = std.loom.typed.Program {
+        types = types
+        functions = functions
+        entry = -1
+        tests = []
+        test_names = []
+        exports = []
+        interfaces = env.interfaces
+        witnesses = env.witnesses
+    }
+    Result.Ok(match std.loom.proof.preserves_update_expression(program, value, predicates,
+        get(env.inputs, 0).build.proof_backend, shared) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    })
+}
 
 fn sequence_store(env Environment, receiver Int, writes Int) Text {
     if base_type(env, receiver) == 4 {

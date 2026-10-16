@@ -1,0 +1,117 @@
+fn atomic_receiver(value Expr, depth Int) Bool {
+    if depth >= 32 {
+        return false
+    }
+    if value.kind == ExprKind.Local {
+        return true
+    }
+    (value.kind == ExprKind.Field || value.kind == ExprKind.Coerce) &&
+    length(value.children) == 1 && atomic_receiver(get(value.children, 0), depth + 1)
+}
+
+// Compact source inputs without equating independent reads. Called bodies keep
+// their own local namespaces; binding/control-flow expressions need that scope
+// machinery and are not reconstructed as already evaluated argument values.
+fn atomic_expression(value Expr, bindings List[Int], params List[Int], depth Int) Result[Expr, Text] {
+    if depth >= 64 || length(value.arms) != 0 {
+        return Result.Err("atomic update expression scope is unsupported")
+    }
+    if value.kind == ExprKind.Local {
+        var slot = 0
+        while slot < length(bindings) && get(bindings, slot) != value.index {
+            slot = slot + 1
+        }
+        if slot == length(bindings) {
+            push(bindings, value.index)
+            push(params, value.ty)
+        } else if get(params, slot) != value.ty {
+            return Result.Err("atomic update input has inconsistent types")
+        }
+        return Result.Ok(proof_expr(value, value.kind, value.ty, value.text, slot, []))
+    }
+    if value.kind != ExprKind.Integer && value.kind != ExprKind.Bool && value.kind != ExprKind.Float &&
+    value.kind != ExprKind.Text && value.kind != ExprKind.Bytes && value.kind != ExprKind.Unary &&
+    value.kind != ExprKind.Binary && value.kind != ExprKind.Coerce && value.kind != ExprKind.Field &&
+    value.kind != ExprKind.Record && value.kind != ExprKind.List && value.kind != ExprKind.Variant &&
+    value.kind != ExprKind.Call && value.kind != ExprKind.Intrinsic && value.kind != ExprKind.FunctionRef &&
+    value.kind != ExprKind.IndirectCall {
+        return Result.Err("atomic update expression needs an explicit function scope")
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, atomic_expression(get(value.children, index), bindings, params, depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(proof_expr(value, value.kind, value.ty, value.text, value.index, children))
+}
+
+// A fallback for a checked primitive store/transparent forwarder. Model its
+// original argument evaluation once, in order, instead of turning dependent
+// index/value expressions into unrelated scalar parameters. This is proof-only:
+// executable source and its ordinary faults/effects are not rewritten.
+// predicates must be the complete normalized constructor predicate, not the
+// optional facts extracted from a type when some conjuncts are unsupported.
+pub fn preserves_update_expression(program Program, operation Expr, predicates List[Expr],
+    backend ProofBackend, shared Bool) Result[Bool, Text] {
+    if single_list_write(program.functions, operation) == 0 {
+        return Result.Err("preservation needs one checked sequence store")
+    }
+    let receiver = get(operation.children, 0)
+    if receiver.kind != ExprKind.Coerce || length(receiver.children) != 1 ||
+    !atomic_receiver(get(receiver.children, 0), 0) {
+        return Result.Err("atomic update requires an established receiver path")
+    }
+    let ty = get(receiver.children, 0).ty
+    if ty < 6 || ty >= length(program.types) {
+        return Result.Err("atomic update requires a constrained receiver")
+    }
+    let shape = get(program.types, ty)
+    if shape.kind != TypeKind.Refined || length(shape.fields) != 1 || get(shape.fields, 0).ty != receiver.ty {
+        return Result.Err("atomic update requires a checked representation borrow")
+    }
+    let params = new[Int]()
+    let body = atomic_expression(operation, [], params, 0)?
+    let clauses = new[Expr]()
+    var index = 0
+    while index < length(predicates) {
+        let predicate = get(predicates, index)
+        if !bounded_contract(predicate) || !invariant_entry_supported(predicate, 0) {
+            return Result.Err("atomic update needs its complete supported predicate")
+        }
+        push(clauses, invariant_entry_at(predicate, get(body.children, 0)))
+        index = index + 1
+    }
+    if length(predicates) == 0 {
+        return Result.Err("atomic update has no supported continuing predicate")
+    }
+    let locals = new[Local]()
+    index = 0
+    while index < length(params) {
+        push(locals, Local {
+                name = "input"
+                ty = get(params, index)
+                mutable = false
+                is_scoped = false
+            })
+        index = index + 1
+    }
+    verify_preservation(program, Function {
+            is_async = false
+            symbol = -1
+            arguments = []
+            params = params
+            result = 0
+            locals = locals
+            preconditions = clauses
+            postconditions = clauses
+            result_cleanup = []
+            result_local = -1
+            body = body
+            runtime_name = ""
+            span = operation.span
+        }, backend, shared, [InputGuarantee {
+                ty = ty
+                writes = 2
+            }])
+}

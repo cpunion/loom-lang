@@ -267,4 +267,11 @@ test fn byte_constraints_allow_opaque_reads_but_not_unproved_mutation() {
             value[0] = 255
         }
         """))
+    byte_constraint_reject(concat(definitions, """
+        type Header = Bytes where valid_utf8(self) && length(self) > 0 && self[0] > 0
+
+        pub fn invalid(value Header) {
+            value[0] = 7
+        }
+        """))
 }
