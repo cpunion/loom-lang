@@ -1,0 +1,6 @@
+test fn replacement_is_source_library_code_at_both_stages() {
+    assert greeting("雪") == "Hello, 雪!"
+    assert comptime {
+        greeting("Loom")
+    } == "Hello, Loom!"
+}
