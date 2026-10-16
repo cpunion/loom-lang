@@ -1,0 +1,310 @@
+import std.iter.from_list
+import std.stream.from_iter
+import std.stream.collect
+import std.text.to_bytes
+import std.list.length
+import std.list.push
+import std.bytes.set
+import std.bytes.to_text
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.outcome
+import std.task.Outcome
+
+fn raw(value Bytes) Result[Bytes, Text] {
+    Result.Ok(value)
+}
+
+fn packet(value Result[Bytes, Text]) Result[Bytes, Text] {
+    value
+}
+
+fn chunks(wire Bytes, width Int) List[Bytes] {
+    let output List[Bytes] = [new()]
+    var position = 0
+    while position < std.bytes.length(wire) {
+        let chunk = new()
+        var count = 0
+        while count < width && position < std.bytes.length(wire) {
+            push(chunk, get(wire, position))
+            position = position + 1
+            count = count + 1
+        }
+        std.list.push(output, chunk)
+    }
+    output
+}
+
+test async fn utf8_lines_keep_line_rules_across_arbitrary_byte_boundaries() {
+    let wire = to_bytes("\nfirst\r\nhé中😀\rinside\r\nlast\r")
+    let widths = [1, 2, 7, 4096]
+    var index = 0
+    while index < length(widths) {
+        let source dyn Stream[Item = Bytes] = from_iter(from_list(chunks(wire, widths[index])))
+        let reader = lines(source, raw, 64)
+        let values = collect(reader).await
+        assert length(values) == 4
+        assert match values[0] {
+            Result.Ok(value) => value == "",
+            _ => false
+        }
+        assert match values[1] {
+            Result.Ok(value) => value == "first",
+            _ => false
+        }
+        assert match values[2] {
+            Result.Ok(value) => value == "hé中😀\rinside",
+            _ => false
+        }
+        assert match values[3] {
+            Result.Ok(value) => value == "last\r",
+            _ => false
+        }
+        assert match reader.next().await {
+            Option.None => true,
+            _ => false
+        }
+        index = index + 1
+    }
+    let empty = lines(from_iter(from_list([new()])), raw, 0)
+    assert match empty.next().await {
+        Option.None => true,
+        _ => false
+    }
+    let terminated = lines(from_iter(from_list([to_bytes("x\n")])), raw, 1)
+    assert length(collect(terminated).await) == 1
+}
+
+test async fn line_limits_count_payload_bytes_not_crlf_or_characters() {
+    let exact = lines(from_iter(from_list(chunks(to_bytes("hé\r\n"), 1))), raw, 3)
+    assert match exact.next().await {
+        Option.Some(Result.Ok(value)) => value == "hé",
+        _ => false
+    }
+    let zero = lines(from_iter(from_list(chunks(to_bytes("\r\n\n"), 1))), raw, 0)
+    assert length(collect(zero).await) == 2
+    let source = from_iter(from_list([to_bytes("abcd\n"), to_bytes("unread")]))
+    let oversized = lines(source, raw, 3)
+    assert match oversized.next().await {
+        Option.Some(Result.Err(LineError.TooLong(maximum))) => maximum == 3,
+        _ => false
+    }
+    assert match oversized.next().await {
+        Option.None => true,
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(value) => std.bytes.to_text(value) == "unread",
+        _ => false
+    }
+    let final_cr = lines(from_iter(from_list([to_bytes("a\r")])), raw, 1)
+    assert match final_cr.next().await {
+        Option.Some(Result.Err(LineError.TooLong(_))) => true,
+        _ => false
+    }
+    let cr_content = lines(from_iter(from_list([to_bytes("a\r\r\n")])), raw, 2)
+    assert match cr_content.next().await {
+        Option.Some(Result.Ok(value)) => value == "a\r",
+        _ => false
+    }
+}
+
+test async fn line_errors_are_terminal_without_reading_the_suffix() {
+    let invalid = new()
+    push(invalid, 255)
+    push(invalid, 10)
+    let source = from_iter(from_list([invalid, to_bytes("unread")]))
+    let reader = lines(source, raw, 8)
+    assert match reader.next().await {
+        Option.Some(Result.Err(LineError.Utf8)) => true,
+        _ => false
+    }
+    assert match reader.next().await {
+        Option.None => true,
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(value) => std.bytes.to_text(value) == "unread",
+        _ => false
+    }
+    let inputs List[Result[Bytes, Text]] = [Result.Ok(to_bytes("partial")), Result.Err("input failed"), Result.Ok(to_bytes("unread"))]
+    let failed_source = from_iter(from_list(inputs))
+    let failed_reader = lines(failed_source, packet, 32)
+    assert match failed_reader.next().await {
+        Option.Some(Result.Err(LineError.Input(message))) => message == "input failed",
+        _ => false
+    }
+    assert match failed_reader.next().await {
+        Option.None => true,
+        _ => false
+    }
+    assert match failed_source.next().await {
+        Option.Some(Result.Ok(value)) => std.bytes.to_text(value) == "unread",
+        _ => false
+    }
+}
+
+test async fn line_copies_share_the_cursor_without_prefetch_or_output_aliases() {
+    let wire = to_bytes("one\ntwo\n")
+    let source = from_iter(from_list([wire, to_bytes("unread")]))
+    let reader = lines(source, raw, 8)
+    let shared = reader
+    let first = match reader.next().await {
+        Option.Some(Result.Ok(value)) => value
+        _ => {
+            assert false
+            ""
+        }
+    }
+    set(wire, 0, 120)
+    assert first == "one"
+    assert match shared.next().await {
+        Option.Some(Result.Ok(value)) => value == "two",
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(value) => std.bytes.to_text(value) == "unread",
+        _ => false
+    }
+}
+
+record Waiting {
+    calls List[Int]
+}
+
+impl Stream for Waiting {
+    type Item = Bytes
+
+    async fn next(self Waiting) Option[Bytes] {
+        self.calls[0] = self.calls[0] + 1
+        if self.calls[0] == 1 {
+            return Option.Some(to_bytes("partial"))
+        }
+        sleep_ms(10000).await
+        Option.Some(to_bytes("suffix\n"))
+    }
+}
+
+fn broken(value Bytes) Result[Bytes, Text] {
+    assert false
+    Result.Ok(value)
+}
+
+test async fn cancelled_pulls_and_converter_faults_cannot_replay_partial_lines() {
+    let source = Waiting {
+        calls = [0]
+    }
+    let reader = lines(source, raw, 32)
+    let pending = reader.next()
+    while source.calls[0] < 2 {
+        sleep_ms(0).await
+    }
+    assert source.calls[0] == 2
+    assert match cancel(pending) {
+        Outcome.Cancelled => true,
+        _ => false
+    }
+    assert match reader.next().await {
+        Option.None => true,
+        _ => false
+    }
+    assert source.calls[0] == 2
+    let failed_source = from_iter(from_list([to_bytes("first\n"), to_bytes("unread")]))
+    let failed_reader = lines(failed_source, broken, 32)
+    assert match outcome(failed_reader.next()).await {
+        Outcome.Faulted(_) => true,
+        _ => false
+    }
+    assert match failed_reader.next().await {
+        Option.None => true,
+        _ => false
+    }
+    assert match failed_source.next().await {
+        Option.Some(value) => std.bytes.to_text(value) == "unread",
+        _ => false
+    }
+}
+
+record Configuration {
+    events List[Int]
+    milliseconds Int
+}
+
+record Owned {
+    configuration Configuration
+}
+
+impl MustScope for Owned {
+}
+
+impl Dispose for Owned {
+    fn dispose(self Owned) {
+        std.list.push(self.configuration.events, 9)
+    }
+}
+
+impl Stream for Owned {
+    type Item = Bytes
+
+    async fn next(self Owned) Option[Bytes] {
+        std.list.push(self.configuration.events, 1)
+        defer {
+            std.list.push(self.configuration.events, 2)
+        }
+        sleep_ms(self.configuration.milliseconds).await
+        Option.Some(to_bytes("owned\n"))
+    }
+}
+
+fn create(configuration Configuration) Owned {
+    std.list.push(configuration.events, 0)
+    Owned {
+        configuration = configuration
+    }
+}
+
+fn open(configuration Configuration) Result[Owned, Text] {
+    Result.Ok(create(configuration))
+}
+
+async fn owned(configuration Configuration) Result[Bool, Text] {
+    scoped reader = lines(open, configuration, raw, 32)?
+    Result.Ok(match reader.next().await {
+            Option.Some(Result.Ok(value)) => value == "owned",
+            _ => false
+        })
+}
+
+test async fn line_factory_owners_drain_children_before_disposal() {
+    let events List[Int] = []
+    assert match owned(Configuration {
+            events = events
+            milliseconds = 0
+        }).await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+    assert length(events) == 4 && events[0] == 0 && events[1] == 1 && events[2] == 2 && events[3] == 9
+    let cancelled List[Int] = []
+    let pending = owned(Configuration {
+            events = cancelled
+            milliseconds = 10000
+        })
+    while length(cancelled) < 2 {
+        sleep_ms(0).await
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true,
+        _ => false
+    }
+    assert length(cancelled) == 4 && cancelled[2] == 2 && cancelled[3] == 9
+    let direct List[Int] = []
+    {
+        scoped reader = lines(create, Configuration {
+                events = direct
+                milliseconds = 0
+            }, raw, 32)
+        discard reader.next().await
+    }
+    assert length(direct) == 4 && direct[3] == 9
+}

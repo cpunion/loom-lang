@@ -204,7 +204,10 @@ file. JSON streaming handles chunk boundaries,
 backpressure and LF-framed records without requiring a full document Text.
 Source-written [length-prefixed framing](../../compiler/std/stream/length32/README.md)
 handles bounded binary messages over arbitrary chunks, including scoped factories
-and real TCP. Other framing and general borrow-retaining adapters remain open.
+and real TCP. [UTF-8 line framing](../../compiler/std/stream/lines/README.md)
+adds explicit byte limits, CRLF handling and strict decoding across arbitrary
+chunks; errors/cancellation retire the shared cursor without suffix prefetch.
+Other framing and general borrow-retaining adapters remain open.
 
 Stop-the-world copying GC preserves precise roots, sharing and cycles.
 Nonallocating functions stay root-free; liveness retires dead roots at checked

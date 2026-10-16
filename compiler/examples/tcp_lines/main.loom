@@ -1,0 +1,98 @@
+import std.net.tcp.Stream
+import std.stream.Stream
+import std.net.tcp.TcpError
+import std.net.tcp.listen
+import std.net.tcp.connect
+import std.net.tcp.accept
+import std.net.tcp.local_address
+import std.net.tcp.write_bytes
+import std.net.tcp.shutdown_write
+import std.net.tcp.close_listener
+import std.net.tcp.close_stream
+import std.net.tcp.chunks.read
+import std.stream.lines.lines
+import std.option.Option
+import std.result.Result
+import std.bytes.new
+import std.bytes.push
+import std.bytes.get
+import std.bytes.length
+import std.text.to_bytes
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.Outcome
+
+fn packet(value Result[Bytes, TcpError]) Result[Bytes, TcpError] {
+    value
+}
+
+async fn send(connection std.net.tcp.Stream) Result[Int, TcpError] {
+    let wire = to_bytes("hello\r\nhé中😀\nlast")
+    var position = 0
+    while position < length(wire) {
+        let chunk = new()
+        push(chunk, get(wire, position))
+        discard write_bytes(connection, chunk).await?
+        sleep_ms(0).await
+        position = position + 1
+    }
+    // Keep sending open: terminated lines must not require connection EOF.
+    Result.Ok(position)
+}
+
+async fn trial() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let client = connect(local_address(listener)?).await?
+    defer {
+        discard close_stream(client)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    let source = read(server, 2)
+
+    let abandoned = lines(source, packet, 32)
+    let pending = abandoned.next()
+    sleep_ms(1).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true,
+        _ => false
+    }
+    assert match abandoned.next().await {
+        Option.None => true,
+        _ => false
+    }
+
+    let reader = lines(source, packet, 32)
+    let writing = send(client)
+    assert match reader.next().await {
+        Option.Some(Result.Ok(value)) => value == "hello",
+        _ => false
+    }
+    assert match reader.next().await {
+        Option.Some(Result.Ok(value)) => value == "hé中😀",
+        _ => false
+    }
+    discard writing.await?
+    discard shutdown_write(client)?
+    assert match reader.next().await {
+        Option.Some(Result.Ok(value)) => value == "last",
+        _ => false
+    }
+    assert match reader.next().await {
+        Option.None => true,
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+async fn main() {
+    assert match trial().await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+}
