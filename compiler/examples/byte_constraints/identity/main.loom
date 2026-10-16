@@ -1,0 +1,68 @@
+import std.bytes.is_utf8
+import std.bytes.clone
+import std.bytes.decode_utf8
+import std.list.clone
+import std.list.length
+import std.text.to_bytes
+import std.result.Result
+import std.result.ConstraintError
+
+fn checksum(values List[Int]) Int {
+    var total = 0
+    var index = 0
+    while index < length(values) {
+        total = total * 31 + values[index]
+        index = index + 1
+    }
+    total
+}
+
+type Checked = List[Int] where checksum(self) == 7
+
+type Utf8 = Bytes where is_utf8(self)
+
+fn checked_numbers(input List[Int]) Result[Checked, ConstraintError] {
+    Checked(clone(input))
+}
+
+fn checked_text(input Bytes) Result[Utf8, ConstraintError] {
+    Utf8(clone(input))
+}
+
+fn unchanged_numbers(value Checked) {
+    value[0] = {
+        let saved = value[0]
+        saved + 0
+    }
+}
+
+fn unchanged_text(value Utf8) {
+    value[0] = {
+        let saved = value[0]
+        saved + 0
+    }
+}
+
+fn main() {
+    match checked_numbers([7]) {
+        Result.Ok(value) => {
+            unchanged_numbers(value)
+            assert value[0] == 7
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    match checked_text(to_bytes("hé")) {
+        Result.Ok(value) => {
+            unchanged_text(value)
+            assert match decode_utf8(value) {
+                Result.Ok(text) => text == "hé"
+                Result.Err(_) => false
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

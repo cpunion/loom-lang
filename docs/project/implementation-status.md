@@ -146,6 +146,8 @@ supported theories and boundaries. The central rules are:
   faults precede stores, and opaque content predicates grant no unproved writes.
   Dependent store arguments preserve checked block/match bindings and the
   receiver evaluated before argument-side rebinding; unsupported scopes reject.
+  Proved identity stores preserve even unexpanded pure predicates. Every store
+  compares the current representation, not IEEE equality or a cached shared read.
   Shared atomic element reads can use the continuing predicate at that snapshot;
   separate reads still cannot assume equal contents.
 - Fresh drafts and selected known aliases can publish a constrained outer header

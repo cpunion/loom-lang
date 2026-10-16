@@ -21,6 +21,7 @@ record Verification {
     query ProofQuery
     shared Bool
     preservation List[Expr]
+    identity_stores Bool
     body_calls List[Int]
     capture_returns Bool
     returns List[Outcome]
@@ -797,6 +798,7 @@ fn verify_entered(proof Verification, state State) Result[Bool, Text] {
         query = proof.query
         shared = proof.shared
         preservation = proof.preservation
+        identity_stores = proof.identity_stores
         body_calls = proof.body_calls
         capture_returns = proof.capture_returns
         returns = proof.returns
@@ -880,6 +882,7 @@ fn contract_verification(program Program, function Function, backend ProofBacken
             query = ordinary.query
             shared = shared
             preservation = ordinary.preservation
+            identity_stores = ordinary.identity_stores
             body_calls = ordinary.body_calls
             capture_returns = ordinary.capture_returns
             returns = ordinary.returns

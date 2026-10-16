@@ -1,0 +1,99 @@
+// Representation identity is stronger than source ==: signed zero can be
+// observed by later Float arithmetic, while NaN is not equal to itself.
+// Opaque graph provenance supplies no identity evidence.
+fn stored_identity(proof Verification, left Value, right Value, depth Int) Result[Predicate, Text] {
+    discard loop_step(proof)?
+    if depth >= 16 {
+        return Result.Err("stored identity depth exhausted")
+    }
+    match left {
+        Value.Empty => match right {
+            Value.Empty => Result.Ok(Predicate.Constant(true))
+            _ => Result.Err("stored representations differ")
+        }
+        Value.List(identity) => match right {
+            Value.List(other) => Result.Ok(Predicate.Constant(identity == other))
+            _ => Result.Err("stored representations differ")
+        }
+        Value.Record(fields) => match right {
+            Value.Record(other) => stored_field_identity(proof, fields, other, depth + 1)
+            _ => Result.Err("stored representations differ")
+        }
+        Value.Sum(owner, tag, variants) => match right {
+            Value.Sum(other, selected, payloads) => {
+                if owner != other || length(variants) != length(payloads) {
+                    return Result.Err("stored variants differ")
+                }
+                var equal = boolean(binary("==", Value.Number(tag), Value.Number(selected))?)?
+                var index = 0
+                while index < length(variants) {
+                    equal = Predicate.And(predicates(equal,
+                            stored_field_identity(proof, get(variants, index), get(payloads, index), depth + 1)?))
+                    index = index + 1
+                }
+                Result.Ok(equal)
+            }
+            _ => Result.Err("stored representations differ")
+        }
+        _ => {
+            let first = array_scalar(left)?
+            let second = array_scalar(right)?
+            if same_array_scalar(first, second) {
+                return Result.Ok(Predicate.Constant(true))
+            }
+            if scalar_domain(first) == ScalarDomain.Float || scalar_domain(second) == ScalarDomain.Float {
+                return Result.Err("Float identity needs the same stored snapshot")
+            }
+            boolean(binary("==", left, right)?)
+        }
+    }
+}
+
+fn stored_field_identity(proof Verification, left List[Value], right List[Value], depth Int) Result[Predicate, Text] {
+    if length(left) != length(right) {
+        return Result.Err("stored fields differ")
+    }
+    var equal = Predicate.Constant(true)
+    var index = 0
+    while index < length(left) {
+        equal = Predicate.And(predicates(equal, stored_identity(proof, get(left, index), get(right, index), depth)?))
+        index = index + 1
+    }
+    Result.Ok(equal)
+}
+
+fn unchanged_store(proof Verification, primitive Text, receiver Int, identity Int,
+    index Linear, value Value, state State) Result[List[Outcome], Text] {
+    let element = if primitive == "bytes_set" {
+        1
+    } else if proof_list_type(proof.program, receiver) {
+        get(get(proof.program.types, receiver).arguments, 0)
+    } else {
+        return Result.Err("identity store needs a checked sequence type")
+    }
+    // Called after argument evaluation, bounds validation and interference.
+    // This is a logical read at the atomic store, not another executable read.
+    let current = read_element_outcomes(proof, element, identity, index, state)?
+    let output = new[Outcome]()
+    var path = 0
+    while path < length(current) {
+        let before = get(current, path)
+        if !loop_holds(Predicate.Constant(false), before.state) {
+            let equal = stored_identity(proof, before.value, value, 0)?
+            if !loop_holds(equal, before.state) {
+                if !proof.query.backend.enabled {
+                    return Result.Err("store identity is not proved")
+                }
+                solver_fact(proof.query, equal, before.state)
+            }
+        }
+        // A proved identity store changes no alias, field, extent or content
+        // version. Queued equalities still must discharge before admission.
+        discard add_outcome(output, Outcome {
+                state = before.state
+                value = Value.Empty
+            })?
+        path = path + 1
+    }
+    Result.Ok(output)
+}
