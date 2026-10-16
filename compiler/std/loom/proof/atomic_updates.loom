@@ -9,41 +9,72 @@ fn atomic_receiver(value Expr, depth Int) Bool {
     length(value.children) == 1 && atomic_receiver(get(value.children, 0), depth + 1)
 }
 
-// Compact source inputs without equating independent reads. Called bodies keep
-// their own local namespaces; binding/control-flow expressions need that scope
-// machinery and are not reconstructed as already evaluated argument values.
-fn atomic_expression(value Expr, bindings List[Int], params List[Int], depth Int) Result[Expr, Text] {
-    if depth >= 64 || length(value.arms) != 0 {
+fn atomic_local(local Int, locals List[Local], used List[Int]) Result[Bool, Text] {
+    if local < 0 || local >= length(locals) {
+        return Result.Err("atomic update local is outside its checked scope")
+    }
+    var index = 0
+    while index < length(used) {
+        if get(used, index) == local {
+            return Result.Ok(true)
+        }
+        index = index + 1
+    }
+    push(used, local)
+    Result.Ok(true)
+}
+
+// Keep checked binding identities and metadata. In particular a bound local
+// is not an arbitrary input, and two source reads are not one frozen value.
+fn atomic_scope(value Expr, locals List[Local], used List[Int], bound List[Bool], depth Int) Result[Bool, Text] {
+    if depth >= 64 {
         return Result.Err("atomic update expression scope is unsupported")
     }
-    if value.kind == ExprKind.Local {
-        var slot = 0
-        while slot < length(bindings) && get(bindings, slot) != value.index {
-            slot = slot + 1
-        }
-        if slot == length(bindings) {
-            push(bindings, value.index)
-            push(params, value.ty)
-        } else if get(params, slot) != value.ty {
+    if value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign {
+        discard atomic_local(value.index, locals, used)?
+        if value.kind == ExprKind.Local && get(locals, value.index).ty != value.ty {
             return Result.Err("atomic update input has inconsistent types")
         }
-        return Result.Ok(proof_expr(value, value.kind, value.ty, value.text, slot, []))
-    }
-    if value.kind != ExprKind.Integer && value.kind != ExprKind.Bool && value.kind != ExprKind.Float &&
+        if value.kind == ExprKind.Let {
+            set(bound, value.index, true)
+        }
+    } else if value.kind != ExprKind.Integer && value.kind != ExprKind.Bool && value.kind != ExprKind.Float &&
     value.kind != ExprKind.Text && value.kind != ExprKind.Bytes && value.kind != ExprKind.Unary &&
     value.kind != ExprKind.Binary && value.kind != ExprKind.Coerce && value.kind != ExprKind.Field &&
     value.kind != ExprKind.Record && value.kind != ExprKind.List && value.kind != ExprKind.Variant &&
     value.kind != ExprKind.Call && value.kind != ExprKind.Intrinsic && value.kind != ExprKind.FunctionRef &&
-    value.kind != ExprKind.IndirectCall {
+    value.kind != ExprKind.IndirectCall && value.kind != ExprKind.Block && value.kind != ExprKind.If &&
+    value.kind != ExprKind.Match && value.kind != ExprKind.While && value.kind != ExprKind.Break &&
+    value.kind != ExprKind.Continue && value.kind != ExprKind.Assert && value.kind != ExprKind.Discard {
         return Result.Err("atomic update expression needs an explicit function scope")
     }
-    let children = new[Expr]()
     var index = 0
     while index < length(value.children) {
-        push(children, atomic_expression(get(value.children, index), bindings, params, depth + 1)?)
+        discard atomic_scope(get(value.children, index), locals, used, bound, depth + 1)?
         index = index + 1
     }
-    Result.Ok(proof_expr(value, value.kind, value.ty, value.text, value.index, children))
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let bindings = std.list.clone(arm.bindings)
+        push(bindings, arm.whole)
+        var field = 0
+        while field < length(bindings) {
+            let local = get(bindings, field)
+            if local >= 0 {
+                discard atomic_local(local, locals, used)?
+                set(bound, local, true)
+            }
+            field = field + 1
+        }
+        field = 0
+        while field < length(arm.body) {
+            discard atomic_scope(get(arm.body, field), locals, used, bound, depth + 1)?
+            field = field + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
 }
 
 // A fallback for a checked primitive store/transparent forwarder. Model its
@@ -52,7 +83,7 @@ fn atomic_expression(value Expr, bindings List[Int], params List[Int], depth Int
 // executable source and its ordinary faults/effects are not rewritten.
 // predicates must be the complete normalized constructor predicate, not the
 // optional facts extracted from a type when some conjuncts are unsupported.
-pub fn preserves_update_expression(program Program, operation Expr, predicates List[Expr],
+pub fn preserves_update_expression(program Program, source_locals List[Local], operation Expr, predicates List[Expr],
     backend ProofBackend, shared Bool) Result[Bool, Text] {
     if single_list_write(program.functions, operation) == 0 {
         return Result.Err("preservation needs one checked sequence store")
@@ -70,31 +101,67 @@ pub fn preserves_update_expression(program Program, operation Expr, predicates L
     if shape.kind != TypeKind.Refined || length(shape.fields) != 1 || get(shape.fields, 0).ty != receiver.ty {
         return Result.Err("atomic update requires a checked representation borrow")
     }
-    let params = new[Int]()
-    let body = atomic_expression(operation, [], params, 0)?
-    let clauses = new[Expr]()
+    let used = new[Int]()
+    let bound = new[Bool]()
+    let snapshots = new[Int]()
+    let mapping = new[Int]()
     var index = 0
+    while index < length(source_locals) {
+        push(bound, false)
+        push(snapshots, -1)
+        push(mapping, -1)
+        index = index + 1
+    }
+    discard atomic_scope(operation, source_locals, used, bound, 0)?
+    let params = new[Int]()
+    let locals = new[Local]()
+    index = 0
+    while index < length(used) {
+        let local = get(used, index)
+        if !get(bound, local) {
+            let source = get(source_locals, local)
+            set(snapshots, local, length(params))
+            push(params, source.ty)
+            push(locals, Local {
+                    name = "input"
+                    ty = source.ty
+                    mutable = false
+                    is_scoped = false
+                })
+        }
+        index = index + 1
+    }
+    let statements = new[Expr]()
+    index = 0
+    while index < length(used) {
+        let local = get(used, index)
+        let source = get(source_locals, local)
+        let slot = length(locals)
+        set(mapping, local, slot)
+        push(locals, source)
+        if !get(bound, local) {
+            let input = proof_expr(operation, ExprKind.Local, source.ty, "", get(snapshots, local), [])
+            push(statements, proof_expr(operation, ExprKind.Let, 0, "", slot, [input]))
+        }
+        index = index + 1
+    }
+    // The receiver is evaluated before argument effects. Freeze only that
+    // path in the postcondition, not the mutable source slot it was read from.
+    let target = call_body_at(receiver, 0, Option.Some(snapshots), 64)?
+    push(statements, call_body_at(operation, 0, Option.Some(mapping), 64)?)
+    let body = proof_expr(operation, ExprKind.Block, 0, "", -1, statements)
+    let clauses = new[Expr]()
+    index = 0
     while index < length(predicates) {
         let predicate = get(predicates, index)
         if !bounded_contract(predicate) || !invariant_entry_supported(predicate, 0) {
             return Result.Err("atomic update needs its complete supported predicate")
         }
-        push(clauses, invariant_entry_at(predicate, get(body.children, 0)))
+        push(clauses, invariant_entry_at(predicate, target))
         index = index + 1
     }
     if length(predicates) == 0 {
         return Result.Err("atomic update has no supported continuing predicate")
-    }
-    let locals = new[Local]()
-    index = 0
-    while index < length(params) {
-        push(locals, Local {
-                name = "input"
-                ty = get(params, index)
-                mutable = false
-                is_scoped = false
-            })
-        index = index + 1
     }
     verify_preservation(program, Function {
             is_async = false

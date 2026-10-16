@@ -7,7 +7,7 @@ fn update_literal(value Expr) Bool {
     value.kind == ExprKind.Text || value.kind == ExprKind.Float
 }
 
-fn proved_update_expression(env Environment, functions List[Function], value Expr) Bool {
+fn proved_update_expression(env Environment, functions List[Function], locals List[Local], value Expr) Bool {
     if env.expanding_helpers || env.stage_depth >= 32 {
         return false
     }
@@ -36,13 +36,13 @@ fn proved_update_expression(env Environment, functions List[Function], value Exp
         shared = worker_expression(get(functions, index).body)
         index = index + 1
     }
-    match update_expression_proof(env, functions, value, shared) {
+    match update_expression_proof(env, functions, locals, value, shared) {
         Result.Ok(proved) => proved
         Result.Err(_) => false
     }
 }
 
-fn update_expression_proof(env Environment, functions List[Function], value Expr, shared Bool) Result[Bool, Failure] {
+fn update_expression_proof(env Environment, functions List[Function], locals List[Local], value Expr, shared Bool) Result[Bool, Failure] {
     let receiver = get(value.children, 0)
     let ty = get(receiver.children, 0).ty
     let node = predicate_node(env, get(env.types, ty).symbol)
@@ -85,7 +85,7 @@ fn update_expression_proof(env Environment, functions List[Function], value Expr
         interfaces = env.interfaces
         witnesses = env.witnesses
     }
-    Result.Ok(match std.loom.proof.preserves_update_expression(program, value, predicates,
+    Result.Ok(match std.loom.proof.preserves_update_expression(program, locals, value, predicates,
         get(env.inputs, 0).build.proof_backend, shared) {
         Result.Ok(proved) => proved
         Result.Err(_) => false

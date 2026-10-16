@@ -97,7 +97,7 @@ fn draft_update(updates DraftUpdates, value Expr, inputs List[InputOrigin]) Bool
         arms = value.arms
         falls = value.falls
     }
-    if !constraint_operation(updates.env, updates.functions, operation) {
+    if !constraint_operation(updates.env, updates.functions, get(updates.current, 0).locals, operation) {
         if operation.kind != ExprKind.Call {
             return false
         }
@@ -107,7 +107,7 @@ fn draft_update(updates DraftUpdates, value Expr, inputs List[InputOrigin]) Bool
                 return false
             }
         }
-        if !constraint_operation(updates.env, updates.functions, operation) {
+        if !constraint_operation(updates.env, updates.functions, get(updates.current, 0).locals, operation) {
             return false
         }
     }

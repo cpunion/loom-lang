@@ -26,7 +26,7 @@ fn atomic_pair_program() Program {
 }
 
 fn atomic_pair_store(offset Text, replacement Expr) Expr {
-    let input = expression(ExprKind.Local, 7, "", 99, [])
+    let input = expression(ExprKind.Local, 7, "", 0, [])
     let receiver = expression(ExprKind.Coerce, 6, "", -1, [input])
     let size = expression(ExprKind.Intrinsic, 1, "list_len", -1, [receiver])
     expression(ExprKind.Intrinsic, 0, "list_set", -1,
@@ -36,24 +36,30 @@ fn atomic_pair_store(offset Text, replacement Expr) Expr {
 test fn atomic_store_expressions_keep_input_identity_and_source_order() {
     let program = atomic_pair_program()
     let predicates = get(program.types, 7).constraint
-    assert match preserves_update_expression(program, atomic_pair_store("1", literal("-1")),
+    let locals = [Local {
+            name = "values"
+            ty = 7
+            mutable = false
+            is_scoped = false
+        }]
+    assert match preserves_update_expression(program, locals, atomic_pair_store("1", literal("-1")),
         predicates, no_proof_backend(), false) {
         Result.Ok(proved) => proved
         Result.Err(_) => false
     }
-    assert match preserves_update_expression(program, atomic_pair_store("1", literal("-1")),
+    assert match preserves_update_expression(program, locals, atomic_pair_store("1", literal("-1")),
         predicates, no_proof_backend(), true) {
         Result.Ok(proved) => proved
         Result.Err(_) => false
     }
-    assert match preserves_update_expression(program, atomic_pair_store("2", literal("-1")),
+    assert match preserves_update_expression(program, locals, atomic_pair_store("2", literal("-1")),
         predicates, no_proof_backend(), false) {
         Result.Err(_) => true
         Result.Ok(proved) => !proved
     }
     let append = expression(ExprKind.Intrinsic, 0, "list_push", -1,
         [get(atomic_pair_store("1", literal("1")).children, 0), literal("1")])
-    assert match preserves_update_expression(program, append, predicates, no_proof_backend(), false) {
+    assert match preserves_update_expression(program, locals, append, predicates, no_proof_backend(), false) {
         Result.Err(_) => true
         Result.Ok(proved) => !proved
     }
@@ -62,13 +68,26 @@ test fn atomic_store_expressions_keep_input_identity_and_source_order() {
     let restored = expression(ExprKind.Intrinsic, 0, "list_set", -1, [values, literal("0"), literal("1")])
     push(program.functions, contract_fixture([6], 1,
             expression(ExprKind.Block, 1, "", -1, [invalid, restored, literal("-1")]), [], []))
-    let input = expression(ExprKind.Local, 7, "", 99, [])
+    let input = expression(ExprKind.Local, 7, "", 0, [])
     let replacement = helper_call(0, 1, [expression(ExprKind.Coerce, 6, "", -1, [input])])
     // Argument effects occur before the outer store and must preserve the
     // complete predicate themselves; a later restoration does not excuse them.
-    assert match preserves_update_expression(program, atomic_pair_store("1", replacement),
+    assert match preserves_update_expression(program, locals, atomic_pair_store("1", replacement),
         predicates, no_proof_backend(), false) {
         Result.Err(_) => true
         Result.Ok(proved) => !proved
+    }
+    push(locals, Local {
+            name = "replacement"
+            ty = 1
+            mutable = false
+            is_scoped = false
+        })
+    let block_value = expression(ExprKind.Block, 1, "", -1,
+        [expression(ExprKind.Let, 0, "", 1, [literal("-1")]), local(1)])
+    assert match preserves_update_expression(program, locals, atomic_pair_store("1", block_value),
+        predicates, no_proof_backend(), false) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
     }
 }

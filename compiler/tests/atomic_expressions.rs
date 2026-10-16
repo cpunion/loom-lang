@@ -14,7 +14,17 @@ import std.list.length
 type Pair = List[Int] where length(self) == 2 && self[0] <= self[1]
 
 fn copy_second(values Pair) {
-    values[0] = values[1]
+    values[{
+        let first = 0
+        first
+    }] = {
+        let second = values[1]
+        if second >= values[0] {
+            second
+        } else {
+            values[0]
+        }
+    }
 }
 
 fn copy_first(values Pair) {
@@ -84,4 +94,55 @@ fn main() {
             success(&common::loom(&["run", package.path().to_str().unwrap()]));
         }
     }
+}
+
+#[test]
+fn scoped_arguments_keep_the_receiver_captured_before_rebinding() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("main.loom");
+    let contents = r#"
+import std.list.length
+
+type Head = List[Int] where length(self) == 2 && self[0] > 0
+
+fn rebind(first Head, second Head) {
+    var current = first
+    current[0] = {
+        current = second
+        7
+    }
+    assert current[0] == second[0]
+}
+
+fn main() {
+    let first = Head([1, 2])
+    let second = Head([2, 3])
+    rebind(first, second)
+    assert first[0] == 7 && second[0] == 2
+}
+
+test fn scoped_receiver_is_evaluated_once() {
+    main()
+}
+"#;
+    fs::write(&source, contents).unwrap();
+    for mode in ["check", "test", "run"] {
+        success(&common::loom(&[mode, package.path().to_str().unwrap()]));
+    }
+    let binary = common::executable(package.path(), "scoped-store");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package.path().to_str().unwrap()])
+                .arg("--output")
+                .arg(&binary)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&binary));
+    }
+    fs::write(&source, contents.replace("        7\n", "        0\n")).unwrap();
+    let output = common::loom(&["check", package.path().to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("constrained sequence"));
 }

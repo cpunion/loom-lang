@@ -136,6 +136,69 @@ test fn atomic_updates_preserve_dependent_arguments_and_receiver_paths() {
         """))
 }
 
+test fn atomic_updates_keep_scoped_bindings_and_the_evaluated_receiver() {
+    let header = """
+    import std.list.length
+    type Head = List[Int] where length(self) == 2 && self[0] > 0
+    type Positive = Int where self > 0
+    enum Choice {
+        Some(Positive)
+        None
+    }
+
+    """
+    list_constraint_accept(concat(header, """
+        pub fn scoped_index(values Head) {
+            values[{
+                let count = length(values)
+                count - 1
+            }] = {
+                let first = values[0]
+                if first > 0 {
+                    first
+                } else {
+                    1
+                }
+            }
+        }
+        pub fn matched(values Head, choice Choice) {
+            values[0] = match choice {
+                Choice.Some(value) => value
+                Choice.None => {
+                    let value = values[0]
+                    value
+                }
+            }
+        }
+        pub fn rebind(first Head, second Head) {
+            var current = first
+            current[0] = {
+                current = second
+                7
+            }
+        }
+        """))
+    // Rebinding the source variable must not move the postcondition to the
+    // second handle: native evaluation already captured the first receiver.
+    list_constraint_reject(concat(header, """
+        pub fn invalid(first Head, second Head) {
+            var current = first
+            current[0] = {
+                current = second
+                0
+            }
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn unknown(values Head, replacement Int) {
+            values[0] = {
+                let value = replacement
+                value
+            }
+        }
+        """))
+}
+
 test fn single_element_updates_prove_the_complete_content_constraint() {
     let header = """
     import std.list.length
