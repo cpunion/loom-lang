@@ -47,10 +47,18 @@ Failed staging is retained for recovery and never replaces the requested output.
 As with single-package apply, publication assumes a trusted local workspace;
 native rename is neither no-clobber against racing writers nor crash-durable.
 
+Explicit private nongeneric function renames also compose with independent
+body edits and moves within these packages. Each rename uses stable sidecar
+identity and checked reference-token edits in that complete branch's module
+context, including the package's own tests. Local capture, conflicting names,
+public/generic targets and missing binding evidence require resolution; names
+in other packages are not rewritten. The combined result still passes the
+normal production and per-package test checks.
+
 The output includes its manifest and lock, not external dependencies or ignored
 build caches. Keep relative path dependencies valid at the new location and
 provision locked Git snapshots before an offline build. Module Git-object input,
-package/import-graph changes and batch rename composition are not implemented.
+package/import-graph changes are not implemented.
 
 ## Single-package snapshots
 

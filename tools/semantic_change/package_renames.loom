@@ -1,0 +1,38 @@
+record PackageRenames {
+    directory Text
+    renames List[FunctionRename]
+}
+
+// Normalize each private rename in its complete branch, not against a mixture
+// of that branch's package and the baseline's other packages. Private names
+// cannot be referenced by another package; the shared normalizer still checks
+// every supported local binding in production and the package's own tests.
+fn normalize_package_renames(revisions List[PackageRevision], plans List[PackageRenames],
+    production Project, tests Project) Result[List[PackageRevision], Text] {
+    let ordinary = package_project(production, revisions)?
+    let testing = package_project(tests, revisions)?
+    let output = new[PackageRevision]()
+    var index = 0
+    while index < length(plans) {
+        let plan = get(plans, index)
+        let selected = package_revision(revisions, plan.directory)?
+        let revision = if length(plan.renames) == 0 {
+            selected.revision
+        } else {
+            normalize_rename(selected.revision, plan.renames, plan.directory,
+                Project {
+                    root = project_package(ordinary, selected.revision.package_name)?
+                    ..ordinary
+                }, Project {
+                    root = project_package(testing, selected.revision.package_name)?
+                    ..testing
+                })?
+        }
+        push(output, PackageRevision {
+                directory = selected.directory
+                revision = revision
+            })
+        index = index + 1
+    }
+    Result.Ok(output)
+}

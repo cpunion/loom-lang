@@ -367,8 +367,8 @@ pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], ri
     discard package_scopes(tests, base)?
     discard same_package_identities(production, base, left)?
     discard same_package_identities(production, base, right)?
-    discard separate_package_changes(package_changes(base, left)?, package_changes(base, right)?, production, tests)?
-    let merged = new[PackageRevision]()
+    let plans = new[PackageRenames]()
+    var renaming = false
     var index = 0
     while index < length(base) {
         let original = get(base, index)
@@ -387,9 +387,36 @@ pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], ri
         !same_implicit_imports(original.revision, a)? || !same_implicit_imports(original.revision, b)? {
             return Result.Err("package merge import bindings changed; explicit resolution required")
         }
+        let renames = function_renames(indexed(original.revision)?, indexed(a)?, indexed(b)?)?
+        push(plans, PackageRenames {
+                directory = original.directory
+                renames = renames
+            })
+        renaming = renaming || length(renames) != 0
+        index = index + 1
+    }
+    if renaming {
+        let original = normalize_package_renames(base, plans, production, tests)?
+        let a = normalize_package_renames(left, plans, production, tests)?
+        let b = normalize_package_renames(right, plans, production, tests)?
+        return merge_package_names(original, a, b,
+            package_project(production, original)?, package_project(tests, original)?)
+    }
+    merge_package_names(base, left, right, production, tests)
+}
+
+fn merge_package_names(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
+    production Project, tests Project) Result[List[PackageRevision], Text] {
+    discard separate_package_changes(package_changes(base, left)?, package_changes(base, right)?, production, tests)?
+    let merged = new[PackageRevision]()
+    var index = 0
+    while index < length(base) {
+        let original = get(base, index)
         push(merged, PackageRevision {
                 directory = original.directory
-                revision = proposed(original.revision, a, b)?
+                revision = proposed(original.revision,
+                    package_revision(left, original.directory)?.revision,
+                    package_revision(right, original.directory)?.revision)?
             })
         index = index + 1
     }
