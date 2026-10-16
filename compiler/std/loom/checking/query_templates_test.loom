@@ -1,0 +1,147 @@
+import std.text.contains
+
+test fn selected_queries_ignore_unrelated_templates_without_proving_the_package() {
+    let files = source_files("""
+        fn invalid[T](value T) Int {
+            value + 1
+        }
+        fn invalid_static(comptime value Int) Int {
+            false
+        }
+        fn leaf[T](value T) T {
+            value
+        }
+        fn good() Int {
+            let number = leaf(3)
+            number
+        }
+        """)
+    let bound = match bind(fixture_project(files), false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            get(new[std.loom.binding.Program](), 0)
+        }
+    }
+    match check(bound) {
+        Result.Err(_) => {
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+    var attempt = 0
+    while attempt < 2 {
+        match check_query(bound, 0, get(bound.symbols, 3).node.span.start) {
+            Result.Ok(query) => {
+                assert length(query.functions) == 2
+                let current = get(query.functions, 0)
+                assert current.symbol == 3
+                let call = get(get(current.body.children, 0).children, 0)
+                assert call.kind == ExprKind.Call
+                assert get(query.functions, call.index).symbol == 2
+            }
+            Result.Err(problem) => {
+                discard write_error(problem.diagnostic.message)
+                assert false
+            }
+        }
+        match check_query(bound, 0, get(bound.symbols, 0).node.span.start) {
+            Result.Err(_) => {
+            }
+            Result.Ok(_) => {
+                assert false
+            }
+        }
+        attempt = attempt + 1
+    }
+}
+
+fn query_template_rejected(source Text) {
+    match query_named(source_files(source), "good") {
+        Result.Err(problem) => {
+            assert contains(problem.diagnostic.message, "explicit capability")
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+}
+
+test fn selected_template_closures_cover_abstract_callbacks_methods_and_ctfe() {
+    query_template_rejected("""
+        fn invalid[T](value T) Int {
+            value + 1
+        }
+        fn good[T](value T) Int {
+            let callback = invalid[T]
+            callback(value)
+        }
+        """)
+    let methods = """
+        concept C {
+            fn invalid[T](self Self, value T) Int
+        }
+        impl C for Bool {
+            fn invalid[T](self Bool, value T) Int {
+                value + 1
+            }
+        }
+        """
+    query_template_rejected(concat(methods, """
+        fn good() Int {
+            comptime { true.invalid(3) }
+        }
+        """))
+    query_template_rejected(concat(methods, """
+        fn good[T](value T) Int {
+            let callback = true.invalid[T]
+            callback(value)
+        }
+        """))
+}
+
+test fn selected_template_dependencies_terminate_on_recursive_calls() {
+    let files = source_files("""
+        fn echo[T](count Int, value T) T {
+            if count == 0 {
+                value
+            } else {
+                echo(count - 1, value)
+            }
+        }
+        fn good() Int {
+            echo(2, 3)
+        }
+        """)
+    match query_named(files, "good") {
+        Result.Ok(query) => {
+            assert length(query.functions) == 2
+        }
+        Result.Err(problem) => {
+            discard write_error(problem.diagnostic.message)
+            assert false
+        }
+    }
+}
+
+test fn selected_template_queries_do_not_reuse_a_pack_instance_as_its_body_owner() {
+    let files = source_files("""
+        fn count[Ts...](values Ts...) Int {
+            0
+        }
+        type Flag = Int where count() == 0
+        fn good() Int {
+            3
+        }
+        """)
+    match query_named(files, "count") {
+        Result.Ok(query) => {
+            assert length(query.functions) == 0
+        }
+        Result.Err(problem) => {
+            discard write_error(problem.diagnostic.message)
+            assert false
+        }
+    }
+}

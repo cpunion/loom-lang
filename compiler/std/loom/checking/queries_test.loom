@@ -48,8 +48,6 @@ test fn local_queries_keep_full_bindings_and_stable_call_indices_after_failures(
 test fn local_queries_preserve_template_legality_ctfe_and_required_proofs() {
     query_reject("fn invalid[T](value T) Int { value + 1 }\nfn good() Int { invalid(3) }")
     query_reject("fn invalid[T](value T) Int { value + 1 }\nfn good() Int { comptime { invalid(3) } }")
-    // Deliberate V1 boundary: unrelated bad templates still prevent queries.
-    query_reject("fn invalid[T](value T) Int { value + 1 }\nfn good() Int { 3 }")
     query_reject("fn invalid() Int { false }\nfn good() Int { comptime { invalid() } }")
     query_reject("fn invalid() Int ensures result == 2 { 1 }\nfn good() Int { invalid() }")
     query_reject("fn predicate(value Int) Bool { 1 }\ntype Valid = Int where predicate(self)\nfn good() Int { 3 }")

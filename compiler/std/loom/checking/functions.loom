@@ -124,6 +124,9 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
     // Dispatch must validate the selected implementation/default, not only the
     // concept declaration. Witness activation and CTFE schedule here as well.
     discard validate_static(env, id, constants, declaration)?
+    if get(env.inputs, 0).declaration_queries {
+        require_query_template(env, id)
+    }
     var index = 0
     var instances = 0
     while index < length(env.pending) {

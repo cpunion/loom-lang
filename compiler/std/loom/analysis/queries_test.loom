@@ -374,14 +374,35 @@ test fn independent_queries_require_the_selected_function_and_its_complete_depen
     }
 }
 
-test fn independent_queries_do_not_bypass_invalid_generic_declarations() {
-    let text = "fn invalid[T](value T) Int { true }\nfn main() { let count = 3\nassert count == 3 }"
+test fn independent_queries_isolate_unrelated_but_not_selected_generic_errors() {
+    let text = """
+        fn invalid[T](value T) Int {
+            true
+        }
+        fn main() {
+            let count = 3
+            assert count == 3
+        }
+        """
     let bindings = query_bindings(input(text))
     assert match check(bindings) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
-    assert match inspect_independent(bindings, 0, query_offset(text, "count ==")) {
+    let found = independent_found(bindings, text, "count ==")
+    only_type(found, "Int")
+    let start = query_offset(text, "count =")
+    only_definition(found, start, start + 5)
+    let selected = """
+        fn invalid[T](value T) Int {
+            value + 1
+        }
+        fn main() {
+            let count = comptime { invalid(3) }
+            assert count == 4
+        }
+        """
+    assert match inspect_independent(query_bindings(input(selected)), 0, query_offset(selected, "count ==")) {
         Option.None => true
         Option.Some(_) => false
     }

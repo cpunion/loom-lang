@@ -138,6 +138,9 @@ fn function_reference(context Context, node Node, options List[Int], supplied_ty
 }
 
 fn checked_reference(context Context, node Node, chosen FunctionReference) Result[Bool, Failure] {
+    if get(context.env.inputs, 0).declaration_queries {
+        discard require_query_reference(context.env, chosen.signature, chosen.arguments)?
+    }
     let selected_signature = get(context.env.signatures, chosen.signature)
     if reflection_intrinsic(context.env, selected_signature.symbol) {
         return Result.Err(error(context, node, "type reflection must be called directly; use a source wrapper for a function value"))

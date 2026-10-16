@@ -63,6 +63,8 @@ generators whose definition-context uses are not a complete editable source map.
 Resident workers reuse valid analyses while revalidating source and observed
 inputs. Query-only declaration headers support ordinary/generic and impl
 signatures despite body errors, including original static parameter slots.
+Independent body queries isolate unrelated ordinary/template errors while
+validating the selected template, CTFE and witness dependency closure.
 Dependent type values, unexpanded packs and broader body recovery remain limited.
 Recovered queries provide neither build success nor proof evidence.
 Contract navigation lazily checks source clauses in a separate query snapshot,
