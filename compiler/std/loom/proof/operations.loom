@@ -30,6 +30,9 @@ fn unsupported_operation() ProofOperation {
 
 fn intrinsic_operation(primitive Text, ty Int, arity Int) ProofOperation {
     let name = sequence_operation(primitive)
+    if name == "cell_get" && arity == 1 {
+        return operation_shape(1, OperandFlow.Eager, true, true)
+    }
     if (name == "proof_enum_tag" && ty == 1 && arity == 1) ||
     (name == "proof_enum_payload" && arity == 3) {
         return operation_shape(arity, OperandFlow.Eager, false, true)

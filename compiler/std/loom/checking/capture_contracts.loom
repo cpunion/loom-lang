@@ -1,0 +1,74 @@
+// Proof sees the same storage as execution. Preserve source local IDs here;
+// close_function performs the native environment-slot permutation afterward.
+fn capture_entry_observations(scope Lexical, value Expr) Expr {
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, if value.kind == ExprKind.Intrinsic && value.text == "contract_old" {
+                capture_precondition(scope, get(value.children, index))
+            } else {
+                capture_entry_observations(scope, get(value.children, index))
+            })
+        index = index + 1
+    }
+    storage_node(value, value.kind, value.ty, value.index, children)
+}
+
+fn capture_conditions(context Context, values List[Expr]) List[Expr] {
+    if length(context.lexical) == 0 || (length(get(context.lexical, 0).cells) == 0 &&
+        get(context.lexical, 0).environment < 0) {
+        return values
+    }
+    let output = new[Expr]()
+    var index = 0
+    while index < length(values) {
+        let scope = get(context.lexical, 0)
+        push(output, close_expression(scope, capture_entry_observations(scope, get(values, index)), false, false))
+        index = index + 1
+    }
+    output
+}
+
+fn capture_storage(context Context, function Function) Function {
+    if length(context.lexical) == 0 || length(get(context.lexical, 0).cells) == 0 {
+        return function
+    }
+    let scope = get(context.lexical, 0)
+    let locals = new[Local]()
+    var index = 0
+    while index < length(function.locals) {
+        let local = get(function.locals, index)
+        let cell = captured_storage(scope, index)
+        push(locals, Local {
+                name = local.name
+                ty = if cell >= 0 {
+                    cell
+                } else {
+                    local.ty
+                }
+                mutable = local.mutable
+                is_scoped = local.is_scoped
+            })
+        index = index + 1
+    }
+    Function {
+        is_async = function.is_async
+        symbol = function.symbol
+        arguments = function.arguments
+        params = function.params
+        result = function.result
+        locals = locals
+        preconditions = capture_conditions(context, function.preconditions)
+        postconditions = capture_conditions(context, function.postconditions)
+        result_cleanup = capture_conditions(context, function.result_cleanup)
+        result_local = function.result_local
+        body = close_expression(scope, function.body, false, false)
+        runtime_name = function.runtime_name
+        span = function.span
+    }
+}
+
+fn with_source_contracts(context Context, function Function, preconditions List[Expr], postconditions List[Expr]) Function {
+    with_contracts(function, capture_conditions(context, closure_preconditions(context, preconditions)),
+        capture_conditions(context, postconditions))
+}

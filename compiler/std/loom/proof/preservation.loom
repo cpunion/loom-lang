@@ -35,6 +35,7 @@ fn verify_preservation(program Program, function Function, backend ProofBackend,
         shared = proof.shared
         preservation = conditions
         identity_stores = identity
+        protected = proof.protected
         body_calls = proof.body_calls
         capture_returns = true
         returns = new[Outcome]()
@@ -53,6 +54,7 @@ fn with_loop_returns(proof Verification) Verification {
         shared = proof.shared
         preservation = proof.preservation
         identity_stores = proof.identity_stores
+        protected = proof.protected
         body_calls = proof.body_calls
         capture_returns = proof.capture_returns
         returns = if proof.capture_returns {
@@ -77,6 +79,7 @@ fn preservation_snapshot(proof Verification) Verification {
         shared = false
         preservation = proof.preservation
         identity_stores = proof.identity_stores
+        protected = proof.protected
         body_calls = proof.body_calls
         capture_returns = proof.capture_returns
         returns = proof.returns

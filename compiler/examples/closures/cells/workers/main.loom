@@ -1,0 +1,28 @@
+import std.task.worker.run
+
+type Positive = Int where self > 0
+
+async fn exercise() {
+    var value = Positive(1)
+    let read = fn() Int
+    ensures result > 0 {
+        value
+    }
+    let change = fn() {
+        value = Positive(2)
+    }
+    let first = run(fn() Int {
+            change()
+            read()
+        })
+    let second = run(fn() Int {
+            change()
+            read()
+        })
+    let left, right = (first, second).await
+    assert left > 0 && right > 0 && read() > 0
+}
+
+async fn main() {
+    exercise().await
+}

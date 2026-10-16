@@ -385,7 +385,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         operand = operand + 1
     }
     var observation = -1
-    if length(context.observations) != 0 && (list_length_expression(value) || list_read_expression(value) ||
+    if length(context.observations) != 0 && (list_length_expression(value) || list_read_expression(value) || cell_read_expression(value) ||
         entry_observation_expression(value)) {
         observation = expanded_observation(context, value)
     }

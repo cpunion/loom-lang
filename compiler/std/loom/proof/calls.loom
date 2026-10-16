@@ -65,6 +65,7 @@ fn verification(function Function, program Program, backend ProofBackend) Verifi
         shared = false
         preservation = new[Expr]()
         identity_stores = false
+        protected = []
         body_calls = new[Int]()
         capture_returns = false
         returns = new[Outcome]()

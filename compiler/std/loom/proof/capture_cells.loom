@@ -1,0 +1,121 @@
+// Captured bindings are fixed one-slot mutable storage. Reuse the sequence
+// version/alias algebra, not immutable scalar locals or a second heap theory.
+fn capture_cell_shape(shape Type) Bool {
+    shape.kind == TypeKind.Frame && shape.symbol == -1 && length(shape.arguments) == 1 &&
+    length(shape.fields) == 1 && get(shape.fields, 0).name == "value" &&
+    get(shape.fields, 0).ty == get(shape.arguments, 0)
+}
+
+fn capture_cell_type(program Program, ty Int) Bool {
+    ty >= 6 && ty < length(program.types) && capture_cell_shape(get(program.types, ty))
+}
+
+// Input cells already contain a typed value at invocation entry. Materialize
+// that one snapshot once; later stores/unknown aliases invalidate it normally.
+fn input_capture_cells(proof Verification, ty Int, value Value, state State, depth Int) Result[State, Text] {
+    if ty < 6 || ty >= length(proof.program.types) || depth >= 16 {
+        return Result.Ok(state)
+    }
+    let shape = get(proof.program.types, ty)
+    if capture_cell_shape(shape) {
+        let identity = match value {
+            Value.List(identity) => identity
+            _ => {
+                return Result.Err("capture cell input needs a tracked handle")
+            }
+        }
+        let current = fixed_capture_cell(identity, state)
+        match known_element(identity, constant(integer(0)), current) {
+            Result.Ok(_) => {
+                return Result.Ok(current)
+            }
+            Result.Err(_) => {
+            }
+        }
+        let content = record_parameter_value(proof, get(shape.arguments, 0), depth + 1)
+        return remember_element(identity, constant(integer(0)), content,
+            typed_value_state(proof, get(shape.arguments, 0), content, current))
+    }
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        return input_capture_cells(proof, get(shape.fields, 0).ty, value, state, depth + 1)
+    }
+    if record_input_shape(shape) {
+        match value {
+            Value.Record(fields) => {
+                var current = state
+                var index = 0
+                while index < length(fields) && index < length(shape.fields) {
+                    current = input_capture_cells(proof, get(shape.fields, index).ty,
+                        get(fields, index), current, depth + 1)?
+                    index = index + 1
+                }
+                return Result.Ok(current)
+            }
+            _ => {
+            }
+        }
+    }
+    Result.Ok(state)
+}
+
+fn fixed_capture_cell(identity Int, state State) State {
+    match list_state(identity, state) {
+        Result.Ok(extent) => {
+            if extent.fixed_extent && length(extent.size.terms) == 0 &&
+            compare(extent.size.constant, integer(1)) == 0 {
+                return state
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    let initialized = list_bounds(Value.List(identity), state)
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(initialized.extents) {
+        let extent = get(initialized.extents, index)
+        push(extents, if extent.identity == identity {
+                ListExtent {
+                    identity = identity
+                    size = constant(integer(1))
+                    allocated = extent.allocated
+                    private_storage = extent.private_storage
+                    read_only = extent.read_only
+                    fixed_extent = true
+                    invariant_type = extent.invariant_type
+                    frontier = extent.frontier
+                    unreachable = extent.unreachable
+                    contents = extent.contents
+                    cells = extent.cells
+                }
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = initialized.locals
+        facts = initialized.facts
+        extents = extents
+        observations = initialized.observations
+    }
+}
+
+fn cell_read_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "cell_get" && length(value.children) == 1
+}
+
+fn cell_read_view(value Expr) Expr {
+    proof_expr(value, ExprKind.Intrinsic, value.ty, "list_get", value.index,
+        [get(value.children, 0), proof_expr(value, ExprKind.Integer, 1, "0", -1, [])])
+}
+
+fn execute_cell_store(proof Verification, value Expr, state State, depth Int) Result[List[Outcome], Text] {
+    if value.index != 0 || length(value.children) != 2 ||
+    !capture_cell_type(proof.program, get(value.children, 0).ty) {
+        return Result.Err("required proof needs a modeled capture cell store")
+    }
+    let operation = proof_expr(value, ExprKind.Intrinsic, 0, "list_set", -1,
+        [get(value.children, 0), proof_expr(value, ExprKind.Integer, 1, "0", -1, []), get(value.children, 1)])
+    execute_list_operation(proof, operation, "list_set", state, depth)
+}

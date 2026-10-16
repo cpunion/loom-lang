@@ -3,7 +3,7 @@ fn list_read_expression(value Expr) Bool {
 }
 
 fn contains_list_read(value Expr) Bool {
-    if list_read_expression(value) {
+    if list_read_expression(value) || cell_read_expression(value) {
         return true
     }
     var index = 0

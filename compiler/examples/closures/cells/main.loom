@@ -1,0 +1,61 @@
+import std.list.length
+
+fn positive_head(values List[Int]) Bool {
+    length(values) > 0 && values[0] > 0
+}
+
+type Head = List[Int] where positive_head(self)
+
+fn counter() fn() Int {
+    var value = 1
+    fn() Int
+    requires value < 9223372036854775807
+    ensures result == old(value) + 1 {
+        value = value + 1
+        value
+    }
+}
+
+fn replaceable(first Head, second Head) (fn() Int, fn()) {
+    var value = first
+    let read = fn() Int
+    ensures result > 0 {
+        value[0]
+    }
+    let change = fn() {
+        value = second
+    }
+    (read, change)
+}
+
+fn calculated() Int
+ensures result == 3 {
+    var value = 1
+    let change = fn() {
+        value = 3
+    }
+    let alias = change
+    alias()
+    value
+}
+
+fn exercise() {
+    let next = counter()
+    let alias = next
+    assert next() == 2 && alias() == 3
+    assert calculated() == 3
+    let read, change = replaceable(Head([1]), Head([2]))
+    assert read() == 1
+    change()
+    assert read() == 2
+    let folded = comptime {
+        let advance = counter()
+        discard advance()
+        advance()
+    }
+    assert folded == 3
+}
+
+fn main() {
+    exercise()
+}

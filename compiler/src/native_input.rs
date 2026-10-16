@@ -1039,6 +1039,14 @@ impl Converter<'_> {
                         .collect::<Result<_>>()?,
                 )
             }
+            7 if node.text == "cell_get" => {
+                let value = self.expr(self.child(node, 0, 1)?)?;
+                let fields = self.frame(value.ty)?;
+                if fields.len() != 1 || fields[0].1 != ty {
+                    return Err("checked cell load type mismatch".into());
+                }
+                E::Field(Box::new(value), 0)
+            }
             7 => {
                 let operation = primitive(&node.text)?;
                 if node.children.len() != primitive_arity(operation) {

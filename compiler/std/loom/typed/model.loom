@@ -141,6 +141,8 @@ pub enum ExprKind {
 // FrameNew children are
 // indexed Field initializers; omitted fields are zeroed. FrameStore children
 // are [frame,value], index selects the field, and its result is Unit.
+// The generated cell_get intrinsic reads a mutable capture cell's sole field;
+// unlike an immutable Field projection, it is an effect-accounted heap read.
 pub record Expr {
     kind ExprKind
     ty Int

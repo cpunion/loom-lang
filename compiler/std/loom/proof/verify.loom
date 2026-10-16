@@ -22,6 +22,7 @@ record Verification {
     shared Bool
     preservation List[Expr]
     identity_stores Bool
+    protected List[InputGuarantee]
     body_calls List[Int]
     capture_returns Bool
     returns List[Outcome]
@@ -110,7 +111,7 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
         return Value.Empty
     }
     let shape = get(proof.program.types, ty)
-    if shape.kind == TypeKind.List || shape.kind == TypeKind.Bytes {
+    if shape.kind == TypeKind.List || shape.kind == TypeKind.Bytes || capture_cell_shape(shape) {
         let identity = get(proof.fresh, 0)
         std.list.set(proof.fresh, 0, identity + 1)
         return Value.List(identity)
@@ -521,6 +522,17 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
         }
         return Result.Ok(values)
     }
+    if expr.kind == ExprKind.FrameStore {
+        return execute_cell_store(proof, expr, state, depth - 1)
+    }
+    if expr.kind == ExprKind.FrameNew && capture_cell_type(proof.program, expr.ty) {
+        if length(expr.children) != 1 || get(expr.children, 0).kind != ExprKind.Field ||
+        get(expr.children, 0).index != 0 || length(get(expr.children, 0).children) != 1 {
+            return Result.Err("required proof needs a complete capture cell initializer")
+        }
+        let value = proof_expr(expr, ExprKind.List, expr.ty, "", -1, get(expr.children, 0).children)
+        return execute(proof, value, state, depth - 1)
+    }
     if expr.kind == ExprKind.Record || expr.kind == ExprKind.FrameNew {
         return record_outcomes(proof, expr, state, depth - 1)
     }
@@ -550,6 +562,15 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
                     }
                 }
                 _ => {
+                }
+            }
+            if capture_cell_type(proof.program, expr.ty) {
+                match value {
+                    Value.List(identity) => {
+                        state = fixed_capture_cell(identity, state)
+                    }
+                    _ => {
+                    }
                 }
             }
             discard add_outcome(output, Outcome {
@@ -609,6 +630,12 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
     if expr.kind == ExprKind.Await || expr.kind == ExprKind.Suspend {
         return task_completion(proof, expr, state, depth - 1)
     }
+    if cell_read_expression(expr) {
+        if !capture_cell_type(proof.program, get(expr.children, 0).ty) {
+            return Result.Err("required proof needs a checked capture cell read")
+        }
+        return execute_list_operation(proof, cell_read_view(expr), "list_get", state, depth - 1)
+    }
     let operation = proof_operation(expr)
     if expr.kind == ExprKind.Intrinsic && operation.arity >= 0 && !operation.heap {
         return execute_immutable_operation(proof, expr, expr.text, state, depth - 1)
@@ -661,7 +688,8 @@ fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, 
     verify_body(proof, protected, new[Int](), new[Int]())
 }
 
-fn verify_body(proof Verification, protected List[InputGuarantee], allocations List[Int], entries List[Int]) Result[Bool, Text] {
+fn verify_body(source Verification, protected List[InputGuarantee], allocations List[Int], entries List[Int]) Result[Bool, Text] {
+    let proof = protected_verification(source, protected)
     let function = proof.function
     if length(function.postconditions) == 0 {
         return Result.Ok(true)
@@ -703,6 +731,7 @@ fn verify_body(proof Verification, protected List[InputGuarantee], allocations L
                 let value = parameter_value(proof, ty, index)?
                 state = integer_input_bounds(value,
                     list_bounds(value, text_bounds(value, assigned(state, index, value))))
+                state = input_capture_cells(proof, ty, value, state, 0)?
                 if allocated {
                     match value {
                         Value.List(identity) => {
@@ -800,6 +829,7 @@ fn verify_entered(proof Verification, state State) Result[Bool, Text] {
         shared = proof.shared
         preservation = proof.preservation
         identity_stores = proof.identity_stores
+        protected = proof.protected
         body_calls = proof.body_calls
         capture_returns = proof.capture_returns
         returns = proof.returns
@@ -884,6 +914,7 @@ fn contract_verification(program Program, function Function, backend ProofBacken
             shared = shared
             preservation = ordinary.preservation
             identity_stores = ordinary.identity_stores
+            protected = ordinary.protected
             body_calls = ordinary.body_calls
             capture_returns = ordinary.capture_returns
             returns = ordinary.returns

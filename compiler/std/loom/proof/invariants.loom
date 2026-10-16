@@ -33,24 +33,51 @@ fn invariant_predicate(predicate Expr, value Value, state State) State {
     }
 }
 
+// A typed read preserves scalar/inline facts. It does not renew a mutable
+// container predicate after a possibly overlapping write invalidated it.
+fn stable_invariant_predicate(predicate Expr, value Value, state State) State {
+    if predicate.kind == ExprKind.Binary && predicate.text == "&&" {
+        return stable_invariant_predicate(get(predicate.children, 1), value,
+            stable_invariant_predicate(get(predicate.children, 0), value, state))
+    }
+    if entry_guard_expression(predicate) {
+        return invariant_predicate(predicate, value, state)
+    }
+    state
+}
+
 fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int) State {
+    invariant_facts(types, ty, value, state, depth, true)
+}
+
+fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int, heap Bool) State {
     // Built-in scalar/opaque IDs have no type predicates. Avoid loading their
     // aggregate Type metadata for every ordinary parameter or record leaf.
     if ty < 6 || depth >= 16 || ty >= length(types) {
         return state
     }
     let shape = get(types, ty)
+    if capture_cell_shape(shape) {
+        return match value {
+            Value.List(identity) => fixed_capture_cell(identity, state)
+            _ => state
+        }
+    }
     let observed = match value {
         Value.Projected(contents, path, index) => projected_type_value(types, ty, contents, path, index, depth)
         _ => value
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
-        var known = invariant_facts(types, get(shape.fields, 0).ty, observed, state, depth + 1)
+        var known = invariant_facts(types, get(shape.fields, 0).ty, observed, state, depth + 1, heap)
         var index = 0
         while index < length(shape.constraint) {
             let predicate = get(shape.constraint, index)
             if bounded_contract(predicate) {
-                known = invariant_predicate(predicate, observed, known)
+                known = if heap {
+                    invariant_predicate(predicate, observed, known)
+                } else {
+                    stable_invariant_predicate(predicate, observed, known)
+                }
             }
             index = index + 1
         }
@@ -63,7 +90,7 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
                 var index = 0
                 while index < length(fields) && index < length(shape.fields) {
                     known = invariant_facts(types, get(shape.fields, index).ty,
-                        get(fields, index), known, depth + 1)
+                        get(fields, index), known, depth + 1, heap)
                     index = index + 1
                 }
                 return known
@@ -101,7 +128,7 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
                             projected_type_value(types, field_ty, contents, path, index, depth + 1)
                             _ => payload
                         }
-                        known = guarded_type_invariants(types, field_ty, represented, selected, known, depth + 1)
+                        known = guarded_type_invariants(types, field_ty, represented, selected, known, depth + 1, heap)
                     }
                     Result.Err(_) => {
                     }
@@ -121,8 +148,13 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
 // A successful typed boundary establishes the value's own predicate, not facts
 // about another invocation or the storage from which this value was read.
 fn typed_value_state(proof Verification, ty Int, value Value, state State) State {
-    invariant_facts(proof.program.types, ty, value,
-        task_private_value(proof, ty, value, bounded(value, state)), 0)
+    let bounded = task_private_value(proof, ty, value, bounded(value, list_bounds(value, state)))
+    let protected = if length(proof.protected) != 0 {
+        protected_input(proof.program.types, proof.protected, ty, value, bounded, 0)
+    } else {
+        bounded
+    }
+    invariant_facts(proof.program.types, ty, value, protected, 0, false)
 }
 
 // Hypothetical entry reads establish a typed value only where the access is
@@ -133,7 +165,12 @@ fn guarded_value_invariants(proof Verification, ty Int, value Value, valid Predi
 
 fn guarded_type_invariants(types List[Type], ty Int, value Value,
     valid Predicate, state State, depth Int) State {
-    let known = invariant_facts(types, ty, value, integer_input_bounds(value, state), depth)
+    guarded_type_invariants(types, ty, value, valid, state, depth, true)
+}
+
+fn guarded_type_invariants(types List[Type], ty Int, value Value,
+    valid Predicate, state State, depth Int, heap Bool) State {
+    let known = invariant_facts(types, ty, value, integer_input_bounds(value, state), depth, heap)
     if loop_holds(valid, state) {
         return known
     }
