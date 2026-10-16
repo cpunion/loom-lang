@@ -89,7 +89,7 @@ fn package_project(project Project, revisions List[PackageRevision]) Result[Proj
 }
 
 fn package_target(analysis Analysis, scopes List[PackageScope], package Int, path Text,
-    offset Int) Result[BindingTarget, Text] {
+    offset Int, abstract_body Bool) Result[BindingTarget, Text] {
     var file = -1
     var index = 0
     while index < length(analysis.bindings.files) {
@@ -102,19 +102,7 @@ fn package_target(analysis Analysis, scopes List[PackageScope], package Int, pat
     if file < 0 {
         return Result.Err("package reference has no analyzed source file")
     }
-    let inspection = match inspect_at(analysis, file, offset) {
-        Option.Some(value) => value
-        Option.None => match inspect_independent(analysis.bindings, file, offset,
-            proof_inputs(analysis.proof_backend)) {
-            Option.Some(value) => value
-            Option.None => {
-                return Result.Err("package reference has no checked binding evidence")
-            }
-        }
-    }
-    if length(inspection.definitions) != 1 {
-        return Result.Err("package reference has no unique checked definition")
-    }
+    let inspection = reference_inspection(analysis, file, offset, abstract_body)?
     let location = get(inspection.definitions, 0)
     if location.file < 0 || location.file >= length(analysis.bindings.files) {
         return Result.Err("package reference definition has no source file")
@@ -177,13 +165,13 @@ fn compare_package_entry(before Analysis, before_scopes List[PackageScope], orig
                 original.path
             } else {
                 join_path(directory, original.path)
-            }, original.start + offset)?
+            }, original.start + offset, original.abstract_body)?
         let target = package_target(after, after_scopes, package,
             if directory == "" {
                 current.path
             } else {
                 join_path(directory, current.path)
-            }, current.start + offset)?
+            }, current.start + offset, current.abstract_body)?
         if !same_target(expected, target) {
             return Result.Err("package merge changed a retained checked reference binding")
         }
@@ -258,6 +246,7 @@ fn compare_packages(before Analysis, original List[PackageRevision], after Analy
                         end = node.span.end
                         body = slice(file.text, node.span.start, node.span.end)
                         header = ""
+                        abstract_body = needs_abstract_bindings(node)
                     }
                     if package_entry_active(after, file.package, entry)? {
                         discard compare_package_entry(before, old_scopes, entry, after, new_scopes,

@@ -27,15 +27,18 @@ This is a conservative dependency separation rule, not declaration-level indepen
 or behavior equivalence. Changes to package scope, imports, conflicting
 headers/contracts, connected deletion versus edits, unsupported declarations and references
 without complete checked evidence require explicit resolution.
-Explicit private nongeneric function renames compose in package batches too:
+Explicit private function renames compose in package batches too:
 the shared token/binding normalizer checks each complete branch in production
 and the renamed package's private tests before the combined merge. The original
 baseline must match before normalization. Overloaded declarations are selected
 by stable identity and signature locator, not spelling. A rename may split or
 join an overload set only if checked calls and function references keep their
 identified targets; ambiguous or changed bindings still require resolution.
-Public/generic renames and moves
-across package identities still require explicit resolution.
+Generic bodies require checked abstract bindings as well as agreement with any
+observed concrete instances; every retained reference still needs one checked
+definition. Unselected static branches, unsupported generic forms and missing
+evidence require resolution.
+Public renames and moves across package identities still require explicit resolution.
 Private rename composition also rejects packages exporting a macro generator:
 generated Text/AST can bind private helpers in the definition context, outside
 the checked import closure. The shared invocation-signature query identifies

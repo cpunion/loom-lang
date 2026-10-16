@@ -295,7 +295,7 @@ not a second performance changelog here.
 ## Semantic changes, deployment and delivery
 
 The [semantic merge trial](../../tools/semantic_change_trial/README.md) supports
-reviewed move-plus-edit, private nongeneric rename-plus-edit and independent
+reviewed move-plus-edit, private rename-plus-edit and independent
 additions within one package or a fixed-package module, using explicit identities
 and pinned source/test bases.
 Selected overload renames use the same checked binding normalizer; names alone
@@ -307,7 +307,10 @@ shared Z3 adapter for ordinary contract checks, including rename/binding checks
 and each package's private tests. Defaults stay I/O-free; unknown proofs reject.
 Ambiguities can persist as source-bound drafts; compilation ignores that metadata.
 Checked bindings prevent silent nominal/field drift.
-Public/generic rename composition, automatic identities, arbitrary edits and
+Generic reference comparison requires checked abstract bodies and agreement
+with observed concrete instances; missing or ambiguous bindings and unselected
+static branches still reject.
+Public rename composition, automatic identities, arbitrary edits and
 package/import-graph changes remain open.
 
 The [SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md)
