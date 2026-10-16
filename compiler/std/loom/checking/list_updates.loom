@@ -2,9 +2,31 @@ import std.loom.proof.verify_preservation
 import std.loom.proof.sequence_operation
 import std.loom.proof.preserves_update_expression
 
+fn update_literal(value Expr) Bool {
+    value.kind == ExprKind.Integer || value.kind == ExprKind.Bool ||
+    value.kind == ExprKind.Text || value.kind == ExprKind.Float
+}
+
 fn proved_update_expression(env Environment, functions List[Function], value Expr) Bool {
     if env.expanding_helpers || env.stage_depth >= 32 {
         return false
+    }
+    let receiver = get(value.children, 0)
+    if !constraint_weakened(env, receiver) {
+        return false
+    }
+    if get(receiver.children, 0).kind == ExprKind.Local {
+        var dependent = false
+        var argument = 1
+        while argument < length(value.children) {
+            dependent = dependent || !update_literal(get(value.children, argument))
+            argument = argument + 1
+        }
+        // The preceding probe already kept these exact literals. Rebuilding
+        // the same receiver-only obligation supplies no argument relationships.
+        if !dependent {
+            return false
+        }
     }
     // Shared builds must prove the same expression with interference between
     // argument reads and the atomic store; sequential evidence cannot waive it.
@@ -162,7 +184,7 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
                 mutable = false
                 is_scoped = false
             })
-        push(arguments, if index != 0 && input.kind == ExprKind.Integer {
+        push(arguments, if index != 0 && update_literal(input) {
                 input
             } else if input.ty != source.ty {
                 expression(ExprKind.Coerce, input.ty, node, "", -1, [source], true)
@@ -336,8 +358,7 @@ fn list_mutation_input(probe ListMutationInputs, argument Expr, depth Int) Resul
                 }
             })
     }
-    Result.Ok(if argument.kind == ExprKind.Integer || argument.kind == ExprKind.Bool ||
-        argument.kind == ExprKind.Text || argument.kind == ExprKind.Float {
+    Result.Ok(if update_literal(argument) {
             argument
         } else if argument.ty != ty {
             expression(ExprKind.Coerce, argument.ty, probe.node, "", -1, expressions(input), true)

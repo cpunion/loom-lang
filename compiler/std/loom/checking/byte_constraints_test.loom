@@ -270,8 +270,12 @@ test fn byte_constraints_allow_opaque_reads_but_not_unproved_mutation() {
     byte_constraint_reject(concat(definitions, """
         type Header = Bytes where valid_utf8(self) && length(self) > 0 && self[0] > 0
 
+        fn ascii(value Int) Int {
+            7
+        }
+
         pub fn invalid(value Header) {
-            value[0] = 7
+            value[0] = ascii(value[0])
         }
         """))
 }
