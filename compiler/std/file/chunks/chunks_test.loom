@@ -192,8 +192,7 @@ fn observed_stream(input (Text, List[State])) Chunks {
 
 test async fn owned_pipelines_do_not_prefetch_and_close_after_early_exit() {
     {
-        let create fn(Text) Chunks = stream
-        scoped empty = take(create, "\0invalid", 0)
+        scoped empty = take(stream, "\0invalid", 0)
         assert std.list.length(collect(empty).await) == 0
     }
     let path = "loom-file-chunks-pipeline-test.tmp"

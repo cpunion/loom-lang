@@ -43,13 +43,11 @@ fallback for early exit, faults and cancellation. Pending operations drain befor
 fallback close, which cannot suspend; cancelling a running OS call still waits
 for completion. GC does not close files. Serialize pulls and close on one cursor.
 
-The standard owned adapters accept fresh factories. Since `stream` is overloaded,
-give the factory a concrete function type when passing it as a value:
+The standard owned adapters accept fresh factories:
 
 ```loom
-// In an async function, with std.file.chunks.Chunks and std.stream.take imported.
-let create fn(Text) Chunks = stream
-scoped first = take(create, path, 1)
+// In an async function, with std.stream.take imported.
+scoped first = take(stream, path, 1)
 ```
 
 An unpulled zero-item limit does not open the file. Adapters preserve nested
