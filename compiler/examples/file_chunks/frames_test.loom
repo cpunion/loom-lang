@@ -1,0 +1,56 @@
+import file_chunks.wire.messages
+import std.file.chunks.stream
+import std.file.tasks.write_bytes
+import std.file.FileError
+import std.fs.remove_file
+import std.stream.length32.frames
+import std.stream.collect
+import std.result.Result
+import std.bytes.length
+import std.bytes.get
+import std.bytes.set
+import std.list.length
+
+fn packet(value Result[Bytes, FileError]) Result[Bytes, FileError] {
+    value
+}
+
+async fn framed_file(path Text) Result[Bool, FileError] {
+    defer {
+        discard remove_file(path)
+    }
+    discard std.file.tasks.write_bytes(path, messages()).await?
+    scoped source = frames(stream, path, packet, 9000)
+    let records = collect(source).await
+    assert std.list.length(records) == 3
+    let first = match records[0] {
+        Result.Ok(bytes) => bytes
+        _ => {
+            assert false
+            messages()
+        }
+    }
+    let second = match records[1] {
+        Result.Ok(bytes) => bytes
+        _ => {
+            assert false
+            messages()
+        }
+    }
+    assert length(first) == 8187 && get(first, 0) == 97 && get(first, 8186) == 97
+    assert length(second) == 3 && get(second, 0) == 255 && get(second, 1) == 0 && get(second, 2) == 128
+    set(first, 0, 0)
+    assert get(second, 0) == 255
+    assert match records[2] {
+        Result.Ok(bytes) => length(bytes) == 0
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+test async fn scoped_file_factories_decode_frames_across_chunk_boundaries() {
+    assert match framed_file("loom-file-chunks-framing-test.tmp").await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}

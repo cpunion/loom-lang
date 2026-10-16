@@ -1,0 +1,145 @@
+import std.stream.Stream
+import std.option.Option
+import std.result.Result
+import std.resource.MustScope
+import std.resource.Dispose
+import std.file.FileError
+import std.bytes.new
+
+async intrinsic fn async_open(path Text, create Bool) Int
+
+async intrinsic fn async_read(handle Int, buffer Bytes, limit Int) Int
+
+async intrinsic fn async_close(handle Int) Int
+
+intrinsic fn file_abort(handle Int) Int
+
+pub record Chunks {
+    file ChunkFile
+    path Text
+}
+
+record ChunkFile {
+    state State
+}
+
+record State {
+    handle List[Int]
+    ended List[Bool]
+    limit Int
+}
+
+// Construction does no I/O. Each pull requests at most limit bytes.
+pub fn stream(path Text) Chunks {
+    stream(path, 8192)
+}
+
+pub fn stream(path Text, limit Int) Chunks
+requires limit > 0
+{
+    Chunks {
+        file = ChunkFile {
+            state = State {
+                handle = [-1]
+                ended = [false]
+                limit = limit
+            }
+        }
+        path = path
+    }
+}
+
+fn release(state State) Int {
+    let handle = state.handle[0]
+    state.handle[0] = -1
+    state.ended[0] = true
+    handle
+}
+
+fn abort(state State) {
+    let handle = release(state)
+    if handle >= 0 {
+        discard file_abort(handle)
+    }
+}
+
+pub async fn close(value Chunks) Result[Int, FileError] {
+    let handle = release(value.file.state)
+    if handle < 0 {
+        return Result.Ok(0)
+    }
+    var completed = false
+    defer {
+        if !completed {
+            discard file_abort(handle)
+        }
+    }
+    let status = async_close(handle).await
+    completed = true
+    if status < 0 {
+        Result.Err(FileError.Close)
+    } else {
+        Result.Ok(status)
+    }
+}
+
+pub async fn next(value Chunks) Option[Result[Bytes, FileError]] {
+    let state = value.file.state
+    if state.ended[0] {
+        return Option.None
+    }
+    var completed = false
+    defer {
+        if !completed {
+            abort(state)
+        }
+    }
+    if state.handle[0] < 0 {
+        let handle = async_open(value.path, false).await
+        if handle < 0 {
+            return Option.Some(Result.Err(FileError.Open))
+        }
+        state.handle[0] = handle
+    }
+    // Never reuse a buffer already delivered to the consumer.
+    let buffer = new()
+    let count = async_read(state.handle[0], buffer, state.limit).await
+    if count < 0 {
+        return Option.Some(Result.Err(FileError.Read))
+    }
+    if count == 0 {
+        let closed = close(value).await
+        completed = true
+        return match closed {
+            Result.Ok(_) => Option.None
+            Result.Err(error) => Option.Some(Result.Err(error))
+        }
+    }
+    completed = true
+    Option.Some(Result.Ok(buffer))
+}
+
+impl Stream for Chunks {
+    type Item = Result[Bytes, FileError]
+
+    async fn next(self Chunks) Option[Result[Bytes, FileError]] {
+        next(self).await
+    }
+}
+
+impl MustScope for Chunks {
+}
+
+impl Dispose for Chunks {
+    fn dispose(self Chunks) {
+    }
+}
+
+impl MustScope for ChunkFile {
+}
+
+impl Dispose for ChunkFile {
+    fn dispose(self ChunkFile) {
+        abort(self.state)
+    }
+}

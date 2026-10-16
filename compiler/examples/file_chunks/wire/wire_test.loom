@@ -1,0 +1,4 @@
+test fn private_helpers_encode_an_empty_frame() {
+    let bytes = framed(new())
+    assert length(bytes) == 4 && get(bytes, 0) == 0 && get(bytes, 3) == 0
+}

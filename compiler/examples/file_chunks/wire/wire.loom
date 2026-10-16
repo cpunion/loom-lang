@@ -1,0 +1,41 @@
+import std.bytes.new
+import std.bytes.get
+import std.bytes.push
+import std.bytes.length
+import std.stream.length32.encode
+import std.result.Result
+
+fn framed(payload Bytes) Bytes {
+    match encode(payload, 9000) {
+        Result.Ok(bytes) => bytes
+        Result.Err(_) => {
+            assert false
+            new()
+        }
+    }
+}
+
+fn append(output Bytes, value Bytes) {
+    var index = 0
+    while index < length(value) {
+        push(output, get(value, index))
+        index = index + 1
+    }
+}
+
+pub fn messages() Bytes {
+    let large = new()
+    var index = 0
+    while index < 8187 {
+        push(large, 97)
+        index = index + 1
+    }
+    let binary = new()
+    push(binary, 255)
+    push(binary, 0)
+    push(binary, 128)
+    let wire = framed(large)
+    append(wire, framed(binary))
+    append(wire, framed(new()))
+    wire
+}
