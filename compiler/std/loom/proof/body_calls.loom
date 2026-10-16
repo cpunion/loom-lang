@@ -83,6 +83,7 @@ fn inference_frame(proof Verification, query ProofQuery) Verification {
         shared = proof.shared
         preservation = proof.preservation
         identity_stores = proof.identity_stores
+        protected = proof.protected
         body_calls = proof.body_calls
         capture_returns = false
         returns = new[Outcome]()
@@ -184,6 +185,7 @@ fn source_body_call(proof Verification, target Int, function Function, input Cal
         shared = proof.shared
         preservation = proof.preservation
         identity_stores = proof.identity_stores
+        protected = proof.protected
         body_calls = calls
         capture_returns = true
         returns = new[Outcome]()

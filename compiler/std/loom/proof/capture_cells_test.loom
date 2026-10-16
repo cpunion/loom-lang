@@ -1,0 +1,48 @@
+fn capture_cell_program() Program {
+    let types = new[Type]()
+    var index = 0
+    while index < 6 {
+        push(types, publication_shape(TypeKind.Int, []))
+        index = index + 1
+    }
+    push(types, Type {
+            kind = TypeKind.Frame
+            symbol = -1
+            arguments = [1]
+            pack_widths = []
+            fields = [Field {
+                    name = "value"
+                    ty = 1
+                }]
+            variants = []
+            constraint = []
+        })
+    proof_program_with_types(types)
+}
+
+test fn capture_cell_stores_and_reads_share_versions_without_freezing_contents() {
+    let program = capture_cell_program()
+    let cell = expression(ExprKind.Local, 6, "", 0, [])
+    let write = expression(ExprKind.FrameStore, 0, "", 0, [cell, literal("2")])
+    let read = expression(ExprKind.Intrinsic, 1, "cell_get", -1, [cell])
+    let function = contract_fixture([6], 1, expression(ExprKind.Block, 1, "", -1, [write, read]), [],
+        [operation("==", local(1), literal("2"))])
+    assert helpers_verified(program, function)
+    assert match verify_shared(program, function, no_proof_backend()) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    assert proof_operation(read).heap
+    assert !entry_guard_expression(read)
+    let proof = verification(function, program)
+    let value = record_parameter_value(proof, 6, 0)
+    let state = typed_value_state(proof, 6, value, State {
+            locals = [value]
+            facts = []
+            extents = []
+            observations = []
+        })
+    let extent = get(state.extents, 0)
+    assert extent.fixed_extent && !extent.read_only && !extent.private_storage
+    assert compare(extent.size.constant, integer(1)) == 0 && length(extent.size.terms) == 0
+}

@@ -370,15 +370,21 @@ fn local_location(analysis CheckedQuery, report Inspection, function Function, l
         }
         index = index + 1
     }
-    if symbol.node.value == "" && symbol.owner >= 0 {
-        index = 0
-        while index < length(analysis.functions) {
-            let parent = get(analysis.functions, index)
-            if parent.symbol == symbol.owner {
-                capture_location(analysis, report, parent, function, get(function.locals, local).name, parent.body)
-            }
-            index = index + 1
+    capture_location(analysis, report, function, get(function.locals, local).name)
+}
+
+fn capture_location(analysis CheckedQuery, report Inspection, function Function, name Text) {
+    let symbol = get(analysis.bindings.symbols, function.symbol)
+    if symbol.node.value != "" || symbol.owner < 0 {
+        return
+    }
+    var index = 0
+    while index < length(analysis.functions) {
+        let parent = get(analysis.functions, index)
+        if parent.symbol == symbol.owner {
+            capture_location(analysis, report, parent, function, name, parent.body)
         }
+        index = index + 1
     }
 }
 
@@ -524,6 +530,13 @@ fn path_depth(analysis CheckedQuery, value Expr) Int {
     if value.kind == ExprKind.Local {
         return 0
     }
+    if value.kind == ExprKind.Intrinsic && value.text == "cell_get" && length(value.children) == 1 {
+        let storage = get(value.children, 0).ty
+        // The cell load is the source binding's value, not a path segment.
+        if value.ty != storage && source_local_type(analysis, storage) == value.ty {
+            return 0
+        }
+    }
     if value.kind == ExprKind.Field && length(value.children) == 1 {
         let child = get(value.children, 0)
         if same_span(value.span, child.span) {
@@ -539,6 +552,31 @@ fn path_depth(analysis CheckedQuery, value Expr) Int {
     -1
 }
 
+// Entry contracts read capture slots before body locals are initialized. Use
+// the checked environment field and its actual initializer, not name guessing.
+fn inspect_capture_read(analysis CheckedQuery, report Inspection, function Function, target Query, value Expr) Bool {
+    let entry = value.kind == ExprKind.Intrinsic && value.text == "entry_list_get" && length(value.children) == 2 &&
+    get(value.children, 1).kind == ExprKind.Integer && get(value.children, 1).text == "0"
+    let slot = if entry || (value.kind == ExprKind.Intrinsic && value.text == "cell_get" && length(value.children) == 1) {
+        get(value.children, 0)
+    } else {
+        value
+    }
+    if slot.kind != ExprKind.Field || length(slot.children) != 1 || length(function.params) == 0 {
+        return false
+    }
+    let receiver = get(slot.children, 0)
+    let shape = get(analysis.types, receiver.ty)
+    if receiver.kind != ExprKind.Local || receiver.index != 0 || receiver.ty != get(function.params, 0) ||
+    shape.kind != TypeKind.Frame || shape.symbol < 0 ||
+    get(shape.fields, slot.index).name != target.token.value || source_local_type(analysis, slot.ty) != value.ty {
+        return false
+    }
+    add_type(report, query_type_name(analysis, value.ty))
+    capture_location(analysis, report, function, target.token.value)
+    true
+}
+
 fn inspect_expression(analysis CheckedQuery, report Inspection, function Function, target Query, value Expr, parent_type Int) {
     // A checked named specialization spans name[type arguments], while its
     // source Name ends before '['. Use only the resolved FunctionRef evidence;
@@ -546,10 +584,19 @@ fn inspect_expression(analysis CheckedQuery, report Inspection, function Functio
     let specialized = value.kind == ExprKind.FunctionRef && target.node.kind == NodeKind.Name &&
     value.span.start == target.node.span.start && value.span.end > target.node.span.end
     if !same_span(value.span, target.node.span) && !specialized {
+        // Normalized clauses keep the enclosing clause span. A checked entry
+        // cell read still identifies its original capture slot and initializer.
+        if target.node.kind == NodeKind.Name && target.segment == 0 && value.kind == ExprKind.Intrinsic &&
+        value.text == "entry_list_get" && inspect_capture_read(analysis, report, function, target, value) {
+            return
+        }
         return
     }
     let kind = target.node.kind
     let path = kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.Type
+    if path && target.segment == 0 && inspect_capture_read(analysis, report, function, target, value) {
+        return
+    }
     if value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign {
         if value.index < 0 || get(function.locals, value.index).name != target.token.value {
             return

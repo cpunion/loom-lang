@@ -51,6 +51,9 @@ fn entry_list_value(context Expansion, value Expr) Expr {
 // Snapshot mutable observations, not their surrounding arithmetic. This keeps
 // short-circuit guards and eager helper-argument definedness in the contract.
 fn entry_reads(value Expr) Expr {
+    if cell_read_expression(value) {
+        return entry_reads(cell_read_view(value))
+    }
     if count_expression(value) {
         let receiver = get(value.children, 0)
         let snapshot = proof_expr(receiver, ExprKind.Intrinsic, receiver.ty, "entry_list", -1,

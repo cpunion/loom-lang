@@ -1,4 +1,4 @@
-test fn closure_contracts_use_immutable_captures_and_keep_mutable_cells_opaque() {
+test fn closure_contracts_keep_immutable_values_and_reject_unproved_mutations() {
     discard accepted("""
         record Capture {
             count Int
@@ -85,6 +85,82 @@ test fn closure_contracts_use_immutable_captures_and_keep_mutable_cells_opaque()
         }
         fn main() {
             discard make()()
+        }
+        """)
+}
+
+test fn mutable_captures_use_real_storage_and_entry_observations() {
+    discard accepted("""
+        fn make() fn() Int {
+            var value = 1
+            fn() Int
+            ensures result == 2 {
+                value = 2
+                value
+            }
+        }
+        fn calculate() Int
+        ensures result == 3 {
+            var value = 1
+            let update = fn() {
+                    value = 3
+                }
+            let alias = update
+            alias()
+            value
+        }
+        fn counter() fn() Int {
+            var value = 1
+            fn() Int
+            requires value < 9223372036854775807
+            ensures result == old(value) + 1 {
+                value = value + 1
+                value
+            }
+        }
+        fn main() {
+            assert make()() == 2 && calculate() == 3
+            let next = counter()
+            assert next() == 2 && next() == 3
+        }
+        """)
+    list_constraint_accept("""
+        import std.list.length
+        fn positive_head(values List[Int]) Bool {
+            length(values) > 0 && values[0] > 0
+        }
+        type Head = List[Int] where positive_head(self)
+        fn make(first Head, second Head) (fn() Int, fn()) {
+            var value = first
+            let read = fn() Int
+            ensures result > 0 {
+                value[0]
+            }
+            let change = fn() {
+                    value = second
+                }
+            (read, change)
+        }
+        fn main() {
+            let read, change = make(Head([1]), Head([2]))
+            assert read() == 1
+            change()
+            assert read() == 2
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        fn positive_head(values List[Int]) Bool {
+            length(values) > 0 && values[0] > 0
+        }
+        type Head = List[Int] where positive_head(self)
+        fn make(first Head, other List[Int]) fn() Int {
+            var value = first
+            fn() Int
+            ensures result > 0 {
+                other[0] = -1
+                value[0]
+            }
         }
         """)
 }

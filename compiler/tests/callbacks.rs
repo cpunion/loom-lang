@@ -183,7 +183,12 @@ fn main() {
 fn source_closures_preserve_shared_cells_cleanup_and_entry_contracts() {
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "closures");
-    for example in ["closures", "comptime_closures"] {
+    for example in [
+        "closures",
+        "comptime_closures",
+        "closures/cells",
+        "closures/cells/workers",
+    ] {
         let package = common::root().join("compiler/examples").join(example);
         for level in ["0", "2"] {
             success(
@@ -235,8 +240,6 @@ fn main() {
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));
     }
-    let original =
-        fs::read_to_string(common::root().join("compiler/examples/closures/main.loom")).unwrap();
     let cache = temporary.path().join("cache");
     let check = || {
         common::loom(&[
@@ -246,15 +249,35 @@ fn main() {
             cache.to_str().unwrap(),
         ])
     };
-    fs::write(temporary.path().join("main.loom"), &original).unwrap();
-    success(&check());
-    success(&check());
-    let invalid = original.replace("ensures result == value", "ensures result > value");
-    assert_ne!(invalid, original);
-    fs::write(temporary.path().join("main.loom"), invalid).unwrap();
-    let rejected = check();
-    assert_eq!(rejected.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("not proved"));
-    fs::write(temporary.path().join("main.loom"), original).unwrap();
-    success(&check());
+    for (example, valid, invalid) in [
+        (
+            "closures",
+            "ensures result == value",
+            "ensures result > value",
+        ),
+        (
+            "closures/cells",
+            "ensures result == 3",
+            "ensures result == 2",
+        ),
+    ] {
+        let original = fs::read_to_string(
+            common::root()
+                .join("compiler/examples")
+                .join(example)
+                .join("main.loom"),
+        )
+        .unwrap();
+        fs::write(temporary.path().join("main.loom"), &original).unwrap();
+        success(&check());
+        success(&check());
+        let changed = original.replace(valid, invalid);
+        assert_ne!(changed, original);
+        fs::write(temporary.path().join("main.loom"), changed).unwrap();
+        let rejected = check();
+        assert_eq!(rejected.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("not proved"));
+        fs::write(temporary.path().join("main.loom"), original).unwrap();
+        success(&check());
+    }
 }

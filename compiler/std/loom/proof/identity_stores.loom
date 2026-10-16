@@ -85,7 +85,7 @@ fn unchanged_store(proof Verification, primitive Text, receiver Int, identity In
     index Linear, value Value, state State) Result[List[Outcome], Text] {
     let element = if primitive == "bytes_set" {
         1
-    } else if proof_list_type(proof.program, receiver) {
+    } else if proof_list_type(proof.program, receiver) || capture_cell_type(proof.program, receiver) {
         get(get(proof.program.types, receiver).arguments, 0)
     } else {
         return Result.Err("identity store needs a checked sequence type")

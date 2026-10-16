@@ -184,10 +184,15 @@ fn with_body(function Function, body Expr) Function {
     }
 }
 
-fn checked_contracts(context Context, id Int, function Function) Result[Function, Failure] {
+fn checked_contracts(context Context, id Int, source Function) Result[Function, Failure] {
     let backend = get(context.env.inputs, 0).build.proof_backend
     let node = symbol(context.env, context.signature.symbol).node
     let has_ensures = has(node, NodeKind.Ensures) || inherited_method_contract(context.env, context.signature.symbol, NodeKind.Ensures)
+    let function = if has_ensures {
+        capture_storage(context, source)
+    } else {
+        source
+    }
     if has_ensures {
         let completed = completed_contract(context, id, function)
         if length(completed) != 0 {
@@ -201,7 +206,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             return Result.Ok(function)
         }
         let conditions = add_contracts(contracts(context, node, NodeKind.Ensures)?, inherited_contracts(context, NodeKind.Ensures)?)
-        let checked = with_contracts(function, function.preconditions, conditions)
+        let checked = with_source_contracts(context, function, function.preconditions, conditions)
         if family_proved {
             return certified_contract(context, id, checked)
         }
@@ -230,11 +235,11 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             // arguments, not one later concrete caller. Every direct Call now
             // addresses this private queue. Callee bodies verify as one group.
             let built = function_body(stage.env, id, context.arguments, context.constants, true)?
-            with_contracts(built.function, built.function.preconditions,
+            with_source_contracts(built.context, capture_storage(built.context, built.function), built.function.preconditions,
                 add_contracts(contracts(built.context, node, NodeKind.Ensures)?, inherited_contracts(built.context, NodeKind.Ensures)?))
         } else {
-            with_contracts(function, closure_preconditions(stage,
-                    add_contracts(contracts(stage, node, NodeKind.Requires)?, inherited_contracts(stage, NodeKind.Requires)?)),
+            with_source_contracts(stage, function,
+                add_contracts(contracts(stage, node, NodeKind.Requires)?, inherited_contracts(stage, NodeKind.Requires)?),
                 add_contracts(contracts(stage, node, NodeKind.Ensures)?, inherited_contracts(stage, NodeKind.Ensures)?))
         }
         let summaries = new[Function]()

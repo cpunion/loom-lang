@@ -28,6 +28,18 @@ fn closure_local(scope Lexical, local Int, captured Bool) Int {
 fn storage_node(value Expr, kind ExprKind, ty Int, index Int, children List[Expr]) Expr {
     Expr { kind = kind ty = ty span = value.span text = value.text index = index children = children arms = value.arms falls = value.falls }
 }
+fn cell_read(value Expr, ty Int, reference Expr) Expr {
+    Expr {
+        kind = ExprKind.Intrinsic
+        ty = ty
+        span = value.span
+        text = "cell_get"
+        index = -1
+        children = expressions(reference)
+        arms = []
+        falls = value.falls
+    }
+}
 // Requires clauses run before the body initializes captured locals. Read their
 // entry values from the environment instead; mutable captures still read a cell.
 fn capture_precondition(scope Lexical, value Expr) Expr {
@@ -39,7 +51,7 @@ fn capture_precondition(scope Lexical, value Expr) Expr {
                 let storage = if capture.cell >= 0 { capture.cell } else { value.ty }
                 let environment = storage_node(value, ExprKind.Local, scope.environment, scope.local, new[Expr]())
                 let field = storage_node(value, ExprKind.Field, storage, capture.field, expressions(environment))
-                if capture.cell >= 0 { return storage_node(value, ExprKind.Field, capture.ty, 0, expressions(field)) }
+                if capture.cell >= 0 { return cell_read(value, capture.ty, field) }
                 return field
             }
             index = index + 1
@@ -68,10 +80,14 @@ fn closure_preconditions(context Context, values List[Expr]) List[Expr] {
 }
 
 fn close_expression(scope Lexical, value Expr, captured Bool) Expr {
+    close_expression(scope, value, captured, true)
+}
+
+fn close_expression(scope Lexical, value Expr, captured Bool, layout Bool) Expr {
     let children = new[Expr]()
     var index = 0
     while index < length(value.children) {
-        push(children, close_expression(scope, get(value.children, index), captured))
+        push(children, close_expression(scope, get(value.children, index), captured, layout))
         index = index + 1
     }
     let arms = new[Arm]()
@@ -80,24 +96,24 @@ fn close_expression(scope Lexical, value Expr, captured Bool) Expr {
         let arm = get(value.arms, index)
         let bindings = new[Int]()
         var item = 0
-        while item < length(arm.bindings) { push(bindings, closure_local(scope, get(arm.bindings, item), captured))
+        while item < length(arm.bindings) { push(bindings, if layout { closure_local(scope, get(arm.bindings, item), captured) } else { get(arm.bindings, item) })
             item = item + 1 }
         let body = new[Expr]()
         item = 0
-        while item < length(arm.body) { push(body, close_expression(scope, get(arm.body, item), captured))
+        while item < length(arm.body) { push(body, close_expression(scope, get(arm.body, item), captured, layout))
             item = item + 1 }
-        push(arms, Arm { variant = arm.variant bindings = bindings whole = closure_local(scope, arm.whole, captured) body = body })
+        push(arms, Arm { variant = arm.variant bindings = bindings whole = if layout { closure_local(scope, arm.whole, captured) } else { arm.whole } body = body })
         index = index + 1
     }
     let local = value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign
-    let mapped = if local || value.kind == ExprKind.ResourceDrain { closure_local(scope, value.index, captured) } else { value.index }
+    let mapped = if layout && (local || value.kind == ExprKind.ResourceDrain) { closure_local(scope, value.index, captured) } else { value.index }
     let cell = if local { captured_storage(scope, value.index) } else { -1 }
     if cell >= 0 {
         let reference = storage_node(value, ExprKind.Local, cell, mapped, new[Expr]())
         if value.kind == ExprKind.Local {
             // A capture initializer transfers the cell reference itself.
             if value.ty == cell { return reference }
-            return storage_node(value, ExprKind.Field, value.ty, 0, expressions(reference))
+            return cell_read(value, value.ty, reference)
         }
         let input = get(children, 0)
         if value.kind == ExprKind.Assign {

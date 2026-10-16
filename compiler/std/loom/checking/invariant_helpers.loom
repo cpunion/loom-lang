@@ -55,7 +55,7 @@ fn value_invariant_types(env Environment, ty Int, seen List[Int], selected List[
                 index = index + 1
             }
         }
-        if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple && shape.kind != TypeKind.Frame {
             return
         }
     }

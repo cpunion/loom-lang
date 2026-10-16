@@ -1,0 +1,3 @@
+test async fn workers_keep_typed_cell_guarantees_not_stale_samples() {
+    exercise().await
+}

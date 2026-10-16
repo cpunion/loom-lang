@@ -3,6 +3,9 @@
 // The ordinary expression algebra then proves truth *and* definedness. Never
 // execute the predicate as a body assertion: that would assume its own success.
 fn contract_observations(proof Verification, value Expr, guard Expr, state State) Result[EntrySnapshot, Text] {
+    if cell_read_expression(value) {
+        return contract_observations(proof, cell_read_view(value), guard, state)
+    }
     if enum_payload_expression(value) {
         let skipped = match pure(guard, state) {
             Result.Ok(Value.Boolean(condition)) => loop_holds(not(condition), state)

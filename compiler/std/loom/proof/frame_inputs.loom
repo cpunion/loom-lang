@@ -59,16 +59,6 @@ fn frame_input(proof Verification, ty Int) Bool {
     if shape.kind != TypeKind.Frame || shape.symbol < 0 {
         return false
     }
-    var field = 0
-    while field < length(shape.fields) {
-        let storage = get(proof.program.types, get(shape.fields, field).ty)
-        // Unclosed source Assign still names a captured binding. Never model
-        // its shared cell as a replaceable proof-local scalar slot.
-        if storage.kind == TypeKind.Frame && storage.symbol < 0 {
-            return false
-        }
-        field = field + 1
-    }
     let budget = [100000]
     if !frame_input_function(proof.function, ty, length(shape.fields), budget) {
         return false

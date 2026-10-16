@@ -32,7 +32,7 @@ fn expanded_observation(context Expansion, value Expr) Int {
 }
 
 fn observation_expression(value Expr) Bool {
-    value.index >= 0 && (list_length_expression(value) || list_read_expression(value) ||
+    value.index >= 0 && (list_length_expression(value) || list_read_expression(value) || cell_read_expression(value) ||
         entry_observation_expression(value))
 }
 

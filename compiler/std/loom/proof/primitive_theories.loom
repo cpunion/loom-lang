@@ -2,6 +2,9 @@
 // eager evaluation belong to the composition layer, not to individual theories.
 fn intrinsic_value(primitive Text, ty Int, inputs List[Value], state State) Result[Value, Text] {
     let name = sequence_operation(primitive)
+    if name == "cell_get" && length(inputs) == 1 {
+        return intrinsic_value("list_get", ty, [get(inputs, 0), Value.Number(constant(integer(0)))], state)
+    }
     if name == "proof_enum_tag" || name == "proof_enum_payload" {
         return enum_projection(name, ty, inputs)
     }
@@ -73,6 +76,9 @@ fn projected_value(contents Int, path List[Int], index Linear, ty Int) Value {
 // Check this operation only; composition has checked each operand under the
 // right guard. A hypothetical expression never establishes its own safety fact.
 fn intrinsic_defined(expr Expr, state State) Result[Bool, Text] {
+    if cell_read_expression(expr) {
+        return defined(cell_read_view(expr), state)
+    }
     if expr.text == "proof_enum_tag" || expr.text == "proof_enum_payload" {
         if enum_payload_expression(expr) && !loop_holds(enum_payload_guard(expr, state)?, state) {
             return Result.Err("enum proof payload requires its selected nominal tag")
