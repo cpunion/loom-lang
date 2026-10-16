@@ -2150,6 +2150,11 @@ loaded, and only the selected root package contributes tests. Unused dependency
 paths are not opened. Canonical roots are reused, without permitting imported
 directory aliases to rename a package or cross nested module boundaries.
 
+Imports select declarations, not every public member of a package. Qualified
+function calls and references still require that function's import. When its
+namespace is already loaded, diagnostics can name the missing import without
+granting access to private or dependency-test declarations.
+
 Package identity includes the module instance, not just its declared name.
 Distinct roots with the same name can coexist through separate dependency
 edges, and their nominal types remain distinct. Paths resolving to the same
