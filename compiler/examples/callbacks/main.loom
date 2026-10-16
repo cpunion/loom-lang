@@ -11,6 +11,14 @@ fn increment(value Int) Int {
     value + 1
 }
 
+fn advance(value Int) Int {
+    value + 1
+}
+
+fn advance(value Int, step Int) Int {
+    value + step
+}
+
 fn double(value Int) Int {
     value * 2
 }
@@ -76,6 +84,7 @@ fn write_trace(trace List[Int], value Int) {
 fn exercise() {
     let action fn(Int) Int = increment
     assert action(4) == 5 && apply(double, 3) == 6
+    assert apply(advance, 6) == 7
     let generic = identity[Int]
     assert generic(7) == 7
     let inferred fn(Text) Text = identity
