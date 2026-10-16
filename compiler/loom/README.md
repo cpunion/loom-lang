@@ -440,8 +440,9 @@ without evaluating the body. Unexpanded packs and dependent compile-time type
 values retain their conservative query paths.
 Body queries require global declarations and the selected call/template dependency
 closure, including contracts and resource flows. Generic/comptime owners retain
-their checked abstract body and lexical type labels; no concrete arguments are
-guessed. Unselected static branches, unexpanded packs and erased static values
+their checked abstract body and nested lexical closures, including capture
+bindings and inherited type labels; no concrete arguments are guessed.
+Unselected static branches, unexpanded packs and erased static values
 do not acquire invented evidence. Normal `analyze`, `check` and `build` remain whole-package
 checks. Query tables are a separate `CheckedQuery`, not a partial `typed.Program`.
 
@@ -450,8 +451,10 @@ uses local 0 and call indices are `-1` until rebound at a construction boundary.
 Do not interpret those indices as references into `program.functions`.
 
 Function types store parameter type IDs followed by the result ID in
-`Type.arguments`. A `FunctionRef` expression names one concrete function instance;
-its optional child supplies the typed managed environment of a lifted closure.
+`Type.arguments`. In executable programs, a `FunctionRef` expression names one
+concrete function instance; its optional child supplies the typed managed
+environment of a lifted closure. Abstract query references keep index `-1`;
+their checked closure bodies do not turn that marker into a runtime queue index.
 an `IndirectCall` stores its callee before the arguments in `Expr.children`.
 The callee has no single statically selected call index. Compile-time function
 values retain source symbols and type arguments for destination reification.

@@ -391,10 +391,19 @@ fn capture_location(analysis CheckedQuery, report Inspection, function Function,
 // Follow the checked capture initializer back to its actual enclosing binding.
 // A same-spelled declaration elsewhere is not definition evidence.
 fn capture_location(analysis CheckedQuery, report Inspection, parent Function, function Function, name Text, value Expr) {
-    if value.kind == ExprKind.FunctionRef && value.index >= 0 && length(value.children) == 1 {
-        let callee = get(analysis.functions, value.index)
-        if callee.symbol == function.symbol && get(callee.arguments, 0) == get(function.arguments, 0) {
-            let environment = get(value.children, 0)
+    if value.kind == ExprKind.FunctionRef && length(value.children) == 1 {
+        let environment = get(value.children, 0)
+        let selected = if value.index >= 0 {
+            let callee = get(analysis.functions, value.index)
+            callee.symbol == function.symbol && get(callee.arguments, 0) == get(function.arguments, 0)
+        } else {
+            // An abstract closure has no runtime queue index. Its checked
+            // environment type and source span identify the exact initializer.
+            let declaration = get(analysis.bindings.symbols, function.symbol)
+            environment.kind == ExprKind.FrameNew && environment.ty == get(function.arguments, 0) &&
+            same_span(value.span, declaration.node.span)
+        }
+        if selected {
             let fields = get(analysis.types, environment.ty).fields
             var index = 0
             while index < length(environment.children) {

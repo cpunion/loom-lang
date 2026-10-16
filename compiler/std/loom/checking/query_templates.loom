@@ -33,11 +33,14 @@ fn query_required_templates(env Environment, owner Int, bodies List[Function]) R
         while index < length(required) {
             let selected = get(required, index)
             let current = get(env.signatures, selected)
-            let body = function(env, selected, abstract_arguments(env, current.parameters), unknown_constants(current), false)?
+            let arguments = abstract_arguments(env, current.parameters)
+            let constants = unknown_constants(current)
+            let body = function(env, selected, arguments, constants, false)?
             if selected == owner {
                 // Retain the checked declaration body, never a guessed concrete
                 // instance. Non-emitting call targets remain logical-only.
                 push(bodies, body)
+                query_closure_bodies(env, current.symbol, arguments, constants, bodies)
             }
             index = index + 1
         }
@@ -47,6 +50,37 @@ fn query_required_templates(env Environment, owner Int, bodies List[Function]) R
         if index == length(required) {
             return Result.Ok(true)
         }
+    }
+}
+
+fn retain_query_closure(env Environment, plan Int, body Function) {
+    let bodies = get(env.inputs, 0).query_closures
+    let absent Option[Function] = Option.None
+    while length(bodies) <= plan {
+        push(bodies, absent)
+    }
+    set(bodies, plan, Option.Some(body))
+}
+
+fn query_closure_bodies(env Environment, owner Int, arguments List[Int], constants List[StaticValue],
+    bodies List[Function]) {
+    let checked = get(env.inputs, 0).query_closures
+    var index = 0
+    while index < length(env.closures) {
+        let plan = get(env.closures, index)
+        if index < length(checked) && plan.checked && lexical_owner(env, plan.signature.symbol) == owner &&
+        same(plan.arguments, arguments) && same_constants(plan.constants, constants) {
+            // Reuse the verified snapshot, not repeated subtree checking for
+            // each nested lambda. Earlier CTFE instances are not evidence.
+            match get(checked, index) {
+                Option.Some(body) => {
+                    push(bodies, body)
+                }
+                Option.None => {
+                }
+            }
+        }
+        index = index + 1
     }
 }
 

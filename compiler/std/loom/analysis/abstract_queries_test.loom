@@ -126,3 +126,114 @@ test fn unused_generic_impl_body_queries_keep_impl_type_parameters() {
     only_definition(found, parameter, parameter + 4)
     only_type(inspection(analysis, text, "copied\n"), "app.Box[T]")
 }
+
+test fn abstract_closure_queries_keep_parameters_and_nested_captures() {
+    let text = """
+        fn wrap[Item](value Item) Item {
+            let outer = fn(first Item) Item {
+                let saved = value
+                let inner = fn(second Item) Item {
+                    discard first
+                    discard second
+                    saved
+                }
+                inner(first)
+            }
+            outer(value)
+        }
+        fn broken() Int {
+            false
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let before = length(bindings.symbols)
+    let first = independent_found(bindings, text, "first\n")
+    only_type(first, "Item")
+    let parameter = query_offset(text, "first Item")
+    only_definition(first, parameter, parameter + 5)
+    let second = independent_found(bindings, text, "second\n")
+    only_type(second, "Item")
+    let nested_parameter = query_offset(text, "second Item")
+    only_definition(second, nested_parameter, nested_parameter + 6)
+    let saved = independent_found(bindings, text, "saved\n")
+    only_type(saved, "Item")
+    let local = query_offset(text, "saved =")
+    only_definition(saved, local, local + 5)
+    let captured = independent_found(bindings, text, "value\n")
+    only_type(captured, "Item")
+    let original = query_offset(text, "value Item")
+    only_definition(captured, original, original + 5)
+    assert length(bindings.symbols) == before
+}
+
+test fn abstract_closure_queries_keep_mutable_capture_storage_and_impl_labels() {
+    let text = """
+        concept Copy {
+            fn copy(self Self) Self
+        }
+        record Box[T] {
+            value T
+        }
+        impl[T] Copy for Box[T] {
+            fn copy(self Box[T]) Box[T] {
+                var count = 0
+                let copied = fn() Box[T] {
+                    count = count + 1
+                    self
+                }
+                copied()
+            }
+        }
+        fn main() {
+        }
+        """
+    let analysis = accepted(input(text))
+    let captured = inspection(analysis, text, "self\n")
+    only_type(captured, "app.Box[T]")
+    let parameter = query_offset(text, "self Box[T]")
+    only_definition(captured, parameter, parameter + 4)
+    let counter = inspection(analysis, text, "count +")
+    only_type(counter, "Int")
+    let local = query_offset(text, "count = 0")
+    only_definition(counter, local, local + 5)
+}
+
+test fn abstract_closure_queries_do_not_publish_failed_or_unselected_bodies() {
+    let text = """
+        fn choose[T](input T) Int {
+            let action = fn() Int {
+                comptime if T == Int {
+                    let hidden = 1
+                    hidden
+                } else {
+                    0
+                }
+            }
+            action()
+        }
+        fn main() {
+            assert choose(3) == 1
+        }
+        """
+    let analysis = accepted(input(text))
+    only_type(inspection(analysis, text, "hidden\n"), "Int")
+    assert match inspect_independent(analysis.bindings, 0, query_offset(text, "hidden\n")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    let invalid = """
+        fn invalid[T](value T) Int {
+            value + 1
+        }
+        fn selected[T](input T) Int {
+            let action = fn() Int {
+                invalid(input)
+            }
+            action()
+        }
+        """
+    assert match inspect_independent(query_bindings(input(invalid)), 0, query_offset(invalid, "input)")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
