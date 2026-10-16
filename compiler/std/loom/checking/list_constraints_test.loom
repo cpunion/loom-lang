@@ -325,6 +325,8 @@ test fn literal_identity_uses_scalar_facts_without_treating_float_equality_as_id
     type Flags = List[Bool] where opaque(self) && length(self) > 0 && self[0]
     type Words = List[Text] where opaque(self) && length(self) > 0 && self[0] == "ready"
 
+    type Decimals = List[Float] where opaque(self) && length(self) > 0 && self[0] == 7.25
+
     """
     list_constraint_accept(concat(header, """
         pub fn flag(values Flags) {
@@ -333,10 +335,18 @@ test fn literal_identity_uses_scalar_facts_without_treating_float_equality_as_id
         pub fn word(values Words) {
             values[0] = "ready"
         }
+        pub fn decimal(values Decimals) {
+            values[0] = 7.25
+        }
         """))
     list_constraint_reject(concat(header, """
         pub fn invalid(values Flags) {
             values[0] = false
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(values Decimals) {
+            values[0] = 7.5
         }
         """))
     list_constraint_reject("""

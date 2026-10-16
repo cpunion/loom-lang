@@ -25,6 +25,8 @@ fn quantified_domains_compose_without_granting_stronger_types_or_accesses() {
     let source = fs::read_to_string(common::root().join(package).join("main.loom")).unwrap();
     for invalid in [
         source.replace("values[0] = 7", "values[0] = 8"),
+        source.replace("values[0] = 7.25", "values[0] = 7.5"),
+        source.replace("values[0] = -0.0", "values[0] = 0.0"),
         source.replace("values[index] > 255", "values[index] > 254"),
         source.replace("values[index] < 0", "values[index] <= 0"),
         source.replace(

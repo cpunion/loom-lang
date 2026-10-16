@@ -152,6 +152,8 @@ supported theories and boundaries. The central rules are:
   label or local variable alone does not establish that separation.
   Literal stores also use proved scalar/quantified cell facts at the atomic
   snapshot, including beside an unexpanded pure conjunct.
+  Float identity distinguishes signed zeros; numerical equality alone is not
+  enough, and an unknown NaN replacement supplies no identity evidence.
   Shared atomic element reads can use the continuing predicate at that snapshot;
   separate reads still cannot assume equal contents.
 - Fresh drafts and selected known aliases can publish a constrained outer header
