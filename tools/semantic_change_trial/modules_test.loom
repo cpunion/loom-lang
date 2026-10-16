@@ -92,8 +92,13 @@ fn module_fixture_branches(staging Text) Result[Text, Text] {
     discard std.file.write_text(path(right, "docs/usage.txt"), "updated alongside the library\n")
     discard remove_file(path(right, "obsolete.txt"))
     discard std.file.write_text(path(left, "lib/value.loom"), """
-        fn secret() Int {
+        fn private_value() Int {
             7
+        }
+        """)
+    discard std.file.write_text(path(left, "lib/value_test.loom"), """
+        test fn private_secret() {
+            assert private_value() == 7
         }
         """)
     discard std.file.write_text(path(left, "lib/moved.loom"), """
@@ -101,7 +106,31 @@ fn module_fixture_branches(staging Text) Result[Text, Text] {
             1
         }
         """)
-    discard moved_identity(path(left, "lib"), "amount", "moved.loom")?
+    let identities = read(path(base, "lib"))?.revision.identities
+    let changes = new[Resolution]()
+    var identity = 0
+    while identity < length(identities) {
+        let declaration = get(identities, identity)
+        if declaration.name == "amount" || declaration.name == "secret" {
+            push(changes, Resolution {
+                    id = declaration.id
+                    path = if declaration.name == "amount" {
+                        "moved.loom"
+                    } else {
+                        "value.loom"
+                    }
+                    name = if declaration.name == "secret" {
+                        "private_value"
+                    } else {
+                        declaration.name
+                    }
+                    key = declaration.key
+                    deletion = false
+                })
+        }
+        identity = identity + 1
+    }
+    discard refresh(path(left, "lib"), changes, false)?
     discard std.file.write_text(path(left, "app/main.loom"), """
         import sample.lib.amount
 
@@ -115,6 +144,7 @@ fn module_fixture_branches(staging Text) Result[Text, Text] {
         """)
     discard std.file.write_text(path(right, "lib/value.loom"), """
         fn secret() Int {
+            // Keep the independent branch's explanation.
             7
         }
 
@@ -181,6 +211,9 @@ fn module_lifecycle(staging Text) Result[Text, Text] {
     let output = path(staging, "output")
     discard apply_module(reviewed.token, output, "compiler/std", base, left, right)?
     assert contains(text_at(path(output, "lib/moved.loom")), "2")
+    assert contains(text_at(path(output, "lib/value.loom")), "fn private_value()")
+    assert contains(text_at(path(output, "lib/value.loom")), "// Keep the independent branch's explanation.")
+    assert contains(text_at(path(output, "lib/value_test.loom")), "private_value() == 7")
     assert contains(text_at(path(output, "app/entry.loom")), "+ 10")
     let binary = match read_bytes(path(output, "data.bin")) {
         Result.Ok(value) => value
@@ -228,8 +261,30 @@ fn module_lifecycle(staging Text) Result[Text, Text] {
     Result.Ok("module lifecycle completed")
 }
 
+// The clock is process-relative, not a globally unique directory allocator.
+// Claim a fresh path atomically and leave failed test snapshots intact.
+fn module_test_directory(label Text) Text {
+    let prefix = concat("tools/semantic_change_trial/target/", concat(label, "-"))
+    var sequence = 0
+    while true {
+        let candidate = concat(prefix, to_text(sequence))
+        match create_dir(candidate) {
+            Result.Ok(_) => {
+                return candidate
+            }
+            Result.Err(FsError.AlreadyExists) => {
+                sequence = sequence + 1
+            }
+            Result.Err(_) => {
+                assert false
+                return ""
+            }
+        }
+    }
+}
+
 test fn module_move_edit_preview_and_publication_keep_private_tests_and_binary_assets() {
-    let staging = concat("tools/semantic_change_trial/target/module-lifecycle-", to_text(monotonic_ns()))
+    let staging = module_test_directory("module-lifecycle")
     assert successful(module_lifecycle(staging)) == "module lifecycle completed"
 }
 
@@ -263,7 +318,7 @@ fn module_rejections(staging Text) Result[Text, Text] {
     discard std.file.write_text(metadata_path, metadata)
     discard std.file.write_text(path(right, "lib/value_test.loom"), "test fn private_secret() { assert secret() == true }\n")
     assert match preview_module("compiler/std", base, left, right) {
-        Result.Err(message) => contains(message, "package merge requires checked source:")
+        Result.Err(message) => contains(message, "requires checked source:")
         Result.Ok(_) => false
     }
     discard std.file.write_text(path(right, "lib/value_test.loom"), "test fn private_secret() { assert secret() == 7 }\n")
@@ -277,6 +332,6 @@ fn module_rejections(staging Text) Result[Text, Text] {
 }
 
 test fn module_review_rejects_stale_identity_private_test_errors_and_unreviewed_config() {
-    let staging = concat("tools/semantic_change_trial/target/module-rejections-", to_text(monotonic_ns()))
+    let staging = module_test_directory("module-rejections")
     assert successful(module_rejections(staging)) == "module rejections completed"
 }

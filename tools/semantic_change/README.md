@@ -26,9 +26,13 @@ external module instances; common consumers or dependencies keep packages connec
 This is a conservative dependency separation rule, not declaration-level independence
 or behavior equivalence. Changes to package scope, imports, conflicting
 headers/contracts, connected deletion versus edits, unsupported declarations and references
-without complete checked evidence require explicit resolution. Batch rename
-composition is not implemented; the single-package entry points retain their
-private nongeneric rename support. This is not behavior-equivalence proof, an
+without complete checked evidence require explicit resolution.
+Explicit private nongeneric function renames compose in package batches too:
+the shared token/binding normalizer checks each complete branch in production
+and the renamed package's private tests before the combined merge. The original
+baseline must match before normalization. Public/generic renames and moves
+across package identities still require explicit resolution.
+This is not behavior-equivalence proof, an
 arbitrary semantic VCS or an execution engine. Checking does not launch the
 application or replay runtime effects; ordinary compile-time checking still runs.
 
