@@ -285,6 +285,22 @@ async function autoImportSmoke(executable, stdRoot) {
     const edited = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 18, unsaved), offered[0].edit.changes[uri]);
     await client.change(file, edited, 19);
     assert.deepEqual((await client.wait(file, 19)).diagnostics, []);
+
+    const loadedNamespace = `import imports.library.Token
+fn main() {
+    assert imports.library.chosen() == 7
+}
+`;
+    await client.change(file, loadedNamespace, 20);
+    const loadedReport = await client.wait(file, 20);
+    assert.equal(loadedReport.diagnostics[0].message,
+      'function imports.library.chosen is not imported; add import imports.library.chosen');
+    const loadedActions = await actionsAt(loadedNamespace, 20, 'imports.library.chosen', loadedReport.diagnostics);
+    assert.equal(loadedActions.length, 1);
+    assert.equal(loadedActions[0].title, 'Import imports.library.chosen');
+    const loadedFixed = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 20, loadedNamespace), loadedActions[0].edit.changes[uri]);
+    await client.change(file, loadedFixed, 21);
+    assert.deepEqual((await client.wait(file, 21)).diagnostics, []);
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(fresh), { code: 'ENOENT' });
   } finally { await client.close(); }

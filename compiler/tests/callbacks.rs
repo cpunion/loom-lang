@@ -3,6 +3,95 @@ mod common;
 use common::{loom, success};
 
 #[test]
+fn partial_callback_arity_works_in_native_code_and_scoped_stream_factories() {
+    let package = "compiler/examples/callbacks";
+    for mode in ["check", "test", "run"] {
+        success(&common::loom(&[mode, package]));
+    }
+    let directory = common::root().join(package);
+    let source = directory.join("main.loom");
+    let text = fs::read_to_string(&source).unwrap();
+    let offset = text.find("advance, 6").unwrap();
+    let declaration = text.find("advance(value Int)").unwrap();
+    let query = common::command(&[
+        "editor-query",
+        directory.to_str().unwrap(),
+        "--at",
+        source.to_str().unwrap(),
+        &offset.to_string(),
+        "--tests",
+    ])
+    .arg("--std")
+    .arg(common::root().join("compiler/std"))
+    .output()
+    .unwrap();
+    success(&query);
+    let report = String::from_utf8(query.stdout).unwrap();
+    assert!(report.contains("\"diagnostics\":[]"));
+    assert!(report.contains("\"types\":[\"fn(Int) Int\"]"));
+    assert!(report.contains(&format!(
+        "\"start\":{declaration},\"end\":{}",
+        declaration + "advance".len()
+    )));
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::executable(temporary.path(), "callback-arity-tests");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["test", package, "--no-run"])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+    }
+}
+
+#[test]
+fn callback_arity_cache_revalidates_new_overload_candidates() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("functions.loom");
+    let definitions = r#"
+fn create(value Int) Int {
+    value + 1
+}
+
+fn apply[A, R](action fn(A) R, value A) R {
+    action(value)
+}
+"#;
+    fs::write(&source, definitions).unwrap();
+    fs::write(
+        temporary.path().join("main.loom"),
+        "pub fn entry() Int {\n    apply(create, 1)\n}\n\nfn main() {\n    assert entry() == 2\n}\n",
+    )
+    .unwrap();
+    let cache = temporary.path().join("cache");
+    let check = || {
+        common::command(&["check", temporary.path().to_str().unwrap()])
+            .arg("--frontend-cache")
+            .arg(&cache)
+            .output()
+            .unwrap()
+    };
+    success(&check());
+    let different =
+        format!("{definitions}\nfn create(first Int, second Int) Int {{\n    first + second\n}}\n");
+    fs::write(&source, &different).unwrap();
+    success(&check());
+    success(&check());
+    fs::write(
+        &source,
+        format!("{different}\nfn create(value Bool) Bool {{\n    value\n}}\n"),
+    )
+    .unwrap();
+    let changed = check();
+    assert_eq!(changed.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("ambiguous function reference"));
+}
+
+#[test]
 fn named_callbacks_keep_native_layouts_and_exact_reference_reachability() {
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "callbacks");
@@ -62,8 +151,29 @@ fn callback_types_purity_and_entry_contracts_remain_checked() {
         assert_eq!(output.status.code(), Some(1), "{text}: {output:?}");
         assert!(!output.stderr.is_empty());
     }
-    fs::write(package.path().join("main.loom"),
-        "fn positive(value Int) Int requires value > 0 { value }\nfn call(action fn(Int) Int) Int { action(0) }\nfn main() { discard call(positive) }").unwrap();
+    fs::write(
+        package.path().join("main.loom"),
+        r#"
+fn positive(value Int) Int
+requires value > 0
+{
+    value
+}
+
+fn positive(first Int, second Int) Int {
+    first + second
+}
+
+fn call[A, R](action fn(A) R, value A) R {
+    action(value)
+}
+
+fn main() {
+    discard call(positive, 0)
+}
+"#,
+    )
+    .unwrap();
     let output = loom(&["run", package.path().to_str().unwrap()]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));

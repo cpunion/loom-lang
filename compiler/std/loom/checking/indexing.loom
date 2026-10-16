@@ -51,7 +51,12 @@ fn application(context Context, node Node, expected Int) Result[Expr, Failure] {
     if lookup(context, first) >= 0 {
         return index_read(context, node, expr(context, receiver, -1)?, arguments)
     }
-    function_value(context, node, referenced_functions(context, receiver.value), arguments, expected)
+    let options = referenced_functions(context, receiver.value)
+    if length(options) == 0 {
+        let message = unimported_function_message(context, receiver.value)
+        if message != "" { return Result.Err(error(context, receiver, message)) }
+    }
+    function_value(context, node, options, arguments, expected, -1)
 }
 fn index_assignment(context Context, node Node) Result[Expr, Failure] {
     let target = child(node, 0)
