@@ -6,6 +6,25 @@ fn proved_update_expression(env Environment, functions List[Function], value Exp
     if env.expanding_helpers || env.stage_depth >= 32 {
         return false
     }
+    let receiver = get(value.children, 0)
+    if !constraint_weakened(env, receiver) {
+        return false
+    }
+    if get(receiver.children, 0).kind == ExprKind.Local {
+        var dependent = false
+        var argument = 1
+        while argument < length(value.children) {
+            let kind = get(value.children, argument).kind
+            dependent = dependent || (kind != ExprKind.Integer && kind != ExprKind.Bool &&
+                kind != ExprKind.Text && kind != ExprKind.Float)
+            argument = argument + 1
+        }
+        // The preceding probe already kept these exact literals. Rebuilding
+        // the same receiver-only obligation supplies no argument relationships.
+        if !dependent {
+            return false
+        }
+    }
     // Shared builds must prove the same expression with interference between
     // argument reads and the atomic store; sequential evidence cannot waive it.
     var shared = false
