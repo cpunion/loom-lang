@@ -1,0 +1,33 @@
+import std.loom.project.import_target
+
+// Explain a failed qualified reference using the caller's actual package edge,
+// not a global name search. This is diagnostic evidence, never import permission.
+fn unimported_function_message(context Context, path Text) Text {
+    let namespace = package(path)
+    let first = slice(path, 0, first_dot(path))
+    if namespace == "" || lookup(context, first) >= 0 || parameter_name(context, first) {
+        return ""
+    }
+    let here = symbol(context.env, context.signature.symbol)
+    let source = context.env.source
+    if length(candidates(source, here.file, here.test_only, path)) != 0 ||
+    length(candidates(source, here.file, here.test_only, namespace)) != 0 {
+        return ""
+    }
+    let owner = get(source.files, here.file).package
+    let target = std.loom.project.import_target(source.modules, source.packages, owner, namespace)
+    if target < 0 || target == owner {
+        return ""
+    }
+    var index = 0
+    while index < length(source.symbols) {
+        let declaration = get(source.symbols, index)
+        if declaration.owner < 0 && declaration.public && !declaration.test_only &&
+        declaration.node.kind == NodeKind.Function && declaration.name == name(path) &&
+        get(source.files, declaration.file).package == target {
+            return concat("function ", concat(path, concat(" is not imported; add import ", path)))
+        }
+        index = index + 1
+    }
+    ""
+}

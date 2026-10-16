@@ -363,7 +363,8 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
         find_data(context.env, context.signature.symbol, node, package(node.value))?
     }
     if declaration < 0 {
-        return Result.Err(error(context, node, "unknown enum type"))
+        let message = unimported_function_message(context, node.value)
+        return Result.Err(error(context, node, if message == "" { "unknown enum type" } else { message }))
     }
     let desired = if selected_type >= 0 {
         selected_type
@@ -546,6 +547,10 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     if package(node.value) != "" && find_data(context.env, context.signature.symbol, node, package(node.value))? >= 0 {
         return variant(context, node, types, inputs, expected)
+    }
+    if length(available) == 0 {
+        let message = unimported_function_message(context, node.value)
+        if message != "" { return Result.Err(error(context, node, message)) }
     }
     let type_count = call_type_count(node, types)
     let options = call_signature_options(context.env, available, length(inputs.nodes), type_count)
