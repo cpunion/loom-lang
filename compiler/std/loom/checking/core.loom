@@ -443,6 +443,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, decl
             declaration_queries = declaration_queries
             declaration_references = new[DeclarationReference]()
             reference_indices = new[List[Int]]()
+            source_contracts = new[SourceContract]()
             result_shapes = new[ResultShape]()
             constraint_errors = new[Int]()
             contracts = new[List[ContractCertificate]]()
@@ -553,6 +554,10 @@ fn checked_program(env Environment, reuse List[Bool], reusable List[Bool], hits 
 }
 
 fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool], hits List[Int], bodies BodyReuse) Result[std.loom.typed.Program, Failure] {
+    checked_program_reusing(env, reuse, reusable, hits, bodies, false)
+}
+
+fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool], hits List[Int], bodies BodyReuse, queries Bool) Result[std.loom.typed.Program, Failure] {
     discard check_pack_contracts(env)?
     let source = env.source
     let deferred_roots = new[Int]()
@@ -601,7 +606,7 @@ fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool
         }
         index = index + 1
     }
-    let functions = emit_functions_reusing(env, entry < 0 || length(exports) != 0, bodies)?
+    let functions = emit_functions_in(env, entry < 0 || length(exports) != 0, bodies, false, queries)?
     discard runtime_meta(env, functions)?
     discard check_unreached(env, deferred_roots)?
     discard layouts(env)?

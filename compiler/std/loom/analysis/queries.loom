@@ -555,9 +555,7 @@ fn path_depth(analysis CheckedQuery, value Expr) Int {
 // Entry contracts read capture slots before body locals are initialized. Use
 // the checked environment field and its actual initializer, not name guessing.
 fn inspect_capture_read(analysis CheckedQuery, report Inspection, function Function, target Query, value Expr) Bool {
-    let entry = value.kind == ExprKind.Intrinsic && value.text == "entry_list_get" && length(value.children) == 2 &&
-    get(value.children, 1).kind == ExprKind.Integer && get(value.children, 1).text == "0"
-    let slot = if entry || (value.kind == ExprKind.Intrinsic && value.text == "cell_get" && length(value.children) == 1) {
+    let slot = if value.kind == ExprKind.Intrinsic && value.text == "cell_get" && length(value.children) == 1 {
         get(value.children, 0)
     } else {
         value
@@ -584,12 +582,6 @@ fn inspect_expression(analysis CheckedQuery, report Inspection, function Functio
     let specialized = value.kind == ExprKind.FunctionRef && target.node.kind == NodeKind.Name &&
     value.span.start == target.node.span.start && value.span.end > target.node.span.end
     if !same_span(value.span, target.node.span) && !specialized {
-        // Normalized clauses keep the enclosing clause span. A checked entry
-        // cell read still identifies its original capture slot and initializer.
-        if target.node.kind == NodeKind.Name && target.segment == 0 && value.kind == ExprKind.Intrinsic &&
-        value.text == "entry_list_get" && inspect_capture_read(analysis, report, function, target, value) {
-            return
-        }
         return
     }
     let kind = target.node.kind
@@ -724,6 +716,12 @@ fn inspect_tree(analysis CheckedQuery, report Inspection, function Function, tar
 // navigate to a unique concept signature, never a speculative implementation;
 // overloaded signatures not distinguished by name/arity omit the location.
 pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
+    if file < 0 || file >= length(analysis.source.files) {
+        return Option.None
+    }
+    if source_contract_at(get(analysis.source.files, file).tree, offset) {
+        return inspect_source_contract(analysis, file, offset)
+    }
     let declarations = get(analysis.source.files, file).tree.children
     var index = 0
     while index < length(declarations) {

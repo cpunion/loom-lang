@@ -380,6 +380,10 @@ fn emitted_function(env Environment, function Function) Result[Bool, Failure] {
 // Only a private proof program may retain abstract call instances. Normal
 // emission and CTFE still require concrete runtime parameters and results.
 fn emit_functions_in(env Environment, retain Bool, bodies BodyReuse, proof Bool) Result[List[Function], Failure] {
+    emit_functions_in(env, retain, bodies, proof, false)
+}
+
+fn emit_functions_in(env Environment, retain Bool, bodies BodyReuse, proof Bool, queries Bool) Result[List[Function], Failure] {
     let functions = new[Function]()
     var index = 0
     var more = true
@@ -395,7 +399,8 @@ fn emit_functions_in(env Environment, retain Bool, bodies BodyReuse, proof Bool)
             } else {
                 match reuse_body(env, bodies, instance)? {
                     Option.Some(value) => value
-                    Option.None => function(env, instance.signature, instance.arguments, instance.constants, true)?
+                    Option.None => function(env, instance.signature, instance.arguments, instance.constants, true,
+                        if queries { index } else { -1 })?
                 }
             }
             if !proof {

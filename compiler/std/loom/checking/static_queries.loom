@@ -7,6 +7,7 @@ record CheckInputs {
     declaration_queries Bool
     declaration_references List[DeclarationReference]
     reference_indices List[List[Int]]
+    source_contracts List[SourceContract]
     // Trusted source shapes are fixed within this binding/type snapshot.
     result_shapes List[ResultShape]
     constraint_errors List[Int]
