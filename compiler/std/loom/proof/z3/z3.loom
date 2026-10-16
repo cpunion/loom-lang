@@ -19,11 +19,12 @@ pub fn backend(tool Text) ProofBackend {
     ProofBackend {
         enabled = true
         context = tool
-        solve = solve_obligation
+        solve = solve
     }
 }
 
-fn solve_obligation(tool Text, query Text) Result[Bool, Text] {
+// Hosts with their own context/cache can use the callback directly.
+pub fn solve(tool Text, query Text) Result[Bool, Text] {
     let arguments = new[Text]()
     push(arguments, tool)
     push(arguments, "-in")
