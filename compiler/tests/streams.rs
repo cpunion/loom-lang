@@ -130,7 +130,7 @@ fn scoped_async_file_pipelines_keep_errors_and_stop_before_the_suffix() {
 fn binary_file_streams_bound_chunks_and_keep_scoped_worker_cleanup() {
     let library = "compiler/std/file/chunks";
     let example = "compiler/examples/file_chunks";
-    for package in [library, example] {
+    for package in [library, example, "compiler/examples/file_chunks/wire"] {
         success(&common::loom(&["check", package]));
         success(&common::loom(&["test", package]));
     }
@@ -140,19 +140,21 @@ fn binary_file_streams_bound_chunks_and_keep_scoped_worker_cleanup() {
     let input = temporary.path().join("input.bin");
     let missing = temporary.path().join("absent.bin");
     for level in ["0", "2"] {
-        success(
-            &common::command(&["test", library, "--no-run"])
-                .arg("--output")
-                .arg(&tests)
-                .env("LOOM_OPT_LEVEL", level)
-                .output()
-                .unwrap(),
-        );
-        success(&common::run_task_command(
-            Command::new(&tests)
-                .current_dir(temporary.path())
-                .env("LOOM_GC_STRESS", "1"),
-        ));
+        for package in [library, example] {
+            success(
+                &common::command(&["test", package, "--no-run"])
+                    .arg("--output")
+                    .arg(&tests)
+                    .env("LOOM_OPT_LEVEL", level)
+                    .output()
+                    .unwrap(),
+            );
+            success(&common::run_task_command(
+                Command::new(&tests)
+                    .current_dir(temporary.path())
+                    .env("LOOM_GC_STRESS", "1"),
+            ));
+        }
         success(
             &common::command(&["build", example])
                 .arg("--output")

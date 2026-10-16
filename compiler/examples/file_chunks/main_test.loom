@@ -14,7 +14,7 @@ test async fn counts_binary_files_across_default_chunks_without_decoding() {
         push(input, 255)
         index = index + 1
     }
-    assert match write_bytes(path, input) {
+    assert match std.file.write_bytes(path, input) {
         Result.Ok(count) => count == 9001
         Result.Err(_) => false
     }
