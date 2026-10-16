@@ -466,7 +466,7 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
     // A normal-return contract cannot justify intermediate stores. This entry
     // also serves known function values; dispatch must not weaken preservation.
     if length(proof.preservation) != 0 {
-        return source_body_call(proof, call.index, function, arguments, function.is_async, depth)
+        return source_body_call(proof, call.index, function, arguments, false, depth)
     }
     let boundary = length(arguments.state.locals)
     let state = call_scope(arguments.state, arguments.values)
@@ -592,11 +592,7 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     var index = 0
     while index < length(arguments) {
         let input = get(arguments, index)
-        discard append(output, if length(proof.preservation) != 0 {
-                source_body_call(proof, call.index, function, input, false, depth)?
-            } else {
-                applied_call(proof, call, function, input, depth)?
-            })?
+        discard append(output, applied_call(proof, call, function, input, depth)?)?
         index = index + 1
     }
     Result.Ok(output)
