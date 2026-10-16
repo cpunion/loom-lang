@@ -198,7 +198,7 @@ fn spaced(previous Token, current Token, force Bool, prefix Bool) Bool {
             return previous.value == "if" || previous.value == "while" || previous.value == "match" ||
             previous.value == "let" || previous.value == "var" ||
             previous.value == "return" || previous.value == "assert" || previous.value == "discard" ||
-            previous.value == "requires" || previous.value == "ensures"
+            previous.value == "requires" || previous.value == "ensures" || previous.value == "where"
         }
         // Calls attach to receivers; binary operators, assignments, commas and
         // match arrows separate their following grouped expression. Unary
