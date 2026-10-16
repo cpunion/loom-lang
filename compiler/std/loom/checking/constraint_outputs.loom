@@ -1,9 +1,10 @@
 import std.loom.typed.type_relation
 
-// A returned element cannot expose the protected header if its stored type
-// graph cannot contain that List. Opaque captures/conformance and unresolved
-// types supply no such evidence. This is not a promise of element immutability.
-fn constraint_storage_reachable(env Environment, target Int, ty Int) Bool {
+// Walk stored types, cutting a path only when it retains the same nominal
+// guarantee as the input. A recursive element may share a protected header;
+// an unrestricted or differently constrained back-reference is not permission
+// to expose it. Opaque captures/conformance and unresolved types fail closed.
+fn constraint_storage_reachable(env Environment, target Int, protected Int, ty Int) Bool {
     let pending = ints(ty)
     let seen = new[Int]()
     var next = 0
@@ -13,11 +14,16 @@ fn constraint_storage_reachable(env Environment, target Int, ty Int) Bool {
         }
         let current = get(pending, next)
         next = next + 1
-        if current < 0 || current >= length(env.types) ||
-        std.loom.typed.type_relation(env.types, target, current) != 0 {
+        if current < 0 || current >= length(env.types) {
             return true
         }
         if get(env.type_states, current).phase != 2 {
+            return true
+        }
+        if current == protected {
+            continue
+        }
+        if std.loom.typed.type_relation(env.types, target, current) != 0 {
             return true
         }
         var index = 0
@@ -65,7 +71,7 @@ fn constraint_output_independent(env Environment, value Expr) Bool {
     while index < length(value.children) {
         let input = get(value.children, index)
         if constraint_weakened(env, input) &&
-        constraint_storage_reachable(env, input.ty, value.ty) {
+        constraint_storage_reachable(env, input.ty, get(input.children, 0).ty, value.ty) {
             return false
         }
         index = index + 1

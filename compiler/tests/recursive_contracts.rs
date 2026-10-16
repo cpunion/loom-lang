@@ -3,6 +3,57 @@ mod common;
 use common::success;
 
 #[test]
+fn recursive_constrained_data_keeps_shared_guarantees_and_rechecks_edits() {
+    let package = "compiler/examples/recursive_constraints";
+    let temporary = tempfile::tempdir().unwrap();
+    let artifact = common::executable(temporary.path(), "recursive-data");
+    let ir = temporary.path().join("recursive-data.ll");
+    for level in ["0", "2"] {
+        for command in ["build", "test"] {
+            let mut build = common::command(&[command, package]);
+            if command == "test" {
+                build.arg("--no-run");
+            }
+            success(
+                &build
+                    .arg("--output")
+                    .arg(&artifact)
+                    .arg("--emit-ir")
+                    .arg(&ir)
+                    .env("LOOM_OPT_LEVEL", level)
+                    .output()
+                    .unwrap(),
+            );
+            assert!(!fs::read_to_string(&ir).unwrap().contains("proof_enum_"));
+            success(&common::run_tasks(&artifact));
+        }
+    }
+
+    let source = temporary.path().join("main.loom");
+    let program = include_str!("../examples/recursive_constraints/main.loom");
+    let cache = temporary.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            temporary.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    let changed = program.replace("var total = 0", "var total = -1");
+    assert_ne!(changed, program);
+    fs::write(&source, changed).unwrap();
+    let rejected = check();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("proved"));
+    fs::write(&source, program).unwrap();
+    success(&check());
+}
+
+#[test]
 fn recursive_contracts_compile_and_cached_groups_reject_bad_finite_cases() {
     let package = tempfile::tempdir().unwrap();
     let path = package.path().to_str().unwrap();

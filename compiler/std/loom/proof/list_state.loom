@@ -92,6 +92,15 @@ fn list_bounds(value Value, state State) State {
             }
             bounded
         }
+        Value.Sum(_, _, payloads) => {
+            var bounded = state
+            var variant = 0
+            while variant < length(payloads) {
+                bounded = list_bounds(Value.Record(get(payloads, variant)), bounded)
+                variant = variant + 1
+            }
+            bounded
+        }
         _ => state
     }
 }
@@ -308,8 +317,8 @@ fn forget_modified_extents(proof Verification, state State, modified List[Int]) 
     current
 }
 
-// Only checked, finite extent-preserving operations retain caller heap facts.
-// Abstract summaries, recursion and unknown operations supply no frame rule.
+// Frame rules describe actual checked storage effects, not termination.
+// A recursive call graph is safe only if every reachable body is safe.
 enum StorageRequirement {
     Extent
     Elements
@@ -336,42 +345,78 @@ fn storage_expression(value Expr) Bool {
     kind == ExprKind.Break || kind == ExprKind.Continue
 }
 
-fn preserves_list_state(program Program, value Expr, budget List[Int], requirement StorageRequirement, depth Int) Bool {
+record StorageVisit {
+    target Int
+    active Bool
+}
+
+// -1: unsupported; bit 0: recursive edge; bit 1: captured-cell write.
+// Calls in arguments are scanned even when their target body was already seen.
+fn storage_effects(program Program, value Expr, budget List[Int], requirement StorageRequirement,
+    visits List[StorageVisit], depth Int) Int {
     if depth >= 32 || !conjunction_step(budget) {
-        return false
+        return -1
     }
     if cell_store_expression(program, value) {
-        return preserves_list_state(program, cell_store_view(value), budget, requirement, depth + 1)
+        let effects = storage_effects(program, cell_store_view(value), budget, requirement, visits, depth + 1)
+        return if effects < 0 {
+            -1
+        } else {
+            effects | 2
+        }
     }
+    var effects = 0
     let kind = value.kind
     if kind == ExprKind.Call {
         if value.index < 0 || value.index >= length(program.functions) {
-            return false
+            return -1
         }
         let function = get(program.functions, value.index)
         if function.is_async {
-            return false
+            return -1
         }
         if function.runtime_name != "" {
             if !storage_operation(program, function.runtime_name, function.result, value.children, requirement) {
-                return false
+                return -1
             }
         } else {
-            if !preserves_list_state(program, function.body, budget, requirement, depth + 1) {
-                return false
+            var index = 0
+            while index < length(visits) && get(visits, index).target != value.index {
+                index = index + 1
+            }
+            if index < length(visits) {
+                if get(visits, index).active {
+                    effects = effects | 1
+                }
+            } else {
+                push(visits, StorageVisit {
+                        target = value.index
+                        active = true
+                    })
+                let nested = storage_effects(program, function.body, budget, requirement, visits, depth + 1)
+                if nested < 0 {
+                    return -1
+                }
+                effects = effects | nested
+                set(visits, index, StorageVisit {
+                        target = value.index
+                        active = false
+                    })
             }
         }
     } else {
         if !storage_expression(value) &&
         !(kind == ExprKind.Intrinsic && storage_operation(program, value.text, value.ty, value.children, requirement)) {
-            return false
+            return -1
         }
     }
     var index = 0
     while index < length(value.children) {
-        if !preserves_list_state(program, get(value.children, index), budget, requirement, depth + 1) {
-            return false
+        let nested = storage_effects(program, get(value.children, index), budget, requirement, visits, depth + 1)
+        if nested < 0 {
+            return -1
         }
+        effects = effects | nested
         index = index + 1
     }
     index = 0
@@ -379,24 +424,33 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], requireme
         let body = get(value.arms, index).body
         var item = 0
         while item < length(body) {
-            if !preserves_list_state(program, get(body, item), budget, requirement, depth + 1) {
-                return false
+            let nested = storage_effects(program, get(body, item), budget, requirement, visits, depth + 1)
+            if nested < 0 {
+                return -1
             }
+            effects = effects | nested
             item = item + 1
         }
         index = index + 1
     }
-    true
+    effects
+}
+
+fn preserves_list_state(program Program, value Expr, budget List[Int], requirement StorageRequirement) Bool {
+    let effects = storage_effects(program, value, budget, requirement, new[StorageVisit](), 0)
+    // Recursive captured-cell stores need a separate alias/write summary;
+    // cutting a call edge cannot erase a changed caller binding.
+    effects >= 0 && !((effects & 1) != 0 && (effects & 2) != 0)
 }
 
 fn extent_preserving(program Program, value Expr) Bool {
     let budget = new[Int]()
     push(budget, 256)
-    preserves_list_state(program, value, budget, StorageRequirement.Extent, 0)
+    preserves_list_state(program, value, budget, StorageRequirement.Extent)
 }
 
 fn elements_preserving(program Program, value Expr) Bool {
     let budget = new[Int]()
     push(budget, 256)
-    preserves_list_state(program, value, budget, StorageRequirement.Elements, 0)
+    preserves_list_state(program, value, budget, StorageRequirement.Elements)
 }

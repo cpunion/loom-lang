@@ -47,7 +47,7 @@ fn closed_storage_inputs(program Program, params List[Int]) Bool {
 fn storage_local(program Program, body Expr) Bool {
     let budget = new[Int]()
     push(budget, 256)
-    preserves_list_state(program, body, budget, StorageRequirement.Local, 0)
+    preserves_list_state(program, body, budget, StorageRequirement.Local)
 }
 
 // A fresh header may hold shared elements. Check its origin and publication,

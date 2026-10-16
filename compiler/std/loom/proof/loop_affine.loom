@@ -54,7 +54,7 @@ fn loop_affine_pair(proof Verification, candidates List[LoopCandidate], left Loo
     var index = 0
     while index < length(candidates) {
         match get(candidates, index) {
-            LoopCandidate.Affine(terms, _) => {
+            LoopCandidate.Affine(terms, _, _) => {
                 if length(terms) == 2 && same_loop_observation(get(terms, 0).observation, left) &&
                 same_loop_observation(get(terms, 1).observation, right) &&
                 compare(product(get(terms, 0).factor, b), product(get(terms, 1).factor, a)) == 0 {
@@ -75,7 +75,7 @@ fn loop_affine_pair(proof Verification, candidates List[LoopCandidate], left Loo
         }]
     match loop_affine_value(terms, entry) {
         Result.Ok(initial) => {
-            discard add_loop_candidate(candidates, LoopCandidate.Affine(terms, initial), entry)?
+            discard add_loop_candidate(candidates, LoopCandidate.Affine(terms, "==", initial), entry)?
         }
         Result.Err(_) => {
         }
@@ -201,6 +201,52 @@ fn loop_affine_candidates(proof Verification, guard Expr, body Expr, candidates 
             }
         }
         left = left + 1
+    }
+    Result.Ok(true)
+}
+
+fn loop_affine_inequalities(candidates List[LoopCandidate], terms List[LoopTerm], initial Value, entry State) Result[Bool, Text] {
+    if length(candidates) < 64 {
+        discard add_loop_candidate(candidates, LoopCandidate.Affine(terms, ">=", initial), entry)?
+    }
+    if length(candidates) < 64 {
+        discard add_loop_candidate(candidates, LoopCandidate.Affine(terms, "<=", initial), entry)?
+    }
+    Result.Ok(true)
+}
+
+// Signed observation pairs can be monotone rather than conserved. Reserve
+// existing identity/observation proposals first, then prove these bounds through
+// the ordinary entry/all-backedge fixed point. Suggestions grant no facts.
+fn loop_affine_bounds(proof Verification, candidates List[LoopCandidate], entry State) Result[Bool, Text] {
+    let count = length(candidates)
+    var index = 0
+    while index < count && length(candidates) < 64 {
+        discard loop_step(proof)?
+        match get(candidates, index) {
+            LoopCandidate.Affine(terms, relation, initial) => {
+                if relation == "==" {
+                    discard loop_affine_inequalities(candidates, terms, initial, entry)?
+                    if length(terms) == 2 && length(candidates) < 64 {
+                        let right = get(terms, 1)
+                        let signed = [get(terms, 0), LoopTerm {
+                                observation = right.observation
+                                factor = negate(right.factor)
+                            }]
+                        match loop_affine_value(signed, entry) {
+                            Result.Ok(value) => {
+                                discard loop_affine_inequalities(candidates, signed, value, entry)?
+                            }
+                            Result.Err(_) => {
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
     }
     Result.Ok(true)
 }

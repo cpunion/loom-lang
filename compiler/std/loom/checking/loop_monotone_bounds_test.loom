@@ -1,0 +1,62 @@
+test fn affine_loop_bounds_compose_nonconstant_callee_guarantees() {
+    discard accepted("""
+        fn contribution(value Int) Int
+        ensures result >= 1 {
+            if value > 1 { value } else { 1 }
+        }
+        fn fold(limit Int, value Int) Int
+        requires limit > 0
+        ensures result >= limit {
+            var index = 0
+            var total = 0
+            while index < limit {
+                total = total + contribution(value)
+                index = index + 1
+            }
+            total
+        }
+        fn decreasing(limit Int, value Int) Int
+        requires limit > 0
+        ensures result <= -limit {
+            var index = 0
+            var total = 0
+            while index < limit {
+                total = total - contribution(value)
+                index = index + 1
+            }
+            total
+        }
+        """)
+}
+
+test fn affine_bounds_recheck_early_exits_and_nonpreserving_backedges() {
+    rejects("""
+        fn wrong(limit Int) Int
+        requires limit > 0
+        ensures result >= limit {
+            var index = 0
+            var total = 0
+            while index < limit {
+                if index == 0 { break }
+                total = total + 1
+                index = index + 1
+            }
+            total
+        }
+        """
+    )
+    rejects("""
+        fn wrong(limit Int, skip Bool) Int
+        requires limit > 0
+        ensures result >= limit {
+            var index = 0
+            var total = 0
+            while index < limit {
+                index = index + 1
+                if skip { continue }
+                total = total + 1
+            }
+            total
+        }
+        """)
+}

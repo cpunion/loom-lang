@@ -1,0 +1,67 @@
+import std.list.get
+import std.list.length
+import std.list.push
+import std.text.length
+import std.time.sleep_ms
+
+type Name = Text where length(self) > 0
+
+type Children = List[Node] where length(self) > 0
+
+enum Node {
+    Leaf(Name)
+    Branch(Children)
+}
+
+fn first(children List[Node]) Node {
+    get(children, 0)
+}
+
+fn replace(children Children, name Name) {
+    children[0] = Node.Leaf(name)
+}
+
+fn size(node Node) Int
+ensures result > 0 {
+    match node {
+        Node.Leaf(_) => 1
+        Node.Branch(children) => {
+            var total = 0
+            var index = 0
+            while index < length(children) {
+                total = total + size(get(children, index))
+                index = index + 1
+            }
+            total
+        }
+    }
+}
+
+async fn inspect(node Node) Bool {
+    sleep_ms(1).await
+    size(node) > 0
+}
+
+async fn exercise() {
+    let children = Children([Node.Leaf(Name("first"))])
+    let root = Children([Node.Branch(children)])
+    let tree = first(root)
+    assert size(tree) == 1
+    let pending = inspect(tree)
+    match tree {
+        Node.Leaf(_) => {
+            assert false
+        }
+        Node.Branch(shared) => {
+            replace(shared, Name("second"))
+            push(shared, Node.Branch(Children([Node.Leaf(Name("third"))])))
+        }
+    }
+    assert pending.await
+    assert length(children) == 2 && length(root) == 1
+    assert size(tree) == 2
+}
+
+async fn main() {
+    exercise().await
+}
