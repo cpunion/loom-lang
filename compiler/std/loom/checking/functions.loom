@@ -714,7 +714,8 @@ fn old_entry_expression(context Context, node Node, shared Bool, depth Int) Resu
             }
             index = index + 1
         }
-        return Result.Ok(inline_constraint_base(context.env, expr(context, node, -1)?.ty, 0))
+        let ty = expr(context, node, -1)?.ty
+        return Result.Ok(inline_constraint_base(context.env, ty, 0) || old_list_type(context.env, ty))
     }
     let call = node.kind == NodeKind.Call
     if call && lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 {

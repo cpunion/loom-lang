@@ -146,6 +146,12 @@ record EntrySnapshot {
 }
 
 fn immutable_snapshot(value Value) Bool {
+    entry_snapshot_value(value, false)
+}
+
+// Intermediate receivers may retain an object identity, not its mutable heap.
+// Only the enclosing entry observation supplies a length/content snapshot.
+fn entry_snapshot_value(value Value, references Bool) Bool {
     match value {
         Value.Number(_) => true
         Value.Nonlinear(_) => true
@@ -153,10 +159,14 @@ fn immutable_snapshot(value Value) Bool {
         Value.Boolean(_) => true
         Value.Text(_) => true
         Value.Float(_) => true
+        Value.List(_) => references
+        // Unobserved inline siblings can stay opaque; no facts or structure
+        // are supplied for them by copying an entry receiver.
+        Value.Opaque(_, _) => references
         Value.Record(fields) => {
             var index = 0
             while index < length(fields) {
-                if !immutable_snapshot(get(fields, index)) {
+                if !entry_snapshot_value(get(fields, index), references) {
                     return false
                 }
                 index = index + 1
@@ -169,7 +179,7 @@ fn immutable_snapshot(value Value) Bool {
                 let fields = get(payloads, variant)
                 var field = 0
                 while field < length(fields) {
-                    if !immutable_snapshot(get(fields, field)) {
+                    if !entry_snapshot_value(get(fields, field), references) {
                         return false
                     }
                     field = field + 1
@@ -191,9 +201,17 @@ fn capture_entry(proof Verification, value Expr, entry State, current State) Res
 
 fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
     entry State, current State) Result[EntrySnapshot, Text] {
+    capture_guarded_entry(proof, value, guard, entry, current, false)
+}
+
+fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
+    entry State, current State, references Bool) Result[EntrySnapshot, Text] {
     if entry_observation_expression(value) {
         match observation_value(value, guard, current) {
             Option.Some(observed) => {
+                if entry_element_expression(value) && !entry_snapshot_value(observed, references) {
+                    return Result.Err("old List elements require immutable scalar or inline values")
+                }
                 let captured = observation_reference(value, observed, current)
                 let values = new[Value]()
                 push(values, observed)
@@ -214,7 +232,9 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
     let flow = proof_operation(value).flow
     while index < length(value.children) {
         let next = operand_guard(flow, index, children, guard)
-        let captured = capture_guarded_entry(proof, get(value.children, index), next, before, state)?
+        let receiver = references || (index == 0 && (entry_observation_expression(value) ||
+                value.kind == ExprKind.Field || value.kind == ExprKind.Coerce))
+        let captured = capture_guarded_entry(proof, get(value.children, index), next, before, state, receiver)?
         push(children, captured.expression)
         state = captured.state
         before = captured.entry
@@ -251,7 +271,7 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
             let outcome = entry_element(proof, read, guard, view)?
             observed = outcome.value
             before = outcome.state
-            if !immutable_snapshot(observed) {
+            if !entry_snapshot_value(observed, references) {
                 return Result.Err("old List elements require immutable scalar or inline values")
             }
         } else {
@@ -273,7 +293,10 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
                     Predicate.Compare(">=", location.index),
                     Predicate.Compare("<", add(location.index,
                             scale(list_extent(location.identity, before)?, integer(-1))))))
-            after_scope = guarded_value_invariants(proof, value.ty, observed, valid, after_scope)
+            // A copied reference does not renew a mutable child predicate in
+            // the post-call heap. Immutable logical snapshots remain typed.
+            after_scope = guarded_type_invariants(proof.program.types, value.ty, observed, valid,
+                after_scope, 0, immutable_snapshot(observed))
         }
         after_scope = if proof.shared && entry_length_expression(value) {
             match observed {

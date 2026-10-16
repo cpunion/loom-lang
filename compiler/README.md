@@ -2371,6 +2371,10 @@ Complete environments need a checked read-only slot footprint; mutable bindings
 use versioned one-slot storage rather than immutable proof locals. Copies of a
 closure retain cell aliases, and `old(value)` can observe a captured entry value.
 Bounded loops and helper write footprints use the same storage versions.
+Entry observations can traverse indexed or captured List handles and inline records with
+unobserved generic fields, including pure helper calls. The
+[entry receiver example](examples/closures/cells/entries/README.md) also returns
+logical outer List snapshots without copying their storage.
 Capturing a List/Bytes handle freezes neither its contents nor its aliases.
 Worker contracts use the same interference and per-store preservation rules.
 See [captured storage contracts](examples/closures/cells/README.md). General

@@ -6,6 +6,7 @@ target/loom test compiler/examples/closures/cells
 target/loom run compiler/examples/closures/cells
 target/loom test compiler/examples/closures/cells/loops
 target/loom test compiler/examples/closures/cells/workers
+target/loom test compiler/examples/closures/cells/entries
 ```
 
 Closure copies share mutable captured bindings. Contracts follow the actual
@@ -23,3 +24,7 @@ counter advances to a requested bound; entry and every backedge must establish
 the candidate invariant. Cell stores participate in helper write footprints,
 so unchanged lengths never imply unchanged contents. Shared interference still
 prevents treating separate counter reads as one value.
+
+The [entry receiver package](entries/README.md) observes Lists through captured
+bindings and inline records, including generic handles and compile-time calls.
+Intermediate object identities never become deep immutable snapshots.

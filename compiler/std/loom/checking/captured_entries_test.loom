@@ -1,0 +1,55 @@
+import std.text.replace
+
+test fn captured_entry_receivers_preserve_snapshots_without_freezing_aliases() {
+    let source = """
+        import std.list.length
+        import std.list.push
+        fn make(first List[Int], other List[Int]) fn() Int {
+            var current = first
+            fn() Int
+            requires length(current) > 0 && length(other) > 0
+            ensures result == old(current[0]) {
+                BODY
+            }
+        }
+        """
+    list_length_contract(std.text.replace(source, "BODY", """
+        let before = current[0]
+        current = other
+        before
+        """), true)
+    list_length_contract(std.text.replace(source, "BODY", """
+        current = other
+        current[0]
+        """), false)
+    list_length_contract(std.text.replace(source, "BODY", """
+        current[0] = 0
+        current[0]
+        """), false)
+    list_length_contract(std.text.replace(source, "BODY", """
+        other[0] = 0
+        current[0]
+        """), false)
+    let grown = std.text.replace(source, "old(current[0])", "old(current[1])")
+    list_length_contract(std.text.replace(grown, "BODY", """
+        push(current, 0)
+        current[1]
+        """), false)
+    let length_source = std.text.replace(source, "old(current[0])", "old(length(current))")
+    list_length_contract(std.text.replace(length_source, "BODY", """
+        current = other
+        length(current)
+        """), false)
+    let nested = std.text.replace(source, "List[Int]", "List[List[Int]]")
+    let nested_entry = std.text.replace(nested, "old(current[0])", "old(length(current[0]))")
+    list_length_contract(std.text.replace(nested_entry, "BODY", """
+        let before = length(current[0])
+        current = other
+        before
+        """), true)
+    let nested_grown = std.text.replace(nested_entry, "old(length(current[0]))", "old(length(current[1]))")
+    list_length_contract(std.text.replace(nested_grown, "BODY", """
+        push(current, [])
+        length(current[1])
+        """), false)
+}

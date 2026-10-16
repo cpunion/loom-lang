@@ -187,6 +187,7 @@ fn source_closures_preserve_shared_cells_cleanup_and_entry_contracts() {
         "closures",
         "comptime_closures",
         "closures/cells",
+        "closures/cells/entries",
         "closures/cells/loops",
         "closures/cells/workers",
     ] {
@@ -265,6 +266,11 @@ fn main() {
             "closures/cells/loops",
             "ensures result == limit",
             "ensures result > limit",
+        ),
+        (
+            "closures/cells/entries",
+            "ensures result == old(length(current))",
+            "ensures result == old(length(current)) + 1",
         ),
     ] {
         let original = fs::read_to_string(
