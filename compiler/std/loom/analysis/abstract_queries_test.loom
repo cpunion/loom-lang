@@ -101,3 +101,28 @@ test fn unused_generic_body_queries_work_after_successful_application_analysis()
     only_definition(found, parameter, parameter + 5)
     only_type(inspection(analysis, text, "copied\n"), "T")
 }
+
+test fn unused_generic_impl_body_queries_keep_impl_type_parameters() {
+    let text = """
+        concept Copy {
+            fn copy(self Self) Self
+        }
+        record Box[T] {
+            value T
+        }
+        impl[T] Copy for Box[T] {
+            fn copy(self Box[T]) Box[T] {
+                let copied = self
+                copied
+            }
+        }
+        fn main() {
+        }
+        """
+    let analysis = accepted(input(text))
+    let found = inspection(analysis, text, "self\n")
+    only_type(found, "app.Box[T]")
+    let parameter = query_offset(text, "self Box[T]")
+    only_definition(found, parameter, parameter + 4)
+    only_type(inspection(analysis, text, "copied\n"), "app.Box[T]")
+}
