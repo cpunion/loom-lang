@@ -1,5 +1,7 @@
 import std.loom.project.valid_target_property
 import std.loom.checking.target_value
+import std.loom.checking.with_proof_backend
+import std.loom.proof.z3.backend
 
 // Called only after the source observes a target property. Plain checking,
 // formatting and compiler-library consumers do not need a native tool.
@@ -48,6 +50,7 @@ fn native_target_inputs(tool Text) Result[List[BuildOption], Text] {
 }
 
 fn driver_build_inputs(options List[BuildOption], tool Text) BuildInputs {
+    let solver = std.loom.proof.z3.backend("z3")
     std.loom.checking.with_proof_backend(build_inputs(read_input, options, native_target_inputs, tool),
-        cached_proof_backend("z3", solve_obligation))
+        cached_proof_backend(solver.context, solver.solve))
 }

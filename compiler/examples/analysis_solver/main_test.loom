@@ -1,0 +1,3 @@
+test fn a_source_tool_can_supply_a_real_solver_without_the_compiler_cli() {
+    exercise()
+}

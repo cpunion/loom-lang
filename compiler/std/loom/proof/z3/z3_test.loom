@@ -1,0 +1,26 @@
+import std.text.contains
+
+test fn explicit_z3_backend_accepts_only_an_exact_unsatisfiable_result() {
+    let configured = backend("z3")
+    assert match configured.solve(configured.context, "(assert false)\n(check-sat)\n") {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match configured.solve(configured.context, "(assert true)\n(check-sat)\n") {
+        Result.Ok(value) => !value
+        _ => false
+    }
+    assert match configured.solve(configured.context, "(bad-command)\n(assert false)\n(check-sat)\n") {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert match configured.solve(configured.context, "(assert false)\n(check-sat)\n(check-sat)\n") {
+        Result.Err(_) => true
+        _ => false
+    }
+    let missing = backend("")
+    assert match missing.solve(missing.context, "(assert false)\n(check-sat)\n") {
+        Result.Err(message) => contains(message, "required proof needs Z3")
+        Result.Ok(_) => false
+    }
+}

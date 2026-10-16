@@ -68,6 +68,9 @@ uninstantiated or generated uses remain conservative. Executable contracts and
 ordinary compilation do not retain this query evidence.
 Public `std.loom` parser/project/analysis libraries share the compiler's
 implementation without requiring a compiler process, filesystem or LLVM.
+Hosts can explicitly supply the source `std.loom.proof.z3` adapter for unresolved
+supported proofs; default analysis stays I/O-free and ordinary programs gain no
+solver dependency.
 Their IDs and spans belong to a snapshot, not persistent semantic history.
 
 ## Language and compile-time programming

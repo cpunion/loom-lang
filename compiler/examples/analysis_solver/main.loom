@@ -1,0 +1,66 @@
+import std.loom.analysis.analyze_with_inputs
+import std.loom.checking.BuildInputs
+import std.loom.checking.build_inputs
+import std.loom.checking.no_input_reader
+import std.loom.checking.with_proof_backend
+import std.loom.parser.parse
+import std.loom.project.Project
+import std.loom.project.ModuleInstance
+import std.loom.project.Package
+import std.loom.project.SourceFile
+import std.loom.proof.z3.backend
+import std.result.Result
+import std.text.replace
+
+fn accepts(source Text, inputs BuildInputs) Bool {
+    let tree = match parse(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let project = Project {
+        files = [SourceFile {
+                package = 0
+                path = "/virtual/sample/input.loom"
+                text = source
+                tree = tree
+                test_only = false
+                trusted_std = false
+            }]
+        modules = [ModuleInstance {
+                name = "sample"
+                source = "/virtual/sample"
+            }]
+        packages = [Package {
+                instance = 0
+                relative = ""
+                imports = []
+            }]
+        root = 0
+    }
+    match analyze_with_inputs(project, false, inputs) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
+fn exercise() {
+    let source = """
+        fn square(value Int) Int
+        ensures result >= 0 {
+            value * value
+        }
+        """
+    // The in-process bounded rules cannot establish this nonlinear property.
+    let ordinary = build_inputs(no_input_reader)
+    assert !accepts(source, ordinary)
+    let inputs = with_proof_backend(ordinary, backend("z3"))
+    assert accepts(source, inputs)
+    // Zero is a counterexample; the configured solver must not accept this.
+    assert !accepts(replace(source, "result >= 0", "result > 0"), inputs)
+}
+
+fn main() {
+    exercise()
+}

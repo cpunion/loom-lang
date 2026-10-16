@@ -2,6 +2,26 @@ use std::{fs, process::Command};
 mod common;
 use common::success;
 
+#[test]
+fn source_analysis_can_explicitly_supply_the_shared_z3_adapter() {
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = common::executable(directory.path(), "analysis-solver");
+    success(
+        &common::command(&["test", "compiler/examples/analysis_solver", "--no-run"])
+            .arg("--output")
+            .arg(&artifact)
+            .env("LOOM_OPT_LEVEL", "0")
+            .output()
+            .unwrap(),
+    );
+    success(
+        &Command::new(artifact)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+}
+
 const RESTORE: &str = r#"import std.list.get
 import std.list.set
 import std.list.length
