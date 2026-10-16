@@ -1,0 +1,40 @@
+// Query-only source clauses retain their checked spans and real call queue.
+// Proof-normalized contracts remain authoritative in executable programs,
+// certificates and private proof/CTFE queues.
+record SourceContract {
+    instance Int
+    function Function
+}
+
+fn source_contract_query(context Context, instance Int, source Function) Result[Bool, Failure] {
+    let node = symbol(context.env, context.signature.symbol).node
+    if length(source.preconditions) == 0 && !has(node, NodeKind.Ensures) &&
+    !inherited_method_contract(context.env, context.signature.symbol, NodeKind.Ensures) {
+        return Result.Ok(true)
+    }
+    // Recheck only the source clauses after mandatory verification. The
+    // emitter explicitly supplies its own instance; other queues cannot
+    // publish snapshots with unrelated call/local indices into this table.
+    // Inherited clauses belong to their concept's file and parameter names,
+    // not to this source declaration. Never attach their spans to its body.
+    let clauses = contracts(context, node, NodeKind.Ensures)?
+    let function = with_source_contracts(context, capture_storage(context, source),
+        contracts(context, node, NodeKind.Requires)?, clauses)
+    push(get(context.env.inputs, 0).source_contracts, SourceContract {
+            instance = instance
+            function = close_function(context, function)
+        })
+    Result.Ok(true)
+}
+
+// Overlay only after the query's entire closure passed checking. These
+// functions are inspection evidence, not a compilable or serializable Program.
+fn source_contract_functions(env Environment, functions List[Function]) {
+    let sources = get(env.inputs, 0).source_contracts
+    var index = 0
+    while index < length(sources) {
+        let source = get(sources, index)
+        set(functions, source.instance, source.function)
+        index = index + 1
+    }
+}

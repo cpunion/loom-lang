@@ -28,6 +28,23 @@ pub record CheckedQuery {
     declarations List[DeclarationReference]
 }
 
+// Full application query: concrete instances reached from build roots and
+// source contracts. CTFE-only bodies do not become runtime instances.
+pub fn check_query(source std.loom.binding.Program, inputs BuildInputs) Result[CheckedQuery, Failure] {
+    discard expanded_source(source)?
+    let env = prepare_with_inputs(query_source(source)?, inputs, true)?
+    let program = checked_program_reusing(env, new[Bool](), new[Bool](), ints(0), no_body_reuse(), true)?
+    source_contract_functions(env, program.functions)
+    Result.Ok(CheckedQuery {
+            bindings = env.source
+            types = env.types
+            interfaces = env.interfaces
+            functions = program.functions
+            headers = new[SignatureHeader]()
+            declarations = get(env.inputs, 0).declaration_references
+        })
+}
+
 fn query_signature_header(node Node, offset Int) Bool {
     var index = 0
     while index < length(node.children) {
@@ -125,10 +142,11 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
             discard schedule(env, owner, new[Int](), new[StaticValue](), symbol(env, current.symbol).node)?
             // A produced dyn value can be used outside this query. Check its
             // witness methods too, without unrelated application roots.
-            functions = emit_functions(env, true)?
+            functions = emit_functions_in(env, true, no_body_reuse(), false, true)?
         }
     }
     discard layouts(env)?
+    source_contract_functions(env, functions)
     Result.Ok(CheckedQuery {
             bindings = env.source
             types = env.types

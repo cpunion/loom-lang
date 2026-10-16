@@ -61,6 +61,11 @@ inputs. Query-only declaration headers support ordinary/generic and impl
 signatures despite body errors, including original static parameter slots.
 Dependent type values, unexpanded packs and broader body recovery remain limited.
 Recovered queries provide neither build success nor proof evidence.
+Contract navigation lazily checks source clauses in a separate query snapshot,
+retaining parameter, field, helper and captured-binding locations lost during
+proof normalization. Concrete generic observations share this source view;
+uninstantiated or generated uses remain conservative. Executable contracts and
+ordinary compilation do not retain this query evidence.
 Public `std.loom` parser/project/analysis libraries share the compiler's
 implementation without requiring a compiler process, filesystem or LLVM.
 Their IDs and spans belong to a snapshot, not persistent semantic history.

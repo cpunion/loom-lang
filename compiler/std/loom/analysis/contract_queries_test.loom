@@ -1,0 +1,118 @@
+import std.text.replace
+import std.loom.checking.check_query
+
+test fn normalized_contracts_keep_source_parameters_fields_and_selected_helpers() {
+    let text = """
+        record Item {
+            count Int
+        }
+        fn read(value Int) Int {
+            value
+        }
+        fn read(value Item) Int {
+            value.count
+        }
+        fn keep(value Item) Item
+        ensures read(result) == read(value)
+        ensures result.count == old(value).count {
+            value
+        }
+        fn main() {
+            assert keep(Item { count = 7 }).count == 7
+        }
+        """
+    let analysis = accepted(input(text))
+    let parameter = query_offset(text, "value Item) Item")
+    let field = query_offset(text, "count Int")
+    let helper = query_offset(text, "read(value Item)")
+    let reference = inspection(analysis, text, "value)\nensures")
+    only_type(reference, "app.Item")
+    only_definition(reference, parameter, parameter + 5)
+    only_definition(inspection(analysis, text, "value).count"), parameter, parameter + 5)
+    only_type(inspection(analysis, text, "count == old"), "Int")
+    only_definition(inspection(analysis, text, "count == old"), field, field + 5)
+    let call = inspection(analysis, text, "read(result)")
+    only_type(call, "fn(app.Item) Int")
+    only_definition(call, helper, helper + 4)
+    let bindings = query_bindings(input(text))
+    only_definition(independent_found(bindings, text, "value).count"), parameter, parameter + 5)
+    only_definition(independent_found(bindings, text, "read(result)"), helper, helper + 4)
+    let invalid = std.text.replace(text, "ensures read(result) == read(value)", "ensures false")
+    assert match inspect_independent(query_bindings(input(invalid)), 0, query_offset(invalid, "value).count")) {
+        Option.None => true
+        _ => false
+    }
+}
+
+test fn contract_queries_use_observed_generic_instances_without_mutating_executable_ir() {
+    let text = """
+        record Box[T] {
+            value T
+            count Int
+        }
+        fn identity[T](item Box[T]) Box[T]
+        ensures result.count == old(item.count) {
+            item
+        }
+        fn main() {
+            assert identity(Box { value = 7, count = 1 }).count == 1
+            assert identity(Box { value = true, count = 2 }).count == 2
+        }
+        """
+    let analysis = accepted(input(text))
+    let functions = length(analysis.program.functions)
+    let symbols = length(analysis.bindings.symbols)
+    let parameter = query_offset(text, "item Box[T]")
+    let reference = inspection(analysis, text, "item.count)")
+    assert length(reference.types) == 2
+    assert (get(reference.types, 0) == "app.Box[Int]" && get(reference.types, 1) == "app.Box[Bool]") ||
+    (get(reference.types, 1) == "app.Box[Int]" && get(reference.types, 0) == "app.Box[Bool]")
+    only_definition(reference, parameter, parameter + 4)
+    let field = query_offset(text, "count Int")
+    only_definition(inspection(analysis, text, "count == old"), field, field + 5)
+    assert length(analysis.program.functions) == functions
+    assert length(analysis.bindings.symbols) == symbols
+    assert length(analysis.contract_queries) == 1
+}
+
+test fn query_views_do_not_attach_inherited_clauses_to_implementation_source() {
+    let text = """
+        concept Keeps {
+            fn keep(self Self, value Int) Int
+            requires value >= 0
+            ensures result == value
+        }
+        impl Keeps for Int {
+            fn keep(self Int, item Int) Int
+            ensures result == item {
+                item
+            }
+        }
+        fn main() {
+            let receiver = 1
+            assert receiver.keep(7) == 7
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let view = match check_query(bindings, build_inputs(no_input_reader)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    var found = false
+    var index = 0
+    while index < length(view.functions) {
+        let function = get(view.functions, index)
+        let symbol = get(view.bindings.symbols, function.symbol)
+        if symbol.name == "keep" && symbol.owner >= 0 &&
+        get(view.bindings.symbols, symbol.owner).node.kind == NodeKind.Impl {
+            assert length(function.preconditions) == 0
+            assert length(function.postconditions) == 1
+            found = true
+        }
+        index = index + 1
+    }
+    assert found
+}

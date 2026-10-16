@@ -1,0 +1,33 @@
+fn source_contract_at(node Node, offset Int) Bool {
+    if !inside(node.span, offset) {
+        return false
+    }
+    if node.kind == NodeKind.Requires || node.kind == NodeKind.Ensures {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if source_contract_at(get(node.children, index), offset) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Normalized proof expressions deliberately have clause-wide spans. Lazily
+// inspect separately checked source clauses instead of guessing their bindings.
+// Inputs replay this successful analysis's snapshots, not the filesystem.
+fn inspect_source_contract(analysis Analysis, file Int, offset Int) Option[Inspection] {
+    if length(analysis.contract_queries) == 0 {
+        match check_query(analysis.bindings, analysis_query_inputs(analysis)) {
+            Result.Ok(view) => {
+                push(analysis.contract_queries, view)
+            }
+            Result.Err(_) => {
+                return Option.None
+            }
+        }
+    }
+    inspect_view(get(analysis.contract_queries, 0), file, offset)
+}
