@@ -61,6 +61,12 @@ fn method_reference_candidates(context Context, node Node, receiver Expr, member
 
 fn bound_method_value(context Context, node Node, receiver Expr, member Text,
     expected Int, arity Int) Result[Expr, Failure] {
+    bound_method_value(context, node, receiver, member, expected, arity,
+        "no accessible function reference matches; provide an exact function type and required concept evidence")
+}
+
+fn bound_method_value(context Context, node Node, receiver Expr, member Text,
+    expected Int, arity Int, missing Text) Result[Expr, Failure] {
     let types = reference_type_arguments(node)
     let desired = if expected >= 0 && get(context.env.types, expected).kind == TypeKind.Function {
         let arguments = ints(receiver.ty)
@@ -75,7 +81,11 @@ fn bound_method_value(context Context, node Node, receiver Expr, member Text,
         -1
     }
     let count = call_type_count(node, types)
-    let choices = pack_references(context, method_reference_candidates(context, node, receiver, member)?, count, desired)?
+    let available = method_reference_candidates(context, node, receiver, member)?
+    if length(available) == 0 {
+        return Result.Err(error(context, node, missing))
+    }
+    let choices = pack_references(context, available, count, desired)?
     let options = new[Int]()
     var index = 0
     while index < length(choices) {

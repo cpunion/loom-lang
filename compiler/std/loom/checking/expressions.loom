@@ -51,7 +51,8 @@ fn projected_member(context Context, node Node, value Expr, field Text, expected
     let declaration = symbol(context.env, ty.symbol)
     let here = symbol(context.env, context.signature.symbol)
     if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
-        if binding { return bound_method_value(context, node, value, field, expected, arity) }
+        if binding { return bound_method_value(context, node, value, field, expected, arity,
+            "cannot inspect a private type from another package") }
         return Result.Err(error(context, node, "cannot inspect a private type from another package"))
     }
     var index = 0

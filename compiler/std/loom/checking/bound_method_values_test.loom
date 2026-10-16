@@ -104,3 +104,42 @@ test fn bound_dynamic_methods_need_only_the_exposed_interface_not_an_extra_impor
         }
     }
 }
+
+test fn private_receiver_methods_do_not_erase_private_field_diagnostics() {
+    let declaration = """
+        record Hidden { secret Int }
+        pub concept Read { fn read(self Self) Int }
+        impl Read for Hidden { fn read(self Hidden) Int { self.secret } }
+        pub fn make() Hidden { Hidden { secret = 7 } }
+        """
+    let files = source_files("""
+        import lib.Read
+        import lib.make
+        fn main() {
+            let value = make()
+            let action = value.read
+            assert action() == 7
+        }
+        """)
+    push(files, source_file("lib", declaration, false))
+    assert match checked(files) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let invalid = source_files("""
+        import lib.Read
+        import lib.make
+        fn main() {
+            let value = make()
+            discard value.secret
+        }
+        """)
+    push(invalid, source_file("lib", declaration, false))
+    assert match checked(invalid) {
+        Result.Err(failed) => failed.diagnostic.message == "cannot inspect a private type from another package"
+        Result.Ok(_) => false
+    }
+}
