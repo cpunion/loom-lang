@@ -8,6 +8,31 @@ fn partial_callback_arity_works_in_native_code_and_scoped_stream_factories() {
     for mode in ["check", "test", "run"] {
         success(&common::loom(&[mode, package]));
     }
+    let directory = common::root().join(package);
+    let source = directory.join("main.loom");
+    let text = fs::read_to_string(&source).unwrap();
+    let offset = text.find("advance, 6").unwrap();
+    let declaration = text.find("advance(value Int)").unwrap();
+    let query = common::command(&[
+        "editor-query",
+        directory.to_str().unwrap(),
+        "--at",
+        source.to_str().unwrap(),
+        &offset.to_string(),
+        "--tests",
+    ])
+    .arg("--std")
+    .arg(common::root().join("compiler/std"))
+    .output()
+    .unwrap();
+    success(&query);
+    let report = String::from_utf8(query.stdout).unwrap();
+    assert!(report.contains("\"diagnostics\":[]"));
+    assert!(report.contains("\"types\":[\"fn(Int) Int\"]"));
+    assert!(report.contains(&format!(
+        "\"start\":{declaration},\"end\":{}",
+        declaration + "advance".len()
+    )));
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "callback-arity-tests");
     for level in ["0", "2"] {
