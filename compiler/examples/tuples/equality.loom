@@ -1,6 +1,6 @@
 import std.result.ConstraintError
 
-type TupleOne = Int where(self, true) == (1, true)
+type TupleOne = Int where (self, true) == (1, true)
 
 enum TupleState {
     Waiting

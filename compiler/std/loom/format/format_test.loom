@@ -232,6 +232,18 @@ test fn multiline_groups_postfix_and_unary_operators_stay_parseable() {
     discard round_trip("fn f(){ discard 1 .0\ndiscard 1.0 .0\ndiscard ({ if true {} if false {} }) }")
 }
 
+test fn parenthesized_constraint_conditions_are_not_calls() {
+    assert round_trip("""
+        type Positive=Int where((self>0))
+        type One=Int where(self,true)==(1,true)
+        """) == """
+        type Positive = Int where ((self > 0))
+
+        type One = Int where (self, true) == (1, true)
+
+        """
+}
+
 test fn grouped_operands_have_spaces_but_calls_and_unary_prefixes_do_not() {
     assert round_trip("fn f(){let x=(1,2)\nlet y=1+(2*3)\nassert true&&(!false||true)\ndiscard choose(x,(y))\ndiscard -(1+2)\ndiscard !(false)\n}") ==
     """
