@@ -3,6 +3,14 @@ import deployment.register
 import deployment.start_attempt
 import deployment.note_failure
 import deployment.current
+import deployment.assume_historical
+import deployment.initialize
+import deployment.replace_unstarted_attempt
+import deployment.dry_run
+import deployment.Schema
+import deployment.MigrationCatalog
+import deployment.Handling
+import deployment.ConflictKind
 import deployment.FailurePolicy
 import deployment.BasisEvidence
 import std.list.get
@@ -11,16 +19,78 @@ import std.process.arguments
 import std.result.Result
 
 fn recorded_roundtrip(database Text) Result[Bool, Text] {
+    let baseline = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     let target = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    let attempt = prepare("upgrade_2", "", target, FailurePolicy.Rollback)?
+    discard initialize("/usr/bin/sqlite3", database)?
+    discard assume_historical("/usr/bin/sqlite3", database, "baseline", baseline)?
+    let attempt = prepare("upgrade_2", baseline, target, FailurePolicy.Rollback)?
     discard register("/usr/bin/sqlite3", database, attempt)?
-    discard start_attempt("/usr/bin/sqlite3", database, "upgrade_2")?
-    let other = prepare("upgrade_3", "", target, FailurePolicy.Stop)?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.Assumed(basis) => basis == baseline
+        _ => false
+    }
+    let other_target = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    let other = prepare("upgrade_3", baseline, other_target, FailurePolicy.Stop)?
     assert match register("/usr/bin/sqlite3", database, other) {
         Result.Err(_) => true,
         _ => false
     }
-    discard note_failure("/usr/bin/sqlite3", database, "upgrade_2")?
+    let from = Schema {
+        basis = baseline
+        tables = []
+    }
+    let to = Schema {
+        basis = other_target
+        tables = []
+    }
+    let catalog = MigrationCatalog {
+        from_basis = baseline
+        to_basis = other_target
+        forward = [Handling {
+                kind = ConflictKind.ChangedBasis
+                table = ""
+                column = ""
+                action = "apply"
+            }]
+        recovery = [Handling {
+                kind = ConflictKind.ChangedBasis
+                table = ""
+                column = ""
+                action = "restore"
+            }]
+    }
+    assert match dry_run("/usr/bin/sqlite3", database, from, to, catalog)?.evidence {
+        BasisEvidence.Assumed(basis) => basis == baseline
+        _ => false
+    }
+    discard replace_unstarted_attempt("/usr/bin/sqlite3", database, "upgrade_2", other)?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.Assumed(basis) => basis == baseline
+        _ => false
+    }
+    assert match start_attempt("/usr/bin/sqlite3", database, "upgrade_2") {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert match replace_unstarted_attempt("/usr/bin/sqlite3", database, "upgrade_3", attempt) {
+        Result.Err(_) => true
+        _ => false
+    }
+    discard start_attempt("/usr/bin/sqlite3", database, "upgrade_3")?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.None => true
+        _ => false
+    }
+    let future = prepare("upgrade_4", baseline, target, FailurePolicy.Stop)?
+    assert match replace_unstarted_attempt("/usr/bin/sqlite3", database, "upgrade_3", future) {
+        Result.Err(_) => true
+        _ => false
+    }
+    discard note_failure("/usr/bin/sqlite3", database, "upgrade_3")?
+    assert match register("/usr/bin/sqlite3", database, future) {
+        Result.Err(_) => true
+        _ => false
+    }
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.None => true,
         _ => false
