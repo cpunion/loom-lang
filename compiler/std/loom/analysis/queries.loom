@@ -711,9 +711,16 @@ fn inspect_tree(analysis CheckedQuery, report Inspection, function Function, tar
     inspect_variant_pattern(analysis, report, function, target, value)
     inspect_expression(analysis, report, function, target, value, parent_type)
     if value.kind == ExprKind.FunctionRef && same_span(value.span, target.node.span) {
-        if bound_method_reference(analysis, value) {
-            let receiver = get(get(get(value.children, 0).children, 0).children, 0)
-            inspect_tree(analysis, report, function, target, receiver, -1)
+        if bound_method_reference(analysis, value) && length(value.children) == 1 {
+            let environment = get(value.children, 0)
+            // Reified/forwarded references can carry an environment local,
+            // rather than a receiver initializer written at this occurrence.
+            if environment.kind == ExprKind.FrameNew && length(environment.children) == 1 {
+                let field = get(environment.children, 0)
+                if field.kind == ExprKind.Field && length(field.children) == 1 {
+                    inspect_tree(analysis, report, function, target, get(field.children, 0), -1)
+                }
+            }
         }
         return
     }

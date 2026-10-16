@@ -42,11 +42,16 @@ test fn bound_method_queries_show_fixed_types_and_real_method_definitions() {
         impl Read for Int {
             fn read(self Int) Int { self }
         }
+        fn forward(comptime action fn() Int) fn() Int {
+            action
+        }
         fn main() {
             let value = 3
             let static_action = value.read
             let dynamic dyn Read = value
             let dynamic_action = dynamic.read
+            let forwarded = forward((5).read)
+            assert forwarded() == 5
             assert static_action() == dynamic_action()
         }
         """
@@ -75,6 +80,8 @@ test fn bound_method_queries_show_fixed_types_and_real_method_definitions() {
     let prototype = query_offset(text, "read(self Self)")
     only_definition(dynamic_action, prototype, prototype + 4)
     only_type(inspection(analysis, text, "dynamic.read"), "dyn app.Read")
+    let parameter = inspection(analysis, text, "action\n")
+    only_type(parameter, "fn() Int")
 }
 
 test fn closure_queries_keep_source_parameters_and_captured_bindings() {
