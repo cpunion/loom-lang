@@ -578,20 +578,32 @@ async function main() {
     };
     const bad = path.join(folder, 'overlay_bad.loom');
     const broken = 'fn broken() Int { let n Int = true\nn }\n';
-    await client.open(bad, broken);
+    const unrelated = broken + `
+fn invalid[T](input T) Int {
+    input + 1
+}
+
+fn invalid_static(comptime input Int) Int {
+    false
+}
+`;
+    await client.open(bad, unrelated);
     for (const sameFile of [false, true]) {
       if (sameFile) await client.rpc.sendNotification('textDocument/didClose', { textDocument: { uri: URI.file(bad).toString() } });
-      const mixed = sameFile ? source + broken : source;
+      const mixed = sameFile ? source + unrelated : source;
       await client.change(file, mixed, sameFile ? 8 : 7);
       assert.ok((await client.wait(sameFile ? file : bad, sameFile ? 8 : 1)).diagnostics.length > 0);
       const retained = await client.rpc.sendRequest('textDocument/hover', at(file, mixed, 'value=='));
       assert.ok(retained.contents.some(item => item.value === 'Int'));
       assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', at(file, mixed, 'helper()')), definitions);
-      const invalid = at(sameFile ? file : bad, sameFile ? mixed : broken, 'n }');
+      const invalid = at(sameFile ? file : bad, sameFile ? mixed : unrelated, 'n }');
       assert.equal(await client.rpc.sendRequest('textDocument/hover', invalid), null);
       assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', invalid), []);
+      const template = at(sameFile ? file : bad, sameFile ? mixed : unrelated, 'input + 1');
+      assert.equal(await client.rpc.sendRequest('textDocument/hover', template), null);
+      assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', template), []);
       // Signature types remain known without claiming the erroneous body checked.
-      const header = at(sameFile ? file : bad, sameFile ? mixed : broken, 'Int { let n');
+      const header = at(sameFile ? file : bad, sameFile ? mixed : unrelated, 'Int { let n');
       const signature = await client.rpc.sendRequest('textDocument/hover', header);
       assert.ok(signature.contents.some(item => item.value === 'Int'));
       assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', header), []);
