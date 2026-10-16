@@ -69,6 +69,18 @@ fn capture_storage(context Context, function Function) Function {
 }
 
 fn with_source_contracts(context Context, function Function, preconditions List[Expr], postconditions List[Expr]) Function {
-    with_contracts(function, capture_conditions(context, closure_preconditions(context, preconditions)),
-        capture_conditions(context, postconditions))
+    let pre = capture_conditions(context, closure_preconditions(context, preconditions))
+    let post = capture_conditions(context, postconditions)
+    if length(context.locals) <= length(function.locals) {
+        return with_contracts(function, pre, post)
+    }
+    // Staged clauses can introduce their own temporary bindings. Keep the
+    // captured-storage prefix, then append those checked clause-local slots.
+    let locals = std.list.clone(function.locals)
+    var index = length(locals)
+    while index < length(context.locals) {
+        push(locals, get(context.locals, index))
+        index = index + 1
+    }
+    with_contracts(function, locals, pre, post)
 }

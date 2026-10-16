@@ -3,13 +3,18 @@ import std.loom.typed.TypeKind
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.Function
-import std.loom.proof.invariant_predicates
+import std.loom.proof.established_predicates
 import std.list.new
 import std.list.get
 import std.list.push
 import std.list.set
 import std.list.length
 import std.result.Result
+
+record InvariantPredicate {
+    value Expr
+    locals List[Local]
+}
 
 fn value_invariant_types(env Environment, ty Int, seen List[Int], selected List[Int], depth Int) {
     if ty < 6 || ty >= length(env.types) || depth >= 16 {
@@ -27,7 +32,7 @@ fn value_invariant_types(env Environment, ty Int, seen List[Int], selected List[
     if shape.kind == TypeKind.Refined {
         index = 0
         while index < length(shape.constraint) {
-            if predicate_calls(get(shape.constraint, index), 0) {
+            if predicate_expansion(get(shape.constraint, index), 0) {
                 push(selected, ty)
                 index = length(shape.constraint)
             } else {
@@ -88,11 +93,11 @@ fn expression_invariant_types(env Environment, value Expr, seen List[Int], selec
     }
 }
 
-fn expanded_invariant_parts(program std.loom.typed.Program, base Int, predicate Expr, output List[Expr], depth Int) {
+fn expanded_invariant_parts(program std.loom.typed.Program, locals List[Local], predicate Expr, output List[Expr], depth Int) {
     if depth >= 32 || length(output) >= 256 {
         return
     }
-    match invariant_predicates(program, base, predicate) {
+    match established_predicates(program, locals, predicate) {
         Result.Ok(predicates) => {
             var index = 0
             while index < length(predicates) && length(output) < 256 {
@@ -105,8 +110,8 @@ fn expanded_invariant_parts(program std.loom.typed.Program, base Int, predicate 
             // Text/shared-free helper on one side must not hide proved scalar
             // facts on the other. Disjunctions cannot be split this way.
             if predicate.kind == ExprKind.Binary && predicate.text == "&&" {
-                expanded_invariant_parts(program, base, get(predicate.children, 0), output, depth + 1)
-                expanded_invariant_parts(program, base, get(predicate.children, 1), output, depth + 1)
+                expanded_invariant_parts(program, locals, get(predicate.children, 0), output, depth + 1)
+                expanded_invariant_parts(program, locals, get(predicate.children, 1), output, depth + 1)
             }
         }
     }
@@ -152,13 +157,17 @@ fn expanded_invariant_types(env Environment, functions List[Function]) Result[Li
     }
     let first = get(selected, 0)
     let stage = staging(predicate_scope(env, first)?, predicate_node(env, get(env.types, first).symbol))?
-    let predicates = new[Expr]()
+    let predicates = new[InvariantPredicate]()
     var index = 0
     while index < length(selected) {
         let ty = get(selected, index)
         let locals = predicate_scope(stage.env, ty)?.locals
         let scope = predicate_context(stage.env, ty, locals, 0, true)?
-        push(predicates, refinement_expression(scope, ty)?)
+        let predicate = refinement_expression(scope, ty)?
+        push(predicates, InvariantPredicate {
+                value = predicate
+                locals = scope.locals
+            })
         index = index + 1
     }
     let program = prepared_in(stage, true)?
@@ -173,7 +182,8 @@ fn expanded_invariant_types(env Environment, functions List[Function]) Result[Li
         let ty = get(selected, index)
         let shape = get(types, ty)
         let expanded = std.list.clone(shape.constraint)
-        expanded_invariant_parts(program, get(shape.fields, 0).ty, get(predicates, index), expanded, 0)
+        let predicate = get(predicates, index)
+        expanded_invariant_parts(program, predicate.locals, predicate.value, expanded, 0)
         set(types, ty, Type {
                 kind = shape.kind
                 symbol = shape.symbol

@@ -1,0 +1,72 @@
+import std.result.ConstraintError
+
+type TupleOne = Int where(self, true) == (1, true)
+
+enum TupleState {
+    Waiting
+    Ready
+}
+
+fn equality_contract(value (Int, Bool)) (Int, Bool)
+ensures result == value
+{
+    value
+}
+
+fn equality_constraint(value TupleOne) Int
+ensures result == 1
+{
+    value
+}
+
+fn equality_checked(value Int) Result[TupleOne, ConstraintError] {
+    TupleOne(value)
+}
+
+fn equalities() {
+    assert (1, (true, "item")) == (1, (true, "item"))
+    assert (TupleState.Waiting,) != (TupleState.Ready,)
+    assert (1, false) != (2, true)
+    assert (-0.0,) == (0.0,)
+    assert equality_contract((3, true)) == (3, true)
+    assert equality_constraint(TupleOne(1)) == 1
+    assert match equality_checked(1) {
+        Result.Ok(value) => value == 1
+        Result.Err(_) => false
+    }
+    assert match equality_checked(2) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    let nan = 0.0 / 0.0
+    assert (nan,) != (nan,)
+    assert !((nan,) == (nan,))
+    assert comptime {
+        ((1,), true) == ((1,), true)
+    }
+    assert comptime {
+        (Int, Bool) == (Int, Bool)
+    }
+
+    let counter = [0]
+    assert counted(counter) != counted(counter)
+    assert get(counter, 0) == 2
+    // A mismatched first field does not suppress right-operand effects.
+    assert (0, "called") != counted(counter)
+    assert get(counter, 0) == 3
+
+    var original = (7, concat("be", "fore"))
+    assert original == {
+        original = (8, "after")
+        (7, concat("be", "fore"))
+    }
+    assert original == (8, "after")
+}
+
+async fn equal_tuple_later() (Text, Int) {
+    (concat("be", "fore"), 7)
+}
+
+async fn equalities_after_suspend() {
+    assert (concat("be", "fore"), 7) == equal_tuple_later().await
+}

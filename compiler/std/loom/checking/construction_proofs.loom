@@ -70,7 +70,7 @@ fn established_construction_premises(program std.loom.typed.Program, locals List
     var index = 0
     while index < length(premises) {
         let premise = get(premises, index)
-        if predicate_calls(premise, 0) {
+        if predicate_expansion(premise, 0) {
             match established_predicates(program, locals, premise) {
                 Result.Ok(expanded) => {
                     var item = 0
@@ -286,8 +286,10 @@ fn proved_construction(context Context, node Node, source Node, value Expr, targ
     if value.kind != ExprKind.Call {
         // Preserve bounded pure scalar computations, not just bare bindings.
         // fact_size excludes mutable locals, heap observations and calls.
+        let destination = get(context.env.types, target)
         if context.fact_head >= 0 && fact_size(context, value, 0) > 0 &&
-        (contract_call(predicate_node(context.env, get(context.env.types, target).symbol)) || helper_facts(context)) {
+        (contract_call(predicate_node(context.env, destination.symbol)) ||
+            (length(destination.constraint) == 1 && predicate_expansion(get(destination.constraint, 0), 0)) || helper_facts(context)) {
             return flow_construction_proof(context, node, value, target)
         }
         return Result.Ok(false)

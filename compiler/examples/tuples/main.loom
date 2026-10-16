@@ -33,6 +33,7 @@ fn unwrap(value Int) Result[Int, Text] {
 }
 
 fn exercise() {
+    equalities()
     let counter = new[Int]()
     push(counter, 0)
     let number, label = counted(counter)
@@ -84,4 +85,5 @@ async fn main() {
     exercise()
     expansions()
     spread_tasks().await
+    equalities_after_suspend().await
 }

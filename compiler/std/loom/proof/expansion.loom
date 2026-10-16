@@ -461,6 +461,10 @@ fn evaluation_proved(query ProofQuery, premise Expr, guard Expr, value Expr, req
 }
 
 fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengths Bool, backend ProofBackend) Result[Bool, Text] {
+    helper_implication(program, new[Local](), premise, conclusion, list_lengths, backend)
+}
+
+fn helper_implication(program Program, locals List[Local], premise Expr, conclusion Expr, list_lengths Bool, backend ProofBackend) Result[Bool, Text] {
     let budget = new[Int]()
     push(budget, 1024)
     let binders = new[Int]()
@@ -475,7 +479,7 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
         origins = new[ObservationOrigin]()
         binders = binders
     }
-    let left = normalized_predicate(expanded(source, premise, proof_bool(premise, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
+    let left = normalized_predicate(expanded(source, premise, proof_bool(premise, true), new[ExpansionBinding](), locals, true, 0, 0)?)?
     let target = Expansion {
         program = program
         list_lengths = list_lengths
@@ -486,7 +490,7 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
         origins = new[ObservationOrigin]()
         binders = binders
     }
-    let right = normalized_predicate(expanded(target, conclusion, proof_bool(conclusion, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
+    let right = normalized_predicate(expanded(target, conclusion, proof_bool(conclusion, true), new[ExpansionBinding](), locals, true, 0, 0)?)?
     // Parameter substitution can share a small DAG whose unfolded tree is huge.
     // Bound every expression before unbudgeted symbolic/definedness traversal.
     if !bounded_expression(left) || !bounded_expression(right) || !bounded_evaluations(source) || !bounded_evaluations(target) {
@@ -537,7 +541,13 @@ pub fn implies_with_helpers(program Program, premise Expr, conclusion Expr) Bool
 }
 
 pub fn implies_with_helpers(program Program, premise Expr, conclusion Expr, backend ProofBackend) Bool {
-    match helper_implication(program, premise, conclusion, false, backend) {
+    implies_with_helpers(program, new[Local](), premise, conclusion, backend)
+}
+
+// Lowered predicates may bind temporary locals beyond canonical self 0.
+// Their supplied checked scope covers both expressions; budgets are unchanged.
+pub fn implies_with_helpers(program Program, locals List[Local], premise Expr, conclusion Expr, backend ProofBackend) Bool {
+    match helper_implication(program, locals, premise, conclusion, false, backend) {
         Result.Ok(proved) => proved,
         Result.Err(_) => false
     }
@@ -706,4 +716,12 @@ pub fn established_predicates(program Program, locals List[Local], predicate Exp
     let budget = new[Int]()
     push(budget, 4096)
     contract_predicates(program, locals, inputs, true, budget, new[Int](), new[ObservationOrigin]())
+}
+
+// Normalize hypothetical clauses, retaining every guarded safety obligation.
+// Unlike established_predicates, no successful evaluation is assumed here.
+pub fn normalized_predicates(program Program, locals List[Local], predicates List[Expr]) Result[List[Expr], Text] {
+    let budget = new[Int]()
+    push(budget, 4096)
+    contract_predicates(program, locals, predicates, false, budget, new[Int](), new[ObservationOrigin]())
 }

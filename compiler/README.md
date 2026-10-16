@@ -819,6 +819,14 @@ var left, (_, right) = (1, (false, 2))
 
 Tuple elements and the destructuring initializer evaluate once, left to right.
 Tuple types are structural: element types and arity determine identity.
+`==` and `!=` compare matching tuples elementwise, including nested tuples whose
+leaves support built-in equality: scalars, Text and payload-free enums (also
+type values at compile time). Both operands evaluate once, left to right, before
+field comparison; an early mismatch does not suppress operand effects or faults. Float leaves
+retain IEEE semantics, including NaN and signed zero. Lists, records, functions
+and other noncomparable leaves do not gain equality merely by being in a tuple.
+The same lowering works in CTFE, constraints and required contracts; unknown
+proofs still reject.
 Existing tuple values require matching element types; aggregate widening is not
 implicit. Contextual tuple literals can use the existing scalar weakening rules.
 `(value)` is grouping, `(value,)` a singleton tuple; `()` remains unavailable.

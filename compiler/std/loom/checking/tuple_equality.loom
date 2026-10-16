@@ -1,0 +1,58 @@
+// Lower structural equality to existing scalar operators. Snapshot both eager
+// operands before comparing any fields, including across allocation/suspension.
+fn tuple_equality(context Context, node Node, left Expr) Result[Expr, Failure] {
+    let right = expr(context, child(node, 1), left.ty)?
+    let first = length(context.locals)
+    push(context.locals, Local {
+            name = ""
+            ty = left.ty
+            mutable = false
+            is_scoped = false
+        })
+    let second = length(context.locals)
+    push(context.locals, Local {
+            name = ""
+            ty = right.ty
+            mutable = false
+            is_scoped = false
+        })
+    let equal = tuple_equal_fields(context, node,
+        atom(ExprKind.Local, left.ty, node, first),
+        atom(ExprKind.Local, right.ty, node, second), 0)?
+    let output = if node.value == "!=" {
+        expression(ExprKind.Unary, 2, node, "!", -1, expressions(equal), true)
+    } else {
+        equal
+    }
+    let body = expressions(expression(ExprKind.Let, 0, child(node, 0), "", first, expressions(left), left.falls))
+    push(body, expression(ExprKind.Let, 0, child(node, 1), "", second, expressions(right), right.falls))
+    push(body, output)
+    Result.Ok(expression(ExprKind.Block, 2, node, "", -1, body, left.falls && right.falls))
+}
+
+fn tuple_equal_fields(context Context, node Node, left Expr, right Expr, depth Int) Result[Expr, Failure] {
+    if depth >= 64 {
+        return Result.Err(error(context, node, "tuple comparison nesting limit exceeded"))
+    }
+    let ty = base_type(context.env, left.ty)
+    let a = typed(context, node, left, ty)?
+    let b = typed(context, node, right, ty)?
+    let shape = get(context.env.types, ty)
+    if shape.kind == TypeKind.Tuple {
+        var result_value = expression(ExprKind.Bool, 2, node, "true", -1, new[Expr](), true)
+        var index = 0
+        while index < length(shape.arguments) {
+            let field = get(shape.arguments, index)
+            let x = expression(ExprKind.Field, field, node, "", index, expressions(a), true)
+            let y = expression(ExprKind.Field, field, node, "", index, expressions(b), true)
+            let equal = tuple_equal_fields(context, node, x, y, depth + 1)?
+            result_value = expression(ExprKind.Binary, 2, node, "&&", -1, pair(result_value, equal), true)
+            index = index + 1
+        }
+        return Result.Ok(result_value)
+    }
+    if ty != 1 && ty != 2 && ty != 3 && ty != 5 && shape.kind != TypeKind.Meta && !enum_equality(context, ty) {
+        return Result.Err(error(context, node, "tuple equality requires comparable elements"))
+    }
+    Result.Ok(expression(ExprKind.Binary, 2, node, "==", -1, pair(a, b), true))
+}

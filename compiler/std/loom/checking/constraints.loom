@@ -63,7 +63,7 @@ fn predicate_form(node Node, calls Bool) Bool {
         }
         return true
     }
-    if node.kind != NodeKind.Unary && node.kind != NodeKind.Binary {
+    if node.kind != NodeKind.Unary && node.kind != NodeKind.Binary && node.kind != NodeKind.Tuple {
         return false
     }
     var index = 0
@@ -524,7 +524,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
         }
     }
     if (base == 1 || base == 3 || base == 5) && source.kind == TypeKind.Refined && length(source.constraint) == 1 && length(destination.constraint) == 1 &&
-    (predicate_calls(get(source.constraint, 0), 0) || predicate_calls(get(destination.constraint, 0), 0)) &&
+    (predicate_expansion(get(source.constraint, 0), 0) || predicate_expansion(get(destination.constraint, 0), 0)) &&
     helpers_imply(context, node, input.ty, target) {
         return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
     }

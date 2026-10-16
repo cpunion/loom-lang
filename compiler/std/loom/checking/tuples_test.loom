@@ -15,7 +15,7 @@ test fn tuples_are_structural_and_generic() {
     rejects("fn main() { discard (1, true).2 }")
     rejects("fn main() { discard (1, true).9223372036854775807 }")
     rejects("fn main() { discard (1, true).name }")
-    rejects("fn main() { assert (1, 2) == (1, 2) }")
+    rejects("fn main() { assert (1, 2) == (1, true) }")
     rejects("fn no_value() {}\nfn main() { discard (no_value(), 1) }")
     rejects("fn invalid(value (Int, Unit)) {}")
 }
