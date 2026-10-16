@@ -78,6 +78,14 @@ impl Fetch for Int {
     }
 }
 
+impl Fetch for Buffer {
+    async fn fetch(self Buffer, value Int) Int {
+        push(self.values, value)
+        sleep_ms(1).await
+        value
+    }
+}
+
 fn exercise() {
     var value = 2
     let saved = value.step
@@ -129,6 +137,16 @@ fn exercise() {
 }
 
 async fn exercise_async() {
+    let started = Buffer {
+        values = []
+    }
+    let scheduled = started.fetch
+    assert length(started.values) == 0
+    let pending = scheduled(3)
+    assert length(started.values) == 0
+    sleep_ms(1).await
+    assert length(started.values) == 1 && started.values[0] == 3
+    assert pending.await == 3
     let factory = (4).fetch
     assert factory(5).await == 9
     let dynamic dyn Fetch = 7

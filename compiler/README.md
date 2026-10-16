@@ -2394,8 +2394,9 @@ evaluation of its receiver. Later rebinding does not change that saved value;
 shared children remain shared. Accessible fields take precedence for value
 selection. Contextual function types or explicit type arguments must select one
 exact signature, including generic and variadic methods. `dyn` values expose
-only their declared concept. Async bound methods are ordinary factories returning
-cold Tasks, with the same resource and staging rules as other closures. See the
+only their declared concept. Binding an async method schedules nothing; calling
+it enqueues an ordinary hot Task without running the body inline. Resource and
+staging rules are the same as for other closures. See the
 [bound method example](examples/bound_methods/README.md).
 
 ## Contract boundary

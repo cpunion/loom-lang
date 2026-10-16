@@ -92,8 +92,9 @@ computations remain unsupported. See [concepts](../../compiler/README.md#concept
 
 [Bound method values](../../compiler/examples/bound_methods/README.md) retain one
 receiver evaluation and use ordinary closure environments. Exact contextual
-signatures select overloads and generic/variadic methods; async methods return
-cold Tasks. Shared children remain shared and scoped/resource captures reject.
+signatures select overloads and generic/variadic methods. Binding an async method
+schedules nothing; invoking it enqueues a hot Task. Shared children remain shared
+and scoped/resource captures reject.
 
 [Variadic functions](../../compiler/README.md#variadic-functions) and generic
 records/enums support structural inference, independent/repeated words, explicit
