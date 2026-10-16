@@ -4756,11 +4756,13 @@ remain future work. Retirement is omitted when no later collection can benefit.
 Small objects carry private allocation/forwarding metadata beside their payload;
 page maps and base bitmaps replace per-object hash entries. Large objects remain
 separately tracked. Neither mechanism changes source layout or native callback ABI.
-Ordinary locals remain nonescaping SSA candidates; separate shadow slots mirror
-their source writes for the collector, including pattern bindings. After a
-possible allocation, used locals and pending expression snapshots reload updated
-references. An earlier argument retains its own value even if a later argument
-reassigns the source variable.
+Compact managed locals remain nonescaping SSA candidates; separate shadow slots
+mirror their source writes for the collector, including pattern bindings.
+Inline aggregates larger than two target pointers instead use their actual local
+storage as the root, avoiding whole-header copies after every possible allocation.
+Pending expression snapshots remain independent in both cases: an earlier
+argument retains its own value even if a later argument reassigns the source
+variable. Loads after a possible allocation observe relocated references.
 List/Text accesses use checked typed loads/stores, not runtime accessors.
 Source `std.list.view` adds fixed-shape ranges with shared element identities;
 see the [shared view example](examples/shared_views). A watched List removal

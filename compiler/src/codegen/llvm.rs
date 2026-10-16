@@ -11,7 +11,7 @@ use inkwell::{
     intrinsics::Intrinsic,
     module::{Linkage, Module},
     passes::PassBuilderOptions,
-    targets::{FileType, TargetMachine},
+    targets::{FileType, TargetData, TargetMachine},
     types::{BasicType, BasicTypeEnum, FunctionType, IntType},
     values::{BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue},
 };
@@ -210,11 +210,12 @@ fn emit_checked(
         }
     }
     let machine = &native.machine;
+    let target_data = machine.get_target_data();
     let optimization = native.optimization;
     let context = Context::create();
     let module = context.create_module("loom");
     module.set_triple(&machine.get_triple());
-    module.set_data_layout(&machine.get_target_data().get_data_layout());
+    module.set_data_layout(&target_data.get_data_layout());
     let builder = context.create_builder();
     let mut tracers = HashMap::new();
     let mut functions = vec![None; program.functions.len()];
@@ -272,7 +273,7 @@ fn emit_checked(
                 builder.build_store(locals[index].ok_or("invalid checked parameter")?, value)?;
             }
         }
-        let size_type = context.ptr_sized_int_type(&machine.get_target_data(), None);
+        let size_type = context.ptr_sized_int_type(&target_data, None);
         let roots = if allocating.contains(&id)
             || plans.iter().any(|plan| {
                 plan.captures
@@ -284,6 +285,7 @@ fn emit_checked(
                 &module,
                 &builder,
                 program,
+                &target_data,
                 shared,
                 &allocating,
                 source,
@@ -320,6 +322,7 @@ fn emit_checked(
             local_types: &source.locals,
             allocating: &allocating,
             program,
+            target_data: &target_data,
             size_type,
             roots,
             liveness,
@@ -605,6 +608,7 @@ struct FunctionEmitter<'a, 'ctx> {
     local_types: &'a [Type],
     allocating: &'a BTreeSet<usize>,
     program: &'a checked::Program,
+    target_data: &'a TargetData,
     size_type: IntType<'ctx>,
     roots: gc::RootFrame<'ctx>,
     liveness: gc_liveness::Plan,
@@ -664,10 +668,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         if self.roots.locals.is_empty() {
             return Ok(());
         }
-        // Source-local order keeps generated IR deterministic. Ordinary locals
-        // remain nonescaping; LLVM removes restores not used before a write.
+        // Source-local order keeps generated IR deterministic. Compact locals
+        // remain nonescaping; in-place roots already hold relocated references.
         for (index, ty) in self.local_types.iter().enumerate() {
             if let Some(root) = self.roots.locals.get(&index) {
+                if self.locals[index] == Some(*root) {
+                    continue;
+                }
                 let value = self.builder.build_load(
                     native_type(self.context, self.program, *ty)?,
                     *root,
@@ -1127,7 +1134,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         self.builder
             .build_store(self.locals[local].ok_or("invalid checked local")?, value)?;
-        if let Some(slot) = self.roots.locals.get(&local) {
+        if let Some(slot) = self.roots.locals.get(&local)
+            && self.locals[local] != Some(*slot)
+        {
             self.builder.build_store(*slot, value)?;
         }
         Ok(())
