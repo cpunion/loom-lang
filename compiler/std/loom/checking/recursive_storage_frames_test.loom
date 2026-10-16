@@ -1,0 +1,48 @@
+test fn recursive_storage_frames_check_all_mutual_bodies() {
+    let source = """
+        import std.list.length
+        import std.list.push
+        fn left(values List[Int], depth Int) Int
+        ensures result == 0 {
+            if depth > 0 { discard right(values, depth - 1) }
+            0
+        }
+        fn right(values List[Int], depth Int) Int
+        ensures result == 0 {
+            if depth > 0 { discard left(values, depth - 1) }
+            discard length(values)
+            0
+        }
+        pub fn read(values List[Int], depth Int) Int
+        ensures result == old(length(values)) {
+            discard left(values, depth)
+            length(values)
+        }
+        """
+    list_constraint_accept(source)
+    list_constraint_reject(std.text.replace(source, "discard length(values)", "push(values, 1)"))
+}
+
+test fn recursive_storage_frames_do_not_skip_argument_effects() {
+    let source = """
+        import std.list.length
+        import std.list.push
+        fn change(values List[Int]) Int
+        ensures result == 0 {
+            push(values, 1)
+            0
+        }
+        fn visit(values List[Int], depth Int) Int
+        ensures result == 0 {
+            if depth > 0 { discard visit(values, change(values)) }
+            0
+        }
+        pub fn read(values List[Int], depth Int) Int
+        ensures result == old(length(values)) {
+            discard visit(values, depth)
+            length(values)
+        }
+        """
+    list_constraint_reject(source)
+    list_constraint_accept(std.text.replace(source, "push(values, 1)", "discard length(values)"))
+}

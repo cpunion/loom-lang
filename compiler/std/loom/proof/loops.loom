@@ -15,7 +15,7 @@ enum LoopCandidate {
     Unreachable(Int, List[Int], Int)
     EntryExtent(Int, List[Int], Text, Linear)
     Element(Int, Linear, Text, Value)
-    Affine(List[LoopTerm], Value)
+    Affine(List[LoopTerm], Text, Value)
 }
 
 record LoopControl {
@@ -204,7 +204,7 @@ fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], gu
 
 fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] {
     match candidate {
-        LoopCandidate.Affine(terms, initial) => boolean(binary("==",
+        LoopCandidate.Affine(terms, relation, initial) => boolean(binary(relation,
                 loop_affine_value(terms, state)?, initial)?)
         LoopCandidate.Element(identity, index, relation, initial) =>
         boolean(binary(relation, known_element(identity, index, state)?, initial)?)
@@ -547,6 +547,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     loop_prefix_candidates(proof, expr, candidates, writes, resized, observed)
     discard loop_affine_candidates(proof, guard, body, candidates, writes, observed)?
     discard loop_observation_candidates(proof, expr, candidates, writes, resized, observed)?
+    discard loop_affine_bounds(proof, candidates, observed)?
     var head = loop_head(proof, writes, storage, candidates, headers)?
     head = loop_query_views(proof, clauses, head)
     head = loop_candidate_views(proof, candidates, head)

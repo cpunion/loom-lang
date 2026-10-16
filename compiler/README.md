@@ -2610,10 +2610,14 @@ runtime monitor is installed. Copies of a constrained value keep sharing its sto
 
 Indexing, ordinary non-escaping read helpers and explicit copies are allowed.
 Shared element results may escape when their stored type graph proves they cannot
-contain the protected outer header. This covers nested Lists and supported
-record/tuple/enum fields without freezing their contents. Recursive backreferences,
-opaque captures/dyn data and unresolved types remain conservative; non-escaping
-helpers can still return independent scalar observations.
+expose the protected outer header without its same nominal guarantee. This covers
+nested Lists and supported record/tuple/enum fields without freezing their
+contents, including recursive paths through that constrained type. Raw or
+differently constrained backreferences, opaque captures/dyn data and unresolved
+types remain conservative; non-escaping helpers can still return independent
+scalar observations. The [recursive data example](examples/recursive_constraints)
+combines nonempty child Lists, shared mutation, a proved recursive fold and a real
+wait. A permitted typed cycle does not imply termination or acyclicity.
 Extent-only predicates never grant an unrestricted outer alias.
 When the predicate observes only length, element replacement is also permitted:
 
@@ -3333,6 +3337,13 @@ fault-freedom promise. Contract predicates still expand actual finite pure
 bodies: a recursive predicate cannot become an axiom from its own `ensures`.
 See the [recursive contract example](examples/recursive_contracts/main.loom).
 
+Storage frames inspect the bounded reachable synchronous call graph, including
+mutually recursive groups. Every reachable body and each call's actual arguments
+must preserve the requested extent/content/locality property; a visited call edge
+does not hide later writes. Unknown effects and recursive captured-cell writes
+remain conservative. This proves a frame property, not termination, purity of a
+contract predicate or freedom from shared interference.
+
 Length-preserving loops can infer bounds/equalities for observed Int, Bool and
 Text elements, and scalar field relations in immutable inline elements. Source
 pre/postconditions may propose storage conservation laws; they are not assumed
@@ -3402,6 +3413,10 @@ guards. Written Int guard cursors also propose entry-difference relations with
 other written Int locals, after existing storage/quantifier proposals and within
 the same candidate budget. Constant affine translations additionally suggest
 weighted pair relations, such as `total - 2 * cursor` or `total + remaining`.
+Signed pair bounds can also be monotone rather than conserved: a positive
+nonconstant contribution can establish `total >= cursor`, without an exact
+per-iteration rate. Both inequality directions use the same entry/backedge
+checks and candidate budget; early exits receive no guard-false assumption.
 Finite pure helpers and exact scalar/inline-field result summaries can supply
 the same translation coefficients, including declared concept guarantees.
 Projection reuses the ordinary result template without requiring facts about

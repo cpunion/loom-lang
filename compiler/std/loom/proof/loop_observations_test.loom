@@ -13,7 +13,7 @@ test fn affine_observations_follow_current_inline_values_not_initial_headers() {
             observation = LoopObservation.Local(0, [1])
             factor = integer(1)
         }]
-    let candidate = LoopCandidate.Affine(terms, Value.Number(constant(integer(5))))
+    let candidate = LoopCandidate.Affine(terms, "==", Value.Number(constant(integer(5))))
     let proof = verification(fixture(literal("0"), [], literal("true")), empty_proof_program())
     assert loop_candidate_preserved(proof, candidate, entry)
     let rebound = assigned(entry, 0, Value.Record([Value.List(43), Value.Number(constant(integer(2)))]))

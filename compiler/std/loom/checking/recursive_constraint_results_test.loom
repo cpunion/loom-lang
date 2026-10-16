@@ -1,0 +1,106 @@
+test fn recursive_element_results_retain_their_nominal_sequence_guarantees() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.list.push
+        type Nonempty = List[Node] where length(self) > 0
+        enum Node {
+            Leaf(Int)
+            Branch(Nonempty)
+        }
+        pub fn direct(values Nonempty) Node {
+            values[0]
+        }
+        fn forwarded(values List[Node]) Node {
+            values[0]
+        }
+        pub fn read(values Nonempty) Node {
+            forwarded(values)
+        }
+        fn main() {
+            let children = Nonempty([Node.Leaf(1)])
+            let root = Nonempty([Node.Branch(children)])
+            match read(root) {
+                Node.Leaf(_) => { assert false }
+                Node.Branch(alias) => {
+                    push(alias, Node.Leaf(2))
+                    assert length(children) == 2 && length(root) == 1
+                }
+            }
+            children[0] = Node.Branch(children)
+            match direct(children) {
+                Node.Leaf(_) => { assert false }
+                Node.Branch(alias) => { assert length(alias) > 0 }
+            }
+        }
+        """)
+}
+
+test fn differently_constrained_recursive_backrefs_do_not_preserve_the_input_guarantee() {
+    list_constraint_reject("""
+        import std.list.length
+        type Nonempty = List[Node] where length(self) > 0
+        type Fixed = List[Node] where length(self) == 1
+        enum Node {
+            Leaf(Int)
+            Branch(Nonempty)
+        }
+        pub fn expose(values Fixed) Node {
+            values[0]
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Nonempty = List[Node] where length(self) > 0
+        record Node {
+            protected Nonempty
+            raw List[Node]
+        }
+        pub fn expose(values Nonempty) Node {
+            values[0]
+        }
+        """)
+}
+
+test fn recursive_constrained_folds_compose_positive_results() {
+    list_constraint_accept("""
+        import std.list.length
+        type Nonempty = List[Node] where length(self) > 0
+        enum Node {
+            Leaf(Int)
+            Branch(Nonempty)
+        }
+        pub fn size(node Node) Int
+        ensures result > 0 {
+            match node {
+                Node.Leaf(_) => 1
+                Node.Branch(children) => {
+                    var total = 0
+                    var index = 0
+                    while index < length(children) {
+                        total = total + size(children[index])
+                        index = index + 1
+                    }
+                    total
+                }
+            }
+        }
+        """)
+}
+
+test fn recursive_branch_payloads_retain_nonempty_bounds() {
+    list_constraint_accept("""
+        import std.list.length
+        type Nonempty = List[Node] where length(self) > 0
+        enum Node {
+            Leaf(Int)
+            Branch(Nonempty)
+        }
+        pub fn arity(node Node) Int
+        ensures result > 0 {
+            match node {
+                Node.Leaf(_) => 1
+                Node.Branch(children) => length(children)
+            }
+        }
+        """)
+}

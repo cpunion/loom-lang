@@ -1,0 +1,17 @@
+test async fn recursive_constraints_keep_sharing_across_a_real_wait() {
+    exercise().await
+}
+
+test fn typed_cycles_preserve_the_nonempty_handle_not_a_termination_promise() {
+    let children = Children([Node.Leaf(Name("cycle"))])
+    children[0] = Node.Branch(children)
+    match first(children) {
+        Node.Leaf(_) => {
+            assert false
+        }
+        Node.Branch(shared) => {
+            push(shared, Node.Leaf(Name("tail")))
+            assert length(children) == 2
+        }
+    }
+}

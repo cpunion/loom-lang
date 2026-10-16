@@ -146,12 +146,13 @@ supported theories and boundaries. The central rules are:
   rules, including callback writes, loop induction and entry observations through
   captured List handles and inline records. Unobserved generic fields stay opaque.
   Shared children retain interference and alias rules; general mutable-frame graphs
-  remain open.
+  remain open. Bounded synchronous recursive groups retain checked storage frames
+  only after all reachable bodies and actual arguments pass the same effect rules.
 - Loop candidates need entry and every-backedge proof; losing a candidate
   rechecks dependents. Logical `old` snapshots preserve supported entry values
   and outer content versions without runtime copies or freezing mutable children.
   General termination, recursive predicates and arbitrary graph snapshots are
-  not proved.
+  not proved. Signed affine pair bounds also compose nonconstant callee bounds.
 - List/Bytes extent, indexed observations and supported immutable columns share
   versioned storage rules. Quantified valid-index views retain the ordinary
   element domains, including Int/byte ranges and immutable inline fields; no
@@ -161,6 +162,10 @@ supported theories and boundaries. The central rules are:
   every actual store, not merely at normal return. Both sequence types support
   fresh constrained construction and checked representation borrows; byte-range
   faults precede stores, and opaque content predicates grant no unproved writes.
+  Recursive element results may retain the same nominal sequence guarantee;
+  raw or differently constrained backreferences do not inherit it. The
+  [recursive data example](../../compiler/examples/recursive_constraints) combines
+  shared child Lists, a proved recursive fold and real suspension.
   Dependent store arguments preserve checked block/match bindings and the
   receiver evaluated before argument-side rebinding; unsupported scopes reject.
   Proved identity stores preserve even unexpanded pure predicates. Every store
