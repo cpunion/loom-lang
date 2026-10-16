@@ -164,3 +164,26 @@ test fn mutable_captures_use_real_storage_and_entry_observations() {
         }
         """)
 }
+
+test fn captured_cells_use_loop_induction_without_freezing_aliases() {
+    let source = """
+        fn bounded(start Int) fn(Int) Int {
+            var value = start
+            fn(limit Int) Int
+            requires value <= limit
+            ensures result == limit {
+                while value < limit {
+                    value = value + 1
+                }
+                value
+            }
+        }
+        fn main() {
+            let next = bounded(0)
+            assert next(3) == 3 && next(7) == 7
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.join(std.text.split(source, "value = value + 1"), "value = value + 2"))
+    rejects(std.text.join(std.text.split(source, "value = value + 1"), "break"))
+}

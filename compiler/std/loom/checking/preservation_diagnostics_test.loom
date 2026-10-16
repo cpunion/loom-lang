@@ -1,0 +1,34 @@
+fn preservation_diagnostic_check(source Text, backend std.loom.proof.ProofBackend) Result[std.loom.typed.Program, Failure] {
+    check_with_inputs(bind(fixture_project(list_constraint_files(source)), false)?,
+        with_proof_backend(build_inputs(no_input_reader), backend))
+}
+
+test fn required_sequence_preservation_reports_backend_failure() {
+    let calls = [0]
+    let backend = std.loom.proof.ProofBackend {
+        enabled = true
+        context = "bounded test backend"
+        solve = fn(context Text, query Text) Result[Bool, Text] {
+            set(calls, 0, get(calls, 0) + 1)
+            Result.Err("proof backend exhausted its budget")
+        }
+    }
+    assert match preservation_diagnostic_check("""
+        import std.list.length
+        fn square(values List[Int]) Bool {
+            length(values) == 2 && values[1] == values[0] * values[0]
+        }
+        type Square = List[Int] where square(self)
+        fn change(values List[Int]) {
+            values[0] = 0
+            values[1] = 0
+        }
+        fn apply(values Square) {
+            change(values)
+        }
+        """, backend) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "proof backend exhausted its budget")
+        Result.Ok(_) => false
+    }
+    assert get(calls, 0) > 0
+}

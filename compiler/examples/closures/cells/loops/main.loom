@@ -1,0 +1,21 @@
+fn bounded(start Int) fn(Int) Int {
+    var value = start
+    fn(limit Int) Int
+    requires value <= limit
+    ensures result == limit {
+        while value < limit {
+            value = value + 1
+        }
+        value
+    }
+}
+
+fn exercise() {
+    let advance = bounded(0)
+    let alias = advance
+    assert advance(3) == 3 && alias(7) == 7
+}
+
+fn main() {
+    exercise()
+}

@@ -187,6 +187,7 @@ fn source_closures_preserve_shared_cells_cleanup_and_entry_contracts() {
         "closures",
         "comptime_closures",
         "closures/cells",
+        "closures/cells/loops",
         "closures/cells/workers",
     ] {
         let package = common::root().join("compiler/examples").join(example);
@@ -259,6 +260,11 @@ fn main() {
             "closures/cells",
             "ensures result == 3",
             "ensures result == 2",
+        ),
+        (
+            "closures/cells/loops",
+            "ensures result == limit",
+            "ensures result > limit",
         ),
     ] {
         let original = fs::read_to_string(

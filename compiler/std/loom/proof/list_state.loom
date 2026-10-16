@@ -340,6 +340,9 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], requireme
     if depth >= 32 || !conjunction_step(budget) {
         return false
     }
+    if cell_store_expression(program, value) {
+        return preserves_list_state(program, cell_store_view(value), budget, requirement, depth + 1)
+    }
     let kind = value.kind
     if kind == ExprKind.Call {
         if value.index < 0 || value.index >= length(program.functions) {

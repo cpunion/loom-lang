@@ -140,6 +140,12 @@ fn loop_writes(proof Verification, expr Expr, entry State, writes List[Bool], gu
     if depth <= 0 {
         return Result.Err("loop proof depth budget exhausted")
     }
+    if cell_read_expression(expr) && capture_cell_type(proof.program, get(expr.children, 0).ty) {
+        return loop_writes(proof, cell_read_view(expr), entry, writes, guard, depth - 1)
+    }
+    if cell_store_expression(proof.program, expr) {
+        return loop_writes(proof, cell_store_view(expr), entry, writes, guard, depth - 1)
+    }
     let kind = expr.kind
     let scalar = kind == ExprKind.Integer || kind == ExprKind.Float || kind == ExprKind.Bool || kind == ExprKind.Text || kind == ExprKind.Local ||
     kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce ||

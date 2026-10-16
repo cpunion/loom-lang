@@ -85,6 +85,12 @@ fn frame_expression(program Program, function Function, value Expr, locals List[
     if depth >= 32 || !conjunction_step(budget) || length(value.arms) != 0 {
         return false
     }
+    if value.kind == ExprKind.FrameStore {
+        if !cell_store_expression(program, value) {
+            return false
+        }
+        return frame_expression(program, function, cell_store_view(value), locals, entry, writes, budget, depth + 1)
+    }
     // The caller first establishes extent_preserving for the entire body.
     // Visit all branches and cleanup bodies: this is a may-write union, not
     // execution or a proof that an apparently unreachable write can be ignored.
