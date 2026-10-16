@@ -824,8 +824,9 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
     }
 }
 
-// A fresh, isolated check of the containing concrete function and its call
-// closure. Global declaration or template errors still prevent a result.
+// A fresh, isolated check of the containing concrete function, its callees and
+// required templates. Global declaration or selected dependency errors still
+// prevent a result; unrelated body errors do not.
 // Failure returns no facts, never a partially checked executable Program.
 pub fn inspect_independent(bindings std.loom.binding.Program, file Int, offset Int) Option[Inspection] {
     inspect_independent(bindings, file, offset, build_inputs(no_input_reader))

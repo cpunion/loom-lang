@@ -78,7 +78,8 @@ minimal project; this example's extra `stats` package is written by hand.
 See the [VS Code trial](../../../editors/vscode/README.md#try-it) for unsaved
 diagnostics, formatting, completion, hover, definition navigation and supported
 rename operations. Independent ordinary functions remain queryable
-despite unrelated body errors; syntax and template errors can still block queries.
+despite unrelated body errors; syntax, global declarations and errors in the
+selected dependency closure can still block queries.
 A failed native assertion reports
 the test name and the assertion's original file, line and Unicode column,
 including when it fails inside a helper. The test process stops at its first
