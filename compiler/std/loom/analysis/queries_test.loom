@@ -1,6 +1,7 @@
 import std.option.Option
 import std.text.byte
 import std.loom.checking.check
+import std.io.write_error
 
 fn query_offset(text Text, fragment Text) Int {
     var index = 0
@@ -22,6 +23,7 @@ fn inspection(analysis Analysis, text Text, fragment Text) Inspection {
     match inspect_at(analysis, 0, query_offset(text, fragment)) {
         Option.Some(found) => found
         Option.None => {
+            discard std.io.write_error(concat("missing inspection: ", concat(fragment, "\n")))
             assert false
             inspection(analysis, text, fragment)
         }
@@ -47,6 +49,36 @@ test fn closure_queries_keep_source_parameters_and_captured_bindings() {
     only_type(field, "Int")
     let member = query_offset(text, "count Int")
     only_definition(field, member, member + 5)
+}
+
+test fn capture_contract_queries_follow_entry_slots_to_source_bindings() {
+    let text = """
+        fn make(limit Int) fn(Int) Int {
+            var current = 0
+            fn(step Int) Int
+            requires current < limit
+            requires step == 1
+            ensures result == old(current) + 1 {
+                current = current + step
+                current
+            }
+        }
+        fn main() {
+            assert make(3)(1) == 1
+        }
+        """
+    let analysis = accepted(input(text))
+    let binding = query_offset(text, "current = 0")
+    let entry = inspection(analysis, text, "current < limit")
+    only_type(entry, "Int")
+    only_definition(entry, binding, binding + 7)
+    let snapshot = inspection(analysis, text, "current) + 1")
+    only_type(snapshot, "Int")
+    only_definition(snapshot, binding, binding + 7)
+    let limit = inspection(analysis, text, "limit\n")
+    only_type(limit, "Int")
+    let parameter = query_offset(text, "limit Int")
+    only_definition(limit, parameter, parameter + 5)
 }
 
 test fn static_capture_slots_do_not_shift_source_parameters_or_leak_frame_types() {
