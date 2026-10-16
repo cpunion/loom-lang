@@ -81,8 +81,9 @@ witness slice when ABI, receiver and arguments agree and no other work occurs.
 Nontransparent/noncontiguous adapters retain boxes. Dynamic associated families
 accept scoped structural templates, including outer captures and nested bindings;
 conversion checks arbitrary admitted inputs rather than sampling reachable slots.
-Dependent compile-time type computations and incremental body reuse for these
-templates remain unsupported. See [concepts](../../compiler/README.md#concepts).
+Eligible body snapshots rekey closed templates, nested captures and symbolic
+projections without exporting their local evidence. Dependent compile-time type
+computations remain unsupported. See [concepts](../../compiler/README.md#concepts).
 
 [Variadic functions](../../compiler/README.md#variadic-functions) and generic
 records/enums support structural inference, independent/repeated words, explicit

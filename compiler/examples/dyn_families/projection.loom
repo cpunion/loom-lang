@@ -1,0 +1,30 @@
+concept Element {
+    type Data
+}
+
+impl Element for Int {
+    type Data = Text
+}
+
+concept Projection {
+    type Item[T Element]
+
+    fn project[T Element](self Self, value Self.Item[T]) Self.Item[T]
+}
+
+impl Projection for Bool {
+    type Item[T] = T.Data
+
+    fn project[T Element](self Bool, value T.Data) T.Data {
+        value
+    }
+}
+
+fn projected(source dyn Projection[Item[T] = T.Data]) Text {
+    source.project[Int]("projection")
+}
+
+fn exercise_projection() {
+    let source dyn Projection[Item[T] = T.Data] = true
+    assert projected(source) == "projection"
+}

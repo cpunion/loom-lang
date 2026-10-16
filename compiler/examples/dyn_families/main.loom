@@ -59,6 +59,7 @@ impl Nested for Bool {
 }
 
 fn exercise() {
+    exercise_projection()
     let lists dyn Lists[Item[T] = List[T]] = true
     let values = relabel(lists).echo[Int]([7, 9])
     assert values[0] == 7 && values[1] == 9

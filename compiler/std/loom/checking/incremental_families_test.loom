@@ -1,0 +1,141 @@
+test fn cached_family_bodies_rekey_captures_without_publishing_binder_permissions() {
+    let source = """
+        concept Family {
+            type Item[T]
+        }
+        concept Nested {
+            type Entry[T]
+        }
+        pub fn keep(value dyn Nested[Entry[T] = dyn Family[Item[U] = (T, U)]])
+            dyn Nested[Entry[T] = dyn Family[Item[U] = (T, U)]] {
+            value
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let prior = get(definition_state(initial).bodies, 0)
+    let allowed = new[Bool]()
+    var index = 0
+    while index < length(prior.definitions.entries) {
+        push(allowed, true)
+        index = index + 1
+    }
+    let reuse = body_reuse(initial, prior.definitions, allowed)
+    var outer = -1
+    index = 0
+    while index < length(prior.types) {
+        let ty = get(prior.types, index)
+        if ty.kind == TypeKind.Family && get(prior.types, get(ty.arguments, ty.symbol)).kind == TypeKind.Dyn {
+            outer = index
+        }
+        index = index + 1
+    }
+    assert outer >= 0
+    let family = get(prior.types, outer)
+    let inner = get(get(prior.types, get(family.arguments, family.symbol)).arguments, 0)
+    let binder = get(family.arguments, 0)
+    assert !body_type_supported(reuse, inner)
+    assert body_type_supported(reuse, outer)
+    assert !body_type_supported(reuse, inner)
+    assert get(reuse.type_support, binder * 2) == 0
+    assert !body_type_supported(reuse, binder)
+
+    let restored = restored_definition_cache(initial)
+    let checked = match cached_source(restored, concat("fn added(value List[Bool]) List[Bool] { value }\n", source)) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+            return
+        }
+    }
+    assert bodies_reused(restored) == 1
+    let function = get(checked.program.functions, cached_function(checked, "keep"))
+    assert type_name(checked.bindings, checked.program.types, checked.program.interfaces, function.result) ==
+    "dyn app.Nested[Entry[F0] = dyn app.Family[Item[F1] = (F0, F1)]]"
+    assert std.loom.typed.concrete_type(checked.program.types, function.result)
+}
+
+test fn cached_family_bodies_recheck_changed_domains_and_method_guarantees() {
+    let declarations = """
+        concept Value {}
+        concept Family {
+            type Item[T Value] Value
+            fn number(self Self, input Int) Int
+            requires input >= 0
+            ensures result == input
+        }
+        """
+    let consumer = """
+        pub fn forward(source dyn Family[Item[T] = T], input Int) Int
+        requires input >= 0
+        ensures result == input {
+            source.number(input)
+        }
+        """
+    let source = concat(declarations, concat("\n", consumer))
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let reused = restored_definition_cache(initial)
+    assert match cached_source(reused, concat("fn added() {}\n", source)) {
+        Result.Ok(_) => bodies_reused(reused) == 1
+        Result.Err(_) => false
+    }
+    let saved = restored_definition_cache(reused)
+    let domain = std.text.join(std.text.split(source, "Item[T Value] Value"), "Item[T] Value")
+    assert match cached_source(saved, domain) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let weaker = concat(std.text.join(std.text.split(declarations, "ensures result == input"),
+            "ensures result >= 0"), concat("\n", consumer))
+    assert weaker != source
+    assert match cached_source(saved, weaker) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn cached_family_bodies_rekey_symbolic_projection_members() {
+    let source = """
+        concept Element {
+            type Data
+        }
+        concept Family {
+            type Item[T Element]
+        }
+        pub fn keep(value dyn Family[Item[T] = T.Data]) dyn Family[Item[T] = T.Data] {
+            value
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let reused = restored_definition_cache(initial)
+    let checked = match cached_source(reused, concat("fn added() {}\n", source)) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+            return
+        }
+    }
+    assert bodies_reused(reused) == 1
+    let function = get(checked.program.functions, cached_function(checked, "keep"))
+    assert type_name(checked.bindings, checked.program.types, checked.program.interfaces, function.result) ==
+    "dyn app.Family[Item[F0] = F0.app.Element.Data]"
+}
