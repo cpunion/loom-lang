@@ -90,6 +90,11 @@ Eligible body snapshots rekey closed templates, nested captures and symbolic
 projections without exporting their local evidence. Dependent compile-time type
 computations remain unsupported. See [concepts](../../compiler/README.md#concepts).
 
+[Bound method values](../../compiler/examples/bound_methods/README.md) retain one
+receiver evaluation and use ordinary closure environments. Exact contextual
+signatures select overloads and generic/variadic methods; async methods return
+cold Tasks. Shared children remain shared and scoped/resource captures reject.
+
 [Variadic functions](../../compiler/README.md#variadic-functions) and generic
 records/enums support structural inference, independent/repeated words, explicit
 `...` groups, callbacks, methods, CTFE and suspension.

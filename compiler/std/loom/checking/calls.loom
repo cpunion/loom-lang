@@ -641,7 +641,8 @@ fn invoke_shared(context Context, node Node, options List[Int], types List[Node]
         }
         let probe = probing && static_position(context, options, index)
         let input = get(inputs.nodes, index)
-        let arity = if expected_argument < 0 && (input.kind == NodeKind.Name || input.kind == NodeKind.Apply) {
+        let arity = if expected_argument < 0 && (input.kind == NodeKind.Name || input.kind == NodeKind.Apply ||
+        input.kind == NodeKind.Select || input.kind == NodeKind.Index) {
             shared_callback_arity(context.env, options, index)
         } else {
             -1

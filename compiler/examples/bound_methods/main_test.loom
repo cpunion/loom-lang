@@ -1,0 +1,7 @@
+test fn bound_methods_preserve_receivers_inference_and_staging() {
+    exercise()
+}
+
+test async fn bound_async_methods_create_ordinary_cold_tasks() {
+    exercise_async().await
+}

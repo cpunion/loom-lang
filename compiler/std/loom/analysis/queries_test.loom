@@ -34,6 +34,49 @@ fn only_type(found Inspection, expected Text) {
     assert length(found.types) == 1 && get(found.types, 0) == expected
 }
 
+test fn bound_method_queries_show_fixed_types_and_real_method_definitions() {
+    let text = """
+        concept Read {
+            fn read(self Self) Int
+        }
+        impl Read for Int {
+            fn read(self Int) Int { self }
+        }
+        fn main() {
+            let value = 3
+            let static_action = value.read
+            let dynamic dyn Read = value
+            let dynamic_action = dynamic.read
+            assert static_action() == dynamic_action()
+        }
+        """
+    let analysis = accepted(input(text))
+    let offset = query_offset(text, "value.read")
+    let static_action = match inspect_at(analysis, 0, offset + 6) {
+        Option.Some(found) => found
+        Option.None => {
+            assert false
+            inspection(analysis, text, "value.read")
+        }
+    }
+    only_type(static_action, "fn() Int")
+    let implementation = query_offset(text, "read(self Int)")
+    only_definition(static_action, implementation, implementation + 4)
+    only_type(inspection(analysis, text, "value.read"), "Int")
+    let dynamic_offset = query_offset(text, "dynamic.read")
+    let dynamic_action = match inspect_at(analysis, 0, dynamic_offset + 8) {
+        Option.Some(found) => found
+        Option.None => {
+            assert false
+            static_action
+        }
+    }
+    only_type(dynamic_action, "fn() Int")
+    let prototype = query_offset(text, "read(self Self)")
+    only_definition(dynamic_action, prototype, prototype + 4)
+    only_type(inspection(analysis, text, "dynamic.read"), "dyn app.Read")
+}
+
 test fn closure_queries_keep_source_parameters_and_captured_bindings() {
     let text = "record Item { count Int }\nfn make(start Int) fn(Int) Int { var current = Item { count = start }\nfn(step Int) Int { current = Item { count = current.count + step }\ncurrent.count } }\nfn main() { assert make(1)(2) == 3 }"
     let analysis = accepted(input(text))

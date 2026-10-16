@@ -1,0 +1,182 @@
+// Method values use ordinary closure environments and calls. The receiver is
+// saved once by value; shared children retain their normal aliasing semantics.
+fn method_reference_candidates(context Context, node Node, receiver Expr, member Text) Result[List[Int], Failure] {
+    let options = new[Int]()
+    let shape = get(context.env.types, receiver.ty)
+    let dynamic = shape.kind == TypeKind.Dyn
+    let exposed = if dynamic {
+        get(context.env.interfaces, shape.symbol).symbol
+    } else {
+        -1
+    }
+    var index = 0
+    while index < length(context.env.concepts) {
+        let capability = get(context.env.concepts, index)
+        if (dynamic && capability.symbol == exposed) || (!dynamic && visible_concept(context, capability.symbol)) {
+            let methods = new[Int]()
+            var method = 0
+            while method < length(capability.methods) {
+                let id = get(capability.methods, method)
+                if symbol(context.env, get(context.env.signatures, id).symbol).name == member && pack_instance(context.env, id) < 0 {
+                    push(methods, id)
+                }
+                method = method + 1
+            }
+            method = 0
+            while method < length(context.env.packs) {
+                let pack = get(context.env.packs, method)
+                let item = symbol(context.env, pack.source)
+                if pack_family(pack) && item.owner == capability.symbol && item.name == member {
+                    push(methods, -1 - pack.source)
+                }
+                method = method + 1
+            }
+            if length(methods) != 0 {
+                let provided = if dynamic || shape.kind == TypeKind.Parameter ||
+                shape.kind == TypeKind.Associated || shape.kind == TypeKind.Rigid {
+                    -1
+                } else {
+                    implementation(context, receiver.ty, capability.symbol)?
+                }
+                if dynamic || provided >= 0 || (!concrete(context.env, receiver.ty) && evidence(context, receiver.ty, capability.symbol)?) {
+                    if dynamic {
+                        let here = symbol(context.env, context.signature.symbol)
+                        let item = symbol(context.env, capability.symbol)
+                        if !item.public && get(context.env.source.files, item.file).package != get(context.env.source.files, here.file).package {
+                            return Result.Err(error(context, node, "the receiver does not expose that concept"))
+                        }
+                    }
+                    var selected = 0
+                    while selected < length(methods) {
+                        push(options, get(methods, selected))
+                        selected = selected + 1
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(options)
+}
+
+fn bound_method_value(context Context, node Node, receiver Expr, member Text,
+    expected Int, arity Int) Result[Expr, Failure] {
+    let types = reference_type_arguments(node)
+    let desired = if expected >= 0 && get(context.env.types, expected).kind == TypeKind.Function {
+        let arguments = ints(receiver.ty)
+        let tail = get(context.env.types, expected).arguments
+        var index = 0
+        while index < length(tail) {
+            push(arguments, get(tail, index))
+            index = index + 1
+        }
+        intern(context.env, TypeKind.Function, -1, arguments)
+    } else {
+        -1
+    }
+    let count = call_type_count(node, types)
+    let choices = pack_references(context, method_reference_candidates(context, node, receiver, member)?, count, desired)?
+    let options = new[Int]()
+    var index = 0
+    while index < length(choices) {
+        let id = get(choices, index)
+        let current = get(context.env.signatures, id)
+        // Keep the same declared-evidence preference as a method call.
+        if get(context.env.types, receiver.ty).kind == TypeKind.Dyn ||
+        !bound_method(context, receiver.ty, member, length(current.params), count, choices)? ||
+        evidence(context, receiver.ty, symbol(context.env, current.symbol).owner)? {
+            push(options, id)
+        }
+        index = index + 1
+    }
+    let chosen = function_reference(context, node, options, types, desired,
+        if arity < 0 {
+            -1
+        } else {
+            arity + 1
+        }, ints(receiver.ty))?
+    discard checked_reference(context, node, chosen)?
+    if resource_borrowed(context, receiver)? {
+        return Result.Err(error(context, node, "a bound method cannot retain a scoped or borrowed resource receiver"))
+    }
+    bound_method_closure(context, node, receiver, member, chosen)
+}
+
+fn bound_method_closure(context Context, node Node, receiver Expr, member Text,
+    chosen FunctionReference) Result[Expr, Failure] {
+    let shape = get(context.env.types, chosen.ty).arguments
+    let parameters = new[Node]()
+    let inputs = source_nodes(pack_node(node, NodeKind.Name, "$bound_receiver", new[Node]()))
+    var index = 1
+    while index + 1 < length(shape) {
+        let name = concat("$bound_argument", to_text(index))
+        push(parameters, pack_node(node, NodeKind.Parameter, name,
+                source_nodes(meta_reference(node, get(shape, index)))))
+        push(inputs, pack_node(node, NodeKind.Name, name, new[Node]()))
+        index = index + 1
+    }
+    let types = new[Node]()
+    var identity = concat("macro/bound-method/", to_text(chosen.signature))
+    index = 0
+    while index < length(chosen.arguments) {
+        let ty = get(chosen.arguments, index)
+        identity = concat(identity, concat("/", to_text(ty)))
+        if index > 0 {
+            push(types, meta_reference(node, ty))
+        }
+        index = index + 1
+    }
+    let method = symbol(context.env, get(context.env.signatures, chosen.signature).symbol)
+    let capability = symbol(context.env, method.owner)
+    let package = get(context.env.source.files, capability.file).package
+    let path = std.loom.project.qualify(package_label(context.env.source.modules, context.env.source.packages, package),
+        concat(capability.name, concat(".", member)))
+    let call = if get(context.env.types, receiver.ty).kind == TypeKind.Dyn {
+        let values = new[Node]()
+        index = 1
+        while index < length(inputs) {
+            push(values, get(inputs, index))
+            index = index + 1
+        }
+        // The exposed interface needs no separate source import at this use.
+        pack_node(node, NodeKind.MethodCall, member, [get(inputs, 0),
+                pack_node(node, NodeKind.TypeArguments, "$expanded", types),
+                pack_node(node, NodeKind.Arguments, "", values)])
+    } else {
+        pack_node(node, NodeKind.Call, path, [
+                pack_node(node, NodeKind.TypeArguments, "$expanded", types),
+                pack_node(node, NodeKind.Arguments, "", inputs)])
+    }
+    let children = source_nodes(pack_node(node, NodeKind.Parameters, "", parameters))
+    let output = get(shape, length(shape) - 1)
+    if output != 0 {
+        push(children, pack_node(node, NodeKind.ReturnType, "", source_nodes(meta_reference(node, output))))
+    }
+    push(children, pack_node(node, NodeKind.Block, "", source_nodes(call)))
+    push(children, pack_node(node, NodeKind.ExpansionId, identity, new[Node]()))
+    // The generated namespace must not capture a caller's same-named local.
+    // This binding exists only while checking the ordinary closure recipe.
+    let isolated = Context {
+        lexical = new_lexical()
+        env = context.env
+        signature = context.signature
+        arguments = context.arguments
+        constants = context.constants
+        locals = new[Local]()
+        bindings = new[Binding]()
+        head = -1
+        cleanups = new[Cleanup]()
+        cleanup_head = -1
+        loop_boundary = -2
+        facts = new[Fact]()
+        fact_head = -1
+        emit = context.emit
+    }
+    let scope = bind_local(isolated, node, "$bound_receiver", receiver.ty, false, -1)?
+    let callback = closure_literal(scope, pack_node(node, NodeKind.Function, "", children))?
+    let environment = get(callback.children, 0)
+    let field = get(environment.children, 0)
+    let saved = expression(ExprKind.Field, receiver.ty, node, "", field.index, expressions(receiver), receiver.falls)
+    let frame = expression(ExprKind.FrameNew, environment.ty, node, "", -1, expressions(saved), receiver.falls)
+    Result.Ok(expression(ExprKind.FunctionRef, callback.ty, node, "", callback.index, expressions(frame), receiver.falls))
+}

@@ -23,31 +23,64 @@ fn first_dot(value Text) Int {
     length(value)
 }
 fn member(context Context, node Node, value Expr, field Text) Result[Expr, Failure] {
-    let ty = get(context.env.types, value.ty)
-    if ty.kind == TypeKind.Refined && get(context.env.types, base_type(context.env, value.ty)).kind == TypeKind.Record {
-        // The refined record has the same inline representation. Projection
-        // reads a value copy; only whole-value replacement is assignable.
-        let base = base_type(context.env, value.ty)
-        return member(context, node, expression(ExprKind.Coerce, base, node, "", -1, expressions(value), value.falls), field)
+    projected_member(context, node, value, field, -1, -1, false)
+}
+
+fn projected_member(context Context, node Node, value Expr, field Text, expected Int,
+    arity Int, binding Bool) Result[Expr, Failure] {
+    let applied = binding && (node.kind == NodeKind.Apply || node.kind == NodeKind.Index)
+    let source = if applied { child(node, 0) } else { node }
+    let original = get(context.env.types, value.ty)
+    let base = if original.kind == TypeKind.Refined { base_type(context.env, value.ty) } else { value.ty }
+    let ty = if original.kind == TypeKind.Refined && get(context.env.types, base).kind == TypeKind.Record {
+        get(context.env.types, base)
+    } else { original }
+    if ty.kind == TypeKind.Tuple {
+        match std.int.parse(field) {
+            Result.Ok(_) => {
+                let selected = tuple_member(context, source, value, field)?
+                return if applied { index_read(context, node, selected, child(node, 1).children) } else { Result.Ok(selected) }
+            }
+            Result.Err(_) => {}
+        }
     }
-    if ty.kind == TypeKind.Tuple { return tuple_member(context, node, value, field) }
-    if ty.kind != TypeKind.Record { return Result.Err(error(context, node, "field access requires a known record type")) }
+    if ty.kind != TypeKind.Record {
+        if binding { return bound_method_value(context, node, value, field, expected, arity) }
+        return Result.Err(error(context, node, "field access requires a known record type"))
+    }
     let declaration = symbol(context.env, ty.symbol)
     let here = symbol(context.env, context.signature.symbol)
     if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
+        if binding { return bound_method_value(context, node, value, field, expected, arity) }
         return Result.Err(error(context, node, "cannot inspect a private type from another package"))
     }
     var index = 0
     while index < length(ty.fields) {
         let found = get(ty.fields, index)
         if found.name == field {
-            return Result.Ok(expression(ExprKind.Field, found.ty, node, "", index, expressions(value), value.falls))
+            let receiver = if base != value.ty && ty.kind == TypeKind.Record {
+                expression(ExprKind.Coerce, base, source, "", -1, expressions(value), value.falls)
+            } else { value }
+            let selected = expression(ExprKind.Field, found.ty, source, "", index, expressions(receiver), value.falls)
+            return if applied { index_read(context, node, selected, child(node, 1).children) } else { Result.Ok(selected) }
         }
         index = index + 1
     }
-    Result.Err(error(context, node, "unknown record field"))
+    if binding { bound_method_value(context, node, value, field, expected, arity) }
+    else { Result.Err(error(context, node, "unknown record field")) }
 }
 fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
+    named_reference(context, node, expected, -1)
+}
+
+fn reference_type_arguments(node Node) List[Node] {
+    if node.kind == NodeKind.Apply || node.kind == NodeKind.Index { child(node, 1).children }
+    else { new[Node]() }
+}
+
+fn named_reference(context Context, operation Node, expected Int, arity Int) Result[Expr, Failure] {
+    let applied = operation.kind == NodeKind.Apply || operation.kind == NodeKind.Index
+    let node = if applied { child(operation, 0) } else { operation }
     let end = first_dot(node.value)
     let first = slice(node.value, 0, end)
     let local = lookup(context, first)
@@ -57,7 +90,7 @@ fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     if local < 0 {
         let options = referenced_functions(context, node.value)
-        if length(options) != 0 { return function_value(context, node, options, new[Node](), expected, -1) }
+        if length(options) != 0 { return function_value(context, operation, options, reference_type_arguments(operation), expected, arity) }
         if meta_named(context, node) { return meta_literal(context, node, context_type(context, node)?) }
         if end < length(node.value) { return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected) }
         return Result.Err(error(context, node, "unknown local value"))
@@ -70,10 +103,13 @@ fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
     while index < length(node.value) {
         let rest = slice(node.value, index + 1, length(node.value))
         let end = first_dot(rest)
-        value = member(context, node, value, slice(rest, 0, end))?
+        let last = index + 1 + end == length(node.value)
+        value = projected_member(context, if last { operation } else { node }, value,
+            slice(rest, 0, end), expected, arity, last)?
         index = index + 1 + end
     }
-    Result.Ok(value)
+    if applied && end == length(node.value) { index_read(context, operation, value, child(operation, 1).children) }
+    else { Result.Ok(value) }
 }
 fn enum_equality(context Context, ty Int) Bool {
     let value = get(context.env.types, ty)
@@ -116,7 +152,7 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     }
     if kind == NodeKind.Apply || kind == NodeKind.Index {
         let value = if kind == NodeKind.Apply { application(context, node, expected)? } else {
-            index_read(context, node, expr(context, child(node, 0), -1)?, child(node, 1).children)?
+            indexed_value(context, node, expected)?
         }
         return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
     }
@@ -135,7 +171,8 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Select {
         match static_alias_source(context, node) {
             Option.Some(source) => expr(context, source, -1)?
-            Option.None => member(context, node, expr(context, child(node, 0), -1)?, node.value)?
+            Option.None => projected_member(context, node, expr(context, child(node, 0), -1)?, node.value,
+                expected, -1, true)?
         }
     } else {
     if kind == NodeKind.Unary {
