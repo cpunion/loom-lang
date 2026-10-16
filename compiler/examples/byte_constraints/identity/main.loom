@@ -1,8 +1,11 @@
 import std.bytes.is_utf8
 import std.bytes.clone
 import std.bytes.decode_utf8
+import std.bytes.new
+import std.bytes.push
 import std.list.clone
 import std.list.length
+import std.list.push
 import std.text.to_bytes
 import std.result.Result
 import std.result.ConstraintError
@@ -29,10 +32,37 @@ fn checked_text(input Bytes) Result[Utf8, ConstraintError] {
     Utf8(clone(input))
 }
 
+fn copied_through_scratch(input Int) Int
+ensures result == input
+{
+    let scratch List[Int] = []
+    push(scratch, input)
+    let containers = [scratch]
+    let alias = containers[0]
+    alias[0] = 0
+    scratch[0] = input
+    alias[0]
+}
+
+fn copied_through_bytes(input Int) Int
+ensures result == input
+{
+    let scratch = new()
+    push(scratch, input)
+    scratch[0] = 0
+    scratch[0] = input
+    scratch[0]
+}
+
 fn unchanged_numbers(value Checked) {
     value[0] = {
         let saved = value[0]
         saved + 0
+    }
+    value[0] = copied_through_scratch(value[0])
+    value[0] = {
+        let action = copied_through_scratch
+        action(value[0])
     }
 }
 
@@ -40,6 +70,12 @@ fn unchanged_text(value Utf8) {
     value[0] = {
         let saved = value[0]
         saved + 0
+    }
+    value[0] = copied_through_scratch(value[0])
+    value[0] = copied_through_bytes(value[0])
+    value[0] = {
+        let action = copied_through_bytes
+        action(value[0])
     }
 }
 

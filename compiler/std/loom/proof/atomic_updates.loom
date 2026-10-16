@@ -89,8 +89,9 @@ pub fn preserves_update_expression(program Program, source_locals List[Local], o
 }
 
 // Identity stores preserve every already established pure constraint, without
-// needing its formula. Each actual store must leave the current cell unchanged,
-// including stores in argument helpers and after shared interference.
+// needing its formula. Stores into existing storage must leave the current
+// cell unchanged, including in argument helpers and after shared interference.
+// Fresh unpublished scratch can change without affecting those predicates.
 pub fn preserves_update_identity(program Program, source_locals List[Local], operation Expr,
     backend ProofBackend, shared Bool) Result[Bool, Text] {
     preserves_update_expression(program, source_locals, operation, [proof_bool(operation, true)], backend, shared, true)

@@ -18,7 +18,9 @@ element retains its type's continuing predicate, not equality with a later read.
 not grant arbitrary writes: an unknown UTF-8 preservation proof still rejects.
 The [identity package](identity/main.loom) preserves both UTF-8 and a source
 checksum constraint through stores proved to leave the current cell unchanged,
-without expanding either predicate:
+without expanding either predicate. Its pure argument helpers mutate fresh,
+unpublished List/Bytes scratch, including a local alias reached through another
+container. Existing or possibly published storage needs its own preservation proof:
 
 ```sh
 target/loom check compiler/examples/byte_constraints/identity

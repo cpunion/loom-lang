@@ -110,8 +110,8 @@ pub fn single_list_write(functions List[Function], value Expr) Int {
 
 fn list_operation_outcomes(proof Verification, primitive Text, ty Int, receiver_type Int, inputs CallArguments) Result[List[Outcome], Text] {
     let name = sequence_operation(primitive)
-    if proof.identity_stores && (list_mutation(name) || name == "list_retain_range") && name != "list_set" {
-        return Result.Err("identity preservation does not permit sequence resizing or transfers")
+    if proof.identity_stores && name == "list_retain_range" {
+        return Result.Err("identity preservation does not permit retained-view registration")
     }
     var state = inputs.state
     if primitive == "bytes_push" || primitive == "bytes_set" {
@@ -209,7 +209,15 @@ fn list_operation_outcomes(proof Verification, primitive Text, ty Int, receiver_
     if stored >= 0 {
         state = array_contents(proof, identity, state)?
     }
-    let size = list_extent(identity, state)?
+    let target = list_state(identity, state)?
+    let size = target.size
+    // Existing inputs cannot reach an allocation made later unless it was
+    // published. Mutating that private scratch changes no established input
+    // predicate; a local name, read-only alias or distinct ID is not evidence.
+    let preserve_existing = proof.identity_stores && !(target.allocated && target.private_storage)
+    if preserve_existing && list_mutation(name) && name != "list_set" {
+        return Result.Err("identity preservation does not permit resizing or transferring existing storage")
+    }
     if name == "list_len" && length(inputs.values) == 1 {
         return Result.Ok(outcomes(state, Value.Number(size)))
     }
@@ -251,7 +259,7 @@ fn list_operation_outcomes(proof Verification, primitive Text, ty Int, receiver_
         if name == "list_get" {
             return read_element_outcomes(proof, ty, identity, index, state)
         }
-        if proof.identity_stores {
+        if preserve_existing {
             return unchanged_store(proof, primitive, receiver_type, identity, index, get(inputs.values, 2), state)
         }
         return Result.Ok(outcomes(written_element(proof, identity, index, get(inputs.values, 2), state)?, Value.Empty))

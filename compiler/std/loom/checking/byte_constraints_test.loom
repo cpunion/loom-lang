@@ -261,11 +261,19 @@ test fn byte_constraints_allow_opaque_reads_but_not_unproved_mutation() {
         pub fn decoded(value Utf8) Text {
             text(value)
         }
+        fn copied(byte Int) Int {
+            let scratch = new()
+            push(scratch, byte)
+            scratch[0] = 0
+            scratch[0] = byte
+            scratch[0]
+        }
         pub fn unchanged(value Utf8) {
             value[0] = {
                 let byte = value[0]
                 byte + 0
             }
+            value[0] = copied(value[0])
         }
         """))
     byte_constraint_reject(concat(definitions, """

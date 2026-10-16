@@ -1,3 +1,35 @@
+test fn preservation_callbacks_execute_stores_instead_of_assuming_return_contracts() {
+    let header = """
+    import std.list.length
+    type Head = List[Int] where length(self) > 0 && self[0] > 0
+    fn indirect(values List[Int]) Int {
+        let action = temporary
+        action(values)
+    }
+    pub fn update(values Head) {
+        values[0] = indirect(values)
+    }
+
+    """
+    list_constraint_accept(concat(header, """
+        fn temporary(values List[Int]) Int
+        ensures result == 7
+        {
+            values[0] = 7
+            7
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn temporary(values List[Int]) Int
+        ensures result == 7
+        {
+            values[0] = 0
+            values[0] = 7
+            7
+        }
+        """))
+}
+
 test fn invariant_callbacks_preserve_field_origins_through_known_targets() {
     resource_accept("""
         record Input {
