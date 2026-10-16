@@ -1,0 +1,18 @@
+import std.task.worker.run
+
+test async fn recursive_guarantees_survive_concurrent_preserving_growth() {
+    let children = Children([Node.Leaf(Name("first"))])
+    let tree = Node.Branch(children)
+    let reader = run(fn() Int
+        ensures result > 0 {
+            size(tree)
+        })
+    let writer = run(fn() Int
+        ensures result > 0 {
+            push(children, Node.Leaf(Name("second")))
+            size(tree)
+        })
+    let left, right = (reader, writer).await
+    assert left > 0 && right > 0
+    assert size(tree) == 2
+}
