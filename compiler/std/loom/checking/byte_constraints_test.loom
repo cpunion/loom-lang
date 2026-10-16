@@ -261,6 +261,12 @@ test fn byte_constraints_allow_opaque_reads_but_not_unproved_mutation() {
         pub fn decoded(value Utf8) Text {
             text(value)
         }
+        pub fn unchanged(value Utf8) {
+            value[0] = {
+                let byte = value[0]
+                byte + 0
+            }
+        }
         """))
     byte_constraint_reject(concat(definitions, """
         pub fn invalid(value Utf8) {

@@ -246,6 +246,42 @@ test fn single_element_updates_prove_the_complete_content_constraint() {
         """))
 }
 
+test fn unchanged_stores_preserve_unexpanded_pure_constraints_without_restoration() {
+    let header = """
+    import std.list.length
+    fn checksum(values List[Int]) Int {
+        var total = 0
+        var index = 0
+        while index < length(values) {
+            total = total * 31 + values[index]
+            index = index + 1
+        }
+        total
+    }
+    type Checked = List[Int] where checksum(self) == 7
+
+    """
+    list_constraint_accept(concat(header, """
+        pub fn unchanged(values Checked) {
+            values[0] = {
+                let saved = values[0]
+                saved + 0
+            }
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn restore(values List[Int]) Int {
+            let saved = values[0]
+            values[0] = 0
+            values[0] = saved
+            saved
+        }
+        pub fn invalid(values Checked) {
+            values[0] = restore(values)
+        }
+        """))
+}
+
 test fn atomic_updates_reuse_only_stable_caller_conditions() {
     let header = """
     import std.list.length

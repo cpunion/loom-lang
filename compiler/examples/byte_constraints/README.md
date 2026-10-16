@@ -16,6 +16,19 @@ element retains its type's continuing predicate, not equality with a later read.
 
 `Utf8` uses the non-copying `std.bytes.is_utf8` predicate. Its admitted reads do
 not grant arbitrary writes: an unknown UTF-8 preservation proof still rejects.
+The [identity package](identity/main.loom) preserves both UTF-8 and a source
+checksum constraint through stores proved to leave the current cell unchanged,
+without expanding either predicate:
+
+```sh
+target/loom check compiler/examples/byte_constraints/identity
+target/loom test compiler/examples/byte_constraints/identity
+target/loom run compiler/examples/byte_constraints/identity
+```
+
+It is a separate directory package, not part of this package's worker tests.
+A read followed by a write is not one atomic operation; a worker build must
+independently prove equality with the cell at the store, not a prior read.
 The public I/O-free checking library needs a host proof backend for obligations
 that exceed its local rules; the CLI uses its compile-time solver. Native
 executables do not link that solver or install a storage monitor.

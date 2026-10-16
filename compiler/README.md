@@ -2468,7 +2468,7 @@ See the [record refinement example](examples/record_refinement/main.loom).
 Bytes refinements use the same controlled-sequence construction, escape analysis
 and per-store preservation algebra as Lists, with ordinary Bytes layout and no
 runtime monitor. Their byte-range validation still faults before mutation.
-Pure content predicates such as `is_utf8` can define a checked read-only view;
+Pure content predicates such as `is_utf8` can define a checked content view;
 unknown preservation never grants writes. The [binary constraint example](examples/byte_constraints/README.md)
 combines preserving helpers, explicit copies, faults, real suspension and shared
 workers. A single shared read can use its continuing invariant without assuming
@@ -2671,6 +2671,11 @@ branches and reassignment in the same proof engine. The receiver captured before
 argument evaluation remains the target even if an argument rebinds its source
 variable. This is bounded preservation reasoning, not a promise to prove every
 index relation; unsupported resource/async scopes and outer-function exits reject.
+A separate identity rule admits stores proved to leave the current cell unchanged,
+even when the original pure predicate cannot be expanded. It checks every store
+in argument helpers too, not only the final contents. Float representation identity
+is not IEEE equality; an earlier shared read is not the current store snapshot.
+See the [unchanged-store example](examples/byte_constraints/identity/main.loom).
 Atomic replacement and append also reuse stable caller evidence: `requires`, successful assertions,
 selected branches, early exits and immutable scalar copies. Pure helper conditions
 use the same bounded expansion as construction proofs:

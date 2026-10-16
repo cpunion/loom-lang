@@ -33,6 +33,7 @@ fn with_loop_control(proof Verification, control Option[LoopControl]) Verificati
         query = proof.query
         shared = proof.shared
         preservation = proof.preservation
+        identity_stores = proof.identity_stores
         body_calls = proof.body_calls
         capture_returns = proof.capture_returns
         returns = proof.returns

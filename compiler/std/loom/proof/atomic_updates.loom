@@ -85,6 +85,19 @@ fn atomic_scope(value Expr, locals List[Local], used List[Int], bound List[Bool]
 // optional facts extracted from a type when some conjuncts are unsupported.
 pub fn preserves_update_expression(program Program, source_locals List[Local], operation Expr, predicates List[Expr],
     backend ProofBackend, shared Bool) Result[Bool, Text] {
+    preserves_update_expression(program, source_locals, operation, predicates, backend, shared, false)
+}
+
+// Identity stores preserve every already established pure constraint, without
+// needing its formula. Each actual store must leave the current cell unchanged,
+// including stores in argument helpers and after shared interference.
+pub fn preserves_update_identity(program Program, source_locals List[Local], operation Expr,
+    backend ProofBackend, shared Bool) Result[Bool, Text] {
+    preserves_update_expression(program, source_locals, operation, [proof_bool(operation, true)], backend, shared, true)
+}
+
+fn preserves_update_expression(program Program, source_locals List[Local], operation Expr, predicates List[Expr],
+    backend ProofBackend, shared Bool, identity Bool) Result[Bool, Text] {
     if single_list_write(program.functions, operation) == 0 {
         return Result.Err("preservation needs one checked sequence store")
     }
@@ -180,5 +193,5 @@ pub fn preserves_update_expression(program Program, source_locals List[Local], o
         }, backend, shared, [InputGuarantee {
                 ty = ty
                 writes = 2
-            }])
+            }], [], [], identity)
 }

@@ -1,6 +1,7 @@
 import std.loom.proof.verify_preservation
 import std.loom.proof.sequence_operation
 import std.loom.proof.preserves_update_expression
+import std.loom.proof.preserves_update_identity
 
 fn update_literal(value Expr) Bool {
     value.kind == ExprKind.Integer || value.kind == ExprKind.Bool ||
@@ -54,9 +55,7 @@ fn update_expression_proof(env Environment, functions List[Function], locals Lis
     // conjunct and its safety conditions; opaque parts cannot be omitted.
     let predicates = match std.loom.proof.invariant_predicates(isolated, receiver.ty, predicate) {
         Result.Ok(predicates) => predicates
-        Result.Err(_) => {
-            return Result.Ok(false)
-        }
+        Result.Err(_) => new[Expr]()
     }
     let inputs = [receiver.ty]
     let probe = Function {
@@ -85,11 +84,22 @@ fn update_expression_proof(env Environment, functions List[Function], locals Lis
         interfaces = env.interfaces
         witnesses = env.witnesses
     }
-    Result.Ok(match std.loom.proof.preserves_update_expression(program, locals, value, predicates,
-        get(env.inputs, 0).build.proof_backend, shared) {
-        Result.Ok(proved) => proved
-        Result.Err(_) => false
-    })
+    let backend = get(env.inputs, 0).build.proof_backend
+    if length(predicates) > 0 {
+        match std.loom.proof.preserves_update_expression(program, locals, value, predicates, backend, shared) {
+            Result.Ok(proved) => {
+                if proved {
+                    return Result.Ok(true)
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    Result.Ok(match std.loom.proof.preserves_update_identity(program, locals, value, backend, shared) {
+            Result.Ok(proved) => proved
+            Result.Err(_) => false
+        })
 }
 
 fn sequence_store(env Environment, receiver Int, writes Int) Text {

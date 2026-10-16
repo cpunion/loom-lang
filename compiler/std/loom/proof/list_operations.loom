@@ -110,6 +110,9 @@ pub fn single_list_write(functions List[Function], value Expr) Int {
 
 fn list_operation_outcomes(proof Verification, primitive Text, ty Int, receiver_type Int, inputs CallArguments) Result[List[Outcome], Text] {
     let name = sequence_operation(primitive)
+    if proof.identity_stores && (list_mutation(name) || name == "list_retain_range") && name != "list_set" {
+        return Result.Err("identity preservation does not permit sequence resizing or transfers")
+    }
     var state = inputs.state
     if primitive == "bytes_push" || primitive == "bytes_set" {
         // Native validation faults before mutation. These are continuation
@@ -247,6 +250,9 @@ fn list_operation_outcomes(proof Verification, primitive Text, ty Int, receiver_
             Predicate.Compare("<", add(index, scale(size, integer(-1)))))
         if name == "list_get" {
             return read_element_outcomes(proof, ty, identity, index, state)
+        }
+        if proof.identity_stores {
+            return unchanged_store(proof, primitive, receiver_type, identity, index, get(inputs.values, 2), state)
         }
         return Result.Ok(outcomes(written_element(proof, identity, index, get(inputs.values, 2), state)?, Value.Empty))
     }

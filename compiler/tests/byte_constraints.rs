@@ -94,3 +94,70 @@ async fn main() {{
         assert!(message.contains("interference-safe"), "{message}");
     }
 }
+
+#[test]
+fn opaque_identity_stores_revalidate_when_a_worker_enters_the_cached_build() {
+    let example = "compiler/examples/byte_constraints/identity";
+    for mode in ["check", "test", "run"] {
+        success(&common::loom(&[mode, example]));
+    }
+    let package = tempfile::tempdir().unwrap();
+    let cache = package.path().join("cache");
+    let binary = common::executable(package.path(), "identity-stores");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", example])
+                .arg("--output")
+                .arg(&binary)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&binary));
+    }
+    let declarations = fs::read_to_string(common::root().join(example).join("main.loom"))
+        .unwrap()
+        .replace("fn main()", "fn exercise()");
+    for shared in [false, true, false] {
+        let entry = if shared {
+            r#"
+import std.task.worker.run
+
+async fn main() {
+    match checked_text(to_bytes("hé")) {
+        Result.Ok(value) => {
+            discard run(fn() {
+                    unchanged_text(value)
+                }).await
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+"#
+        } else {
+            r#"
+fn main() {
+    exercise()
+}
+"#
+        };
+        fs::write(
+            package.path().join("main.loom"),
+            format!("{declarations}\n{entry}"),
+        )
+        .unwrap();
+        let checked = common::command(&["check", package.path().to_str().unwrap()])
+            .arg("--frontend-cache")
+            .arg(&cache)
+            .output()
+            .unwrap();
+        assert_eq!(checked.status.success(), !shared, "{checked:?}");
+        if shared {
+            assert!(String::from_utf8_lossy(&checked.stderr).contains("constrained sequence"));
+        } else {
+            success(&common::loom(&["run", package.path().to_str().unwrap()]));
+        }
+    }
+}

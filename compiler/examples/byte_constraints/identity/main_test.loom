@@ -1,0 +1,3 @@
+test fn unchanged_stores_preserve_checked_contents() {
+    main()
+}

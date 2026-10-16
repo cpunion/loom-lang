@@ -13,6 +13,11 @@ pub fn verify_preservation(program Program, function Function, backend ProofBack
 // guarantee, nor any separation for later unknown reads or returns.
 pub fn verify_preservation(program Program, function Function, backend ProofBackend,
     shared Bool, protected List[InputGuarantee], allocations List[Int], entries List[Int]) Result[Bool, Text] {
+    verify_preservation(program, function, backend, shared, protected, allocations, entries, false)
+}
+
+fn verify_preservation(program Program, function Function, backend ProofBackend,
+    shared Bool, protected List[InputGuarantee], allocations List[Int], entries List[Int], identity Bool) Result[Bool, Text] {
     let proof = contract_verification(program, function, backend, shared)?
     let conditions = new[Expr]()
     var index = 0
@@ -29,6 +34,7 @@ pub fn verify_preservation(program Program, function Function, backend ProofBack
         query = proof.query
         shared = proof.shared
         preservation = conditions
+        identity_stores = identity
         body_calls = proof.body_calls
         capture_returns = true
         returns = new[Outcome]()
@@ -46,6 +52,7 @@ fn with_loop_returns(proof Verification) Verification {
         query = proof.query
         shared = proof.shared
         preservation = proof.preservation
+        identity_stores = proof.identity_stores
         body_calls = proof.body_calls
         capture_returns = proof.capture_returns
         returns = if proof.capture_returns {
@@ -69,6 +76,7 @@ fn preservation_snapshot(proof Verification) Verification {
         query = proof.query
         shared = false
         preservation = proof.preservation
+        identity_stores = proof.identity_stores
         body_calls = proof.body_calls
         capture_returns = proof.capture_returns
         returns = proof.returns
