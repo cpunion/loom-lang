@@ -2387,7 +2387,17 @@ The [callback example](examples/callbacks/main.loom) uses source `std.list.map`,
 overloaded callbacks, returned functions, and GC-stressed argument
 ordering. Pure captured closures also execute and return from `comptime` blocks,
 preserving shared/cyclic environments. Captured function `comptime` parameters
-use the same environments, as described below. Bound method values remain later work.
+use the same environments, as described below.
+
+`let action = receiver.method` binds an accessible concept method to one
+evaluation of its receiver. Later rebinding does not change that saved value;
+shared children remain shared. Accessible fields take precedence for value
+selection. Contextual function types or explicit type arguments must select one
+exact signature, including generic and variadic methods. `dyn` values expose
+only their declared concept. Binding an async method schedules nothing; calling
+it enqueues an ordinary hot Task without running the body inline. Resource and
+staging rules are the same as for other closures. See the
+[bound method example](examples/bound_methods/README.md).
 
 ## Contract boundary
 

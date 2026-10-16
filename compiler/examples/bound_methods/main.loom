@@ -1,0 +1,160 @@
+import std.list.push
+import std.list.length
+import std.time.sleep_ms
+
+concept Step {
+    fn step(self Self, amount Int) Int
+}
+
+impl Step for Int {
+    fn step(self Int, amount Int) Int
+    ensures result == self + amount {
+        self + amount
+    }
+}
+
+fn measured(calls List[Int]) Int {
+    push(calls, 1)
+    4
+}
+
+fn select[T Step](value T) fn(Int) Int {
+    value.step
+}
+
+fn invoke[T](callback fn(T) T, value T) T {
+    callback(value)
+}
+
+fn specialized[T](comptime callback fn(T) T, value T) T {
+    callback(value)
+}
+
+concept Choose {
+    fn choose(self Self, value Int) Int
+    fn choose(self Self, left Int, right Int) Int
+    fn identity[T](self Self, value T) T {
+        value
+    }
+    fn gather[Ts...](self Self, values Ts...) (Ts...) {
+        values
+    }
+    fn count[Ts...](self Self, values Ts...) Int {
+        1
+    }
+}
+
+impl Choose for Bool {
+    fn choose(self Bool, value Int) Int {
+        value
+    }
+    fn choose(self Bool, left Int, right Int) Int {
+        left + right
+    }
+}
+
+record Buffer {
+    values List[Int]
+}
+
+concept Read {
+    fn read(self Self) Int
+}
+
+impl Read for Buffer {
+    fn read(self Buffer) Int {
+        self.values[0]
+    }
+}
+
+concept Fetch {
+    async fn fetch(self Self, value Int) Int
+}
+
+impl Fetch for Int {
+    async fn fetch(self Int, value Int) Int {
+        sleep_ms(1).await
+        self + value
+    }
+}
+
+impl Fetch for Buffer {
+    async fn fetch(self Buffer, value Int) Int {
+        push(self.values, value)
+        sleep_ms(1).await
+        value
+    }
+}
+
+fn exercise() {
+    var value = 2
+    let saved = value.step
+    value = 9
+    assert saved(3) == 5
+    assert value == 9
+    let advance = fn() Int {
+        value = value + 1
+        value
+    }
+    assert advance() == 10 && saved(3) == 5
+    let dynamic dyn Step = 7
+    let call = dynamic.step
+    assert call(2) == 9
+    let calls List[Int] = []
+    let once = measured(calls).step
+    assert once(1) == 5 && once(2) == 6 && length(calls) == 1
+    assert select(3)(4) == 7
+    assert invoke(true.choose, 8) == 8
+    assert specialized(true.choose, 9) == 9
+    let binary fn(Int, Int) Int = true.choose
+    assert binary(3, 4) == 7
+    let generic = true.identity[Text]
+    let inferred fn(Int) Int = true.identity
+    assert generic("yes") == "yes" && inferred(6) == 6
+    let packed fn(Int, Text) (Int, Text) = true.gather
+    assert packed(1, "two").1 == "two"
+    let empty fn() Int = true.count
+    assert empty() == 1
+    let nested = comptime {
+        select(5)
+    }
+    assert nested(6) == 11
+    let folded = comptime {
+        specialized(select(10), 2)
+    }
+    assert folded == 12
+    let values = [1]
+    let buffer = Buffer {
+        values = values
+    }
+    let read = buffer.read
+    values[0] = 8
+    assert read() == 8
+    // A local matching the package name cannot capture the generated method path.
+    let app = 99
+    let hygienic = value.step
+    assert hygienic(1) == 11 && app == 99
+}
+
+async fn exercise_async() {
+    let started = Buffer {
+        values = []
+    }
+    let scheduled = started.fetch
+    assert length(started.values) == 0
+    let pending = scheduled(3)
+    assert length(started.values) == 0
+    sleep_ms(1).await
+    assert length(started.values) == 1 && started.values[0] == 3
+    assert pending.await == 3
+    let factory = (4).fetch
+    assert factory(5).await == 9
+    let dynamic dyn Fetch = 7
+    let dynamic_factory = dynamic.fetch
+    assert dynamic_factory(2).await == 9
+}
+
+async fn main() {
+    exercise()
+    exercise_async().await
+}

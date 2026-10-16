@@ -41,29 +41,28 @@ fn function_input_arity(context Context, inputs CallInputs, index Int, arity Int
         }
     }
     let node = get(inputs.nodes, index)
-    let receiver = if node.kind == NodeKind.Apply {
+    let receiver = if node.kind == NodeKind.Apply || node.kind == NodeKind.Index {
         child(node, 0)
     } else {
         node
     }
-    if receiver.kind != NodeKind.Name {
+    if receiver.kind != NodeKind.Name && receiver.kind != NodeKind.Select {
         return input_value(context, inputs, index, -1, probe)
     }
-    let options = referenced_functions(context, receiver.value)
-    if length(options) == 0 {
+    if receiver.kind == NodeKind.Name && first_dot(receiver.value) == std.text.length(receiver.value) &&
+    length(referenced_functions(context, receiver.value)) == 0 {
         return input_value(context, inputs, index, -1, probe)
-    }
-    let types = if node.kind == NodeKind.Apply {
-        child(node, 1).children
-    } else {
-        new[Node]()
     }
     let selected = if probe {
         static_probe_context(context, node)?
     } else {
         context
     }
-    let value = function_value(selected, node, options, types, -1, arity)?
+    let value = if receiver.kind == NodeKind.Name {
+        named_reference(selected, node, -1, arity)?
+    } else {
+        projected_member(selected, node, expr(selected, child(receiver, 0), -1)?, receiver.value, -1, arity, true)?
+    }
     Result.Ok(if probe {
             value
         } else {

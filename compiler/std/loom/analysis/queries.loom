@@ -478,6 +478,10 @@ fn field_location(analysis CheckedQuery, report Inspection, ty Int, field Int) {
 }
 
 fn dyn_location(analysis CheckedQuery, report Inspection, value Expr) {
+    dyn_location(analysis, report, value, true)
+}
+
+fn dyn_location(analysis CheckedQuery, report Inspection, value Expr, label_type Bool) {
     if value.index < 0 || length(value.children) == 0 {
         return
     }
@@ -493,11 +497,13 @@ fn dyn_location(analysis CheckedQuery, report Inspection, value Expr) {
         method.result
     }
     let label = signature_name(analysis, method.params, output)
-    add_type(report, if method.is_async {
-            concat("async ", label)
-        } else {
-            label
-        })
+    if label_type {
+        add_type(report, if method.is_async {
+                concat("async ", label)
+            } else {
+                label
+            })
+    }
     var selected = -1
     var index = 0
     while index < length(analysis.bindings.symbols) {
@@ -619,6 +625,25 @@ fn inspect_expression(analysis CheckedQuery, report Inspection, function Functio
         return
     }
     let final = target.segment + 1 == target.segments
+    if final && (path || kind == NodeKind.Select) && bound_method_reference(analysis, value) {
+        add_type(report, query_type_name(analysis, value.ty))
+        let body = get(analysis.functions, value.index).body
+        match bound_method_call(body) {
+            Option.Some(call) => {
+                if call.kind == ExprKind.DynCall {
+                    dyn_location(analysis, report, call, false)
+                } else {
+                    if call.index >= 0 {
+                        symbol_location(analysis, report, get(analysis.functions, call.index).symbol)
+                    }
+                }
+                return
+            }
+            Option.None => {
+            }
+        }
+        return
+    }
     if path && value.kind == ExprKind.Variant {
         inspect_variant_type(analysis, report, function, target, value.ty)
     }
@@ -686,6 +711,17 @@ fn inspect_tree(analysis CheckedQuery, report Inspection, function Function, tar
     inspect_variant_pattern(analysis, report, function, target, value)
     inspect_expression(analysis, report, function, target, value, parent_type)
     if value.kind == ExprKind.FunctionRef && same_span(value.span, target.node.span) {
+        if bound_method_reference(analysis, value) && length(value.children) == 1 {
+            let environment = get(value.children, 0)
+            // Reified/forwarded references can carry an environment local,
+            // rather than a receiver initializer written at this occurrence.
+            if environment.kind == ExprKind.FrameNew && length(environment.children) == 1 {
+                let field = get(environment.children, 0)
+                if field.kind == ExprKind.Field && length(field.children) == 1 {
+                    inspect_tree(analysis, report, function, target, get(field.children, 0), -1)
+                }
+            }
+        }
         return
     }
     var index = 0
@@ -707,6 +743,40 @@ fn inspect_tree(analysis CheckedQuery, report Inspection, function Function, tar
         }
         index = index + 1
     }
+}
+
+fn bound_method_reference(analysis CheckedQuery, value Expr) Bool {
+    if value.kind != ExprKind.FunctionRef || value.index < 0 {
+        return false
+    }
+    let node = get(analysis.bindings.symbols, get(analysis.functions, value.index).symbol).node
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.ExpansionId && std.text.starts_with(child.value, "macro/bound-method/") {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn bound_method_call(value Expr) Option[Expr] {
+    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall {
+        return Option.Some(value)
+    }
+    var index = 0
+    while index < length(value.children) {
+        match bound_method_call(get(value.children, index)) {
+            Option.Some(found) => {
+                return Option.Some(found)
+            }
+            Option.None => {
+            }
+        }
+        index = index + 1
+    }
+    Option.None
 }
 
 // Uses actual checked instances, never spelling-only resolution. Results merge

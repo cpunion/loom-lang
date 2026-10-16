@@ -1,0 +1,7 @@
+test fn bound_methods_preserve_receivers_inference_and_staging() {
+    exercise()
+}
+
+test async fn bound_async_methods_enqueue_tasks_without_running_bodies_inline() {
+    exercise_async().await
+}

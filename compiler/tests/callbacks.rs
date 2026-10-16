@@ -186,6 +186,7 @@ fn source_closures_preserve_shared_cells_cleanup_and_entry_contracts() {
     for example in [
         "closures",
         "comptime_closures",
+        "bound_methods",
         "closures/cells",
         "closures/cells/entries",
         "closures/cells/loops",
@@ -243,6 +244,26 @@ fn main() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));
     }
     let cache = temporary.path().join("cache");
+    fs::write(
+        temporary.path().join("main.loom"),
+        r#"
+concept Checked {
+    fn checked(self Self, value Int) Int requires value > 0
+}
+impl Checked for Int {
+    fn checked(self Int, value Int) Int { self + value }
+}
+fn main() {
+    let source = 3
+    let action = source.checked
+    discard action(0)
+}
+"#,
+    )
+    .unwrap();
+    let rejected = loom(&["run", temporary.path().to_str().unwrap()]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("precondition"));
     let check = || {
         common::loom(&[
             "check",
@@ -252,6 +273,11 @@ fn main() {
         ])
     };
     for (example, valid, invalid) in [
+        (
+            "bound_methods",
+            "ensures result == self + amount",
+            "ensures result > self + amount",
+        ),
         (
             "closures",
             "ensures result == value",

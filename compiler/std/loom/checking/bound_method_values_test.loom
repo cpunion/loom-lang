@@ -1,0 +1,145 @@
+fn method_value_definitions() Text {
+    """
+        concept C {
+            fn read(self Self, value Int) Int
+            fn read(self Self, first Int, second Int) Int
+            fn identity[T](self Self, value T) T { value }
+        }
+        impl C for Int {
+            fn read(self Int, value Int) Int { self + value }
+            fn read(self Int, first Int, second Int) Int { self + first + second }
+        }
+        """
+}
+
+test fn bound_methods_require_unique_exact_signatures_and_explicit_evidence() {
+    discard accepted(concat(method_value_definitions(), """
+        fn choose[T C](value T) fn(Int) Int { value.read }
+        fn main() {
+            let source = 3
+            let action fn(Int) Int = source.read
+            assert action(4) == 7 && choose(5)(6) == 11
+            let identity = source.identity[Bool]
+            assert identity(true)
+        }
+        """))
+    rejects(concat(method_value_definitions(), """
+        fn main() {
+            let source = 3
+            let ambiguous = source.read
+            discard ambiguous
+        }
+        """))
+    rejects(concat(method_value_definitions(), """
+        fn hidden[T](value T) fn(Int) Int { value.read }
+        """))
+    rejects(concat(method_value_definitions(), """
+        fn main() {
+            let source = 3
+            let mismatched fn(Bool) Int = source.read
+            discard mismatched
+        }
+        """))
+    rejects(concat(method_value_definitions(), """
+        fn main() {
+            let source = 3
+            let uninferrable = source.identity
+            discard uninferrable
+        }
+        """))
+}
+
+test fn bound_methods_cannot_launder_resource_or_stage_boundaries() {
+    resource_reject(concat(resource_header(), """
+        fn main() {
+            scoped held = make([0])
+            let escaped = held.use
+            discard escaped
+        }
+        """))
+    resource_reject(concat(resource_header(), """
+        fn main() {
+            let escaped = make([0]).use
+            discard escaped
+        }
+        """))
+    resource_reject(concat(suspension_header(), """
+        concept Read { fn read(self Self) Int }
+        impl Read for Token { fn read(self Token) Int { self.id } }
+        fn main() {
+            let held = token()
+            let escaped = held.read
+            discard escaped
+        }
+        """))
+    rejects(concat(method_value_definitions(), """
+        fn main() {
+            var source = 3
+            let staged = comptime { source.identity[Int] }
+            discard staged
+        }
+        """))
+}
+
+test fn bound_dynamic_methods_need_only_the_exposed_interface_not_an_extra_import() {
+    let files = source_files("""
+        import lib.make
+        fn main() {
+            let value = make()
+            let callback = value.read
+            assert callback() == 7
+        }
+        """)
+    push(files, source_file("lib", """
+        pub concept Read { fn read(self Self) Int }
+        impl Read for Int { fn read(self Int) Int { self } }
+        pub fn make() dyn Read { 7 }
+        """, false))
+    match checked(files) {
+        Result.Ok(_) => {
+        }
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+        }
+    }
+}
+
+test fn private_receiver_methods_do_not_erase_private_field_diagnostics() {
+    let declaration = """
+        record Hidden { secret Int }
+        pub concept Read { fn read(self Self) Int }
+        impl Read for Hidden { fn read(self Hidden) Int { self.secret } }
+        pub fn make() Hidden { Hidden { secret = 7 } }
+        """
+    let files = source_files("""
+        import lib.Read
+        import lib.make
+        fn main() {
+            let value = make()
+            let action = value.read
+            assert action() == 7
+        }
+        """)
+    push(files, source_file("lib", declaration, false))
+    assert match checked(files) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let invalid = source_files("""
+        import lib.Read
+        import lib.make
+        fn main() {
+            let value = make()
+            discard value.secret
+        }
+        """)
+    push(invalid, source_file("lib", declaration, false))
+    assert match checked(invalid) {
+        Result.Err(failed) => failed.diagnostic.message == "cannot inspect a private type from another package"
+        Result.Ok(_) => false
+    }
+}
