@@ -70,7 +70,7 @@ fn draft_version(scope DraftBindings, value Expr, depth Int) Expr {
     while index < length(value.children) {
         // A checked constructor contains generated predicate/Result plumbing.
         // Only its saved source input can change the caller's binding versions.
-        push(children, if value.kind == ExprKind.Block && value.text == "checked list" && index != 0 {
+        push(children, if value.kind == ExprKind.Block && value.text == "checked sequence" && index != 0 {
                 get(value.children, index)
             } else {
                 draft_version(scope, get(value.children, index), depth + 1)

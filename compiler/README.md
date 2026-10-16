@@ -713,6 +713,7 @@ timings; local variables remain conservatively rooted for the function.
   `Result[Text, Utf8Error]`, strictly rejecting invalid bytes with `Invalid`;
   `to_text` faults on invalid UTF-8. Both take an isolated copy on success,
   including embedded NUL, and decoding also works at compile time.
+  `is_utf8(bytes)` tests validity without creating a Text copy, also at compile time.
   `std.text.to_bytes(text)` copies the UTF-8 encoding into an independent mutable
   buffer; changing it cannot change the original Text or another encoding copy.
   `std.file.read_text` reuses the fallible decoder. Binary `read_bytes/write_bytes` preserve
@@ -2463,6 +2464,15 @@ return directly when compile-time evaluation establishes its predicate; a false
 constant is a diagnostic. Unknown inputs, calls, and failed optional evaluation
 retain the `Result` boundary.
 See the [record refinement example](examples/record_refinement/main.loom).
+
+Bytes refinements use the same controlled-sequence construction, escape analysis
+and per-store preservation algebra as Lists, with ordinary Bytes layout and no
+runtime monitor. Their byte-range validation still faults before mutation.
+Pure content predicates such as `is_utf8` can define a checked read-only view;
+unknown preservation never grants writes. The [binary constraint example](examples/byte_constraints/README.md)
+combines preserving helpers, explicit copies, faults, real suspension and shared
+workers. A single shared read can use its continuing invariant without assuming
+equality with a previous or subsequent read.
 
 List-backed constraints can observe lengths independently of their element
 type, including generic or shared elements. Content predicates may observe

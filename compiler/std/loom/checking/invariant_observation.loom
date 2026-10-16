@@ -1,3 +1,5 @@
+import std.loom.proof.sequence_operation
+
 record InvariantCall {
     target Int
     inputs List[InputOrigin]
@@ -195,7 +197,8 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     if kind == ExprKind.IndirectCall && origin_shared(borrowed) {
         borrowed = invariant_indirect(reads, value, inputs, depth + 1)
     }
-    if kind == ExprKind.Intrinsic && origin_shared(borrowed) && value.text != "list_len" {
+    if kind == ExprKind.Intrinsic && origin_shared(borrowed) &&
+    std.loom.proof.sequence_operation(value.text) != "list_len" {
         set(reads.element_reads, 0, true)
     }
     // List predicates may read their controlled outer header, not mutable
@@ -204,10 +207,12 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     if kind == ExprKind.Intrinsic && reads.root_list >= 0 && origin_shared(borrowed) {
         let root = length(inputs) != 0 && !get(inputs, 0).indirect &&
         get(value.children, 0).ty == reads.root_list
-        if !root || (value.text != "list_len" && value.text != "list_get" && value.text != "list_retain_range") {
+        let operation = std.loom.proof.sequence_operation(value.text)
+        if !root || (operation != "list_len" && operation != "list_get" && operation != "list_retain_range" &&
+                value.text != "bytes_utf8" && value.text != "bytes_text_copy") {
             set(reads.valid, 0, false)
         }
-        if shared && (value.text == "list_get" || value.text == "list_retain_range") {
+        if shared && (operation == "list_get" || operation == "list_retain_range") {
             borrowed = origin_indirect(borrowed)
         }
     }
@@ -314,10 +319,11 @@ fn invariant_intrinsic_allowed(contents Bool, writes Int, name Text, inputs List
     }
     // Element replacement cannot change length. Neither the index nor the
     // stored value may transport protected storage to another alias graph.
-    if writes >= 2 && name == "list_push" && length(inputs) == 2 {
+    let operation = std.loom.proof.sequence_operation(name)
+    if writes >= 2 && operation == "list_push" && length(inputs) == 2 {
         return !origin_shared(get(inputs, 1))
     }
-    writes >= 1 && name == "list_set" && length(inputs) == 3 &&
+    writes >= 1 && operation == "list_set" && length(inputs) == 3 &&
     !origin_shared(get(inputs, 1)) && !origin_shared(get(inputs, 2))
 }
 

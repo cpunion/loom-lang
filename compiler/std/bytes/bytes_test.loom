@@ -30,11 +30,13 @@ test fn indexed_bytes_share_mutation_but_not_text_snapshots() {
 }
 
 test fn utf8_decoding_returns_isolated_text_or_an_error() {
+    assert is_utf8(new())
     assert match decode_utf8(new()) { Result.Ok(text) => text == "", _ => false }
     let buffer = new()
     push(buffer, 0)
     push(buffer, 195)
     push(buffer, 169)
+    assert is_utf8(buffer)
     let saved = match decode_utf8(buffer) {
         Result.Ok(text) => text
         Result.Err(_) => { assert false
@@ -45,10 +47,12 @@ test fn utf8_decoding_returns_isolated_text_or_an_error() {
     assert saved == "\0é"
     assert match decode_utf8(buffer) { Result.Ok(text) => text == "\0é!", _ => false }
     set(alias, 0, 255)
+    assert !is_utf8(buffer)
     assert match decode_utf8(buffer) { Result.Err(error) => error == Utf8Error.Invalid, _ => false }
     assert get(buffer, 0) == 255 && length(buffer) == 4 && saved == "\0é"
     let truncated = new()
     push(truncated, 195)
+    assert !is_utf8(truncated)
     assert match decode_utf8(truncated) { Result.Err(error) => error == Utf8Error.Invalid, _ => false }
 }
 
@@ -57,12 +61,14 @@ test fn utf8_decoding_is_compile_time_computable() {
         let buffer = new()
         push(buffer, 195)
         push(buffer, 169)
+        assert is_utf8(buffer)
         decode_utf8(buffer)
     }
     assert match decoded { Result.Ok(text) => text == "é", _ => false }
     let invalid = comptime {
         let buffer = new()
         push(buffer, 128)
+        assert !is_utf8(buffer)
         decode_utf8(buffer)
     }
     assert match invalid { Result.Err(error) => error == Utf8Error.Invalid, _ => false }

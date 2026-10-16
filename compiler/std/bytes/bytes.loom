@@ -34,6 +34,11 @@ requires byte >= 0 && byte <= 255
     bytes_set(value, index, byte)
 }
 
+// Validates the current contents without allocating a Text copy.
+pub fn is_utf8(value Bytes) Bool {
+    bytes_utf8(value)
+}
+
 pub fn push(value Bytes, byte Int)
 requires byte >= 0 && byte <= 255
 {

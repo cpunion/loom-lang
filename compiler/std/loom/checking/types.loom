@@ -307,9 +307,9 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     if kind == TypeKind.Refined {
         let base = resolve_bound(env, declaration, child(item.node, type_part(item.node)), arguments, obligations, depth + 1)?
         let base_kind = get(env.types, base).kind
-        if base != 1 && base != 3 && base != 5 && base_kind != TypeKind.Record && base_kind != TypeKind.List {
+        if base != 1 && base != 3 && base != 4 && base != 5 && base_kind != TypeKind.Record && base_kind != TypeKind.List {
             return Result.Err(failure(env, declaration, item.node,
-                "constraints require Int, Float, Text, a record or a List base"))
+                "constraints require Int, Float, Text, Bytes, a record or a List base"))
         }
         push(fields, Field { name = "self" ty = base })
         // Predicates are validated after every function signature is available.

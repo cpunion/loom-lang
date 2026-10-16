@@ -20,7 +20,7 @@ fn draft_epochs(env Environment, value Expr, candidate Expr, root Int, bodies Li
             part = part + 1
         }
     }
-    if value.kind == ExprKind.Block && value.text == "checked list" {
+    if value.kind == ExprKind.Block && value.text == "checked sequence" {
         return draft_epochs(env, draft_input(value), candidate, root, bodies, depth + 1)
     }
     var index = 0

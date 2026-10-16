@@ -138,7 +138,11 @@ supported theories and boundaries. The central rules are:
 - List/Bytes extent, indexed observations and supported immutable columns share
   versioned storage rules. Unknown aliases, opaque effects and interference
   invalidate facts. Constrained writes must preserve the complete predicate after
-  every actual store, not merely at normal return.
+  every actual store, not merely at normal return. Both sequence types support
+  fresh constrained construction and checked representation borrows; byte-range
+  faults precede stores, and opaque content predicates grant no unproved writes.
+  Shared atomic element reads can use the continuing predicate at that snapshot;
+  separate reads still cannot assume equal contents.
 - Fresh drafts and selected known aliases can publish a constrained outer header
   after checked construction and escape analysis. Raw writable aliases cannot
   escape. Shared builds independently revalidate preservation; no implicit copy,
@@ -148,6 +152,7 @@ supported theories and boundaries. The central rules are:
 
 Representative native trials include
 [constrained shared views](../../compiler/examples/shared_views),
+[constrained Bytes](../../compiler/examples/byte_constraints/README.md),
 [draft publication](../../compiler/examples/record_refinement/drafts.loom),
 [loop contracts](../../compiler/examples/loop_contracts),
 [sorting/permutation](../../compiler/examples/smt_contracts/quantified.loom),

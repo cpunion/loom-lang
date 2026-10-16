@@ -1,0 +1,3 @@
+test async fn constrained_bytes_share_preserving_writes_and_survive_gc_and_waits() {
+    assert exercise().await
+}

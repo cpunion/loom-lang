@@ -94,7 +94,7 @@ fn draft_entry_path(env Environment, input Int, path List[Int]) Bool {
         ty = get(shape.fields, field).ty
         index = index + 1
     }
-    get(env.types, ty).kind == TypeKind.List
+    get(env.types, ty).kind == TypeKind.List || get(env.types, ty).kind == TypeKind.Bytes
 }
 
 fn draft_value_root(env Environment, functions List[Function], current Function, input Expr,

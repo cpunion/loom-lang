@@ -35,7 +35,7 @@ fn draft_alias_argument(updates DraftUpdates, argument Expr, roots List[DraftRoo
         return Result.Err("draft input shape depth exhausted")
     }
     let shape = get(updates.env.types, argument.ty)
-    if shape.kind == TypeKind.List {
+    if shape.kind == TypeKind.List || (shape.kind == TypeKind.Bytes && base_type(updates.env, updates.ty) == 4) {
         let borrowed = constraint_weakened(updates.env, argument)
         let inner = if borrowed {
             get(argument.children, 0)

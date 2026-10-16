@@ -1,4 +1,21 @@
 import std.loom.proof.verify_preservation
+import std.loom.proof.sequence_operation
+
+fn sequence_store(env Environment, receiver Int, writes Int) Text {
+    if base_type(env, receiver) == 4 {
+        if writes == 1 {
+            "bytes_set"
+        } else {
+            "bytes_push"
+        }
+    } else {
+        if writes == 1 {
+            "list_set"
+        } else {
+            "list_push"
+        }
+    }
+}
 
 // Preserve the nominal information erased by an ordinary representation borrow.
 // Other expressions are abstract inputs: never replay caller effects in a proof.
@@ -101,11 +118,7 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
         result_cleanup = new[Expr]()
         result_local = -1
         body = expression(ExprKind.Intrinsic, 0, node,
-            if writes == 1 {
-                "list_set"
-            } else {
-                "list_push"
-            }, -1, arguments, true)
+            sequence_store(env, receiver.ty, writes), -1, arguments, true)
         runtime_name = ""
         span = value.span
     }
@@ -353,10 +366,17 @@ fn list_mutation_proof(env Environment, value Expr, shared Bool, writes Int) Res
 fn flow_list_update(context Context, node Node, value Expr) Expr {
     if !context.emit || !context.env.has_refinements || context.env.expanding_helpers ||
     context.env.stage_depth >= 32 || context.fact_head < 0 || value.ty != 0 ||
-    (length(value.children) != 2 && length(value.children) != 3) ||
-    (value.kind != ExprKind.Call && (value.kind != ExprKind.Intrinsic ||
-            (value.text != "list_set" && value.text != "list_push"))) {
+    (length(value.children) != 2 && length(value.children) != 3) {
         return value
+    }
+    if value.kind != ExprKind.Call {
+        if value.kind != ExprKind.Intrinsic {
+            return value
+        }
+        let operation = std.loom.proof.sequence_operation(value.text)
+        if operation != "list_set" && operation != "list_push" {
+            return value
+        }
     }
     let receiver = get(value.children, 0)
     if !constraint_weakened(context.env, receiver) {
@@ -367,7 +387,7 @@ fn flow_list_update(context Context, node Node, value Expr) Expr {
         return value
     }
     match flow_list_update_proof(context, node, value, ty) {
-        Result.Ok(true) => expression(ExprKind.Block, 0, node, "proved list update", -1,
+        Result.Ok(true) => expression(ExprKind.Block, 0, node, "proved sequence update", -1,
             expressions(value), value.falls)
         _ => value
     }
@@ -431,11 +451,7 @@ fn flow_list_update_proof(context Context, node Node, value Expr, ty Int) Result
         result_cleanup = new[Expr]()
         result_local = -1
         body = expression(ExprKind.Intrinsic, 0, node,
-            if writes == 1 {
-                "list_set"
-            } else {
-                "list_push"
-            }, -1, inputs, true)
+            sequence_store(env, get(value.children, 0).ty, writes), -1, inputs, true)
         runtime_name = ""
         span = node.span
     }

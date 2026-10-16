@@ -3,8 +3,8 @@
 // it; writes require the same preservation proof as a constrained borrow.
 // Existing origin and call-footprint analysis excludes raw publication.
 fn draft_construction(env Environment, value Expr) Bool {
-    (value.kind == ExprKind.Block && value.text == "checked list") ||
-    (value.kind == ExprKind.Coerce && constrained_list(env, value.ty) &&
+    (value.kind == ExprKind.Block && value.text == "checked sequence") ||
+    (value.kind == ExprKind.Coerce && constrained_sequence(env, value.ty) &&
         !constraint_restored(env, value))
 }
 
@@ -79,7 +79,7 @@ fn draft_occurrences(env Environment, value Expr, candidate Expr, depth Int) Int
     } else {
         0
     }
-    if value.kind == ExprKind.Block && value.text == "checked list" {
+    if value.kind == ExprKind.Block && value.text == "checked sequence" {
         return count + draft_occurrences(env, draft_input(value), candidate, depth + 1)
     }
     var index = 0
@@ -107,7 +107,7 @@ fn draft_candidates(env Environment, value Expr, candidates List[Expr], depth In
     if draft_construction(env, value) && draft_place(draft_input(value), 0) {
         push(candidates, value)
     }
-    if value.kind == ExprKind.Block && value.text == "checked list" {
+    if value.kind == ExprKind.Block && value.text == "checked sequence" {
         draft_candidates(env, draft_input(value), candidates, depth + 1)
         return
     }
