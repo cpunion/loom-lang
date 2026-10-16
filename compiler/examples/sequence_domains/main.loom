@@ -61,6 +61,33 @@ fn ordered(values List[Int]) Bool {
 
 type Sorted = List[Int] where ordered(self)
 
+fn opaque_size(values List[Int]) Bool {
+    var remaining = length(values)
+    var total = 0
+    while remaining > 0 {
+        total = total + remaining
+        remaining = remaining - 1
+    }
+    total >= 0
+}
+
+fn all_sevens(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        if values[index] != 7 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+type Sevens = List[Int] where opaque_size(self) && length(self) > 0 && all_sevens(self)
+
+fn preserve_sevens(values Sevens) {
+    values[0] = 7
+}
+
 fn set_last(values List[Int]) {
     values[length(values) - 1] = 9223372036854775807
 }
@@ -71,6 +98,9 @@ fn extend_endpoints(values Sorted) {
 }
 
 fn exercise() {
+    let sevens = Sevens([7, 7])
+    preserve_sevens(sevens)
+    assert all_sevens(sevens)
     let extremes = [-9223372036854775808, 0, 9223372036854775807]
     let rows = [Row {
             amount = -9223372036854775808

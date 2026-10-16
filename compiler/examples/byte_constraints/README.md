@@ -13,6 +13,9 @@ unrestricted mutation is wanted. A byte-range fault happens before its store;
 the original header still satisfies its invariant after the Task faults.
 Colocated tests run concurrent workers over both Bytes and List views. A sampled
 element retains its type's continuing predicate, not equality with a later read.
+The `Header` example combines UTF-8 validity with a constant leading byte.
+Workers may store that same byte and prove sampled/entry values without assuming
+that all mutable reads are stable or expanding the UTF-8 predicate.
 
 `Utf8` uses the non-copying `std.bytes.is_utf8` predicate. Its admitted reads do
 not grant arbitrary writes: an unknown UTF-8 preservation proof still rejects.

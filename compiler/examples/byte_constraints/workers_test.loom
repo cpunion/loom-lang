@@ -50,3 +50,23 @@ test async fn workers_apply_the_same_observation_rules_to_lists() {
     assert left > 0 && right > 0 && list_first(value) > 0
     assert std.list.length(value) == 3
 }
+
+test async fn constant_identity_stores_preserve_the_complete_shared_predicate() {
+    match checked_header(std.text.to_bytes("#hé")) {
+        Result.Ok(value) => {
+            let left = run(fn() Int {
+                    preserve_header(value)
+                    header_byte(value)
+                })
+            let right = run(fn() Int {
+                    preserve_header(value)
+                    header_byte(value)
+                })
+            let first, second = (left, right).await
+            assert first == 35 && second == 35 && std.bytes.is_utf8(value)
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

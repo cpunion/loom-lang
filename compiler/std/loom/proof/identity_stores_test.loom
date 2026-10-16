@@ -40,6 +40,32 @@ test fn identity_preservation_does_not_treat_every_allocation_as_private_scratch
     }
 }
 
+test fn identity_stores_use_the_continuing_predicate_at_the_atomic_read() {
+    let program = atomic_pair_program()
+    let shape = get(program.types, 7)
+    let predicate = get(shape.constraint, 0)
+    let first = get(get(predicate.children, 1).children, 0)
+    set(program.types, 7, Type {
+            kind = shape.kind
+            symbol = shape.symbol
+            arguments = shape.arguments
+            pack_widths = shape.pack_widths
+            fields = shape.fields
+            variants = shape.variants
+            constraint = [operation("&&", get(predicate.children, 0), operation("==", first, literal("7")))]
+        })
+    let body = atomic_pair_store("2", literal("7"))
+    let locals = contract_fixture([7], 0, body, [], []).locals
+    assert match preserves_update_identity(program, locals, body, no_proof_backend(), true) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+    assert match preserves_update_identity(program, locals, atomic_pair_store("2", literal("8")), no_proof_backend(), true) {
+        Result.Err(_) => true
+        Result.Ok(proved) => !proved
+    }
+}
+
 test fn stored_identity_is_not_ieee_equality_or_opaque_graph_provenance() {
     let proof = verification(contract_fixture([], 0, expression(ExprKind.Block, 0, "", -1, []), [], []), empty_proof_program())
     let nan = Value.Float(FloatValue.Literal("NaN"))

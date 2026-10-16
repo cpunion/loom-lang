@@ -310,6 +310,53 @@ test fn unchanged_stores_preserve_unexpanded_pure_constraints_without_restoratio
         """))
 }
 
+test fn literal_identity_uses_scalar_facts_without_treating_float_equality_as_identity() {
+    let header = """
+    import std.list.length
+    fn opaque[T](values List[T]) Bool {
+        var remaining = length(values)
+        var total = 0
+        while remaining > 0 {
+            total = total + remaining
+            remaining = remaining - 1
+        }
+        total >= 0
+    }
+    type Flags = List[Bool] where opaque(self) && length(self) > 0 && self[0]
+    type Words = List[Text] where opaque(self) && length(self) > 0 && self[0] == "ready"
+
+    """
+    list_constraint_accept(concat(header, """
+        pub fn flag(values Flags) {
+            values[0] = true
+        }
+        pub fn word(values Words) {
+            values[0] = "ready"
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        pub fn invalid(values Flags) {
+            values[0] = false
+        }
+        """))
+    list_constraint_reject("""
+        import std.list.length
+        fn inverse_sum(values List[Float]) Float {
+            var total = 0.0
+            var index = 0
+            while index < length(values) {
+                total = total + 1.0 / values[index]
+                index = index + 1
+            }
+            total
+        }
+        type NegativeZero = List[Float] where inverse_sum(self) < 0.0 && length(self) > 0 && self[0] == 0.0
+        pub fn invalid(values NegativeZero) {
+            values[0] = 0.0
+        }
+        """)
+}
+
 test fn atomic_updates_reuse_only_stable_caller_conditions() {
     let header = """
     import std.list.length

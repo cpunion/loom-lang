@@ -78,19 +78,25 @@ fn unchanged_store(proof Verification, primitive Text, receiver Int, identity In
     var path = 0
     while path < length(current) {
         let before = get(current, path)
-        if !loop_holds(Predicate.Constant(false), before.state) {
+        // The continuing input predicate holds at this atomic logical read,
+        // not at an earlier argument read. Reuse the ordinary read adapter.
+        let observed = captured_input_invariants(proof, before.state, before.state)
+        if !loop_holds(Predicate.Constant(false), observed) {
             let equal = stored_identity(proof, before.value, value, 0)?
-            if !loop_holds(equal, before.state) {
+            if !loop_holds(equal, observed) {
+                if loop_holds(not(equal), observed) {
+                    return Result.Err("store identity contradicts the current cell facts")
+                }
                 if !proof.query.backend.enabled {
                     return Result.Err("store identity is not proved")
                 }
-                solver_fact(proof.query, equal, before.state)
+                solver_fact(proof.query, equal, observed)
             }
         }
         // A proved identity store changes no alias, field, extent or content
         // version. Queued equalities still must discharge before admission.
         discard add_outcome(output, Outcome {
-                state = before.state
+                state = observed
                 value = Value.Empty
             })?
         path = path + 1
