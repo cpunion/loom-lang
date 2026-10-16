@@ -26,14 +26,19 @@ fn require_query_template(env Environment, signature Int) {
     }
 }
 
-fn query_required_templates(env Environment) Result[Bool, Failure] {
+fn query_required_templates(env Environment, owner Int, bodies List[Function]) Result[Bool, Failure] {
     let required = get(env.inputs, 0).template_queries
     var index = 0
     while true {
         while index < length(required) {
             let selected = get(required, index)
             let current = get(env.signatures, selected)
-            discard function(env, selected, abstract_arguments(env, current.parameters), unknown_constants(current), false)?
+            let body = function(env, selected, abstract_arguments(env, current.parameters), unknown_constants(current), false)?
+            if selected == owner {
+                // Retain the checked declaration body, never a guessed concrete
+                // instance. Non-emitting call targets remain logical-only.
+                push(bodies, body)
+            }
             index = index + 1
         }
         // Layout/type computations can discover further CTFE dependencies.
