@@ -136,7 +136,10 @@ supported theories and boundaries. The central rules are:
   General termination, recursive predicates and arbitrary graph snapshots are
   not proved.
 - List/Bytes extent, indexed observations and supported immutable columns share
-  versioned storage rules. Unknown aliases, opaque effects and interference
+  versioned storage rules. Quantified valid-index views retain the ordinary
+  element domains, including Int/byte ranges and immutable inline fields; no
+  fact grants an out-of-range access or transfers to a different storage version.
+  Unknown aliases, opaque effects and interference
   invalidate facts. Constrained writes must preserve the complete predicate after
   every actual store, not merely at normal return. Both sequence types support
   fresh constrained construction and checked representation borrows; byte-range

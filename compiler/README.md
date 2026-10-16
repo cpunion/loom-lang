@@ -3232,6 +3232,12 @@ an in-range store removes the previous occurrence and adds the replacement.
 These sequence laws prove arbitrary-index swaps and permutation through calls
 and loops, including duplicates and equal indices.
 
+Logical valid-index views reuse ordinary element type facts, including machine
+Int bounds, byte values in 0..255, Text lengths and immutable inline fields.
+The facts belong to that storage version and do not establish index validity.
+The [typed domain example](examples/sequence_domains/README.md) proves scan
+contracts and preserving sorted endpoint writes without runtime rescanning.
+
 Loop inference proposes quantified prefix, suffix and comparison-boundary
 relations from the declared postconditions. Every candidate must hold initially
 and on every backedge, and survivors are rechecked after removal. The

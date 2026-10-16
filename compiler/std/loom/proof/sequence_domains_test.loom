@@ -1,0 +1,76 @@
+import std.loom.typed.Field
+
+fn sequence_domain_facts(primitive Text, ty Int, types List[Type]) Result[State, Text] {
+    let proof = verification(fixture(literal("0"), [], literal("true")), proof_program_with_types(types))
+    quantified_type_invariants(proof, primitive, ty, 10, variable(1), State {
+            locals = []
+            facts = []
+            extents = []
+            observations = []
+        })
+}
+
+fn quantified_domain(fact Predicate) Predicate {
+    Predicate.Forall(10, constant(integer(0)), variable(1), [fact])
+}
+
+fn sequence_domain_coverage() Result[Bool, Text] {
+    let selected = IntegerTerm.Select(10, [], variable(10))
+    let low = quantified_domain(integer_limit(">=", selected, -9223372036854775808))
+    let high = quantified_domain(integer_limit("<=", selected, 9223372036854775807))
+    let integers = sequence_domain_facts("list_get", 1, [])?
+    assert length(integers.facts) == 2
+    assert same(get(integers.facts, 0), low) && same(get(integers.facts, 1), high)
+    let bytes = sequence_domain_facts("bytes_get", 1, [])?
+    assert length(bytes.facts) == 4
+    assert same(get(bytes.facts, 2), quantified_domain(integer_limit(">=", selected, 0)))
+    assert same(get(bytes.facts, 3), quantified_domain(integer_limit("<=", selected, 255)))
+    // Array totality does not establish any out-of-range element or equality
+    // with another storage version, nor does a List[Int] acquire byte bounds.
+    assert !holds(integer_limit(">=", selected, 0), integers.facts)
+    assert !holds(integer_limit("<=", IntegerTerm.Select(11, [], variable(10)), 255), bytes.facts)
+    assert !holds(integer_limit("<=", IntegerTerm.Select(10, [], variable(1)), 255), bytes.facts)
+    let text = sequence_domain_facts("list_get", 3, [])?
+    assert length(text.facts) == 2
+    assert same(get(text.facts, 0), quantified_domain(integer_limit(">=",
+                IntegerTerm.TextLength(TextValue.Select(10, [], variable(10))), 0)))
+    // Binary64 permits NaN/infinity. Its native SMT sort supplies the domain;
+    // no finite-number or reflexive-equality fact may be invented here.
+    assert length(sequence_domain_facts("list_get", 5, [])?.facts) == 0
+    let types = new[Type]()
+    var index = 0
+    while index < 6 {
+        push(types, publication_shape(TypeKind.Int, []))
+        index = index + 1
+    }
+    push(types, Type {
+            kind = TypeKind.Record
+            symbol = -1
+            arguments = []
+            pack_widths = []
+            fields = [Field {
+                    name = "number",
+                    ty = 1
+                },
+                Field {
+                    name = "text",
+                    ty = 3
+                }]
+            variants = []
+            constraint = []
+        })
+    let columns = sequence_domain_facts("list_get", 6, types)?
+    assert length(columns.facts) == 4
+    assert same(get(columns.facts, 2), quantified_domain(integer_limit(">=",
+                IntegerTerm.Select(10, [0], variable(10)), -9223372036854775808)))
+    assert same(get(columns.facts, 0), quantified_domain(integer_limit(">=",
+                IntegerTerm.TextLength(TextValue.Select(10, [1], variable(10))), 0)))
+    Result.Ok(true)
+}
+
+test fn quantified_sequence_domains_keep_primitive_and_inline_type_bounds_scoped() {
+    assert match sequence_domain_coverage() {
+        Result.Ok(valid) => valid
+        Result.Err(_) => false
+    }
+}

@@ -1,0 +1,90 @@
+import std.list.length
+import std.bytes.length
+import std.text.length
+import std.text.to_bytes
+
+record Row {
+    amount Int
+    label Text
+}
+
+fn machine_range(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        if values[index] < -9223372036854775808 || values[index] > 9223372036854775807 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn byte_range(values Bytes) Bool {
+    var index = 0
+    while index < length(values) {
+        if values[index] < 0 || values[index] > 255 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn row_range(values List[Row]) Bool {
+    var index = 0
+    while index < length(values) {
+        let row = values[index]
+        if row.amount < -9223372036854775808 || row.amount > 9223372036854775807 || length(row.label) < 0 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn typed_storage(values List[Int], bytes Bytes, rows List[Row]) Bool
+ensures result && machine_range(values) && byte_range(bytes) && row_range(rows)
+{
+    true
+}
+
+fn ordered(values List[Int]) Bool {
+    var index = 1
+    while index < length(values) {
+        if values[index - 1] > values[index] {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+type Sorted = List[Int] where ordered(self)
+
+fn extend_endpoints(values Sorted) {
+    values[0] = -9223372036854775808
+    values[length(values) - 1] = 9223372036854775807
+}
+
+fn exercise() {
+    let extremes = [-9223372036854775808, 0, 9223372036854775807]
+    let rows = [Row {
+            amount = -9223372036854775808
+            label = ""
+        }, Row {
+            amount = 9223372036854775807
+            label = "hé"
+        }]
+    let bytes = to_bytes("\0ÿ")
+    bytes[1] = 255
+    assert typed_storage(extremes, bytes, rows)
+    assert typed_storage([], to_bytes(""), [])
+    let sorted = Sorted([-1, 0, 1])
+    let alias = sorted
+    extend_endpoints(sorted)
+    assert alias[0] == -9223372036854775808 && alias[2] == 9223372036854775807
+}
+
+fn main() {
+    exercise()
+}

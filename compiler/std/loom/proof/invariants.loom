@@ -172,13 +172,15 @@ fn projected_type_value(types List[Type], ty Int, contents Int, path List[Int], 
 // Checked element types hold only on the logical version's valid indices.
 // The version's fresh positive ID also names its binder, distinct from source
 // scan binders and scalar symbols. Repeated views then reuse the same formula.
-// Export only invariant facts, never the scan's own bounds or result.
-fn quantified_type_invariants(proof Verification, ty Int, contents Int, size Linear, state State) State {
-    if ty < 6 || contents < 0 {
-        return state
+// Export the element's type facts, never the scan's own bounds or result.
+fn quantified_type_invariants(proof Verification, primitive Text, ty Int,
+    contents Int, size Linear, state State) Result[State, Text] {
+    if contents < 0 {
+        return Result.Ok(state)
     }
     let value = projected_type_value(proof.program.types, ty, contents, new[Int](), variable(contents), 0)
-    let known = invariant_facts(proof.program.types, ty, value, state, 0)
+    let known = sequence_read_state(primitive, value,
+        guarded_value_invariants(proof, ty, value, Predicate.Constant(true), text_bounds(value, state)))?
     var current = state
     var index = length(state.facts)
     while index < length(known.facts) {
@@ -186,5 +188,5 @@ fn quantified_type_invariants(proof Verification, ty Int, contents Int, size Lin
                 predicates(get(known.facts, index))))
         index = index + 1
     }
-    current
+    Result.Ok(current)
 }

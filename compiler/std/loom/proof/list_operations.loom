@@ -19,6 +19,17 @@ pub fn sequence_operation(name Text) Text {
     name
 }
 
+// The storage primitive supplies the same element domain for an executed read
+// and a logical version. Index validity is a separate obligation in both cases.
+fn sequence_read_state(primitive Text, value Value, state State) Result[State, Text] {
+    if primitive == "bytes_get" {
+        let byte = integer_term(value)?
+        return Result.Ok(assume(assume(state, integer_limit(">=", byte, 0)),
+                integer_limit("<=", byte, 255)))
+    }
+    Result.Ok(state)
+}
+
 fn list_operation(primitive Text) Bool {
     let name = sequence_operation(primitive)
     name == "list_new" || name == "list_new_capacity" || name == "list_len" || name == "list_get" ||
@@ -265,10 +276,7 @@ fn execute_list_operation(proof Verification, expr Expr, name Text, state State,
                 } else {
                     read.state
                 }
-                if name == "bytes_get" {
-                    let byte = integer_term(read.value)?
-                    observed = assume(assume(observed, integer_limit(">=", byte, 0)), integer_limit("<=", byte, 255))
-                }
+                observed = sequence_read_state(name, read.value, observed)?
                 set(written, path, Outcome {
                         state = observed
                         value = read.value

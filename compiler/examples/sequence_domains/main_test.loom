@@ -1,0 +1,3 @@
+test fn typed_domains_compose_with_scans_and_persistent_ordering() {
+    exercise()
+}
