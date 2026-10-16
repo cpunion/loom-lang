@@ -123,8 +123,10 @@ can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently
 checked ordinary function can still provide hover and navigation; its own errors
-or a failing dependency suppress the result. Syntax, global declaration, and
-generic/comptime template errors can still block body queries. Original checked
+or a failing dependency suppress the result. Required template declarations are
+checked abstractly, including CTFE/callback/witness dependencies; unrelated
+template bodies no longer block the selected query. Syntax and global declaration
+failures still block recovery. Original checked
 function headers separately retain generic type-parameter declarations and
 static value/callback signatures even when their owner's body is invalid; they
 carry no executable body or proof-success claim.

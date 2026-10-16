@@ -77,15 +77,14 @@ fn query_signature_header(node Node, offset Int) Bool {
     false
 }
 
-fn query_function_owner(env Environment, file Int, offset Int) Int {
+fn query_function_owner(env Environment, declarations Int, file Int, offset Int) Int {
     var selected = -1
     var index = 0
-    while index < length(env.signatures) {
-        let current = get(env.signatures, index)
-        let item = symbol(env, current.symbol)
-        if item.file == file && offset >= item.node.span.start && offset < item.node.span.end &&
-        current.parameters == 0 && !has_static(current) && has(item.node, NodeKind.Block) {
-            selected = index
+    while index < declarations {
+        let item = symbol(env, index)
+        if item.file == file && item.node.kind == NodeKind.Function &&
+        offset >= item.node.span.start && offset < item.node.span.end && has(item.node, NodeKind.Block) {
+            selected = source_signature_id(env, index)
         }
         index = index + 1
     }
@@ -123,11 +122,11 @@ fn query_templates(env Environment) Result[Bool, Failure] {
 }
 
 // Signature queries need only their actual header/type dependencies, not
-// unrelated bodies. Other queries recover only from unrelated ordinary body
-// failures. Binding/global declaration failures remain fatal. Body queries also
-// validate every generic/comptime template: a concrete instance must not substitute for
-// its declaration's abstract legality, including helpers reached only by CTFE.
-// Consequently an unrelated invalid template still prevents body queries.
+// unrelated bodies. Body queries validate their actual template dependency
+// closure: a concrete instance must not substitute for its declaration's
+// abstract legality, including helpers reached only by CTFE. Unrelated ordinary
+// and template body failures do not block this query. Binding/global declaration
+// failures remain fatal; this is not a whole-program build-success claim.
 // Generic headers retain their original abstract types, not concrete instances.
 // Generic/comptime body owners have no concrete query instance and return an
 // empty function list; no arbitrary type or static arguments are invented.
@@ -152,19 +151,24 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
     }
     var functions = new[Function]()
     if length(headers) == 0 {
-        discard query_templates(env)?
-        // Template checking can append generated functions. Keep body-owner
-        // selection on the completed tables, as in ordinary closure queries.
-        let owner = query_function_owner(env, file, offset)
+        // Choose the original declaration, not a specialization produced while
+        // checking a type/header that happens to share its source span.
+        let owner = query_function_owner(env, declarations, file, offset)
         if owner >= 0 {
             let current = get(env.signatures, owner)
-            discard schedule(env, owner, new[Int](), new[StaticValue](), symbol(env, current.symbol).node)?
-            // A produced dyn value can be used outside this query. Check its
-            // witness methods too, without unrelated application roots.
-            functions = emit_functions_in(env, true, no_body_reuse(), false, true)?
+            if current.parameters != 0 || has_static(current) {
+                require_query_template(env, owner)
+            } else {
+                discard schedule(env, owner, new[Int](), new[StaticValue](), symbol(env, current.symbol).node)?
+                // A produced dyn value can be used outside this query. Check its
+                // witness methods too, without unrelated application roots.
+                functions = emit_functions_in(env, true, no_body_reuse(), false, true)?
+            }
         }
+        discard query_required_templates(env)?
+    } else {
+        discard layouts(env)?
     }
-    discard layouts(env)?
     source_contract_functions(env, functions)
     Result.Ok(CheckedQuery {
             bindings = env.source

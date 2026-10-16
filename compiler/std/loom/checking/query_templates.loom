@@ -1,0 +1,63 @@
+// Query-only dependency tracking uses the checker's actual selections, including
+// calls/values in abstract bodies and private CTFE/witness queues. Ordinary
+// compilation does not record edges or change its whole-source template checks.
+fn require_query_template(env Environment, signature Int) {
+    let pack = pack_instance(env, signature)
+    let selected = if pack >= 0 {
+        source_signature_id(env, get(env.packs, pack).declaration)
+    } else {
+        signature
+    }
+    if selected < 0 {
+        return
+    }
+    let current = get(env.signatures, selected)
+    if (current.parameters == 0 && !has_static(current)) ||
+    (prototype(env, current.symbol) && !has(symbol(env, current.symbol).node, NodeKind.Block)) {
+        return
+    }
+    let inputs = get(env.inputs, 0)
+    while length(inputs.template_seen) <= selected {
+        push(inputs.template_seen, false)
+    }
+    if !get(inputs.template_seen, selected) {
+        set(inputs.template_seen, selected, true)
+        push(inputs.template_queries, selected)
+    }
+}
+
+fn query_required_templates(env Environment) Result[Bool, Failure] {
+    let required = get(env.inputs, 0).template_queries
+    var index = 0
+    while true {
+        while index < length(required) {
+            let selected = get(required, index)
+            let current = get(env.signatures, selected)
+            discard function(env, selected, abstract_arguments(env, current.parameters), unknown_constants(current), false)?
+            index = index + 1
+        }
+        // Layout/type computations can discover further CTFE dependencies.
+        // Consume their appended edges without rechecking completed templates.
+        discard layouts(env)?
+        if index == length(required) {
+            return Result.Ok(true)
+        }
+    }
+}
+
+fn require_query_reference(env Environment, signature Int, arguments List[Int]) Result[Bool, Failure] {
+    require_query_template(env, signature)
+    let current = get(env.signatures, signature)
+    if prototype(env, current.symbol) && length(arguments) != 0 {
+        let receiver = get(arguments, 0)
+        let kind = get(env.types, receiver).kind
+        // A known nominal receiver selects its implementation even inside an
+        // abstract caller. Evidence-only and dynamic receivers select none.
+        if kind != TypeKind.Parameter && kind != TypeKind.Associated && kind != TypeKind.Rigid && kind != TypeKind.Dyn &&
+        conformance(env, receiver, symbol(env, current.symbol).owner).implementation >= 0 {
+            let target = method_target(env, signature, arguments, new[StaticValue]())?
+            require_query_template(env, target.signature)
+        }
+    }
+    Result.Ok(true)
+}

@@ -58,6 +58,7 @@ fn record_declaration_reference(env Environment, owner Int, node Node, selected 
 // Callers test the switch before entering this allocating function/root frame.
 // Binding evidence needs no locals, effects, cleanup or other Context state.
 fn record_function_reference(env Environment, owner Int, node Node, selected Int, arguments List[Int]) Result[Bool, Failure] {
+    discard require_query_reference(env, selected, arguments)?
     let source = if node.kind == NodeKind.Apply {
         child(node, 0)
     } else {
