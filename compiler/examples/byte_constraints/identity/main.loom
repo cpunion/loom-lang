@@ -18,6 +18,7 @@ fn checksum(values List[Int]) Int {
 }
 
 type Checked = List[Int] where checksum(self) == 7
+
 type Utf8 = Bytes where is_utf8(self)
 
 fn checked_numbers(input List[Int]) Result[Checked, ConstraintError] {
