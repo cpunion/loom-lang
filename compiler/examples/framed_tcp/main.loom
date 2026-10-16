@@ -1,0 +1,129 @@
+import std.net.tcp.Stream
+import std.stream.Stream
+import std.net.tcp.TcpError
+import std.net.tcp.listen
+import std.net.tcp.connect
+import std.net.tcp.accept
+import std.net.tcp.local_address
+import std.net.tcp.write_bytes
+import std.net.tcp.shutdown_write
+import std.net.tcp.close_listener
+import std.net.tcp.close_stream
+import std.net.tcp.chunks.read
+import std.stream.length32.frames
+import std.stream.length32.encode
+import std.option.Option
+import std.result.Result
+import std.bytes.new
+import std.bytes.get
+import std.bytes.push
+import std.bytes.length
+import std.bytes.to_text
+import std.text.to_bytes
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.Outcome
+
+fn packet(value Result[Bytes, TcpError]) Result[Bytes, TcpError] {
+    value
+}
+
+fn framed(value Bytes) Bytes {
+    match encode(value, 64) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            new()
+        }
+    }
+}
+
+fn append(output Bytes, value Bytes) {
+    var index = 0
+    while index < length(value) {
+        push(output, get(value, index))
+        index = index + 1
+    }
+}
+
+async fn send(connection std.net.tcp.Stream) Result[Int, TcpError] {
+    let binary = new()
+    push(binary, 255)
+    push(binary, 0)
+    let wire = framed(to_bytes("first"))
+    append(wire, framed(binary))
+    append(wire, framed(new()))
+    var index = 0
+    while index < length(wire) {
+        let chunk = new()
+        push(chunk, get(wire, index))
+        discard write_bytes(connection, chunk).await?
+        sleep_ms(0).await
+        index = index + 1
+    }
+    // Leave the write side open: a frame must not require EOF to complete.
+    Result.Ok(index)
+}
+
+async fn trial() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let client = connect(local_address(listener)?).await?
+    defer {
+        discard close_stream(client)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    let source = read(server, 2)
+    let abandoned = frames(source, packet, 64)
+    let pending = abandoned.next()
+    sleep_ms(1).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert match abandoned.next().await {
+        Option.None => true
+        _ => false
+    }
+
+    let messages = frames(source, packet, 64)
+    let writing = send(client)
+    assert match messages.next().await {
+        Option.Some(Result.Ok(value)) => to_text(value) == "first"
+        _ => false
+    }
+    assert match messages.next().await {
+        Option.Some(Result.Ok(value)) => length(value) == 2 && get(value, 0) == 255 && get(value, 1) == 0
+        _ => false
+    }
+    assert match messages.next().await {
+        Option.Some(Result.Ok(value)) => length(value) == 0
+        _ => false
+    }
+    assert writing.await? == 19
+    discard shutdown_write(client)?
+    assert match messages.next().await {
+        Option.None => true
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+async fn main() {
+    assert match trial().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+test async fn frames_complete_on_an_open_connection_after_split_headers_and_cancellation() {
+    assert match trial().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}

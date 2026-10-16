@@ -1,0 +1,294 @@
+import std.iter.from_list
+import std.stream.from_iter
+import std.stream.collect
+import std.text.to_bytes
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.outcome
+import std.task.Outcome
+import std.list.length
+import std.list.new
+import std.list.push
+import std.bytes.set
+import std.bytes.to_text
+
+fn raw(value Bytes) Result[Bytes, Text] {
+    Result.Ok(value)
+}
+
+fn packet(value Result[Bytes, Text]) Result[Bytes, Text] {
+    value
+}
+
+fn bytes(values List[Int]) Bytes {
+    let output = new()
+    var index = 0
+    while index < std.list.length(values) {
+        push(output, values[index])
+        index = index + 1
+    }
+    output
+}
+
+fn encoded(value Bytes) Bytes {
+    match encode(value, 1024) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            new()
+        }
+    }
+}
+
+fn append(output Bytes, value Bytes) {
+    var index = 0
+    while index < length(value) {
+        push(output, get(value, index))
+        index = index + 1
+    }
+}
+
+fn chunks(value Bytes, width Int) List[Bytes] {
+    let output = std.list.new[Bytes]()
+    std.list.push(output, new())
+    var position = 0
+    while position < length(value) {
+        let chunk = new()
+        var count = 0
+        while count < width && position < length(value) {
+            push(chunk, get(value, position))
+            count = count + 1
+            position = position + 1
+        }
+        std.list.push(output, chunk)
+    }
+    output
+}
+
+test async fn length32_frames_preserve_binary_payloads_across_chunk_boundaries() {
+    let binary = bytes([0, 255, 128])
+    let wire = encoded(new())
+    append(wire, encoded(binary))
+    append(wire, encoded(to_bytes("hé中😀")))
+    let widths = [1, 3, 7, 4096]
+    var index = 0
+    while index < std.list.length(widths) {
+        let source dyn Stream[Item = Bytes] = from_iter(from_list(chunks(wire, widths[index])))
+        let reader = frames(source, raw, 1024)
+        let values = collect(reader).await
+        assert std.list.length(values) == 3
+        assert match values[0] {
+            Result.Ok(value) => length(value) == 0
+            _ => false
+        }
+        let body = match values[1] {
+            Result.Ok(value) => value
+            _ => {
+                assert false
+                new()
+            }
+        }
+        assert length(body) == 3 && get(body, 0) == 0 && get(body, 1) == 255 && get(body, 2) == 128
+        assert match values[2] {
+            Result.Ok(value) => std.bytes.to_text(value) == "hé中😀"
+            _ => false
+        }
+        std.bytes.set(body, 0, 9)
+        assert get(binary, 0) == 0
+        index = index + 1
+    }
+    let payload = new()
+    index = 0
+    while index < 300 {
+        push(payload, 42)
+        index = index + 1
+    }
+    let large_wire = encoded(payload)
+    assert length(large_wire) == 304 && get(large_wire, 0) == 0 && get(large_wire, 1) == 0 && get(large_wire, 2) == 1 && get(large_wire, 3) == 44
+    std.bytes.set(payload, 0, 1)
+    assert get(large_wire, 4) == 42
+    let large = frames(from_iter(from_list([large_wire])), raw, 300)
+    assert match large.next().await {
+        Option.Some(Result.Ok(value)) => length(value) == 300 && get(value, 0) == 42
+        _ => false
+    }
+    assert match encode(payload, 299) {
+        Result.Err(EncodeError.TooLarge(size)) => size == 300
+        _ => false
+    }
+}
+
+test async fn length32_stops_at_frame_boundaries_and_copies_share_the_cursor() {
+    let wire = encoded(to_bytes("first"))
+    append(wire, encoded(to_bytes("second")))
+    let source = from_iter(from_list([wire, to_bytes("unread")]))
+    let reader = frames(source, raw, 32)
+    let shared = reader
+    assert match reader.next().await {
+        Option.Some(Result.Ok(value)) => std.bytes.to_text(value) == "first"
+        _ => false
+    }
+    assert match shared.next().await {
+        Option.Some(Result.Ok(value)) => std.bytes.to_text(value) == "second"
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(value) => std.bytes.to_text(value) == "unread"
+        _ => false
+    }
+}
+
+test async fn length32_limits_truncation_and_input_errors_are_terminal() {
+    let source = from_iter(from_list([bytes([255, 255, 255, 255]), to_bytes("unread")]))
+    let reader = frames(source, raw, 64)
+    assert match reader.next().await {
+        Option.Some(Result.Err(FrameError.TooLarge(size))) => size == 4294967295
+        _ => false
+    }
+    assert match reader.next().await {
+        Option.None => true
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(value) => std.bytes.to_text(value) == "unread"
+        _ => false
+    }
+    let header = frames(from_iter(from_list([bytes([0, 0, 0])])), raw, 8)
+    assert match header.next().await {
+        Option.Some(Result.Err(FrameError.TruncatedHeader(count))) => count == 3
+        _ => false
+    }
+    let payload = frames(from_iter(from_list([bytes([0, 0, 0, 3, 42, 43])])), raw, 8)
+    assert match payload.next().await {
+        Option.Some(Result.Err(FrameError.TruncatedPayload(expected, received))) => expected == 3 && received == 2
+        _ => false
+    }
+    let inputs List[Result[Bytes, Text]] = [Result.Ok(bytes([0, 0])), Result.Err("read failed"), Result.Ok(to_bytes("unread"))]
+    let failed_source = from_iter(from_list(inputs))
+    let failed_reader = frames(failed_source, packet, 8)
+    assert match failed_reader.next().await {
+        Option.Some(Result.Err(FrameError.Input(message))) => message == "read failed"
+        _ => false
+    }
+    assert match failed_reader.next().await {
+        Option.None => true
+        _ => false
+    }
+    assert match failed_source.next().await {
+        Option.Some(Result.Ok(value)) => std.bytes.to_text(value) == "unread"
+        _ => false
+    }
+    let empty = frames(from_iter(from_list([encoded(new())])), raw, 0)
+    assert match empty.next().await {
+        Option.Some(Result.Ok(value)) => length(value) == 0
+        _ => false
+    }
+    assert match empty.next().await {
+        Option.None => true
+        _ => false
+    }
+}
+
+record Configuration {
+    events List[Int]
+    milliseconds Int
+}
+
+record OwnedInput {
+    configuration Configuration
+}
+
+impl MustScope for OwnedInput {
+}
+
+impl Dispose for OwnedInput {
+    fn dispose(self OwnedInput) {
+        std.list.push(self.configuration.events, 9)
+    }
+}
+
+impl Stream for OwnedInput {
+    type Item = Bytes
+
+    async fn next(self OwnedInput) Option[Bytes] {
+        std.list.push(self.configuration.events, 1)
+        defer {
+            std.list.push(self.configuration.events, 2)
+        }
+        sleep_ms(self.configuration.milliseconds).await
+        Option.Some(encoded(to_bytes("owned")))
+    }
+}
+
+fn create(configuration Configuration) OwnedInput {
+    std.list.push(configuration.events, 0)
+    OwnedInput {
+        configuration = configuration
+    }
+}
+
+fn open(configuration Configuration) Result[OwnedInput, Text] {
+    Result.Ok(create(configuration))
+}
+
+async fn owned(configuration Configuration) Result[Bool, Text] {
+    scoped reader = frames(open, configuration, raw, 32)?
+    Result.Ok(match reader.next().await {
+            Option.Some(Result.Ok(value)) => std.bytes.to_text(value) == "owned"
+            _ => false
+        })
+}
+
+test async fn length32_owned_factories_drain_pending_pulls_before_disposal() {
+    let events = std.list.new[Int]()
+    assert match owned(Configuration {
+            events = events
+            milliseconds = 0
+        }).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert std.list.length(events) == 4 && events[0] == 0 && events[1] == 1 && events[2] == 2 && events[3] == 9
+    let cancelled_events = std.list.new[Int]()
+    let pending = owned(Configuration {
+            events = cancelled_events
+            milliseconds = 10000
+        })
+    sleep_ms(1).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert std.list.length(cancelled_events) == 4 && cancelled_events[2] == 2 && cancelled_events[3] == 9
+    let direct_events = std.list.new[Int]()
+    {
+        scoped reader = frames(create, Configuration {
+                events = direct_events
+                milliseconds = 0
+            }, raw, 32)
+        discard reader.next().await
+    }
+    assert std.list.length(direct_events) == 4 && direct_events[3] == 9
+}
+
+fn broken(value Bytes) Result[Bytes, Text] {
+    assert false
+    Result.Ok(value)
+}
+
+test async fn length32_converter_faults_retire_the_shared_cursor() {
+    let source = from_iter(from_list([encoded(to_bytes("first")), to_bytes("unread")]))
+    let reader = frames(source, broken, 32)
+    assert match outcome(reader.next()).await {
+        Outcome.Faulted(_) => true
+        _ => false
+    }
+    assert match reader.next().await {
+        Option.None => true
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(value) => std.bytes.to_text(value) == "unread"
+        _ => false
+    }
+}

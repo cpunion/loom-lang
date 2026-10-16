@@ -1,0 +1,245 @@
+import std.stream.Stream
+import std.option.Option
+import std.result.Result
+import std.resource.Dispose
+import std.resource.MustScope
+import std.bytes.new
+import std.bytes.length
+import std.bytes.get
+import std.bytes.push
+
+pub enum FrameError[E] {
+    Input(E)
+    TooLarge(Int)
+    TruncatedHeader(Int)
+    TruncatedPayload(Int, Int)
+}
+
+pub enum EncodeError {
+    TooLarge(Int)
+}
+
+record Cursor {
+    chunk Bytes
+    position Int
+    header_bytes Int
+    announced Int
+    payload Bytes
+    ended Bool
+}
+
+pub record Frames[S Stream, E] {
+    state State[S, E]
+}
+
+record State[S Stream, E] {
+    source S
+    bytes fn(S.Item) Result[Bytes, E]
+    maximum Int
+    cursor List[Cursor]
+}
+
+fn cursor() List[Cursor] {
+    [Cursor {
+            chunk = new()
+            position = 0
+            header_bytes = 0
+            announced = 0
+            payload = new()
+            ended = false
+        }]
+}
+
+// Four big-endian length bytes followed by exactly that many payload bytes.
+// Copies share one serialized cursor; construction does not pull the producer.
+pub fn frames[S Stream, E](source S, bytes fn(S.Item) Result[Bytes, E], maximum Int) Frames[S, E]
+requires maximum >= 0 && maximum <= 4294967295
+{
+    Frames[S, E] {
+        state = State[S, E] {
+            source = source
+            bytes = bytes
+            maximum = maximum
+            cursor = cursor()
+        }
+    }
+}
+
+pub fn frames[A, S Stream + Dispose + MustScope, E](create fn(A) S, input A,
+    bytes fn(S.Item) Result[Bytes, E], maximum Int) Frames[S, E]
+requires maximum >= 0 && maximum <= 4294967295
+{
+    Frames[S, E] {
+        state = State[S, E] {
+            source = create(input)
+            bytes = bytes
+            maximum = maximum
+            cursor = cursor()
+        }
+    }
+}
+
+pub fn frames[A, S Stream + Dispose + MustScope, E, F](create fn(A) Result[S, F], input A,
+    bytes fn(S.Item) Result[Bytes, E], maximum Int) Result[Frames[S, E], F]
+requires maximum >= 0 && maximum <= 4294967295
+{
+    Result.Ok(Frames[S, E] {
+            state = State[S, E] {
+                source = create(input)?
+                bytes = bytes
+                maximum = maximum
+                cursor = cursor()
+            }
+        })
+}
+
+fn failed[E](state List[Cursor], error FrameError[E]) Option[Result[Bytes, FrameError[E]]] {
+    state[0] = Cursor {
+        chunk = new()
+        payload = new()
+        ended = true
+        ..state[0]
+    }
+    Option.Some(Result.Err(error))
+}
+
+fn ready[E](state List[Cursor]) Option[Result[Bytes, FrameError[E]]] {
+    let value = state[0].payload
+    state[0] = Cursor {
+        header_bytes = 0
+        announced = 0
+        payload = new()
+        ..state[0]
+    }
+    Option.Some(Result.Ok(value))
+}
+
+impl[S Stream, E] Stream for Frames[S, E] {
+    type Item = Result[Bytes, FrameError[E]]
+
+    async fn next(self Frames[S, E]) Option[Result[Bytes, FrameError[E]]] {
+        if self.state.cursor[0].ended {
+            return Option.None
+        }
+        while true {
+            let current = self.state.cursor[0]
+            let size = length(current.chunk)
+            if current.position < size {
+                if current.header_bytes < 4 {
+                    var position = current.position
+                    var count = current.header_bytes
+                    var announced = current.announced
+                    while position < size && count < 4 {
+                        announced = announced * 256 + get(current.chunk, position)
+                        position = position + 1
+                        count = count + 1
+                    }
+                    self.state.cursor[0] = Cursor {
+                        position = position
+                        header_bytes = count
+                        announced = announced
+                        ..current
+                    }
+                    if count == 4 {
+                        if announced > self.state.maximum {
+                            return failed[E](self.state.cursor, FrameError.TooLarge(announced))
+                        }
+                        if announced == 0 {
+                            return ready[E](self.state.cursor)
+                        }
+                    }
+                } else {
+                    let remaining = current.announced - length(current.payload)
+                    let available = size - current.position
+                    let count = if remaining < available {
+                        remaining
+                    } else {
+                        available
+                    }
+                    var index = 0
+                    while index < count {
+                        push(current.payload, get(current.chunk, current.position + index))
+                        index = index + 1
+                    }
+                    self.state.cursor[0] = Cursor {
+                        position = current.position + count
+                        ..current
+                    }
+                    if length(current.payload) == current.announced {
+                        return ready[E](self.state.cursor)
+                    }
+                }
+            } else {
+                // A failed/cancelled pull or converter cannot replay consumed
+                // input. Retire retained buffers unless this pull completes.
+                self.state.cursor[0] = Cursor {
+                    chunk = new()
+                    payload = new()
+                    ended = true
+                    ..current
+                }
+                match self.state.source.next().await {
+                    Option.None => {
+                        if current.header_bytes == 0 {
+                            return Option.None
+                        }
+                        return if current.header_bytes < 4 {
+                            failed[E](self.state.cursor, FrameError.TruncatedHeader(current.header_bytes))
+                        } else {
+                            failed[E](self.state.cursor, FrameError.TruncatedPayload(current.announced, length(current.payload)))
+                        }
+                    }
+                    Option.Some(item) => {
+                        let chunk = match self.state.bytes(item) {
+                            Result.Ok(value) => value
+                            Result.Err(error) => {
+                                return failed[E](self.state.cursor, FrameError.Input(error))
+                            }
+                        }
+                        self.state.cursor[0] = Cursor {
+                            chunk = chunk
+                            position = 0
+                            ended = false
+                            ..current
+                        }
+                    }
+                }
+            }
+        }
+        Option.None
+    }
+}
+
+impl[S Stream + Dispose + MustScope, E] MustScope for Frames[S, E] {
+}
+
+impl[S Stream + Dispose + MustScope, E] Dispose for Frames[S, E] {
+    fn dispose(self Frames[S, E]) {
+    }
+}
+
+impl[S Stream + Dispose + MustScope, E] Dispose for State[S, E] {
+    fn dispose(self State[S, E]) {
+    }
+}
+
+// Return a fresh framed buffer without modifying or aliasing the input bytes.
+pub fn encode(payload Bytes, maximum Int) Result[Bytes, EncodeError]
+requires maximum >= 0 && maximum <= 4294967295
+{
+    let size = length(payload)
+    if size > maximum {
+        return Result.Err(EncodeError.TooLarge(size))
+    }
+    let output = new()
+    push(output, size / 16777216)
+    push(output, size / 65536 % 256)
+    push(output, size / 256 % 256)
+    push(output, size % 256)
+    var index = 0
+    while index < size {
+        push(output, get(payload, index))
+        index = index + 1
+    }
+    Result.Ok(output)
+}
