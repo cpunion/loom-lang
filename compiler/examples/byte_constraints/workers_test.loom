@@ -55,12 +55,14 @@ test async fn constant_identity_stores_preserve_the_complete_shared_predicate() 
     match checked_header(std.text.to_bytes("#hé")) {
         Result.Ok(value) => {
             let left = run(fn() Int {
-                    preserve_header(value)
+                    value[0] = 35
                     header_byte(value)
                 })
-            let right = run(fn() Int {
-                    preserve_header(value)
-                    header_byte(value)
+            let right = run(fn() Int
+                ensures result == 35
+                {
+                    value[0] = 35
+                    value[0]
                 })
             let first, second = (left, right).await
             assert first == 35 && second == 35 && std.bytes.is_utf8(value)

@@ -53,6 +53,20 @@ fn capture_precondition(scope Lexical, value Expr) Expr {
     }
     storage_node(value, value.kind, value.ty, value.index, children)
 }
+
+fn closure_preconditions(context Context, values List[Expr]) List[Expr] {
+    if length(context.lexical) == 0 || get(context.lexical, 0).environment < 0 {
+        return values
+    }
+    let output = new[Expr]()
+    var index = 0
+    while index < length(values) {
+        push(output, capture_precondition(get(context.lexical, 0), get(values, index)))
+        index = index + 1
+    }
+    output
+}
+
 fn close_expression(scope Lexical, value Expr, captured Bool) Expr {
     let children = new[Expr]()
     var index = 0
@@ -107,8 +121,18 @@ fn close_function(context Context, function Function) Function {
         push(locals, get(function.locals, scope.local))
         push(params, scope.environment)
     }
+    // Closure bodies supply the environment after their source parameters;
+    // closing moves it to the native leading slot. Synthetic CTFE bodies can
+    // have no such parameter, despite sharing the enclosing lexical context.
+    let hidden = captured && length(function.params) == scope.local + 1 &&
+    get(function.params, scope.local) == scope.environment
+    let parameters = length(function.params) - if hidden {
+        1
+    } else {
+        0
+    }
     var index = 0
-    while index < length(function.params) { push(params, get(function.params, index))
+    while index < parameters { push(params, get(function.params, index))
         index = index + 1 }
     index = 0
     while index < length(function.locals) {

@@ -1,0 +1,89 @@
+// Closure environments contain stable capture slots, unlike mutable captured
+// cells or coroutine frames. Confirm the checked write footprint before using
+// their field values; a Frame tag or allocation label is not that evidence.
+fn frame_input_expression(value Expr, ty Int, fields Int, budget List[Int], depth Int) Bool {
+    if depth >= 128 || get(budget, 0) <= 0 {
+        return false
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    if value.kind == ExprKind.FrameStore && length(value.children) > 0 && get(value.children, 0).ty == ty {
+        return false
+    }
+    if value.kind == ExprKind.FrameNew && value.ty == ty && length(value.children) != fields {
+        return false
+    }
+    var index = 0
+    while index < length(value.children) {
+        if !frame_input_expression(get(value.children, index), ty, fields, budget, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if !frame_input_expression(get(body, item), ty, fields, budget, depth + 1) {
+                return false
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn frame_input_function(function Function, ty Int, fields Int, budget List[Int]) Bool {
+    if !frame_input_expression(function.body, ty, fields, budget, 0) {
+        return false
+    }
+    let groups = [function.preconditions, function.postconditions, function.result_cleanup]
+    var index = 0
+    while index < length(groups) {
+        let clauses = get(groups, index)
+        var item = 0
+        while item < length(clauses) {
+            if !frame_input_expression(get(clauses, item), ty, fields, budget, 0) {
+                return false
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn frame_input(proof Verification, ty Int) Bool {
+    let shape = get(proof.program.types, ty)
+    if shape.kind != TypeKind.Frame || shape.symbol < 0 {
+        return false
+    }
+    var field = 0
+    while field < length(shape.fields) {
+        let storage = get(proof.program.types, get(shape.fields, field).ty)
+        // Unclosed source Assign still names a captured binding. Never model
+        // its shared cell as a replaceable proof-local scalar slot.
+        if storage.kind == TypeKind.Frame && storage.symbol < 0 {
+            return false
+        }
+        field = field + 1
+    }
+    let budget = [100000]
+    if !frame_input_function(proof.function, ty, length(shape.fields), budget) {
+        return false
+    }
+    var index = 0
+    while index < length(proof.program.functions) {
+        if !frame_input_function(get(proof.program.functions, index), ty, length(shape.fields), budget) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn record_input_shape(shape Type) Bool {
+    shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple ||
+    (shape.kind == TypeKind.Frame && shape.symbol >= 0)
+}

@@ -233,7 +233,8 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             with_contracts(built.function, built.function.preconditions,
                 add_contracts(contracts(built.context, node, NodeKind.Ensures)?, inherited_contracts(built.context, NodeKind.Ensures)?))
         } else {
-            with_contracts(function, add_contracts(contracts(stage, node, NodeKind.Requires)?, inherited_contracts(stage, NodeKind.Requires)?),
+            with_contracts(function, closure_preconditions(stage,
+                    add_contracts(contracts(stage, node, NodeKind.Requires)?, inherited_contracts(stage, NodeKind.Requires)?)),
                 add_contracts(contracts(stage, node, NodeKind.Ensures)?, inherited_contracts(stage, NodeKind.Ensures)?))
         }
         let summaries = new[Function]()

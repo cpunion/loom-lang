@@ -201,14 +201,60 @@ fn source_closures_preserve_shared_cells_cleanup_and_entry_contracts() {
             success(&common::run_tasks(&executable));
         }
     }
-    fs::write(temporary.path().join("main.loom"),
-        "fn make(limit Int) fn(Int) Int { fn(value Int) Int requires value > limit { value } }\nfn main() { let action = make(3)\ndiscard action(2) }").unwrap();
-    let output = loom(&["run", temporary.path().to_str().unwrap()]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));
-    fs::write(temporary.path().join("main.loom"),
-        "fn make(limit Int) fn(Int) Int { fn(value Int) Int requires value > limit { value } }\nfn call(comptime action fn(Int) Int) Int { action(2) }\nfn main() { discard call(make(3)) }").unwrap();
-    let output = loom(&["run", temporary.path().to_str().unwrap()]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));
+    let checked_closure = r#"
+fn make(limit Int) fn(Int) Int {
+    fn(value Int) Int
+    requires value > limit
+    ensures result == value {
+        value
+    }
+}
+"#;
+    for entry in [
+        r#"
+fn main() {
+    let action = make(3)
+    discard action(2)
+}
+"#,
+        r#"
+fn call(comptime action fn(Int) Int) Int {
+    action(2)
+}
+fn main() {
+    discard call(make(3))
+}
+"#,
+    ] {
+        fs::write(
+            temporary.path().join("main.loom"),
+            format!("{checked_closure}\n{entry}"),
+        )
+        .unwrap();
+        let output = loom(&["run", temporary.path().to_str().unwrap()]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));
+    }
+    let original =
+        fs::read_to_string(common::root().join("compiler/examples/closures/main.loom")).unwrap();
+    let cache = temporary.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            temporary.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(temporary.path().join("main.loom"), &original).unwrap();
+    success(&check());
+    success(&check());
+    let invalid = original.replace("ensures result == value", "ensures result > value");
+    assert_ne!(invalid, original);
+    fs::write(temporary.path().join("main.loom"), invalid).unwrap();
+    let rejected = check();
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("not proved"));
+    fs::write(temporary.path().join("main.loom"), original).unwrap();
+    success(&check());
 }

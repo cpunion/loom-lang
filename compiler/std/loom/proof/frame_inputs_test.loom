@@ -1,0 +1,62 @@
+fn frame_input_program(owner Int) Program {
+    let program = atomic_pair_program()
+    push(program.types, Type {
+            kind = TypeKind.Frame
+            symbol = owner
+            arguments = []
+            pack_widths = []
+            fields = [Field {
+                    name = "limit"
+                    ty = 1
+                }, Field {
+                    name = "values"
+                    ty = 7
+                }]
+            variants = []
+            constraint = []
+        })
+    program
+}
+
+test fn readonly_frame_inputs_expose_stable_slots_not_immutable_shared_contents() {
+    let program = frame_input_program(42)
+    let input = expression(ExprKind.Local, 8, "", 0, [])
+    let limit = expression(ExprKind.Field, 1, "", 0, [input])
+    let function = contract_fixture([8], 1, limit, [], [operation("==", local(1), limit)])
+    assert helpers_verified(program, function)
+    assert !helpers_verified(frame_input_program(-1), function)
+    let values = expression(ExprKind.Field, 7, "", 1, [input])
+    let raw = expression(ExprKind.Coerce, 6, "", -1, [values])
+    let first = expression(ExprKind.Intrinsic, 1, "list_get", -1, [raw, literal("0")])
+    let read = contract_fixture([8], 1, first, [], [operation(">", local(1), literal("0"))])
+    assert match verify_shared(program, read, no_proof_backend(), [InputGuarantee {
+                ty = 7
+                writes = 1
+            }]) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let repeated = contract_fixture([8], 1, first, [], [operation("==", local(1), first)])
+    assert match verify_shared(program, repeated, no_proof_backend(), [InputGuarantee {
+                ty = 7
+                writes = 1
+            }]) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
+
+test fn frame_inputs_require_the_actual_write_and_initialization_footprint() {
+    let program = frame_input_program(42)
+    let input = expression(ExprKind.Local, 8, "", 0, [])
+    let body = expression(ExprKind.Field, 1, "", 0, [input])
+    let function = contract_fixture([8], 1, body, [], [operation("==", local(1), body)])
+    let write = expression(ExprKind.FrameStore, 0, "", 0, [input, literal("0")])
+    push(program.functions, contract_fixture([8], 0, write, [], []))
+    assert !helpers_verified(program, function)
+    assert !frame_input_expression(expression(ExprKind.FrameNew, 8, "", -1, []), 8, 2, [16], 0)
+    assert !frame_input_expression(body, 8, 2, [0], 0)
+    let modified = contract_fixture([8], 1,
+        expression(ExprKind.Block, 1, "", -1, [write, body]), [], function.postconditions)
+    assert !frame_input(verification(modified, frame_input_program(42)), 8)
+}

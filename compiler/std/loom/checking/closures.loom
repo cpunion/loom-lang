@@ -325,8 +325,14 @@ fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Resul
         index = index + 1
     }
     push(prefix, body)
+    let params = std.list.clone(saved.signature.params)
+    if length(get(env.types, saved.environment).fields) != 0 {
+        // The unclosed body reads its hidden environment at scope.local.
+        // It is an actual proof input, not an uninitialized body local.
+        push(params, saved.environment)
+    }
     let function = Function { is_async = has(node, NodeKind.Async) symbol = saved.signature.symbol arguments = ints(saved.environment)
-        params = saved.signature.params result = saved.signature.result locals = context.locals preconditions = preconditions
+        params = params result = saved.signature.result locals = context.locals preconditions = closure_preconditions(context, preconditions)
         postconditions = new[Expr]() result_cleanup = result_cleanup result_local = result_local body = expression(ExprKind.Block, body.ty, node, "", -1, prefix, body.falls)
         runtime_name = "" span = node.span }
     discard task_flow(context, function)?

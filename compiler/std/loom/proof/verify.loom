@@ -129,7 +129,8 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         return record_parameter_value(proof, get(shape.fields, 0).ty, depth + 1)
     }
-    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple &&
+    (shape.kind != TypeKind.Frame || !frame_input(proof, ty)) {
         return Value.Opaque(get(proof.fresh, 0), new[Int]())
     }
     let fields = new[Value]()

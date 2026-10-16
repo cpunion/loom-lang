@@ -130,6 +130,9 @@ supported theories and boundaries. The central rules are:
   groups and successful Task completion. Faults and cancellation supply no
   normal-return guarantee. Inputs evaluate once; suspension invalidates
   unprotected heap observations.
+  Closure contracts can use complete read-only capture slots and established
+  captured type constraints. Mutable captured cells stay opaque; shared children
+  retain ordinary interference and alias rules.
 - Loop candidates need entry and every-backedge proof; losing a candidate
   rechecks dependents. Logical `old` snapshots preserve supported entry values
   and outer content versions without runtime copies or freezing mutable children.

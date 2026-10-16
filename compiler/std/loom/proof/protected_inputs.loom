@@ -70,7 +70,7 @@ fn protected_input(types List[Type], protected List[InputGuarantee], ty Int, val
         }
         return current
     }
-    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+    if record_input_shape(shape) {
         match value {
             Value.Record(fields) => {
                 var current = state

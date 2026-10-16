@@ -16,6 +16,14 @@ fn shifted(offset Int) fn(Int) Int {
     }
 }
 
+fn select(limit Int) fn(Int) Int {
+    fn(value Int) Int
+    requires value == limit
+    ensures result == value {
+        limit
+    }
+}
+
 fn main() {
     let next = counter(10)
     let alias = next
@@ -24,4 +32,5 @@ fn main() {
     let values = map([1, 2, 3], shifted(5))
     assert length(values) == 3
     assert get(values, 2) == 8
+    assert select(4)(4) == 4
 }
