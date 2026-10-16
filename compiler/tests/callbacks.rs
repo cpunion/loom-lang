@@ -126,8 +126,29 @@ fn callback_types_purity_and_entry_contracts_remain_checked() {
         assert_eq!(output.status.code(), Some(1), "{text}: {output:?}");
         assert!(!output.stderr.is_empty());
     }
-    fs::write(package.path().join("main.loom"),
-        "fn positive(value Int) Int requires value > 0 { value }\nfn call(action fn(Int) Int) Int { action(0) }\nfn main() { discard call(positive) }").unwrap();
+    fs::write(
+        package.path().join("main.loom"),
+        r#"
+fn positive(value Int) Int
+requires value > 0
+{
+    value
+}
+
+fn positive(first Int, second Int) Int {
+    first + second
+}
+
+fn call[A, R](action fn(A) R, value A) R {
+    action(value)
+}
+
+fn main() {
+    discard call(positive, 0)
+}
+"#,
+    )
+    .unwrap();
     let output = loom(&["run", package.path().to_str().unwrap()]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));
