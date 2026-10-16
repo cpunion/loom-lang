@@ -139,23 +139,20 @@ fn nonallocating_mutator_checkpoints_allow_collection_and_reload_roots() {
         scope(|heap| {
             let heap = heap as usize;
             let handoff = Arc::clone(&handoff);
-            let ready = Arc::new(AtomicBool::new(false));
             let control = Arc::new(WorkerControl::default());
             let polls = Arc::new(AtomicUsize::new(0));
             let worker = {
-                let ready = Arc::clone(&ready);
                 let control = Arc::clone(&control);
                 let polls = Arc::clone(&polls);
                 thread::spawn(move || unsafe {
                     attach(heap, || {
                         let result: Result<(), _> = control.run(|| {
                             rooted([handoff.input.load(Ordering::Acquire)], |slots| {
-                                ready.store(true, Ordering::Release);
                                 loop {
                                     loom_rt_worker_checkpoint();
                                     assert_eq!(*slots, handoff.input.load(Ordering::Acquire));
                                     assert_eq!(text_bytes(*slots), b"checkpoint");
-                                    polls.fetch_add(1, Ordering::Relaxed);
+                                    polls.fetch_add(1, Ordering::Release);
                                     thread::yield_now();
                                 }
                             });
@@ -164,15 +161,23 @@ fn nonallocating_mutator_checkpoints_allow_collection_and_reload_roots() {
                     });
                 })
             };
-            while !ready.load(Ordering::Acquire) {
-                thread::yield_now();
-            }
+            let wait_for_progress = |previous| {
+                parked(|| {
+                    while polls.load(Ordering::Acquire) == previous {
+                        thread::yield_now();
+                    }
+                });
+            };
+            wait_for_progress(0);
             for _ in 0..16 {
                 loom_rt_collect();
+                // Count a completed root check after this collection, not a
+                // ready flag published before the worker's first checkpoint.
+                wait_for_progress(polls.load(Ordering::Acquire));
             }
             control.cancel();
             parked(|| worker.join().unwrap());
-            assert!(polls.load(Ordering::Relaxed) > 0);
+            assert!(polls.load(Ordering::Acquire) >= 17);
         });
     });
     loom_rt_collect();
