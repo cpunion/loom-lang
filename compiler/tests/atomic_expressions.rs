@@ -146,3 +146,55 @@ test fn scoped_receiver_is_evaluated_once() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("constrained sequence"));
 }
+
+#[test]
+fn cached_callback_return_guarantees_do_not_hide_intermediate_writes() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("main.loom");
+    let cache = package.path().join("cache");
+    let valid = r#"
+import std.list.length
+
+type Head = List[Int] where length(self) > 0 && self[0] > 0
+
+fn temporary(values List[Int]) Int
+ensures result == 7
+{
+    values[0] = 7
+    7
+}
+
+fn indirect(values List[Int]) Int {
+    let action = temporary
+    action(values)
+}
+
+pub fn update(values Head) {
+    values[0] = indirect(values)
+}
+
+fn main() {
+    let values = Head([1])
+    update(values)
+    assert values[0] == 7
+}
+"#;
+    let invalid = valid.replace(
+        "    values[0] = 7\n",
+        "    values[0] = 0\n    values[0] = 7\n",
+    );
+    for (candidate, accepted) in [(valid, true), (invalid.as_str(), false), (valid, true)] {
+        fs::write(&source, candidate).unwrap();
+        let checked = common::command(&["check", package.path().to_str().unwrap()])
+            .arg("--frontend-cache")
+            .arg(&cache)
+            .output()
+            .unwrap();
+        assert_eq!(checked.status.success(), accepted, "{checked:?}");
+        if accepted {
+            success(&common::loom(&["run", package.path().to_str().unwrap()]));
+        } else {
+            assert!(String::from_utf8_lossy(&checked.stderr).contains("constrained sequence"));
+        }
+    }
+}
