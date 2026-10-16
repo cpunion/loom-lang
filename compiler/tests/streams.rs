@@ -12,15 +12,17 @@ fn length32_frames_keep_binary_boundaries_limits_and_real_tcp_cleanup() {
         "compiler/examples/framed_tcp",
     ] {
         success(&common::loom(&["check", package]));
-        success(
-            &common::command(&["test", package, "--no-run"])
-                .arg("--output")
-                .arg(&executable)
-                .env("LOOM_OPT_LEVEL", "0")
-                .output()
-                .unwrap(),
-        );
-        success(&common::run_tasks(&executable));
+        for level in ["0", "2"] {
+            success(
+                &common::command(&["test", package, "--no-run"])
+                    .arg("--output")
+                    .arg(&executable)
+                    .env("LOOM_OPT_LEVEL", level)
+                    .output()
+                    .unwrap(),
+            );
+            success(&common::run_tasks(&executable));
+        }
     }
     success(
         &common::command(&["build", "compiler/examples/framed_tcp"])
