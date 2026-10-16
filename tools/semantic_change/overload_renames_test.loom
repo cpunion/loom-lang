@@ -1,0 +1,113 @@
+import std.text.replace
+
+fn overload_rename_case(integer_name Text, boolean_name Text, step Text) Revision {
+    let integer = replace(replace("""
+        fn INTEGER_NAME(value Int) Int {
+            value + STEP
+        }
+        """, "INTEGER_NAME", integer_name), "STEP", step)
+    let boolean = replace("""
+        fn BOOLEAN_NAME(value Bool) Int {
+            if value { 40 } else { 0 }
+        }
+        """, "BOOLEAN_NAME", boolean_name)
+    let caller = replace(replace("""
+        fn entry() Int {
+            let read fn(Int) Int = INTEGER_NAME
+            INTEGER_NAME(1) + read(1) + BOOLEAN_NAME(true)
+        }
+        """, "INTEGER_NAME", integer_name), "BOOLEAN_NAME", boolean_name)
+    Revision {
+        package_name = "sample"
+        files = [File {
+                path = "functions.loom"
+                text = concat(integer, concat("\n", concat(boolean, concat("\n", caller))))
+            }]
+        identities = [Identity {
+                id = "integer-id"
+                path = "functions.loom"
+                kind = NodeKind.Function
+                name = integer_name
+                key = key(integer)
+            }, Identity {
+                id = "boolean-id"
+                path = "functions.loom"
+                kind = NodeKind.Function
+                name = boolean_name
+                key = key(boolean)
+            }, Identity {
+                id = "entry-id"
+                path = "functions.loom"
+                kind = NodeKind.Function
+                name = "entry"
+                key = "-"
+            }]
+    }
+}
+
+test fn overload_renames_preserve_selected_calls_and_function_values() {
+    // Split one overload from a name, then merge it into another overload set.
+    // Both directions preserve the Bool definition and the typed Int callback.
+    let names = ["amount", "balance"]
+    var mode = 0
+    while mode < length(names) {
+        let boolean_name = get(names, mode)
+        let base = overload_rename_case("amount", boolean_name, "1")
+        let branches = [overload_rename_case("balance", boolean_name, "1"),
+            overload_rename_case("amount", boolean_name, "2")]
+        var order = 0
+        while order < 2 {
+            match merge(base, get(branches, order), get(branches, 1 - order)) {
+                Result.Ok(merged) => {
+                    let source = get(merged.files, 0).text
+                    assert contains(source, "fn balance(value Int)")
+                    assert contains(source, "value + 2")
+                    assert contains(source, "let read fn(Int) Int = balance")
+                    assert contains(source, concat(boolean_name, "(true)"))
+                    assert get(merged.identities, 0).id == "integer-id"
+                    assert get(merged.identities, 0).name == "balance"
+                }
+                Result.Err(message) => {
+                    discard write_error(message)
+                    assert false
+                }
+            }
+            order = order + 1
+        }
+        mode = mode + 1
+    }
+}
+
+fn with_generic_overload(revision Revision) Revision {
+    let original = get(revision.files, 0)
+    let source = replace(replace(original.text,
+            "fn balance(value Bool)", "fn balance[T](value T)"),
+        "if value { 40 } else { 0 }", "40")
+    assert source != original.text
+    set(revision.files, 0, File {
+            path = original.path
+            text = source
+        })
+    let identity = get(revision.identities, 1)
+    set(revision.identities, 1, Identity {
+            key = key("""
+                fn balance[T](value T) Int {
+                    40
+                }
+                """)
+            ..identity
+        })
+    revision
+}
+
+test fn overload_renames_reject_new_ambiguous_function_values() {
+    let base = with_generic_overload(overload_rename_case("amount", "balance", "1"))
+    let renamed = with_generic_overload(overload_rename_case("balance", "balance", "1"))
+    let edited = with_generic_overload(overload_rename_case("amount", "balance", "2"))
+    // The generic and exact signatures both match the typed callback. A rename
+    // cannot invent a preference or treat ambiguity as preservation evidence.
+    assert match merge(base, renamed, edited) {
+        Result.Err(message) => contains(message, "rename requires checked source: ambiguous function reference")
+        Result.Ok(_) => false
+    }
+}

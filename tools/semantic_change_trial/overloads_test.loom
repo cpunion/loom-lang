@@ -45,7 +45,7 @@ fn remove_trial(directory Text) {
     discard remove_empty_dir(directory)
 }
 
-fn overload_lifecycle(staging Text) Result[Text, Text] {
+fn overload_lifecycle(staging Text, renamed Bool) Result[Text, Text] {
     let fixtures = "tools/semantic_change_trial/fixtures/overloads"
     let base = path(staging, "base")
     let left = path(staging, "left")
@@ -53,7 +53,11 @@ fn overload_lifecycle(staging Text) Result[Text, Text] {
     let output = path(staging, "output")
     discard create_dir(staging)
     discard copy_sources(path(fixtures, "base"), base)?
-    discard copy_sources(path(fixtures, "left"), left)?
+    discard copy_sources(path(fixtures, if renamed {
+                "renamed"
+            } else {
+                "left"
+            }), left)?
     discard copy_sources(path(fixtures, "right"), right)?
     discard initialize("sample", base)?
     let original = read(base)?
@@ -88,14 +92,19 @@ fn overload_lifecycle(staging Text) Result[Text, Text] {
     assert text_at(path(left, ".loom-ids")) == original.sidecar
     assert contains(scan(left)?, concat("numbers.loom ", int_id.key))
     // Exercise the same option parser as the command-line entry point.
-    let options = resolutions(["--move", int_id.id, "numbers.loom", "amount", int_id.key], 0)?
+    let selected_name = if renamed {
+        "increment"
+    } else {
+        "amount"
+    }
+    let options = resolutions(["--move", int_id.id, "numbers.loom", selected_name, int_id.key], 0)?
     discard refresh(left, options.0, options.1)?
     discard refresh(right, [], false)?
     let changed_left = read(left)?
     let changed_right = read(right)?
     assert changed_left.next == original.next && changed_right.next == original.next
     let relocated = get(changed_left.revision.identities, identity_at(changed_left.revision.identities, int_id.id))
-    assert relocated.path == "numbers.loom" && relocated.key == int_id.key
+    assert relocated.path == "numbers.loom" && relocated.key == int_id.key && relocated.name == selected_name
     assert get(changed_left.revision.identities,
         identity_at(changed_left.revision.identities, bool_id.id)).path == "app.loom"
     let plan = review(original, changed_left, changed_right)?
@@ -114,5 +123,10 @@ fn overload_lifecycle(staging Text) Result[Text, Text] {
 
 test fn same_file_overload_moves_edits_and_apply_preserve_identity() {
     let staging = concat("tools/semantic_change_trial/target/overloads-", to_text(monotonic_ns()))
-    assert successful(overload_lifecycle(staging)) == "overload lifecycle completed"
+    assert successful(overload_lifecycle(staging, false)) == "overload lifecycle completed"
+}
+
+test fn selected_overload_rename_move_edit_and_apply_preserve_identity() {
+    let staging = concat("tools/semantic_change_trial/target/overload-rename-", to_text(monotonic_ns()))
+    assert successful(overload_lifecycle(staging, true)) == "overload lifecycle completed"
 }

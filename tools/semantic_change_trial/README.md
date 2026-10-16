@@ -50,7 +50,10 @@ native rename is neither no-clobber against racing writers nor crash-durable.
 Explicit private nongeneric function renames also compose with independent
 body edits and moves within these packages. Each rename uses stable sidecar
 identity and checked reference-token edits in that complete branch's module
-context, including the package's own tests. Local capture, conflicting names,
+context, including the package's own tests. A selected overload may change name
+without renaming its siblings; creating a valid overload set still requires
+every retained call and function reference to keep its checked target.
+Local capture, ambiguous overloads,
 public/generic targets and missing binding evidence require resolution; names
 in other packages are not rewritten. The combined result still passes the
 normal production and per-package test checks.

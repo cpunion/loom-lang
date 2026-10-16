@@ -1,0 +1,4 @@
+// Integer operations have an explicit new name and file.
+fn increment(value Int) Int {
+    value + 1
+}

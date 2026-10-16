@@ -76,23 +76,9 @@ fn function_renames(base Indexed, left Indexed, right Indexed) Result[List[Funct
                 } else {
                     b.name
                 }
-                let revisions = new[Indexed]()
-                push(revisions, base)
-                push(revisions, left)
-                push(revisions, right)
-                var revision = 0
-                while revision < length(revisions) {
-                    let entries = get(revisions, revision).entries
-                    var other = 0
-                    while other < length(entries) {
-                        let entry = get(entries, other)
-                        if entry.id != original.id && (entry.name == original.name || entry.name == name) {
-                            return Result.Err("rename overlaps another declaration name; explicit resolution required")
-                        }
-                        other = other + 1
-                    }
-                    revision = revision + 1
-                }
+                // A name may select several overloads. Normalize only the
+                // identified declaration and its checked reference tokens;
+                // rechecking every binding decides whether composition is safe.
                 push(renames, FunctionRename {
                         id = original.id
                         name = name

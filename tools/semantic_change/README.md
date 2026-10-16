@@ -30,7 +30,11 @@ without complete checked evidence require explicit resolution.
 Explicit private nongeneric function renames compose in package batches too:
 the shared token/binding normalizer checks each complete branch in production
 and the renamed package's private tests before the combined merge. The original
-baseline must match before normalization. Public/generic renames and moves
+baseline must match before normalization. Overloaded declarations are selected
+by stable identity and signature locator, not spelling. A rename may split or
+join an overload set only if checked calls and function references keep their
+identified targets; ambiguous or changed bindings still require resolution.
+Public/generic renames and moves
 across package identities still require explicit resolution.
 This is not behavior-equivalence proof, an
 arbitrary semantic VCS or an execution engine. Checking does not launch the
