@@ -28,6 +28,25 @@ pub record CheckedQuery {
     declarations List[DeclarationReference]
 }
 
+// Signature eligibility uses the invocation's canonical nominal checks. These
+// are supplied top-level source symbol IDs, not synthesized methods, runtime
+// roots or proof that a generator can run.
+pub fn macro_generator_candidates(source std.loom.binding.Program, inputs BuildInputs) Result[List[Int], Failure] {
+    discard expanded_source(source)?
+    let env = prepare_with_inputs(query_source(source)?, inputs, true)?
+    let candidates = new[Int]()
+    var index = 0
+    while index < length(env.signatures) {
+        let current = get(env.signatures, index)
+        if current.symbol < length(source.symbols) && get(source.symbols, current.symbol).owner < 0 &&
+        macro_signature(env, current) {
+            push(candidates, current.symbol)
+        }
+        index = index + 1
+    }
+    Result.Ok(candidates)
+}
+
 // Full application query: concrete instances reached from build roots and
 // source contracts. CTFE-only bodies do not become runtime instances.
 pub fn check_query(source std.loom.binding.Program, inputs BuildInputs) Result[CheckedQuery, Failure] {

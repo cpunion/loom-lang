@@ -53,7 +53,8 @@ fn editor_generated(node Node) Bool {
     }
     var index = 0
     while index < length(node.children) {
-        if editor_generated(get(node.children, index)) {
+        let child = get(node.children, index)
+        if (node.kind == NodeKind.File && child.kind == NodeKind.Comptime) || editor_generated(child) {
             return true
         }
         index = index + 1
@@ -137,8 +138,12 @@ fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
     }
     let owner = editor_field_owner(analysis, target, spelling)
     let public_field = owner >= 0 && get(analysis.bindings.symbols, owner).public &&
-        editor_declaration_authority(analysis, target, true)
-    if !(if field { public_field } else { editor_top_declaration(analysis, target, spelling, true) }) {
+    editor_declaration_authority(analysis, target, true)
+    if !(if field {
+            public_field
+        } else {
+            editor_top_declaration(analysis, target, spelling, true)
+        }) {
         return Result.Err("Public rename requires one ordinary declaration or record field, not overloads or generated declarations")
     }
     let references = editor_references(analysis, target, spelling)

@@ -5,6 +5,7 @@ import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.ast.has
 import std.loom.checking.static_parameter_info
+import std.loom.checking.macro_generator_candidates
 import std.loom.lexer.Kind
 import std.loom.lexer.Token
 import std.loom.lexer.lex
@@ -342,9 +343,9 @@ fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool
     false
 }
 
-// Private declarations cannot be imported by another package. Keep this
-// strictly to one ordinary declaration in the selected package. Public edits
-// use module-wide package checks instead.
+// Private declarations cannot be imported by another package. Select an exact
+// ordinary declaration; a private function may leave an overload set. Public
+// edits use module-wide package checks instead.
 fn editor_declaration_authority(analysis Analysis, target Location, public Bool) Bool {
     let files = analysis.bindings.files
     let root = analysis.bindings.root
@@ -364,6 +365,7 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
     let package = get(files, target.file).package
     var matches = 0
     var selected = false
+    var selected_function = false
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let symbol = get(analysis.bindings.symbols, index)
@@ -378,7 +380,10 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
                     Result.Ok(tokens) => {
                         match editor_name(tokens, symbol.node) {
                             Option.Some(span) => {
-                                selected = editor_same_span(span, target.span)
+                                if editor_same_span(span, target.span) {
+                                    selected = true
+                                    selected_function = kind == NodeKind.Function
+                                }
                             }
                             Option.None => {
                             }
@@ -391,12 +396,37 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
         }
         index = index + 1
     }
-    matches == 1 && selected
+    selected && (matches == 1 || (!public && selected_function))
 }
 
 // An unaccounted same-spelled token could be an unchecked use (for example in
 // an uninstantiated body). Refuse the edit even if an ordinary check succeeds.
-fn editor_private_covered(analysis Analysis, target Location, spelling Text, references List[Location]) Bool {
+fn editor_private_covered(analysis Analysis, target Location, spelling Text, references List[Location], inputs BuildInputs) Bool {
+    // Raw syntax retains declaration stages erased from expanded bindings.
+    var file = 0
+    while file < length(analysis.source.files) {
+        let source = get(analysis.source.files, file)
+        if source.package == analysis.source.root && editor_generated(source.tree) {
+            return false
+        }
+        file = file + 1
+    }
+    // Exported generators can refer to private declarations in their definition
+    // context, even when no invocation occurs in this package's import closure.
+    let generators = match std.loom.checking.macro_generator_candidates(analysis.bindings, inputs) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    var generator = 0
+    while generator < length(generators) {
+        let item = get(analysis.bindings.symbols, get(generators, generator))
+        if item.public && item.owner < 0 && get(analysis.bindings.files, item.file).package == analysis.bindings.root {
+            return false
+        }
+        generator = generator + 1
+    }
     let files = analysis.bindings.files
     let root = analysis.bindings.root
     var index = 0
@@ -406,7 +436,7 @@ fn editor_private_covered(analysis Analysis, target Location, spelling Text, ref
         }
         index = index + 1
     }
-    var file = 0
+    file = 0
     while file < length(files) {
         let source = get(files, file)
         if source.package == root {
@@ -735,7 +765,7 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
         if !options.tests {
             return editor_error("Private declaration rename requires --tests to account for test-file uses")
         }
-        if !editor_private_covered(analysis, target, token.value, references) {
+        if !editor_private_covered(analysis, target, token.value, references, inputs) {
             return editor_error("Rename cannot account for every occurrence of this private declaration")
         }
         if new_name != token.value && editor_private_conflict(analysis, new_name) {
