@@ -46,3 +46,42 @@ test fn capture_cell_stores_and_reads_share_versions_without_freezing_contents()
     assert extent.fixed_extent && !extent.read_only && !extent.private_storage
     assert compare(extent.size.constant, integer(1)) == 0 && length(extent.size.terms) == 0
 }
+
+test fn capture_cell_loops_and_call_frames_use_the_actual_write_footprint() {
+    let program = capture_cell_program()
+    let cell = expression(ExprKind.Local, 6, "", 0, [])
+    let read = expression(ExprKind.Intrinsic, 1, "cell_get", -1, [cell])
+    let write = expression(ExprKind.FrameStore, 0, "", 0, [cell, operation("+", read, literal("1"))])
+    let body = expression(ExprKind.Block, 1, "", -1, [
+            expression(ExprKind.While, 0, "", -1, [operation("<", read, local(1)), write]), read])
+    let function = contract_fixture([6, 1], 1, body, [operation("<=", read, local(1))],
+        [operation("==", local(2), local(1))])
+    assert helpers_verified(program, function)
+    assert extent_preserving(program, write) && !elements_preserving(program, write)
+    assert match verify_shared(program, function, no_proof_backend()) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    let setter = contract_fixture([6], 0, write, [], [])
+    let state = fixed_capture_cell(10, list_bounds(Value.List(10), State {
+                locals = [Value.List(10)]
+                facts = []
+                extents = []
+                observations = []
+            }))
+    let writes = new[ElementWrite]()
+    assert frame_function(program, setter, [Value.List(10)], state, writes, [256], 0)
+    assert length(writes) == 1 && get(writes, 0).identity == 10
+    assert match get(writes, 0).index {
+        Value.Number(index) => length(index.terms) == 0 && compare(index.constant, integer(0)) == 0
+        _ => false
+    }
+    let modified = new[Int]()
+    assert match loop_storage_writes(verification(function, program), write, state, modified, true, 64) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert length(modified) == 1 && get(modified, 0) == 10
+    let invalid = expression(ExprKind.FrameStore, 0, "", 1, [cell, literal("0")])
+    assert !extent_preserving(program, invalid)
+}

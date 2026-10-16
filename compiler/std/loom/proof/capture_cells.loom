@@ -110,12 +110,21 @@ fn cell_read_view(value Expr) Expr {
         [get(value.children, 0), proof_expr(value, ExprKind.Integer, 1, "0", -1, [])])
 }
 
+fn cell_store_expression(program Program, value Expr) Bool {
+    value.kind == ExprKind.FrameStore && value.index == 0 && length(value.children) == 2 &&
+    capture_cell_type(program, get(value.children, 0).ty)
+}
+
+// Execution and footprint analyses must agree on the same atomic write.
+// This is a proof view only; native lowering keeps the ordinary frame store.
+fn cell_store_view(value Expr) Expr {
+    proof_expr(value, ExprKind.Intrinsic, 0, "list_set", -1,
+        [get(value.children, 0), proof_expr(value, ExprKind.Integer, 1, "0", -1, []), get(value.children, 1)])
+}
+
 fn execute_cell_store(proof Verification, value Expr, state State, depth Int) Result[List[Outcome], Text] {
-    if value.index != 0 || length(value.children) != 2 ||
-    !capture_cell_type(proof.program, get(value.children, 0).ty) {
+    if !cell_store_expression(proof.program, value) {
         return Result.Err("required proof needs a modeled capture cell store")
     }
-    let operation = proof_expr(value, ExprKind.Intrinsic, 0, "list_set", -1,
-        [get(value.children, 0), proof_expr(value, ExprKind.Integer, 1, "0", -1, []), get(value.children, 1)])
-    execute_list_operation(proof, operation, "list_set", state, depth)
+    execute_list_operation(proof, cell_store_view(value), "list_set", state, depth)
 }

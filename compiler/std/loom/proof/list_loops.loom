@@ -3,6 +3,12 @@ fn loop_storage_writes(proof Verification, value Expr, entry State, modified Lis
     if depth <= 0 {
         return Result.Err("loop extent analysis budget exhausted")
     }
+    if cell_store_expression(proof.program, value) {
+        return loop_storage_writes(proof, cell_store_view(value), entry, modified, contents, depth - 1)
+    }
+    if value.kind == ExprKind.FrameStore {
+        push(modified, -1)
+    }
     var primitive = if value.kind == ExprKind.Intrinsic {
         value.text
     } else {
