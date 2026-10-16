@@ -61,9 +61,13 @@ fn ordered(values List[Int]) Bool {
 
 type Sorted = List[Int] where ordered(self)
 
+fn set_last(values List[Int]) {
+    values[length(values) - 1] = 9223372036854775807
+}
+
 fn extend_endpoints(values Sorted) {
     values[0] = -9223372036854775808
-    values[length(values) - 1] = 9223372036854775807
+    set_last(values)
 }
 
 fn exercise() {
