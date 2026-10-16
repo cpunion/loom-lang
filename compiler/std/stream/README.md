@@ -75,6 +75,8 @@ a MustScope value and general borrow-retaining adapters remain unsupported.
 See the [file pipeline](../../examples/stream_lines/README.md).
 
 [TCP chunks](../net/tcp/chunks/README.md) borrow an explicitly closed socket.
+[File chunks](../file/chunks/README.md) own a lazy file and yield bounded binary
+buffers without text decoding or prefetching.
 Synchronous algorithms should keep using `std.iter`, avoiding a Task per item.
 
 Run the [example](../../examples/streams/README.md), or test the library with

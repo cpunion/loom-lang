@@ -93,3 +93,61 @@ fn scoped_async_file_pipelines_keep_errors_and_stop_before_the_suffix() {
     success(&output);
     assert_eq!(output.stdout, b"first\nsecond\n");
 }
+
+#[test]
+fn binary_file_streams_bound_chunks_and_keep_scoped_worker_cleanup() {
+    let library = "compiler/std/file/chunks";
+    let example = "compiler/examples/file_chunks";
+    for package in [library, example] {
+        success(&common::loom(&["check", package]));
+        success(&common::loom(&["test", package]));
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let tests = common::executable(temporary.path(), "file-chunk-tests");
+    let executable = common::executable(temporary.path(), "file-chunks");
+    let input = temporary.path().join("input.bin");
+    let missing = temporary.path().join("absent.bin");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["test", library, "--no-run"])
+                .arg("--output")
+                .arg(&tests)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_task_command(
+            Command::new(&tests)
+                .current_dir(temporary.path())
+                .env("LOOM_GC_STRESS", "1"),
+        ));
+        success(
+            &common::command(&["build", example])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        for contents in [vec![], vec![0, 255, 128, 10, 13], vec![255; 9001]] {
+            std::fs::write(&input, &contents).unwrap();
+            let output = common::run_task_command(
+                Command::new(&executable)
+                    .arg(&input)
+                    .env("LOOM_GC_STRESS", "1"),
+            );
+            success(&output);
+            assert_eq!(output.stdout, format!("{}\n", contents.len()).as_bytes());
+        }
+        let output = common::run_task_command(Command::new(&executable).arg(&missing));
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.stderr, b"cannot read file\n");
+    }
+    let output = common::command(&["run", example])
+        .arg("--")
+        .arg(&input)
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(output.stdout, b"9001\n");
+}

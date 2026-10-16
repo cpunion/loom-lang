@@ -163,7 +163,9 @@ iterators and async streams. JSON policy has no special runtime implementation.
 [Iterators](../../compiler/std/iter/README.md),
 [file lines](../../compiler/std/file/lines/README.md) and
 [streams](../../compiler/std/stream/README.md) support ordered, short-circuiting
-consumers and owned scoped pipelines. JSON streaming handles chunk boundaries,
+consumers and owned scoped pipelines. [Binary file chunks](../../compiler/std/file/chunks/README.md)
+provide lazy bounded worker reads without text decoding or retaining the whole
+file. JSON streaming handles chunk boundaries,
 backpressure and LF-framed records without requiring a full document Text.
 Other framing and general borrow-retaining adapters remain open.
 

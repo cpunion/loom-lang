@@ -1,0 +1,25 @@
+import std.file.write_bytes
+import std.bytes.new
+import std.bytes.push
+import std.fs.remove_file
+
+test async fn counts_binary_files_across_default_chunks_without_decoding() {
+    let path = "loom-file-chunks-example-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    let input = new()
+    var index = 0
+    while index < 9001 {
+        push(input, 255)
+        index = index + 1
+    }
+    assert match write_bytes(path, input) {
+        Result.Ok(count) => count == 9001
+        Result.Err(_) => false
+    }
+    assert match count_bytes(path).await {
+        Result.Ok(count) => count == 9001
+        Result.Err(_) => false
+    }
+}

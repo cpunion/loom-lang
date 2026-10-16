@@ -1,0 +1,45 @@
+import std.file.chunks.stream
+import std.file.FileError
+import std.stream.try_fold
+import std.result.Result
+import std.bytes.length
+import std.list.length
+import std.int.to_text
+import std.text.concat
+import std.io.write_text
+import std.io.write_error
+import std.process.arguments
+import std.process.exit_code
+
+async fn count_chunk(count Int, chunk Result[Bytes, FileError]) Result[Int, FileError] {
+    Result.Ok(count + std.bytes.length(chunk?))
+}
+
+async fn count_bytes(path Text) Result[Int, FileError] {
+    scoped source = stream(path)
+    try_fold(source, 0, count_chunk).await
+}
+
+async fn main() {
+    let args = arguments()
+    if length(args) != 2 {
+        discard write_error("usage: file_chunks FILE\n")
+        exit_code(2)
+        return
+    }
+    match count_bytes(args[1]).await {
+        Result.Ok(count) => {
+            match write_text(concat(to_text(count), "\n")) {
+                Result.Ok(_) => {
+                }
+                Result.Err(_) => {
+                    exit_code(1)
+                }
+            }
+        }
+        Result.Err(_) => {
+            discard write_error("cannot read file\n")
+            exit_code(1)
+        }
+    }
+}

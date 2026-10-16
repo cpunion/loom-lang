@@ -1,0 +1,259 @@
+import std.file.write_bytes
+import std.file.write_text
+import std.fs.remove_file
+import std.bytes.get
+import std.bytes.length
+import std.bytes.push
+import std.bytes.set
+import std.list.push
+import std.list.new
+import std.list.length
+import std.stream.take
+import std.stream.collect
+import std.task.Outcome
+import std.task.outcome
+import std.task.cancel
+import std.time.sleep_ms
+
+fn bytes(value Option[Result[Bytes, FileError]]) Bytes {
+    match value {
+        Option.Some(Result.Ok(buffer)) => buffer
+        _ => {
+            assert false
+            std.bytes.new()
+        }
+    }
+}
+
+fn exhausted(value Option[Result[Bytes, FileError]]) Bool {
+    match value {
+        Option.None => true
+        _ => false
+    }
+}
+
+async fn invalid_limit(limit Int) {
+    scoped reader = stream("\0invalid", limit)
+    discard reader.next().await
+}
+
+test async fn pulls_bound_binary_chunks_and_do_not_overwrite_delivered_buffers() {
+    let path = "loom-file-chunks-binary-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    scoped reader = stream(path, 3)
+    assert reader.file.state.handle[0] == -1
+    let input = std.bytes.new()
+    var index = 0
+    while index < 19 {
+        push(input, index)
+        index = index + 1
+    }
+    set(input, 1, 255)
+    assert match write_bytes(path, input) {
+        Result.Ok(count) => count == 19
+        Result.Err(_) => false
+    }
+    let first = bytes(reader.next().await)
+    assert length(first) > 0 && length(first) <= 3
+    let token = reader.file.state.handle[0]
+    assert token >= 0
+    var offset = 0
+    while offset < length(first) {
+        assert get(first, offset) == get(input, offset)
+        offset = offset + 1
+    }
+    set(first, 0, 99)
+    while true {
+        match reader.next().await {
+            Option.Some(Result.Ok(chunk)) => {
+                assert length(chunk) > 0 && length(chunk) <= 3
+                index = 0
+                while index < length(chunk) {
+                    assert get(chunk, index) == get(input, offset)
+                    index = index + 1
+                    offset = offset + 1
+                }
+            }
+            Option.None => {
+                break
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert offset == 19 && get(first, 0) == 99 && get(input, 0) == 0
+    assert exhausted(reader.next().await) && exhausted(reader.next().await)
+    assert reader.file.state.handle[0] == -1 && reader.file.state.ended[0]
+    assert async_read(token, std.bytes.new(), 1).await == -1
+}
+
+test async fn empty_files_open_failures_and_explicit_close_are_terminal() {
+    assert match outcome(invalid_limit(0)).await {
+        Outcome.Faulted(_) => true
+        _ => false
+    }
+    assert match outcome(invalid_limit(-1)).await {
+        Outcome.Faulted(_) => true
+        _ => false
+    }
+    {
+        scoped reader = stream("\0invalid")
+        assert match reader.next().await {
+            Option.Some(Result.Err(error)) => error == FileError.Open
+            _ => false
+        }
+        assert exhausted(reader.next().await)
+    }
+    {
+        scoped reader = stream("\0invalid")
+        assert match close(reader).await {
+            Result.Ok(count) => count == 0
+            Result.Err(_) => false
+        }
+        assert exhausted(reader.next().await)
+    }
+    let path = "loom-file-chunks-empty-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    assert match write_text(path, "") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    scoped empty = stream(path)
+    assert exhausted(empty.next().await) && exhausted(empty.next().await)
+    assert empty.file.state.ended[0]
+}
+
+test async fn close_and_read_errors_retire_the_handle_once() {
+    let path = "loom-file-chunks-errors-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    assert match write_text(path, "abcdef") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    {
+        scoped reader = stream(path, 1)
+        assert length(bytes(reader.next().await)) == 1
+        let token = reader.file.state.handle[0]
+        assert match close(reader).await {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        }
+        assert match close(reader).await {
+            Result.Ok(count) => count == 0
+            Result.Err(_) => false
+        }
+        assert exhausted(reader.next().await)
+        assert async_read(token, std.bytes.new(), 1).await == -1
+    }
+    {
+        scoped reader = stream(path, 1)
+        discard bytes(reader.next().await)
+        discard file_abort(reader.file.state.handle[0])
+        assert match reader.next().await {
+            Option.Some(Result.Err(error)) => error == FileError.Read
+            _ => false
+        }
+        assert exhausted(reader.next().await) && reader.file.state.ended[0]
+    }
+    {
+        scoped reader = stream(path, 1)
+        discard bytes(reader.next().await)
+        discard file_abort(reader.file.state.handle[0])
+        assert match close(reader).await {
+            Result.Err(error) => error == FileError.Close
+            _ => false
+        }
+        assert exhausted(reader.next().await)
+    }
+}
+
+fn observed_stream(input (Text, List[State])) Chunks {
+    let path, observed = input
+    let state = State {
+        handle = [-1]
+        ended = [false]
+        limit = 2
+    }
+    push(observed, state)
+    Chunks {
+        file = ChunkFile {
+            state = state
+        }
+        path = path
+    }
+}
+
+test async fn owned_pipelines_do_not_prefetch_and_close_after_early_exit() {
+    {
+        let create fn(Text) Chunks = stream
+        scoped empty = take(create, "\0invalid", 0)
+        assert std.list.length(collect(empty).await) == 0
+    }
+    let path = "loom-file-chunks-pipeline-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    assert match write_text(path, "abcdef") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let observed = new[State]()
+    var token = -1
+    {
+        scoped source = take(observed_stream, (path, observed), 1)
+        assert std.list.length(collect(source).await) == 1
+        let state = observed[0]
+        token = state.handle[0]
+        assert token >= 0 && !state.ended[0]
+    }
+    assert observed[0].handle[0] == -1 && observed[0].ended[0]
+    assert async_read(token, std.bytes.new(), 1).await == -1
+}
+
+async fn stopped_consumer(path Text, observed List[State], tokens List[Int], fail Bool) {
+    scoped reader = stream(path, 2)
+    push(observed, reader.file.state)
+    discard bytes(reader.next().await)
+    push(tokens, reader.file.state.handle[0])
+    assert !fail
+    sleep_ms(10000).await
+}
+
+test async fn faults_and_cancellation_close_the_owned_file() {
+    let path = "loom-file-chunks-cancel-test.tmp"
+    defer {
+        discard remove_file(path)
+    }
+    assert match write_text(path, "abcdef") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let observed = new[State]()
+    let tokens = new[Int]()
+    assert match outcome(stopped_consumer(path, observed, tokens, true)).await {
+        Outcome.Faulted(_) => true
+        _ => false
+    }
+    assert observed[0].handle[0] == -1 && observed[0].ended[0]
+    assert async_read(tokens[0], std.bytes.new(), 1).await == -1
+    let pending = stopped_consumer(path, observed, tokens, false)
+    var attempts = 0
+    while std.list.length(tokens) < 2 && attempts < 2000 {
+        sleep_ms(1).await
+        attempts = attempts + 1
+    }
+    assert std.list.length(tokens) == 2
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert observed[1].handle[0] == -1 && observed[1].ended[0]
+    assert async_read(tokens[1], std.bytes.new(), 1).await == -1
+}

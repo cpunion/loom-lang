@@ -725,7 +725,10 @@ timings; local variables remain conservatively rooted for the function.
   whole file. Factory overloads of map/filter/take compose new scoped resources;
   the [file pipeline](examples/file_pipeline/README.md) stops at a selected prefix.
   [`std.stream`](std/stream/README.md) adds scoped factory pipelines with directly
-  awaited resource borrows. General borrow-retaining adapters remain open.
+  awaited resource borrows. [`std.file.chunks`](std/file/chunks/README.md) supplies
+  lazy bounded binary file reads without decoding or retaining the whole file;
+  see the [byte-counting application](examples/file_chunks/README.md).
+  General borrow-retaining adapters remain open.
 - Source `std.io.read_bytes()` reads stdin to EOF; `write_bytes(Bytes)` writes
   stdout, and `write_error(Bytes)` writes stderr. These preserve arbitrary bytes,
   report byte counts/errors, and never close standard streams. `read_text()` still
