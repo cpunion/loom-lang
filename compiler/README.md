@@ -2973,6 +2973,11 @@ The public `implies`, `implies_facts`, `implies_with_helpers` and
 `preserves_list_append` queries also accept an explicit backend; their default
 overloads remain I/O-free.
 
+Hosts can explicitly use the same source [Z3 adapter](std/loom/proof/z3) as the
+CLI, without invoking the compiler process or duplicating its solver protocol.
+The stateless adapter starts no process until queried; CLI decision caching
+remains private to its build context. See the [source tool example](examples/analysis_solver).
+
 Proof composition uses the checked expression model, not a second executable IR.
 A closed [operation description](std/loom/proof/operations.loom) supplies operand
 shape, eager/conditional evaluation, heap observations and totality. Shared

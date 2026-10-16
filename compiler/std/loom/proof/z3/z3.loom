@@ -1,0 +1,68 @@
+import std.loom.proof.ProofBackend
+import std.bytes.decode_utf8
+import std.bytes.new
+import std.bytes.push
+import std.bytes.length
+import std.list.new
+import std.list.push
+import std.process.capture_input
+import std.process.ExitStatus
+import std.result.Result
+import std.text.byte
+import std.text.length
+import std.text.trim
+
+// Explicit host capability. Construction performs no I/O; unresolved proof
+// queries invoke the trusted executable with literal arguments and stdin.
+// There is no shared mutable cache, so separate analyses can share this adapter.
+pub fn backend(tool Text) ProofBackend {
+    ProofBackend {
+        enabled = true
+        context = tool
+        solve = solve
+    }
+}
+
+// Hosts with their own context/cache can use the callback directly.
+pub fn solve(tool Text, query Text) Result[Bool, Text] {
+    let arguments = new[Text]()
+    push(arguments, tool)
+    push(arguments, "-in")
+    push(arguments, "-smt2")
+    push(arguments, "-T:2")
+    // Normalize polynomial identities before search. Z3 bounds expansion;
+    // timeout and unknown results remain unproved.
+    push(arguments, "rewriter.som=true")
+    let input = std.bytes.new()
+    var index = 0
+    while index < std.text.length(query) {
+        std.bytes.push(input, byte(query, index))
+        index = index + 1
+    }
+    let output = match capture_input(arguments, input) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("required proof needs Z3; install z3 and make it available on PATH")
+        }
+    }
+    let success = match output.status {
+        ExitStatus.Exited(code) => code == 0
+        _ => false
+    }
+    if !success || std.bytes.length(output.stderr) != 0 {
+        return Result.Err("SMT solver failed; required proof was not established")
+    }
+    let answer = match decode_utf8(output.stdout) {
+        Result.Ok(value) => trim(value)
+        Result.Err(_) => {
+            return Result.Err("invalid SMT response; required proof was not established")
+        }
+    }
+    if answer == "unsat" {
+        return Result.Ok(true)
+    }
+    if answer == "sat" {
+        return Result.Ok(false)
+    }
+    Result.Err("SMT solver returned unknown or timed out; required proof was not established")
+}
