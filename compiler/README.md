@@ -3890,6 +3890,12 @@ are not text-renamed. Tracked build inputs also invalidate generated analyses.
 clients call `expand_project` before `bind`/`check`. Analysis retains the raw
 `source` snapshot separately from expanded bindings for freshness checks.
 
+`std.loom.checking.macro_generator_candidates(bindings, inputs)` lists source
+symbol IDs with the canonical invocation signature, including unused generators.
+This is snapshot-local signature metadata, not successful execution or proof.
+Editors must account for definition-context references hidden in generated code;
+rechecking a partial rename can silently select a surviving overload.
+
 ### Compile-time type values
 
 `type` is a compile-time-only value type. It does not reserve the ordinary name

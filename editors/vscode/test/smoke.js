@@ -457,6 +457,43 @@ fn helper(value Bool) Int {
       await client.change(target, revised, 7);
     }
     assert.deepEqual((await client.wait(file, 7)).diagnostics, []);
+
+    // A hidden macro reference could silently select the surviving widening
+    // sibling after a partial rename; successful rechecking is not enough.
+    const generatedOverload = `import std.reflect.Schema
+type Positive = Int where self > 0
+
+fn helper(value Positive) Int {
+    value + 1
+}
+
+fn helper(value Int) Int {
+    99
+}
+
+fn generated(types List[Schema]) Text {
+    "helper(Positive(2))"
+}
+`;
+    const generatedMain = `fn main() {
+    assert helper(Positive(2)) == 3
+    assert generated!() == 3
+}
+`;
+    const generatedCases = [
+      [generatedOverload, generatedMain],
+      [generatedOverload.replace('fn generated', 'pub fn generated'), generatedMain.replace('    assert generated!() == 3\n', '')],
+      [`${generatedOverload}\ncomptime {\n    "fn staged() Int { helper(Positive(2)) }"\n}\n`, generatedMain.replace('generated!()', 'staged()')],
+    ];
+    for (const [index, [declarations, entry]] of generatedCases.entries()) {
+      const version = 8 + index;
+      await client.change(helper, declarations, version);
+      await client.change(file, entry, version);
+      await client.change(helperTest, 'test fn direct() {\n    assert helper(Positive(3)) == 4\n}\n', version);
+      assert.deepEqual((await client.wait(file, version)).diagnostics, []);
+      await assert.rejects(client.rpc.sendRequest('textDocument/rename',
+        overloadAt(file, entry, entry.indexOf('helper(Positive'))), /every occurrence|generated/);
+    }
     assert.equal(await fs.readFile(file, 'utf8'), savedMain);
     assert.equal(await fs.readFile(helper, 'utf8'), savedHelper);
     assert.equal(await fs.readFile(helperTest, 'utf8'), savedTest);

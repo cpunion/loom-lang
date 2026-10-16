@@ -170,6 +170,9 @@ A private function can leave an overload set: only its exact checked calls,
 typed callbacks and private-test references change, not sibling declarations.
 The replacement name must still be unused. Public overload renames, generated
 code, unaccounted occurrences, name collisions and invalid identifiers reject.
+Private declaration rename also rejects package-local macro calls/declaration
+generation and exported generator signatures: generated names can bind private
+helpers in their definition context, outside the ordinary reference tokens.
 Runtime-local rename also works in compile-time-specialized functions and selected
 branches when checked instances account for every occurrence. Unobserved uses,
 nested closures and compile-time iteration still refuse the edit.

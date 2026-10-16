@@ -1,3 +1,63 @@
+fn generator_names(files List[TestFile]) List[Text] {
+    let source = match bind(fixture_project(files), false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return []
+        }
+    }
+    let symbols = match macro_generator_candidates(source, build_inputs(no_input_reader)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return []
+        }
+    }
+    let names = new[Text]()
+    var index = 0
+    while index < length(symbols) {
+        push(names, get(source.symbols, get(symbols, index)).name)
+        index = index + 1
+    }
+    names
+}
+
+test fn macro_generator_candidates_use_the_invocation_nominal_signature() {
+    let files = source_files("""
+        import std.reflect.Schema
+
+        pub fn generate(types List[Schema]) Text {
+            discard types
+            "42"
+        }
+
+        pub fn ordinary(values List[Int]) Text {
+            discard values
+            "42"
+        }
+
+        pub async fn asynchronous(types List[Schema]) Text {
+            discard types
+            "42"
+        }
+        """)
+    push(files, source_file("std.reflect", input_file("../../reflect/reflect.loom"), true))
+    let names = generator_names(files)
+    assert length(names) == 1 && get(names, 0) == "generate"
+    // Equal spelling/shape does not make an application record the protocol type.
+    assert length(generator_names(source_files("""
+        record Schema {
+            types List[Int]
+            root Int
+        }
+
+        pub fn generate(types List[Schema]) Text {
+            discard types
+            "42"
+        }
+        """))) == 0
+}
+
 test fn typed_macros_expand_without_runtime_generator_roots() {
     let program = match reflected("""
         fn twice(types List[Schema]) Text {

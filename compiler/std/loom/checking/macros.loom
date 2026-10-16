@@ -59,6 +59,16 @@ fn macro_tree(context Context, call Node, value Value, depth Int, budget List[In
 
 // A generator is an ordinary source function. Only its invocation is staged;
 // neither descriptor construction nor generator calls become runtime roots.
+fn macro_signature(env Environment, current Signature) Bool {
+    if current.parameters != 0 || has_static(current) || length(current.params) != 1 ||
+    (current.result != 3 && !macro_tree_type(env, current.result)) ||
+    has(symbol(env, current.symbol).node, NodeKind.Async) {
+        return false
+    }
+    let element = reflection_element(env, get(current.params, 0))
+    element >= 0 && reflection_nominal(env, element, "Schema", TypeKind.Record, 2)
+}
+
 fn macro_generator(context Context, node Node) Result[Int, Failure] {
     if lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 {
         return Result.Err(error(context, node, "macro invocation requires a named source generator, not a local value"))
@@ -72,16 +82,11 @@ fn macro_generator(context Context, node Node) Result[Int, Failure] {
         var signature = 0
         while signature < length(context.env.signatures) {
             let current = get(context.env.signatures, signature)
-            if current.symbol == owner && current.parameters == 0 && !has_static(current) &&
-            length(current.params) == 1 && (current.result == 3 || macro_tree_type(context.env, current.result)) &&
-            !has(symbol(context.env, owner).node, NodeKind.Async) {
-                let element = reflection_element(context.env, get(current.params, 0))
-                if element >= 0 && reflection_nominal(context.env, element, "Schema", TypeKind.Record, 2) {
-                    if selected >= 0 {
-                        return Result.Err(error(context, node, "ambiguous macro generator"))
-                    }
-                    selected = signature
+            if current.symbol == owner && macro_signature(context.env, current) {
+                if selected >= 0 {
+                    return Result.Err(error(context, node, "ambiguous macro generator"))
                 }
+                selected = signature
             }
             signature = signature + 1
         }
@@ -216,7 +221,11 @@ fn macro_call(context Context, node Node, expected Int) Result[Expr, Failure] {
     var known = true
     let marker = part(node, NodeKind.ExpansionId)
     var identity = concat("macro/", concat(to_text(context.signature.symbol), concat("/",
-                if marker < 0 { to_text(node.span.start) } else { child(node, marker).value })))
+                if marker < 0 {
+                    to_text(node.span.start)
+                } else {
+                    child(node, marker).value
+                })))
     var index = 0
     while index < length(inputs.nodes) {
         let value = input_value(context, inputs, index, -1, false)?
