@@ -77,6 +77,9 @@ See the [file pipeline](../../examples/stream_lines/README.md).
 [TCP chunks](../net/tcp/chunks/README.md) borrow an explicitly closed socket.
 [`length32`](length32/README.md) turns arbitrary byte chunks into bounded binary
 messages with a four-byte length prefix, including scoped producer factories.
+[`lines`](lines/README.md) assembles bounded UTF-8 lines from arbitrary byte
+chunks, including CRLF and code points split across chunks. It stops at each
+line boundary and exhausts on errors or cancellation rather than replaying input.
 [File chunks](../file/chunks/README.md) own a lazy file and yield bounded binary
 buffers without text decoding or prefetching.
 Synchronous algorithms should keep using `std.iter`, avoiding a Task per item.

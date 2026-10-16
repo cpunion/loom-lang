@@ -1,0 +1,6 @@
+test async fn lines_arrive_before_eof_and_preserve_split_utf8_after_cancellation() {
+    assert match trial().await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+}

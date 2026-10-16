@@ -1,0 +1,206 @@
+import std.stream.Stream
+import std.option.Option
+import std.result.Result
+import std.resource.Dispose
+import std.resource.MustScope
+import std.bytes.new
+import std.bytes.get
+import std.bytes.push
+import std.bytes.length
+import std.bytes.decode_utf8
+
+pub enum LineError[E] {
+    Input(E)
+    TooLong(Int)
+    Utf8
+}
+
+record Cursor {
+    chunk Bytes
+    position Int
+    output Bytes
+    carriage Bool
+    ended Bool
+}
+
+pub record Lines[S Stream, E] {
+    state State[S, E]
+}
+
+record State[S Stream, E] {
+    source S
+    bytes fn(S.Item) Result[Bytes, E]
+    maximum Int
+    cursor List[Cursor]
+}
+
+fn cursor() List[Cursor] {
+    [Cursor {
+            chunk = new()
+            position = 0
+            output = new()
+            carriage = false
+            ended = false
+        }]
+}
+
+// The maximum counts UTF-8 bytes, excluding LF and one preceding CR.
+// Construction does not pull. Copies share one serialized cursor.
+pub fn lines[S Stream, E](source S, bytes fn(S.Item) Result[Bytes, E], maximum Int) Lines[S, E]
+requires maximum >= 0
+{
+    Lines[S, E] {
+        state = State[S, E] {
+            source = source
+            bytes = bytes
+            maximum = maximum
+            cursor = cursor()
+        }
+    }
+}
+
+pub fn lines[A, S Stream + Dispose + MustScope, E](create fn(A) S, input A,
+    bytes fn(S.Item) Result[Bytes, E], maximum Int) Lines[S, E]
+requires maximum >= 0
+{
+    Lines[S, E] {
+        state = State[S, E] {
+            source = create(input)
+            bytes = bytes
+            maximum = maximum
+            cursor = cursor()
+        }
+    }
+}
+
+pub fn lines[A, S Stream + Dispose + MustScope, E, F](create fn(A) Result[S, F], input A,
+    bytes fn(S.Item) Result[Bytes, E], maximum Int) Result[Lines[S, E], F]
+requires maximum >= 0
+{
+    Result.Ok(Lines[S, E] {
+            state = State[S, E] {
+                source = create(input)?
+                bytes = bytes
+                maximum = maximum
+                cursor = cursor()
+            }
+        })
+}
+
+fn retire(state List[Cursor]) {
+    state[0] = Cursor {
+        chunk = new()
+        position = 0
+        output = new()
+        carriage = false
+        ended = true
+    }
+}
+
+fn failed[E](state List[Cursor], error LineError[E]) Option[Result[Text, LineError[E]]] {
+    retire(state)
+    Option.Some(Result.Err(error))
+}
+
+fn decoded[E](state List[Cursor], output Bytes) Option[Result[Text, LineError[E]]] {
+    match decode_utf8(output) {
+        Result.Ok(value) => Option.Some(Result.Ok(value))
+        Result.Err(_) => failed[E](state, LineError.Utf8)
+    }
+}
+
+impl[S Stream, E] Stream for Lines[S, E] {
+    type Item = Result[Text, LineError[E]]
+
+    async fn next(self Lines[S, E]) Option[Result[Text, LineError[E]]] {
+        let state = self.state.cursor
+        if state[0].ended {
+            return Option.None
+        }
+        while true {
+            let current = state[0]
+            let size = length(current.chunk)
+            if current.position < size {
+                var position = current.position
+                var carriage = current.carriage
+                while position < size {
+                    let byte = get(current.chunk, position)
+                    position = position + 1
+                    if byte == 10 {
+                        state[0] = Cursor {
+                            position = position
+                            output = new()
+                            carriage = false
+                            ..current
+                        }
+                        return decoded[E](state, current.output)
+                    }
+                    if carriage {
+                        if length(current.output) == self.state.maximum {
+                            return failed[E](state, LineError.TooLong(self.state.maximum))
+                        }
+                        push(current.output, 13)
+                    }
+                    carriage = byte == 13
+                    if !carriage {
+                        if length(current.output) == self.state.maximum {
+                            return failed[E](state, LineError.TooLong(self.state.maximum))
+                        }
+                        push(current.output, byte)
+                    }
+                }
+                state[0] = Cursor {
+                    position = position
+                    carriage = carriage
+                    ..current
+                }
+            } else {
+                // A failed/cancelled pull or converter cannot replay input.
+                // Drop retained buffers before suspension; resume only on success.
+                retire(state)
+                match self.state.source.next().await {
+                    Option.None => {
+                        if current.carriage {
+                            if length(current.output) == self.state.maximum {
+                                return failed[E](state, LineError.TooLong(self.state.maximum))
+                            }
+                            push(current.output, 13)
+                        }
+                        return if length(current.output) == 0 {
+                            Option.None
+                        } else {
+                            decoded[E](state, current.output)
+                        }
+                    }
+                    Option.Some(item) => {
+                        let chunk = match self.state.bytes(item) {
+                            Result.Ok(value) => value
+                            Result.Err(error) => {
+                                return failed[E](state, LineError.Input(error))
+                            }
+                        }
+                        state[0] = Cursor {
+                            chunk = chunk
+                            position = 0
+                            ..current
+                        }
+                    }
+                }
+            }
+        }
+        Option.None
+    }
+}
+
+impl[S Stream + Dispose + MustScope, E] MustScope for Lines[S, E] {
+}
+
+impl[S Stream + Dispose + MustScope, E] Dispose for Lines[S, E] {
+    fn dispose(self Lines[S, E]) {
+    }
+}
+
+impl[S Stream + Dispose + MustScope, E] Dispose for State[S, E] {
+    fn dispose(self State[S, E]) {
+    }
+}

@@ -4,12 +4,14 @@ mod common;
 use common::success;
 
 #[test]
-fn length32_frames_keep_binary_boundaries_limits_and_real_tcp_cleanup() {
+fn source_framing_keeps_binary_text_boundaries_limits_and_real_tcp_cleanup() {
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "framed-stream");
     for package in [
         "compiler/std/stream/length32",
         "compiler/examples/framed_tcp",
+        "compiler/std/stream/lines",
+        "compiler/examples/tcp_lines",
     ] {
         success(&common::loom(&["check", package]));
         for level in ["0", "2"] {
@@ -24,15 +26,20 @@ fn length32_frames_keep_binary_boundaries_limits_and_real_tcp_cleanup() {
             success(&common::run_tasks(&executable));
         }
     }
-    success(
-        &common::command(&["build", "compiler/examples/framed_tcp"])
-            .arg("--output")
-            .arg(&executable)
-            .env("LOOM_OPT_LEVEL", "2")
-            .output()
-            .unwrap(),
-    );
-    success(&common::run_tasks(&executable));
+    for package in [
+        "compiler/examples/framed_tcp",
+        "compiler/examples/tcp_lines",
+    ] {
+        success(
+            &common::command(&["build", package])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", "2")
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+    }
 }
 
 #[test]
