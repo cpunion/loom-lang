@@ -18,7 +18,7 @@ test fn normalized_contracts_keep_source_parameters_fields_and_selected_helpers(
             value
         }
         fn main() {
-            assert keep(Item { count = 7 }).count == 7
+            assert true
         }
         """
     let analysis = accepted(input(text))
@@ -37,6 +37,7 @@ test fn normalized_contracts_keep_source_parameters_fields_and_selected_helpers(
     let bindings = query_bindings(input(text))
     only_definition(independent_found(bindings, text, "value).count"), parameter, parameter + 5)
     only_definition(independent_found(bindings, text, "read(result)"), helper, helper + 4)
+    assert length(analysis.contract_queries) == 2
     let invalid = std.text.replace(text, "ensures read(result) == read(value)", "ensures false")
     assert match inspect_independent(query_bindings(input(invalid)), 0, query_offset(invalid, "value).count")) {
         Option.None => true
