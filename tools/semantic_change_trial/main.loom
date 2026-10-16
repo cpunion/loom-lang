@@ -7,6 +7,7 @@ import std.loom.ast.NodeKind
 import std.loom.project.Project
 import std.loom.project.load
 import std.loom.project.join_path
+import std.loom.proof.z3.backend
 import std.bytes.new
 import std.bytes.push
 import std.bytes.decode_utf8
@@ -577,7 +578,7 @@ fn loaded_stamp(loaded Loaded) Text {
 }
 
 fn review(base Loaded, left Loaded, right Loaded) Result[Review, Text] {
-    let merged = merge(base.revision, left.revision, right.revision)?
+    let merged = merge(base.revision, left.revision, right.revision, backend("z3"))?
     let next = std.int.maximum(std.int.maximum(base.next, left.next), right.next)
     let output = std.bytes.new()
     frame(output, "loom-semantic-review-v1")
@@ -595,7 +596,7 @@ fn review(base Loaded, left Loaded, right Loaded) Result[Review, Text] {
 
 fn review_context(base Loaded, left Loaded, right Loaded, context Context) Result[Review, Text] {
     let merged = merge_with_context(base.revision, left.revision, right.revision,
-        context.production, context.tests, context.directory)?
+        context.production, context.tests, context.directory, backend("z3"))?
     let next = std.int.maximum(std.int.maximum(base.next, left.next), right.next)
     let output = std.bytes.new()
     frame(output, "loom-semantic-review-context-v1")

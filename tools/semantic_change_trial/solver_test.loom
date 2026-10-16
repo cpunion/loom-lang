@@ -1,0 +1,68 @@
+import std.text.replace
+
+fn solver_lifecycle(staging Text) Result[Text, Text] {
+    let source = """
+        fn square(value Int) Int
+        ensures result >= 0 {
+            value * value
+        }
+        """
+    let caller = """
+        fn main() {
+            assert square(2) == 4
+        }
+        """
+    let base = path(staging, "base")
+    let left = path(staging, "left")
+    let right = path(staging, "right")
+    let output = path(staging, "output")
+    discard create_dir(staging)
+    discard create_dir(base)
+    discard create_dir(left)
+    discard create_dir(right)
+    discard write_text(path(base, "value.loom"), source)
+    discard write_text(path(base, "app.loom"), caller)
+    discard initialize("sample", base)?
+    let original = read(base)?
+    var index = 0
+    while index < length(original.revision.identities) && get(original.revision.identities, index).name != "square" {
+        index = index + 1
+    }
+    assert index < length(original.revision.identities)
+    let identity = get(original.revision.identities, index)
+    // Preserve an explicit identity while moving and renaming the function.
+    discard write_text(path(left, "app.loom"),
+        concat(replace(source, "square", "squared"), concat("\n", replace(caller, "square", "squared"))))
+    discard write_text(path(left, ".loom-ids"), original.sidecar)
+    discard refresh(left, [Resolution {
+                id = identity.id
+                path = "app.loom"
+                name = "squared"
+                key = identity.key
+                deletion = false
+            }], false)?
+    discard write_text(path(right, "value.loom"), replace(source, "value * value", "value * value + 0"))
+    discard write_text(path(right, "app.loom"), caller)
+    discard write_text(path(right, ".loom-ids"), original.sidecar)
+    discard refresh(right, [], false)?
+    let plan = review(original, read(left)?, read(right)?)?
+    discard apply_directories(plan.token, output, base, left, right)?
+    let merged = text_at(path(output, "app.loom"))
+    assert contains(merged, "fn squared(value Int)")
+    assert contains(merged, "value * value + 0")
+    assert contains(merged, "assert squared(2) == 4")
+    let published = read(output)?
+    assert get(published.revision.identities,
+        identity_at(published.revision.identities, identity.id)).key == identity.key
+    remove_trial(output)
+    remove_trial(left)
+    remove_trial(right)
+    remove_trial(base)
+    discard remove_empty_dir(staging)
+    Result.Ok("solver lifecycle completed")
+}
+
+test fn solver_backed_rename_move_and_edit_survive_review_and_apply() {
+    let staging = concat("tools/semantic_change_trial/target/solver-", to_text(monotonic_ns()))
+    assert successful(solver_lifecycle(staging)) == "solver lifecycle completed"
+}

@@ -246,7 +246,7 @@ fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
     let assets = merge_assets(base.assets, left.assets, right.assets)?
     let merged = merge_packages(module_revisions(base, context.directory),
         module_revisions(left, context.directory), module_revisions(right, context.directory),
-        context.production, context.tests)?
+        context.production, context.tests, backend("z3"))?
     let packages = new[Review]()
     let relative = new[Text]()
     let bytes = std.bytes.new()

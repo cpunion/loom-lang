@@ -40,4 +40,12 @@ This is not behavior-equivalence proof, an
 arbitrary semantic VCS or an execution engine. Checking does not launch the
 application or replay runtime effects; ordinary compile-time checking still runs.
 
+Each merge API also accepts a final `ProofBackend` argument. Hosts can supply
+`std.loom.proof.z3.backend("z3")` to discharge supported unresolved contracts.
+The capability reaches baseline, branch, rename, binding and private-test checks;
+counterexamples, unknown results and solver failures still reject the proposal.
+Calls without that argument stay I/O-free. Neither form enables ambient file
+or target reads. This is ordinary contract checking, not migration or
+behavior-equivalence proof.
+
 Run `target/loom test tools/semantic_change` from the repository root.

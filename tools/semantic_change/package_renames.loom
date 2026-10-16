@@ -8,7 +8,7 @@ record PackageRenames {
 // cannot be referenced by another package; the shared normalizer still checks
 // every supported local binding in production and the package's own tests.
 fn normalize_package_renames(revisions List[PackageRevision], plans List[PackageRenames],
-    production Project, tests Project) Result[List[PackageRevision], Text] {
+    production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
     let ordinary = package_project(production, revisions)?
     let testing = package_project(tests, revisions)?
     let output = new[PackageRevision]()
@@ -26,7 +26,7 @@ fn normalize_package_renames(revisions List[PackageRevision], plans List[Package
                 }, Project {
                     root = project_package(testing, selected.revision.package_name)?
                     ..testing
-                })?
+                }, backend)?
         }
         push(output, PackageRevision {
                 directory = selected.directory

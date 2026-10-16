@@ -1,4 +1,3 @@
-import std.loom.analysis.analyze
 import std.loom.analysis.Analysis
 import std.loom.analysis.inspect_at
 import std.loom.analysis.inspect_independent
@@ -434,7 +433,8 @@ fn target_at(analysis Analysis, revision Indexed, directory Text, entry Entry, o
     let inspected = match inspect_at(analysis, file, entry.start + offset) {
         Option.Some(value) => value
         Option.None => {
-            match inspect_independent(analysis.bindings, file, entry.start + offset) {
+            match inspect_independent(analysis.bindings, file, entry.start + offset,
+                proof_inputs(analysis.proof_backend)) {
                 Option.Some(value) => value
                 Option.None => {
                     return Result.Err(concat("retained reference has no checked binding evidence in ",
@@ -813,9 +813,9 @@ fn project_of(revision Revision) Result[Project, Text] {
         })
 }
 
-fn checked(revision Revision) Result[Revision, Text] {
+fn checked(revision Revision, backend ProofBackend) Result[Revision, Text] {
     let project = project_of(revision)?
-    match analyze(project, false) {
+    match checked_analysis(project, false, backend) {
         Result.Ok(_) => {
         }
         Result.Err(problem) => {
@@ -823,7 +823,7 @@ fn checked(revision Revision) Result[Revision, Text] {
                     problem.diagnostic.message))
         }
     }
-    match analyze(project, true) {
+    match checked_analysis(project, true, backend) {
         Result.Ok(_) => Result.Ok(revision)
         Result.Err(problem) => Result.Err(concat("merged program failed analysis (tests): ",
                 problem.diagnostic.message))
@@ -831,7 +831,7 @@ fn checked(revision Revision) Result[Revision, Text] {
 }
 
 fn checked_bindings(left Revision, right Revision, merged Revision, directory Text,
-    production Project, tests Project) Result[Bool, Text] {
+    production Project, tests Project, backend ProofBackend) Result[Bool, Text] {
     let left_indexed = indexed(left)?
     let right_indexed = indexed(right)?
     let merged_indexed = indexed(merged)?
@@ -865,19 +865,19 @@ fn checked_bindings(left Revision, right Revision, merged Revision, directory Te
                     production
                 }, directory, merged)?
         }
-        let left_analysis = match analyze(left_project, testing) {
+        let left_analysis = match checked_analysis(left_project, testing, backend) {
             Result.Ok(value) => value
             Result.Err(problem) => {
                 return Result.Err(concat("left source has no complete checked binding evidence: ", problem.diagnostic.message))
             }
         }
-        let right_analysis = match analyze(right_project, testing) {
+        let right_analysis = match checked_analysis(right_project, testing, backend) {
             Result.Ok(value) => value
             Result.Err(problem) => {
                 return Result.Err(concat("right source has no complete checked binding evidence: ", problem.diagnostic.message))
             }
         }
-        let merged_analysis = match analyze(merged_project, testing) {
+        let merged_analysis = match checked_analysis(merged_project, testing, backend) {
             Result.Ok(value) => value
             Result.Err(problem) => {
                 return Result.Err(concat("merged source has no complete checked binding evidence: ", problem.diagnostic.message))
@@ -1087,19 +1087,20 @@ fn contextual_package(project Project, package Int, directory Text, revision Rev
         })
 }
 
-fn checked_context(base Revision, merged Revision, production Project, tests Project, directory Text) Result[Revision, Text] {
+fn checked_context(base Revision, merged Revision, production Project, tests Project, directory Text,
+    backend ProofBackend) Result[Revision, Text] {
     if !context_matches_base(production, directory, base, false) ||
     !context_matches_base(tests, directory, base, true) {
         return Result.Err("project context must contain the exact baseline package")
     }
-    match analyze(contextual(production, directory, merged)?, false) {
+    match checked_analysis(contextual(production, directory, merged)?, false, backend) {
         Result.Ok(_) => {
         }
         Result.Err(problem) => {
             return Result.Err(concat("merged program failed analysis (production): ", problem.diagnostic.message))
         }
     }
-    match analyze(contextual(tests, directory, merged)?, true) {
+    match checked_analysis(contextual(tests, directory, merged)?, true, backend) {
         Result.Ok(_) => {
         }
         Result.Err(problem) => {
@@ -1109,14 +1110,14 @@ fn checked_context(base Revision, merged Revision, production Project, tests Pro
     // A changed dependency may make the baseline invalid while the proposed
     // merge happens to adapt to it. That is a cross-package change, not a
     // safe merge against this pinned project basis.
-    match analyze(production, false) {
+    match checked_analysis(production, false, backend) {
         Result.Ok(_) => {
         }
         Result.Err(problem) => {
             return Result.Err(concat("baseline program failed analysis (production): ", problem.diagnostic.message))
         }
     }
-    match analyze(tests, true) {
+    match checked_analysis(tests, true, backend) {
         Result.Ok(_) => {
         }
         Result.Err(problem) => {
@@ -1204,39 +1205,48 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
 }
 
 pub fn merge(base Revision, left Revision, right Revision) Result[Revision, Text] {
-    let project = project_of(base)?
-    let normalized = normalize_renames(base, left, right, "", project, project)?
-    merge_same_names(normalized.original, normalized.left, normalized.right)
+    merge(base, left, right, no_proof_backend())
 }
 
-fn merge_same_names(base Revision, left Revision, right Revision) Result[Revision, Text] {
+pub fn merge(base Revision, left Revision, right Revision, backend ProofBackend) Result[Revision, Text] {
+    let project = project_of(base)?
+    let normalized = normalize_renames(base, left, right, "", project, project, backend)?
+    merge_same_names(normalized.original, normalized.left, normalized.right, backend)
+}
+
+fn merge_same_names(base Revision, left Revision, right Revision, backend ProofBackend) Result[Revision, Text] {
     let merged = proposed(base, left, right)?
     if has_imports(base)? || has_imports(left)? || has_imports(right)? ||
     needs_result_import(base, true)? || needs_result_import(left, true)? ||
     needs_result_import(right, true)? {
         return Result.Err("import-bearing merges require an explicit pinned project context")
     }
-    discard checked(merged)?
+    discard checked(merged, backend)?
     if move_plus_edit(indexed(base)?, indexed(left)?, indexed(right)?) {
         let project = project_of(base)?
-        discard checked_bindings(left, right, merged, "", project, project)?
+        discard checked_bindings(left, right, merged, "", project, project, backend)?
     }
     Result.Ok(merged)
 }
 
 pub fn merge_with_context(base Revision, left Revision, right Revision,
     production Project, tests Project, directory Text) Result[Revision, Text] {
-    let normalized = normalize_renames(base, left, right, directory, production, tests)?
+    merge_with_context(base, left, right, production, tests, directory, no_proof_backend())
+}
+
+pub fn merge_with_context(base Revision, left Revision, right Revision,
+    production Project, tests Project, directory Text, backend ProofBackend) Result[Revision, Text] {
+    let normalized = normalize_renames(base, left, right, directory, production, tests, backend)?
     if same_revision_names(base, normalized.original) {
-        return merge_same_names_with_context(base, left, right, production, tests, directory)
+        return merge_same_names_with_context(base, left, right, production, tests, directory, backend)
     }
     merge_same_names_with_context(normalized.original, normalized.left, normalized.right,
         contextual(production, directory, normalized.original)?,
-        contextual(tests, directory, normalized.original)?, directory)
+        contextual(tests, directory, normalized.original)?, directory, backend)
 }
 
 fn merge_same_names_with_context(base Revision, left Revision, right Revision,
-    production Project, tests Project, directory Text) Result[Revision, Text] {
+    production Project, tests Project, directory Text, backend ProofBackend) Result[Revision, Text] {
     if !same_imports(base, left)? || !same_imports(base, right)? ||
     !same_implicit_imports(base, left)? || !same_implicit_imports(base, right)? {
         return Result.Err("import bindings changed; this merge needs explicit resolution")
@@ -1249,9 +1259,9 @@ fn merge_same_names_with_context(base Revision, left Revision, right Revision,
     if !same_imports(base, merged)? || !same_implicit_imports(base, merged)? {
         return Result.Err("merged imports differ from the pinned project context")
     }
-    discard checked_context(base, merged, production, tests, directory)?
+    discard checked_context(base, merged, production, tests, directory, backend)?
     if move_plus_edit(original, indexed(left)?, indexed(right)?) {
-        discard checked_bindings(left, right, merged, directory, production, tests)?
+        discard checked_bindings(left, right, merged, directory, production, tests, backend)?
     }
     Result.Ok(merged)
 }
