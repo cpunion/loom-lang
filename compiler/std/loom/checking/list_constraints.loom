@@ -138,8 +138,8 @@ fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool 
     std.loom.proof.fresh_list_factory(program, value.index)
 }
 
-fn constraint_operation(env Environment, functions List[Function], value Expr) Bool {
-    constraint_operation(env, functions, value, false)
+fn constraint_operation(env Environment, functions List[Function], locals List[Local], value Expr) Bool {
+    constraint_operation(env, functions, locals, value, false)
 }
 
 // Private aggregate probes retain field paths instead of treating every sibling
@@ -185,7 +185,7 @@ fn constraint_input_writes(env Environment, value Expr, depth Int) Int {
     writes
 }
 
-fn constraint_operation(env Environment, functions List[Function], value Expr, established Bool) Bool {
+fn constraint_operation(env Environment, functions List[Function], locals List[Local], value Expr, established Bool) Bool {
     let inputs = new[InputOrigin]()
     var writes = 2
     var index = 0
@@ -207,7 +207,7 @@ fn constraint_operation(env Environment, functions List[Function], value Expr, e
                 "list_push"
             }, inputs) &&
         (established || proved_list_update(env, value, store) ||
-            proved_update_expression(env, functions, value)) {
+            proved_update_expression(env, functions, locals, value)) {
             return true
         }
     }
@@ -246,23 +246,23 @@ fn constraint_mutation_writes(env Environment, functions List[Function], value E
     }
 }
 
-fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr) Result[Bool, Failure] {
-    list_constraint_expression(env, functions, owner, value, new[Expr]())
+fn list_constraint_expression(env Environment, functions List[Function], locals List[Local], owner Int, value Expr) Result[Bool, Failure] {
+    list_constraint_expression(env, functions, locals, owner, value, new[Expr]())
 }
 
-fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr, drafts List[Expr]) Result[Bool, Failure] {
+fn list_constraint_expression(env Environment, functions List[Function], locals List[Local], owner Int, value Expr, drafts List[Expr]) Result[Bool, Failure] {
     // Only original typing can emit this certificate. Cached bodies retain its
     // definition dependencies; recheck the non-publishing operation structure.
     if value.kind == ExprKind.Block && value.text == "proved sequence update" && length(value.children) == 1 {
         let operation = get(value.children, 0)
-        if !constraint_operation(env, functions, operation, true) {
+        if !constraint_operation(env, functions, locals, operation, true) {
             return Result.Err(list_constraint_error(env, owner, operation,
                     "this operation may invalidate or expose constrained sequence storage; use a proved preserving operation or an explicit copy"))
         }
         var index = 0
         while index < length(operation.children) {
             let child = get(operation.children, index)
-            discard list_constraint_expression(env, functions, owner, if constraint_weakened(env, child) {
+            discard list_constraint_expression(env, functions, locals, owner, if constraint_weakened(env, child) {
                     get(child.children, 0)
                 } else {
                     child
@@ -279,8 +279,8 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
             return Result.Err(list_constraint_error(env, owner, input,
                     "a sequence constraint requires fresh unpublished storage; use a fresh literal, a proved factory, an unpublished local draft or an explicit copy"))
         }
-        discard list_constraint_expression(env, functions, owner, input, drafts)?
-        discard list_constraint_expression(env, functions, owner, get(get(value.children, 1).children, 0), drafts)?
+        discard list_constraint_expression(env, functions, locals, owner, input, drafts)?
+        discard list_constraint_expression(env, functions, locals, owner, get(get(value.children, 1).children, 0), drafts)?
         return Result.Ok(true)
     }
     if value.kind == ExprKind.Coerce && constrained_sequence(env, value.ty) &&
@@ -297,7 +297,7 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
         }
         index = index + 1
     }
-    if borrowed && !constraint_operation(env, functions, value) {
+    if borrowed && !constraint_operation(env, functions, locals, value) {
         return Result.Err(list_constraint_error(env, owner, value,
                 "this operation may invalidate or expose constrained sequence storage; use a proved preserving operation or an explicit copy"))
     }
@@ -308,7 +308,7 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
     index = 0
     while index < length(value.children) {
         let child = get(value.children, index)
-        discard list_constraint_expression(env, functions, owner,
+        discard list_constraint_expression(env, functions, locals, owner,
             if constraint_weakened(env, child) {
                 get(child.children, 0)
             } else {
@@ -321,7 +321,7 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
         let arm = get(value.arms, index)
         var item = 0
         while item < length(arm.body) {
-            discard list_constraint_expression(env, functions, owner, get(arm.body, item), drafts)?
+            discard list_constraint_expression(env, functions, locals, owner, get(arm.body, item), drafts)?
             item = item + 1
         }
         index = index + 1
@@ -334,10 +334,10 @@ fn list_constraint_function(env Environment, functions List[Function], current F
         return Result.Ok(true)
     }
     let drafts = unpublished_drafts(env, functions, current)
-    discard list_constraint_expression(env, functions, current.symbol, current.body, drafts)?
+    discard list_constraint_expression(env, functions, current.locals, current.symbol, current.body, drafts)?
     var index = 0
     while index < length(current.preconditions) {
-        discard list_constraint_expression(env, functions, current.symbol, get(current.preconditions, index))?
+        discard list_constraint_expression(env, functions, current.locals, current.symbol, get(current.preconditions, index))?
         index = index + 1
     }
     Result.Ok(true)

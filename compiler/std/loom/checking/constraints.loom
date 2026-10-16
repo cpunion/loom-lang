@@ -167,7 +167,7 @@ fn validate_refinement(env Environment, ty Int) Result[Int, Failure] {
     // This is analysis, not CTFE or runtime emission. Retain actual abstract
     // helper bodies; unresolved concept summaries remain Deferred and impure.
     let program = prepared_in(stage, !concrete(env, ty))?
-    discard list_constraint_expression(env, program.functions, owner, value)?
+    discard list_constraint_expression(env, program.functions, stage.locals, owner, value)?
     var writes = 0
     if !inline_constraint_base(env, base, 0) {
         let sequence = get(env.types, base).kind == TypeKind.List || get(env.types, base).kind == TypeKind.Bytes

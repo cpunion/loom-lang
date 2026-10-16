@@ -144,6 +144,8 @@ supported theories and boundaries. The central rules are:
   every actual store, not merely at normal return. Both sequence types support
   fresh constrained construction and checked representation borrows; byte-range
   faults precede stores, and opaque content predicates grant no unproved writes.
+  Dependent store arguments preserve checked block/match bindings and the
+  receiver evaluated before argument-side rebinding; unsupported scopes reject.
   Shared atomic element reads can use the continuing predicate at that snapshot;
   separate reads still cannot assume equal contents.
 - Fresh drafts and selected known aliases can publish a constrained outer header

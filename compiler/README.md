@@ -2666,6 +2666,11 @@ and borrows are checked through helper bodies, not trusted annotations. These
 rules also run for compile-time code and unused concrete functions. The constrained
 List has the ordinary native List layout and survives moving GC and Task handoff.
 See the [generic extent example](examples/list_contracts/refinements.loom).
+Dependent store arguments retain their checked local bindings, `if`/`match`
+branches and reassignment in the same proof engine. The receiver captured before
+argument evaluation remains the target even if an argument rebinds its source
+variable. This is bounded preservation reasoning, not a promise to prove every
+index relation; unsupported resource/async scopes and outer-function exits reject.
 Atomic replacement and append also reuse stable caller evidence: `requires`, successful assertions,
 selected branches, early exits and immutable scalar copies. Pure helper conditions
 use the same bounded expansion as construction proofs:

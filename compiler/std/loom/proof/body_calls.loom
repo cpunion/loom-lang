@@ -1,13 +1,32 @@
 // Remap checked locals into a nested invocation, not function/observation IDs.
 // Unsupported alternatives must reject rather than disappear during remapping.
 fn call_body_at(value Expr, offset Int, depth Int) Result[Expr, Text] {
+    call_body_at(value, offset, Option.None, depth)
+}
+
+fn call_local_at(local Int, offset Int, mapping Option[List[Int]]) Result[Int, Text] {
+    if local < 0 {
+        return Result.Ok(local)
+    }
+    match mapping {
+        Option.None => Result.Ok(local + offset)
+        Option.Some(slots) => {
+            if local >= length(slots) || get(slots, local) < 0 {
+                return Result.Err("source proof local is outside its scope")
+            }
+            Result.Ok(get(slots, local))
+        }
+    }
+}
+
+fn call_body_at(value Expr, offset Int, mapping Option[List[Int]], depth Int) Result[Expr, Text] {
     if depth <= 0 {
         return Result.Err("source helper proof body depth exhausted")
     }
     let children = new[Expr]()
     var index = 0
     while index < length(value.children) {
-        push(children, call_body_at(get(value.children, index), offset, depth - 1)?)
+        push(children, call_body_at(get(value.children, index), offset, mapping, depth - 1)?)
         index = index + 1
     }
     let arms = new[Arm]()
@@ -18,27 +37,19 @@ fn call_body_at(value Expr, offset Int, depth Int) Result[Expr, Text] {
         var field = 0
         while field < length(arm.bindings) {
             let local = get(arm.bindings, field)
-            push(bindings, if local < 0 {
-                    -1
-                } else {
-                    local + offset
-                })
+            push(bindings, call_local_at(local, offset, mapping)?)
             field = field + 1
         }
         let body = new[Expr]()
         field = 0
         while field < length(arm.body) {
-            push(body, call_body_at(get(arm.body, field), offset, depth - 1)?)
+            push(body, call_body_at(get(arm.body, field), offset, mapping, depth - 1)?)
             field = field + 1
         }
         push(arms, Arm {
                 variant = arm.variant
                 bindings = bindings
-                whole = if arm.whole < 0 {
-                    -1
-                } else {
-                    arm.whole + offset
-                }
+                whole = call_local_at(arm.whole, offset, mapping)?
                 body = body
             })
         index = index + 1
@@ -51,7 +62,7 @@ fn call_body_at(value Expr, offset Int, depth Int) Result[Expr, Text] {
             span = value.span
             text = value.text
             index = if local {
-                value.index + offset
+                call_local_at(value.index, offset, mapping)?
             } else {
                 value.index
             }
