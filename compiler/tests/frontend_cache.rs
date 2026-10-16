@@ -30,6 +30,39 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn dynamic_family_snapshots_recheck_changed_bindings_and_keep_native_captures() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = include_str!("../examples/dyn_families/main.loom");
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    checked(&cached("emit-checked", &package, &cache, &[]), true);
+
+    // Shift source/type IDs and import the persisted definition snapshot.
+    // Family-bearing bodies may be rechecked, never restored with stale binders.
+    fs::write(package.join("aaa.loom"), "fn unrelated() {}\n").unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    // Rechecking introduces fresh, unused rigid metadata IDs; byte equality is
+    // not a semantic requirement. Both artifacts must preserve native behavior.
+    checked(&cached("run", &package, &cache, &[]), true);
+    success(&common::loom(&["run", package.to_str().unwrap()]));
+
+    let invalid = source.replace(
+        "Item[Renamed] = List[Renamed]",
+        "Item[Renamed] = (Renamed, Renamed)",
+    );
+    assert_ne!(invalid, source);
+    fs::write(&path, invalid).unwrap();
+    let rejected = cached("check", &package, &cache, &[]);
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(!rejected.stderr.is_empty());
+}
+
+#[test]
 fn type_pack_guards_recheck_conformance_and_guarantees_after_body_reuse() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");
