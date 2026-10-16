@@ -49,6 +49,29 @@ fn function_shape(env Environment, current Signature) Int {
 
 fn function_value(context Context, node Node, options List[Int], supplied_types List[Node], expected Int,
     arity Int) Result[Expr, Failure] {
+    let chosen = function_reference(context, node, options, supplied_types, expected, arity, new[Int]())?
+    discard checked_reference(context, node, chosen)?
+    if get(context.env.inputs, 0).declaration_queries {
+        discard record_function_reference(context.env, context.signature.symbol, node, chosen.signature, chosen.arguments)?
+    }
+    let target = if context.emit {
+        schedule(context.env, chosen.signature, chosen.arguments, new[StaticValue](), node)?
+    } else {
+        -1
+    }
+    Result.Ok(expression(ExprKind.FunctionRef, chosen.ty, node, "", target, new[Expr](), true))
+}
+
+record FunctionReference {
+    signature Int
+    arguments List[Int]
+    ty Int
+}
+
+// Fixed receiver types participate in the same exact-signature inference as
+// ordinary references. Selection alone schedules no code or runtime operation.
+fn function_reference(context Context, node Node, options List[Int], supplied_types List[Node], expected Int,
+    arity Int, prefix List[Int]) Result[FunctionReference, Failure] {
     let desired = if expected >= 0 && get(context.env.types, expected).kind == TypeKind.Function {
         expected
     } else {
@@ -69,6 +92,11 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         if (arity < 0 || length(candidate.params) == arity) &&
         !has_static(candidate) && (type_count < 0 || type_count == count) {
             let inferred = supplied_call(context, node, supplied_types, candidate)?
+            var bound = 0
+            while bound < length(prefix) && bound < length(candidate.params) {
+                discard infer(context.env, get(candidate.params, bound), get(prefix, bound), inferred)
+                bound = bound + 1
+            }
             if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
                 if length(shape) == length(candidate.params) + 1 {
@@ -102,25 +130,25 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         }
         return Result.Err(error(context, node, "no accessible function reference matches; provide an exact function type and required concept evidence"))
     }
-    let selected_signature = get(context.env.signatures, selected)
+    Result.Ok(FunctionReference {
+            signature = selected
+            arguments = arguments
+            ty = output
+        })
+}
+
+fn checked_reference(context Context, node Node, chosen FunctionReference) Result[Bool, Failure] {
+    let selected_signature = get(context.env.signatures, chosen.signature)
     if reflection_intrinsic(context.env, selected_signature.symbol) {
         return Result.Err(error(context, node, "type reflection must be called directly; use a source wrapper for a function value"))
     }
     if length(context.env.packs) != 0 {
-        discard check_pack_arity(context.env, selected)?
+        discard check_pack_arity(context.env, chosen.signature)?
     }
     if async_signature(context.env, selected_signature) && has(symbol(context.env, selected_signature.symbol).node, NodeKind.Intrinsic) {
         return Result.Err(error(context, node, "private async intrinsics must be awaited directly"))
     }
-    if get(context.env.inputs, 0).declaration_queries {
-        discard record_function_reference(context.env, context.signature.symbol, node, selected, arguments)?
-    }
-    let target = if context.emit {
-        schedule(context.env, selected, arguments, new[StaticValue](), node)?
-    } else {
-        -1
-    }
-    Result.Ok(expression(ExprKind.FunctionRef, output, node, "", target, new[Expr](), true))
+    Result.Ok(true)
 }
 
 fn call_value(context Context, node Node, callee Expr, types List[Node], inputs CallInputs) Result[Expr, Failure] {

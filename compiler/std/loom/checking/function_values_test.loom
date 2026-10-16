@@ -22,14 +22,26 @@ test fn function_references_use_exact_contextual_signatures_and_declared_bounds(
     rejects("type Positive = Int where self > 0\nfn value(input Positive) Positive { input }\nfn main() { let callback fn(Int) Int = value\ndiscard callback }")
 }
 
-test fn function_fields_and_methods_share_viability_without_implicit_capture() {
+test fn function_fields_and_methods_share_call_viability_and_fields_win_value_selection() {
     discard accepted("record Node { visit fn(Node) Int }\nfn visit(node Node) Int { 1 }\nfn main() { let node = Node { visit = visit }\nassert node.visit(node) == 1 }")
     let definitions = "record Hook { callback fn(Int) Int }\nfn increment(value Int) Int { value + 1 }\nconcept C { fn callback(self Self, value Bool) Bool }\nimpl C for Hook { fn callback(self Hook, value Bool) Bool { value } }\n"
     discard accepted(concat(definitions, "fn main() { let hook = Hook { callback = increment }\nassert hook.callback(2) == 3\nassert hook.callback(true)\nassert (hook.callback)(3) == 4\nassert C.callback(hook, true) }") )
     let ambiguous = "record Hook { callback fn(Int) Int }\nfn increment(value Int) Int { value + 1 }\nconcept C { fn callback(self Self, value Int) Int }\nimpl C for Hook { fn callback(self Hook, value Int) Int { value + 2 } }\n"
     rejects(concat(ambiguous, "fn main() { let hook = Hook { callback = increment }\ndiscard hook.callback(1) }"))
     discard accepted(concat(ambiguous, "fn main() { let hook = Hook { callback = increment }\nassert (hook.callback)(1) == 2\nassert C.callback(hook, 1) == 3 }") )
-    rejects("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\nfn main() { let value = 1\nlet captured = value.value\ndiscard captured }")
+    discard accepted("""
+        concept C {
+            fn value(self Self) Int
+        }
+        impl C for Int {
+            fn value(self Int) Int { self }
+        }
+        fn main() {
+            let value = 1
+            let captured = value.value
+            assert captured() == 1
+        }
+        """)
     rejects("fn value(input Int) Int { input }\nfn main() { let callback = value\nassert callback == callback }")
     rejects("fn value(input Int) Int { input }\nfn main() { let callback = value\ndiscard callback[Int](1) }")
 }
