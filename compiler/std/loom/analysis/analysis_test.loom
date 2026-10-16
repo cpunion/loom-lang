@@ -102,6 +102,32 @@ test fn associated_family_names_include_arguments_after_the_receiver() {
     assert family && plain
 }
 
+test fn dynamic_family_names_distinguish_nested_binders_from_captures() {
+    let text = """
+        concept Family {
+            type Item[T]
+        }
+        concept Nested {
+            type Entry[T]
+        }
+        pub fn keep(value dyn Nested[Entry[T] = dyn Family[Item[U] = (T, U)]] ) {
+            discard value
+        }
+        """
+    let analysis = accepted(input(text))
+    var found = false
+    var index = 0
+    while index < length(analysis.program.types) {
+        let ty = get(analysis.program.types, index)
+        if ty.kind == TypeKind.Dyn &&
+            type_name(analysis, index) == "dyn app.Nested[Entry[F0] = dyn app.Family[Item[F1] = (F0, F1)]]" {
+            found = true
+        }
+        index = index + 1
+    }
+    assert found
+}
+
 test fn snapshots_detect_metadata_text_and_nested_ast_edits() {
     let project = input("fn main() { let count = 3\nassert count == 3 }")
     let analysis = accepted(project)

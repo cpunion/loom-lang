@@ -12,7 +12,7 @@ fn static_storage_budget(env Environment, ty Int, depth Int, budget Int) Int {
         return budget - 1
     }
     let shape = get(env.types, ty)
-    if shape.kind == TypeKind.Meta || shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
+    if shape.kind == TypeKind.Meta || shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated || shape.kind == TypeKind.Rigid {
         return budget - 1
     }
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple &&

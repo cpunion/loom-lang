@@ -15,6 +15,11 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
         return Result.Err(failure(env, owner, node, "type requirement expansion must be finite"))
     }
     let shape = get(env.types, ty)
+    // A lambda's body needs the domain of its declaring associated member.
+    // Its enclosing dyn revalidates that domain and result promise below.
+    if shape.kind == TypeKind.Family {
+        return Result.Ok(true)
+    }
     var index = 0
     while index < length(shape.arguments) {
         discard well_formed(env, owner, get(shape.arguments, index), obligations, node, depth + 1)?
@@ -175,7 +180,12 @@ fn associated_bounds(env Environment, owner Int, capability Int, bindings List[I
     let declaration = get(env.concepts, concept_index(env, capability))
     var member = 0
     while member < length(bindings) {
-        discard member_requirements(env, owner, get(bindings, member), get(declaration.bounds, member), obligations, node)?
+        let source = get(declaration.associated, member)
+        if length(member_parameters(env, source)) == 0 {
+            discard member_requirements(env, owner, get(bindings, member), get(declaration.bounds, member), obligations, node)?
+        } else {
+            discard dynamic_family_requirements(env, owner, source, get(bindings, member), obligations, node)?
+        }
         member = member + 1
     }
     Result.Ok(true)

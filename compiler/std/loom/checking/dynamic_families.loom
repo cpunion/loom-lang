@@ -1,0 +1,96 @@
+fn family_obligations(env Environment, member Int, parameters List[Int], given List[Requirement]) Result[List[Requirement], Failure] {
+    let evidence = new[Requirement]()
+    var index = 0
+    while index < length(given) {
+        push(evidence, get(given, index))
+        index = index + 1
+    }
+    discard inherit_member_requirements(env, member, parameters, evidence)?
+    Result.Ok(evidence)
+}
+
+fn family_parameter_index(parameters List[Node], name Text) Int {
+    var index = 0
+    while index < length(parameters) {
+        if get(parameters, index).value == name {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+// Rewrite only type references, retaining source spans and nominal lookup in
+// the consumer's original scope. A nested binder shadows the enclosing name.
+fn family_binding_node(node Node, parameters List[Node], types List[Int]) Node {
+    if node.kind == NodeKind.TypeParameters {
+        return node
+    }
+    let local = if node.kind == NodeKind.AssociatedType {
+        group(node, NodeKind.TypeParameters)
+    } else {
+        new[Node]()
+    }
+    let visible = new[Node]()
+    let values = new[Int]()
+    var index = 0
+    while index < length(parameters) {
+        if family_parameter_index(local, get(parameters, index).value) < 0 {
+            push(visible, get(parameters, index))
+            push(values, get(types, index))
+        }
+        index = index + 1
+    }
+    let end = first_dot(node.value)
+    let selected = if node.kind == NodeKind.Type || node.kind == NodeKind.Name {
+        family_parameter_index(visible, slice(node.value, 0, end))
+    } else {
+        -1
+    }
+    let name = if selected < 0 {
+        node.value
+    } else {
+        concat(meta_reference(node, get(values, selected)).value, slice(node.value, end, length(node.value)))
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(node.children) {
+        push(children, family_binding_node(child(node, index), visible, values))
+        index = index + 1
+    }
+    pack_node(node, node.kind, name, children)
+}
+
+fn dynamic_binding(env Environment, owner Int, member Int, binding Node,
+    arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
+    let parameters = group(binding, NodeKind.TypeParameters)
+    discard member_parameter_nodes(env, member, owner, parameters, binding)?
+    if length(parameters) == 0 {
+        return resolve_bound(env, owner, child(binding, 0), arguments, obligations, depth)
+    }
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if parameter.kind != NodeKind.Name || get(member_parameters(env, member), index).kind != NodeKind.Name {
+            return Result.Err(failure(env, owner, parameter, "dynamic associated families require ordinary type parameters"))
+        }
+        if family_parameter_index(parameters, parameter.value) != index {
+            return Result.Err(failure(env, owner, parameter, "duplicate dynamic associated type parameter"))
+        }
+        index = index + 1
+    }
+    let fresh = fresh_family_parameters(env, length(parameters))
+    let evidence = family_obligations(env, member, fresh, obligations)?
+    let body = resolve_bound(env, owner, family_binding_node(child(binding, 0), parameters, fresh), arguments, evidence, depth + 1)?
+    Result.Ok(type_family(env, fresh, body))
+}
+
+fn dynamic_family_requirements(env Environment, owner Int, member Int, binding Int,
+    obligations List[Requirement], node Node) Result[Bool, Failure] {
+    let parameters = fresh_family_parameters(env, length(member_parameters(env, member)))
+    let evidence = family_obligations(env, member, parameters, obligations)?
+    let active = association_environment(env, member, binding, parameters)?
+    let output = apply_type_family(active, owner, binding, parameters, node)?
+    discard well_formed(active, owner, output, evidence, node, 0)?
+    member_requirements(active, owner, output, member_bounds(active, member), evidence, node)
+}

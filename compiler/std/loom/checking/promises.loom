@@ -70,7 +70,7 @@ fn promised(env Environment, owner Int, obligations List[Requirement], ty Int, c
             // already interned by other declarations cannot exhaust it.
             if type_depth(env, given.ty) >= 64 || expanded >= 4096 { exhausted = true } else {
                 expanded = expanded + 1
-                if shape.kind != TypeKind.Parameter && shape.kind != TypeKind.Associated {
+                if shape.kind != TypeKind.Parameter && shape.kind != TypeKind.Associated && shape.kind != TypeKind.Rigid {
                     let declaration = get(env.concepts, concept_index(env, given.capability))
                     var member = 0
                     while member < length(declaration.associated) {

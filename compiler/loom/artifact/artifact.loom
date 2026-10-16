@@ -82,6 +82,8 @@ fn type_tag(kind TypeKind) Int {
         TypeKind.Parameter => 5,
         TypeKind.Associated => 5
         TypeKind.Meta => 5
+        TypeKind.Family => 5
+        TypeKind.Rigid => 5
         TypeKind.List => 6,
         TypeKind.Record => 7,
         TypeKind.Tuple => 7
@@ -99,7 +101,12 @@ fn data(buffer Bytes, value Type) {
     integer(buffer, type_tag(value.kind))
     // Unused compile-time identities share the backend's non-emittable opaque
     // type slot; they never expose the checking session's type-value payload.
-    integer(buffer, if value.kind == TypeKind.Meta { 0 } else { value.symbol })
+    integer(buffer, if value.kind == TypeKind.Meta || value.kind == TypeKind.Family ||
+        value.kind == TypeKind.Rigid {
+            0
+        } else {
+            value.symbol
+        })
     if value.kind == TypeKind.List || value.kind == TypeKind.Task {
         integer(buffer, get(value.arguments, 0))
     }

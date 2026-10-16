@@ -1,0 +1,207 @@
+record FamilyMask {
+    parent Int
+    ty Int
+}
+
+// 1: capture-free, 0: escapes a local binder, -1: reasoning exhausted.
+fn family_binding_relation(env Environment, ty Int, aliases List[FamilyAliases], scope Int) Int {
+    if scope < 0 || concrete(env, ty) {
+        return 1
+    }
+    family_binding_in(env, ty, aliases, scope, new[FamilyMask](), -1, new[(Int, Int)](), 0)
+}
+
+// An inferred outer argument cannot refer to a local lambda binder. Binders
+// inside an actual nested lambda are masked, not mistaken for escaping values.
+fn family_binding_in(env Environment, ty Int, aliases List[FamilyAliases], scope Int,
+    masks List[FamilyMask], mask Int, known List[(Int, Int)], depth Int) Int {
+    if depth >= 64 {
+        return -1
+    }
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Rigid {
+        var current = mask
+        while current >= 0 {
+            let entry = get(masks, current)
+            if resource_seen(family_parameters(env, entry.ty), ty) {
+                return 1
+            }
+            current = entry.parent
+        }
+        return if family_alias(aliases, scope, ty, true) < 0 && family_alias(aliases, scope, ty, false) < 0 {
+            1
+        } else {
+            0
+        }
+    }
+    var index = 0
+    while index < length(known) {
+        let entry = get(known, index)
+        if entry.0 == ty && entry.1 == mask {
+            return 1
+        }
+        index = index + 1
+    }
+    if shape.kind == TypeKind.Family {
+        var nested = 0
+        while nested < length(masks) &&
+        !(get(masks, nested).parent == mask && get(masks, nested).ty == ty) {
+            nested = nested + 1
+        }
+        if nested == length(masks) {
+            push(masks, FamilyMask {
+                    parent = mask
+                    ty = ty
+                })
+        }
+        let relation = family_binding_in(env, get(shape.arguments, shape.symbol), aliases, scope, masks, nested, known, depth + 1)
+        if relation != 1 {
+            return relation
+        }
+    } else {
+        index = 0
+        var unknown = false
+        while index < length(shape.arguments) {
+            let relation = family_binding_in(env, get(shape.arguments, index), aliases, scope, masks, mask, known, depth + 1)
+            if relation == 0 {
+                return 0
+            }
+            unknown = unknown || relation < 0
+            index = index + 1
+        }
+        if unknown {
+            return -1
+        }
+    }
+    push(known, (ty, mask))
+    1
+}
+
+fn family_binding_version(arguments List[Int]) Int {
+    var count = 0
+    var index = 0
+    while index < length(arguments) {
+        if get(arguments, index) >= 0 {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    count
+}
+
+// One-way inference and two-sided overlap share scoped structural matching.
+// Unknown rigid equations or exhausted reasoning cannot establish disjoint
+// implementations. Neither mode exports a lambda binder as an outer argument.
+fn unify_families(env Environment, left Int, right Int, arguments List[Int],
+    scopes List[FamilyAliases], scope Int, known List[FamilyEquality], symmetric Bool, depth Int) Bool {
+    if depth >= 64 {
+        return symmetric
+    }
+    let a = if symmetric {
+        overlap_value(env, left, arguments)
+    } else {
+        left
+    }
+    let b = if symmetric {
+        overlap_value(env, right, arguments)
+    } else {
+        right
+    }
+    let first = get(env.types, a)
+    let second = get(env.types, b)
+    if first.kind == TypeKind.Parameter {
+        let relation = family_binding_relation(env, b, scopes, scope)
+        if relation != 1 {
+            return symmetric && relation < 0
+        }
+        if symmetric {
+            if a == b {
+                return true
+            }
+            if overlap_occurs(env, first.symbol, b, arguments) {
+                return false
+            }
+        } else {
+            let previous = get(arguments, first.symbol)
+            if previous >= 0 {
+                return previous == b
+            }
+        }
+        set(arguments, first.symbol, b)
+        return true
+    }
+    if symmetric && second.kind == TypeKind.Parameter {
+        return unify_families(env, b, a, arguments, scopes, scope, known, true, depth + 1)
+    }
+    if first.kind == TypeKind.Rigid || second.kind == TypeKind.Rigid {
+        if symmetric {
+            let from = if first.kind == TypeKind.Rigid {
+                family_alias(scopes, scope, a, true)
+            } else {
+                -1
+            }
+            let to = if second.kind == TypeKind.Rigid {
+                family_alias(scopes, scope, b, false)
+            } else {
+                -1
+            }
+            if from >= 0 || to >= 0 {
+                if first.kind == TypeKind.Associated || second.kind == TypeKind.Associated {
+                    return true
+                }
+                return from == b && to == a
+            }
+            return true
+        }
+        if first.kind != second.kind {
+            return false
+        }
+        let selected = family_alias(scopes, scope, a, true)
+        return if selected >= 0 {
+            selected == b
+        } else {
+            family_alias(scopes, scope, b, false) < 0 && a == b
+        }
+    }
+    if first.kind == TypeKind.Associated || (symmetric && second.kind == TypeKind.Associated) {
+        return true
+    }
+    if !same_constructor(env, first, second) {
+        return false
+    }
+    let version = family_binding_version(arguments)
+    var index = 0
+    while index < length(known) {
+        let entry = get(known, index)
+        if entry.left == a && entry.right == b && entry.scope == scope && entry.version == version {
+            return true
+        }
+        index = index + 1
+    }
+    if first.kind == TypeKind.Family {
+        let nested = family_scope(scopes, scope, family_parameters(env, a), family_parameters(env, b))
+        if !unify_families(env, get(first.arguments, first.symbol), get(second.arguments, second.symbol),
+            arguments, scopes, nested, known, symmetric, depth + 1) {
+            return false
+        }
+    } else {
+        index = 0
+        var matched = true
+        while index < length(first.arguments) {
+            let matches = unify_families(env, get(first.arguments, index), get(second.arguments, index),
+                arguments, scopes, scope, known, symmetric, depth + 1)
+            matched = matched && matches
+            index = index + 1
+        }
+        if !matched {
+            return false
+        }
+    }
+    push(known, FamilyEquality {
+            left = a
+            right = b
+            scope = scope
+            version = family_binding_version(arguments)
+        })
+    true
+}

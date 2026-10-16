@@ -28,3 +28,15 @@ test fn dyn_is_reserved_and_preserves_named_associated_bindings() {
     assert child(ty, 0).value == "Item" && child(child(ty, 0), 0).value == "Int"
     assert child(ty, 1).value == "Other" && child(child(ty, 1), 0).value == "List"
 }
+test fn dynamic_associated_family_bindings_keep_their_own_parameter_group() {
+    let tree = parsed("""
+        fn consume(value dyn Family[Item[T Display] = List[T]]) {}
+        """)
+    let binding = child(child(child(child(child(tree, 0), 1), 0), 0), 0)
+    assert binding.kind == NodeKind.AssociatedType && binding.value == "Item"
+    assert child(binding, 0).value == "List"
+    let parameters = child(binding, 1)
+    assert parameters.kind == NodeKind.TypeParameters
+    assert child(parameters, 0).value == "T"
+    assert child(child(parameters, 0), 0).value == "Display"
+}

@@ -61,9 +61,10 @@ fn member_domain(env Environment, owner Int, member Int, arguments List[Int], ob
     Result.Ok(true)
 }
 fn member_parameter_headers(env Environment, declaration Int, binding Int) Result[Bool, Failure] {
+    member_parameter_nodes(env, declaration, binding, member_parameters(env, binding), symbol(env, binding).node)
+}
+fn member_parameter_nodes(env Environment, declaration Int, binding Int, actual List[Node], node Node) Result[Bool, Failure] {
     let expected = member_parameters(env, declaration)
-    let actual = member_parameters(env, binding)
-    let node = symbol(env, binding).node
     if length(actual) != length(expected) {
         return Result.Err(failure(env, binding, node, "associated binding has the wrong number of type parameters"))
     }

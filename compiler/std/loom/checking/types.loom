@@ -330,6 +330,11 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
 fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node) Result[Int, Failure] {
     let source = get(env.types, ty)
     if source.kind == TypeKind.Parameter { return Result.Ok(get(arguments, source.symbol)) }
+    if source.kind == TypeKind.Family {
+        let fresh = fresh_family_parameters(env, source.symbol)
+        let body = apply_type_family(env, owner, ty, fresh, node)?
+        return Result.Ok(type_family(env, fresh, substitute(env, owner, body, arguments, node)?))
+    }
     if length(source.arguments) == 0 {
         // Header discovery may have interned nominal data without its fields.
         if env.expand_data && get(env.type_states, ty).phase == 0 { discard expand_type(env, ty, 0)? }
@@ -341,6 +346,12 @@ fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node
         push(args, substitute(env, owner, get(source.arguments, index), arguments, node)?)
         index = index + 1
     }
+    rebuild_type(env, owner, ty, args, node)
+}
+
+// Ordinary substitution and scoped family application share nominal expansion.
+fn rebuild_type(env Environment, owner Int, ty Int, args List[Int], node Node) Result[Int, Failure] {
+    let source = get(env.types, ty)
     if source.kind == TypeKind.List { return Result.Ok(intern(env, TypeKind.List, -1, args)) }
     if source.kind == TypeKind.Task { return Result.Ok(intern(env, TypeKind.Task, -1, args)) }
     if source.kind == TypeKind.Function { return Result.Ok(intern(env, TypeKind.Function, -1, args)) }
@@ -371,6 +382,10 @@ fn infer(env Environment, pattern Int, actual Int, arguments List[Int]) Bool {
         return true
     }
     let value = get(env.types, actual)
+    if source.kind == TypeKind.Family {
+        return unify_families(env, pattern, actual, arguments, new[FamilyAliases](), -1,
+            new[FamilyEquality](), false, 0)
+    }
     if !same_constructor(env, source, value) {
         // Preserve a bare T's exact type above. A structural parameter such
         // as View[T] can infer through ordinary implicit refinement weakening;
