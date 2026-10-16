@@ -132,8 +132,9 @@ supported theories and boundaries. The central rules are:
   unprotected heap observations.
   Closure contracts can use complete read-only capture slots and established
   captured type constraints. Mutable bindings share the ordinary storage-version
-  rules, including callback writes and supported entry snapshots. Shared children
-  retain interference and alias rules; general mutable-frame graphs remain open.
+  rules, including callback writes, loop induction and supported entry snapshots.
+  Shared children retain interference and alias rules; general mutable-frame graphs
+  remain open.
 - Loop candidates need entry and every-backedge proof; losing a candidate
   rechecks dependents. Logical `old` snapshots preserve supported entry values
   and outer content versions without runtime copies or freezing mutable children.

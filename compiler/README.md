@@ -2368,6 +2368,7 @@ Required contracts can use captured values and their established type constraint
 Complete environments need a checked read-only slot footprint; mutable bindings
 use versioned one-slot storage rather than immutable proof locals. Copies of a
 closure retain cell aliases, and `old(value)` can observe a captured entry value.
+Bounded loops and helper write footprints use the same storage versions.
 Capturing a List/Bytes handle freezes neither its contents nor its aliases.
 Worker contracts use the same interference and per-store preservation rules.
 See [captured storage contracts](examples/closures/cells/README.md). General

@@ -84,4 +84,10 @@ test fn capture_cell_loops_and_call_frames_use_the_actual_write_footprint() {
     assert length(modified) == 1 && get(modified, 0) == 10
     let invalid = expression(ExprKind.FrameStore, 0, "", 1, [cell, literal("0")])
     assert !extent_preserving(program, invalid)
+    let changed = expression(ExprKind.FrameStore, 0, "", 0, [cell, literal("2")])
+    push(program.functions, contract_fixture([6], 0, changed, [], [proof_bool(changed, true)]))
+    let stale = contract_fixture([6], 1,
+        expression(ExprKind.Block, 1, "", -1, [helper_call(0, 0, [cell]), read]),
+        [operation("==", read, literal("1"))], [operation("==", local(1), literal("1"))])
+    assert !helpers_verified(program, stale)
 }
