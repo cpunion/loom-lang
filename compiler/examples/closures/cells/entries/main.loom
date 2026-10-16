@@ -1,0 +1,93 @@
+import std.list.length
+
+fn extent[T](values List[T]) Int {
+    length(values)
+}
+
+fn remember[T](first List[T], second List[T]) fn() Int {
+    var current = first
+    fn() Int
+    ensures result == old(length(current)) {
+        let before = length(current)
+        current = second
+        before
+    }
+}
+
+record Batch[T] {
+    values List[Int]
+    metadata T
+}
+
+fn batches[T](first Batch[T], second Batch[T]) fn() Int {
+    var current = first
+    fn() Int
+    ensures result == old(extent(current.values)) {
+        let before = length(current.values)
+        current = second
+        before
+    }
+}
+
+fn remember_first(first List[Int], second List[Int]) fn() Int {
+    var current = first
+    fn() Int
+    requires length(current) > 0
+    ensures result == old(current[0]) {
+        let before = current[0]
+        current = second
+        before
+    }
+}
+
+fn remember_handle[T](first List[T], second List[T]) fn() List[T] {
+    var current = first
+    fn() List[T]
+    ensures length(result) == length(old(current)) {
+        let before = current
+        current = second
+        before
+    }
+}
+
+fn remember_nested[T](first List[List[T]], second List[List[T]]) fn() Int {
+    var current = first
+    fn() Int
+    requires length(current) > 0
+    ensures result == old(length(current[0])) {
+        let before = length(current[0])
+        current = second
+        before
+    }
+}
+
+fn exercise() {
+    let next = remember([1, 2], [3])
+    let alias = next
+    assert next() == 2 && alias() == 1
+    let text = remember(["first"], ["second", "third"])
+    assert text() == 1 && text() == 2
+    let batch = batches(Batch {
+            values = [1, 2],
+            metadata = ["first"]
+        }, Batch {
+            values = [3],
+            metadata = ["second", "third"]
+        })
+    assert batch() == 2 && batch() == 1
+    let first = remember_first([4], [9])
+    assert first() == 4 && first() == 9
+    let handle = remember_handle([1, 2], [3])
+    assert length(handle()) == 2 && length(handle()) == 1
+    let nested = remember_nested([[1, 2]], [[3]])
+    assert nested() == 2 && nested() == 1
+    let folded = comptime {
+        let count = remember([1, 2], [3])
+        count() + count()
+    }
+    assert folded == 3
+}
+
+fn main() {
+    exercise()
+}

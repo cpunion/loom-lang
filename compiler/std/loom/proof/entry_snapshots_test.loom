@@ -92,3 +92,105 @@ test fn entry_lists_keep_their_length_and_content_version_without_a_current_head
         _ => false
     }
 }
+
+test fn entry_receivers_keep_handles_without_rewinding_the_post_call_heap() {
+    let program = capture_cell_program()
+    push(program.types, Type {
+            kind = TypeKind.List
+            symbol = -1
+            arguments = [1]
+            pack_widths = []
+            fields = []
+            variants = []
+            constraint = []
+        })
+    push(program.types, Type {
+            kind = TypeKind.Frame
+            symbol = -1
+            arguments = [9]
+            pack_widths = []
+            fields = [Field {
+                    name = "value"
+                    ty = 9
+                }]
+            variants = []
+            constraint = []
+        })
+    push(program.types, Type {
+            kind = TypeKind.Refined
+            symbol = -1
+            arguments = []
+            pack_widths = []
+            fields = [Field {
+                    name = "value"
+                    ty = 7
+                }]
+            variants = []
+            constraint = [operation(">", expression(ExprKind.Intrinsic, 1, "list_get", -1,
+                        [expression(ExprKind.Local, 7, "", 0, []), literal("0")]), literal("0"))]
+        })
+    let function = contract_fixture([8], 1, literal("0"), [], [])
+    let proof = verification(function, program)
+    let initial = with_extent(20, constant(integer(2)), false, fixed_capture_cell(10, State {
+                locals = [Value.List(10)]
+                facts = []
+                extents = []
+                observations = []
+            }))
+    let cells = match remember_element(10, constant(integer(0)), Value.List(20), initial) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let entry = match remember_element(20, constant(integer(0)), Value.Number(constant(integer(1))), cells) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let changed = with_extent(20, constant(integer(5)), false, call_scope(entry, [Value.Number(constant(integer(42)))]))
+    let current = match remember_element(20, constant(integer(0)), Value.Number(constant(integer(-1))), changed) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let receiver = expression(ExprKind.Intrinsic, 9, "entry_list_get", 100,
+        [expression(ExprKind.Local, 8, "", 0, []), literal("0")])
+    let length = expression(ExprKind.Intrinsic, 1, "entry_list_len", 101, [receiver])
+    let captured = match capture_entry(proof, length, entry, current) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match pure(captured.expression, captured.state) {
+        Result.Ok(Value.Number(value)) => index_relation("==", value, constant(integer(2)), captured.state)
+        _ => false
+    }
+    assert match list_extent(20, captured.state) {
+        Result.Ok(value) => index_relation("==", value, constant(integer(5)), captured.state)
+        _ => false
+    }
+    // The old handle's nominal predicate must not be re-established on a
+    // possibly aliased post-call object. That would assume a contradiction.
+    assert loop_holds(Predicate.Constant(false), guarded_value_invariants(proof, 9, Value.List(20),
+            Predicate.Constant(true), current))
+    assert !loop_holds(Predicate.Constant(false), captured.state)
+    // A handle accepted as an entry receiver is not a deep immutable value,
+    // even when the same observation is now available in the snapshot cache.
+    assert !immutable_snapshot(Value.List(20))
+    assert entry_snapshot_value(Value.Record([Value.List(20)]), true)
+    assert !immutable_snapshot(Value.Record([Value.List(20)]))
+    assert entry_snapshot_value(Value.Record([Value.List(20), Value.Opaque(99, [])]), true)
+    assert !immutable_snapshot(Value.Opaque(99, []))
+    assert match capture_entry(proof, receiver, captured.entry, captured.state) {
+        Result.Err(_) => true
+        _ => false
+    }
+}

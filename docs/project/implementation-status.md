@@ -137,7 +137,8 @@ supported theories and boundaries. The central rules are:
   unprotected heap observations.
   Closure contracts can use complete read-only capture slots and established
   captured type constraints. Mutable bindings share the ordinary storage-version
-  rules, including callback writes, loop induction and supported entry snapshots.
+  rules, including callback writes, loop induction and entry observations through
+  captured List handles and inline records. Unobserved generic fields stay opaque.
   Shared children retain interference and alias rules; general mutable-frame graphs
   remain open.
 - Loop candidates need entry and every-backedge proof; losing a candidate

@@ -1,0 +1,3 @@
+test fn nested_entry_receivers_survive_capture_rebinding() {
+    exercise()
+}
