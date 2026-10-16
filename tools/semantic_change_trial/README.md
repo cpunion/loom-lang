@@ -10,6 +10,12 @@ target/loom run tools/semantic_change_trial -- \
   tools/semantic_change_trial/fixtures/right
 ```
 
+Like the compiler CLI, this host explicitly enables the standard Z3 proof
+adapter. Install `z3` on `PATH` for supported contracts that need it; a missing
+solver, counterexample or unknown result cannot authorize a merge. Checking can
+invoke the solver, but never launches the application or replays its effects.
+The underlying merge library remains I/O-free unless given a proof capability.
+
 ## Module snapshots
 
 For a complete named module, use:

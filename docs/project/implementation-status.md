@@ -288,6 +288,9 @@ additions within one package or a fixed-package module, using explicit identitie
 and pinned source/test bases.
 Selected overload renames use the same checked binding normalizer; names alone
 neither identify a declaration nor justify an overload conflict.
+All merge APIs accept an optional explicit proof capability; the CLI uses the
+shared Z3 adapter for ordinary contract checks, including rename/binding checks
+and each package's private tests. Defaults stay I/O-free; unknown proofs reject.
 Ambiguities can persist as source-bound drafts; compilation ignores that metadata.
 Checked bindings prevent silent nominal/field drift.
 Public/generic rename composition, automatic identities, arbitrary edits and

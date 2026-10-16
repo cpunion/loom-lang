@@ -104,7 +104,8 @@ fn package_target(analysis Analysis, scopes List[PackageScope], package Int, pat
     }
     let inspection = match inspect_at(analysis, file, offset) {
         Option.Some(value) => value
-        Option.None => match inspect_independent(analysis.bindings, file, offset) {
+        Option.None => match inspect_independent(analysis.bindings, file, offset,
+            proof_inputs(analysis.proof_backend)) {
             Option.Some(value) => value
             Option.None => {
                 return Result.Err("package reference has no checked binding evidence")
@@ -283,8 +284,8 @@ fn package_entry_active(analysis Analysis, package Int, entry Entry) Result[Bool
     Result.Ok(!testing || (analysis.bindings.tests && package == analysis.bindings.root))
 }
 
-fn package_analysis(project Project, tests Bool) Result[Analysis, Text] {
-    match analyze(project, tests) {
+fn package_analysis(project Project, tests Bool, backend ProofBackend) Result[Analysis, Text] {
+    match checked_analysis(project, tests, backend) {
         Result.Ok(value) => Result.Ok(value)
         Result.Err(failed) => Result.Err(concat("package merge requires checked source: ", failed.diagnostic.message))
     }
@@ -360,6 +361,11 @@ fn package_changes(base List[PackageRevision], branch List[PackageRevision]) Res
 // scope/visibility changes and unaccounted references require explicit review.
 pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
     production Project, tests Project) Result[List[PackageRevision], Text] {
+    merge_packages(base, left, right, production, tests, no_proof_backend())
+}
+
+pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
+    production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
     if length(base) == 0 || length(base) != length(left) || length(base) != length(right) {
         return Result.Err("package merge branches must select the same nonempty package set")
     }
@@ -396,17 +402,17 @@ pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], ri
         index = index + 1
     }
     if renaming {
-        let original = normalize_package_renames(base, plans, production, tests)?
-        let a = normalize_package_renames(left, plans, production, tests)?
-        let b = normalize_package_renames(right, plans, production, tests)?
+        let original = normalize_package_renames(base, plans, production, tests, backend)?
+        let a = normalize_package_renames(left, plans, production, tests, backend)?
+        let b = normalize_package_renames(right, plans, production, tests, backend)?
         return merge_package_names(original, a, b,
-            package_project(production, original)?, package_project(tests, original)?)
+            package_project(production, original)?, package_project(tests, original)?, backend)
     }
-    merge_package_names(base, left, right, production, tests)
+    merge_package_names(base, left, right, production, tests, backend)
 }
 
 fn merge_package_names(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
-    production Project, tests Project) Result[List[PackageRevision], Text] {
+    production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
     discard separate_package_changes(package_changes(base, left)?, package_changes(base, right)?, production, tests)?
     let merged = new[PackageRevision]()
     var index = 0
@@ -433,10 +439,10 @@ fn merge_package_names(base List[PackageRevision], left List[PackageRevision], r
             } else {
                 production
             }
-            discard package_analysis(context, testing)?
-            let before_left = package_analysis(package_project(context, left)?, testing)?
-            let before_right = package_analysis(package_project(context, right)?, testing)?
-            let after = package_analysis(package_project(context, merged)?, testing)?
+            discard package_analysis(context, testing, backend)?
+            let before_left = package_analysis(package_project(context, left)?, testing, backend)?
+            let before_right = package_analysis(package_project(context, right)?, testing, backend)?
+            let after = package_analysis(package_project(context, merged)?, testing, backend)?
             discard compare_packages(before_left, left, after, merged)?
             discard compare_packages(before_right, right, after, merged)?
         }

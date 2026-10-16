@@ -298,7 +298,8 @@ fn compare_renamed(before Analysis, original Indexed, after Analysis, updated In
     Result.Ok(true)
 }
 
-fn rename_analysis(revision Revision, directory Text, production Project, tests Project, testing Bool) Result[Analysis, Text] {
+fn rename_analysis(revision Revision, directory Text, production Project, tests Project, testing Bool,
+    backend ProofBackend) Result[Analysis, Text] {
     let project = if directory == "" {
         project_of(revision)?
     } else {
@@ -308,25 +309,27 @@ fn rename_analysis(revision Revision, directory Text, production Project, tests 
                 production
             }, directory, revision)?
     }
-    match analyze(project, testing) {
+    match checked_analysis(project, testing, backend) {
         Result.Ok(value) => Result.Ok(value)
         Result.Err(problem) => Result.Err(concat("rename requires checked source: ", problem.diagnostic.message))
     }
 }
 
-fn normalize_rename(revision Revision, renames List[FunctionRename], directory Text, production Project, tests Project) Result[Revision, Text] {
+fn normalize_rename(revision Revision, renames List[FunctionRename], directory Text, production Project, tests Project,
+    backend ProofBackend) Result[Revision, Text] {
     let original = indexed(revision)?
-    let before = rename_analysis(revision, directory, production, tests, true)?
+    let before = rename_analysis(revision, directory, production, tests, true, backend)?
     let edits = rename_edits(original, renames, before, directory)?
     let renamed = renamed_revision(original, renames, edits)
     let updated = indexed(renamed)?
-    discard compare_renamed(before, original, rename_analysis(renamed, directory, production, tests, true)?, updated, directory, edits)?
-    discard compare_renamed(rename_analysis(revision, directory, production, tests, false)?, original,
-        rename_analysis(renamed, directory, production, tests, false)?, updated, directory, edits)?
+    discard compare_renamed(before, original, rename_analysis(renamed, directory, production, tests, true, backend)?, updated, directory, edits)?
+    discard compare_renamed(rename_analysis(revision, directory, production, tests, false, backend)?, original,
+        rename_analysis(renamed, directory, production, tests, false, backend)?, updated, directory, edits)?
     Result.Ok(renamed)
 }
 
-fn normalize_renames(base Revision, left Revision, right Revision, directory Text, production Project, tests Project) Result[RenamedRevisions, Text] {
+fn normalize_renames(base Revision, left Revision, right Revision, directory Text, production Project, tests Project,
+    backend ProofBackend) Result[RenamedRevisions, Text] {
     if base.package_name != left.package_name || base.package_name != right.package_name {
         return Result.Err("semantic merge cannot cross package identities")
     }
@@ -337,7 +340,7 @@ fn normalize_renames(base Revision, left Revision, right Revision, directory Tex
         return Result.Err("import-bearing merges require an explicit pinned project context")
     }
     if length(renames) != 0 && directory != "" {
-        discard checked_context(base, base, production, tests, directory)?
+        discard checked_context(base, base, production, tests, directory, backend)?
     }
     Result.Ok(if length(renames) == 0 {
             RenamedRevisions {
@@ -347,9 +350,9 @@ fn normalize_renames(base Revision, left Revision, right Revision, directory Tex
             }
         } else {
             RenamedRevisions {
-                original = normalize_rename(base, renames, directory, production, tests)?
-                left = normalize_rename(left, renames, directory, production, tests)?
-                right = normalize_rename(right, renames, directory, production, tests)?
+                original = normalize_rename(base, renames, directory, production, tests, backend)?
+                left = normalize_rename(left, renames, directory, production, tests, backend)?
+                right = normalize_rename(right, renames, directory, production, tests, backend)?
             }
         })
 }

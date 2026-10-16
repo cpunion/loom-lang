@@ -1,0 +1,113 @@
+import std.loom.proof.z3.backend
+import std.text.replace
+
+fn proof_revision(name Text, destination Text, expression Text) Revision {
+    let body = replace(replace("""
+        fn NAME(value Int) Int
+        ensures result >= 0 {
+            EXPRESSION
+        }
+        """, "NAME", name), "EXPRESSION", expression)
+    let caller = replace("""
+        fn entry() Int {
+            NAME(2)
+        }
+        """, "NAME", name)
+    let revision = renamed_case(name, destination, body, caller)
+    let original = get(revision.identities, 0)
+    set(revision.identities, 0, Identity {
+            key = key(body)
+            ..original
+        })
+    revision
+}
+
+fn proof_package(revision Revision) List[PackageRevision] {
+    [PackageRevision {
+            directory = "pkg"
+            revision = revision
+        }]
+}
+
+fn proof_merged(outcome Result[Revision, Text], name Text) {
+    match outcome {
+        Result.Ok(value) => {
+            assert get(value.files, 0).text == ""
+            assert contains(get(value.files, 1).text, concat("fn ", name))
+            assert contains(get(value.files, 1).text, "value * value + 0")
+            assert get(value.identities, 0).id == "amount-id"
+        }
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+        }
+    }
+}
+
+fn proof_rejected(outcome Result[Revision, Text]) Bool {
+    match outcome {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
+
+test fn explicit_solver_checks_moves_renames_contexts_and_package_batches() {
+    let original = proof_revision("amount", "value.loom", "value * value")
+    let edited = proof_revision("amount", "value.loom", "value * value + 0")
+    let context = rename_context(original)
+    let solver = backend("z3")
+    // Exercise binding-preserving movement, then rename normalization as well.
+    let names = ["amount", "balance"]
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        let moved = proof_revision(name, "app.loom", "value * value")
+        assert proof_rejected(merge(original, moved, edited))
+        proof_merged(merge(original, moved, edited, solver), name)
+        assert proof_rejected(merge_with_context(original, moved, edited, context, context, "pkg"))
+        proof_merged(merge_with_context(original, moved, edited, context, context, "pkg", solver), name)
+        match merge_packages(proof_package(original), proof_package(moved), proof_package(edited), context, context) {
+            Result.Ok(_) => {
+                assert false
+            }
+            Result.Err(_) => {
+            }
+        }
+        match merge_packages(proof_package(original), proof_package(moved), proof_package(edited), context, context, solver) {
+            Result.Ok(values) => proof_merged(Result.Ok(get(values, 0).revision), name)
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        index = index + 1
+    }
+}
+
+test fn solver_counterexamples_and_failures_cannot_authorize_a_merge() {
+    let original = proof_revision("amount", "value.loom", "value * value")
+    let moved = proof_revision("balance", "app.loom", "value * value")
+    let false_body = proof_revision("amount", "value.loom", "value")
+    let context = rename_context(original)
+    let solver = backend("z3")
+    assert proof_rejected(merge(original, moved, false_body, solver))
+    assert proof_rejected(merge_with_context(original, moved, false_body, context, context, "pkg", solver))
+    match merge_packages(proof_package(original), proof_package(moved), proof_package(false_body), context, context, solver) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+    // A real failed capability must not silently become a successful proof.
+    let missing = backend("loom-missing-proof-tool")
+    assert proof_rejected(merge(original, moved, original, missing))
+    assert proof_rejected(merge_with_context(original, moved, original, context, context, "pkg", missing))
+    match merge_packages(proof_package(original), proof_package(moved), proof_package(original), context, context, missing) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+}
