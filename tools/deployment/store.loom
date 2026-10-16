@@ -15,6 +15,7 @@ import std.text.split
 record Stored {
     sequence Int
     attempt Attempt
+    evidence BasisEvidence
 }
 
 fn identifier(value Text) Bool {
@@ -138,13 +139,18 @@ fn stored_line(line Text) Result[Stored, Text] {
     Result.Ok(Stored {
             sequence = sequence
             attempt = attempt
+            evidence = BasisEvidence.None
         })
 }
 
+fn same_attempt_plan(before Attempt, after Attempt) Bool {
+    before.id == after.id && before.from_basis == after.from_basis &&
+    before.to_basis == after.to_basis && before.plan_digest == after.plan_digest &&
+    before.policy == after.policy
+}
+
 fn next_state(before Attempt, after Attempt) Bool {
-    if before.id != after.id || before.from_basis != after.from_basis ||
-    before.to_basis != after.to_basis || before.plan_digest != after.plan_digest ||
-    before.policy != after.policy {
+    if !same_attempt_plan(before, after) {
         return false
     }
     match before.state {
@@ -162,15 +168,42 @@ fn next_state(before Attempt, after Attempt) Bool {
     }
 }
 
-fn new_attempt(before Attempt, after Attempt) Bool {
+fn new_attempt(before Stored, after Attempt) Bool {
     if after.state != DeploymentState.NotDeployed {
         return false
     }
-    match effective(before) {
+    match before.evidence {
         BasisEvidence.Observed(basis) => basis == after.from_basis,
         BasisEvidence.Assumed(basis) => basis == after.from_basis,
-        BasisEvidence.None => false
+        BasisEvidence.None => before.attempt.state == DeploymentState.NotDeployed &&
+        before.attempt.from_basis == "" && after.from_basis == ""
     }
+}
+
+// A prepared plan has not touched the deployed data. Preserve the previous
+// observed/assumed basis, never promote its declared from_basis into evidence.
+fn stored_after(before Stored, after Stored) Result[Stored, Text] {
+    if after.sequence <= before.sequence {
+        return Result.Err("deployment event order is invalid")
+    }
+    if after.attempt.id == before.attempt.id {
+        if !next_state(before.attempt, after.attempt) {
+            return Result.Err("deployment event transition is invalid")
+        }
+    } else {
+        if !new_attempt(before, after.attempt) {
+            return Result.Err("deployment attempt sequence is invalid")
+        }
+    }
+    Result.Ok(Stored {
+            sequence = after.sequence
+            attempt = after.attempt
+            evidence = if after.attempt.state == DeploymentState.NotDeployed {
+                before.evidence
+            } else {
+                effective(after.attempt)
+            }
+        })
 }
 
 // State records contain only validated, non-sensitive IDs/digests and codes.
@@ -206,18 +239,8 @@ fn latest(tool Text, database Text) Result[Option[Stored], Text] {
     while index < length(lines) {
         let line = get(lines, index)
         if line != "" {
-            let current = stored_line(line)?
-            if current.sequence <= previous.sequence {
-                return Result.Err("deployment event order is invalid")
-            }
-            if current.attempt.id == previous.attempt.id {
-                if !next_state(previous.attempt, current.attempt) {
-                    return Result.Err("deployment event transition is invalid")
-                }
-            } else {
-                if !new_attempt(previous.attempt, current.attempt) {
-                    return Result.Err("deployment attempt sequence is invalid")
-                }
+            let current = stored_after(previous, stored_line(line)?)?
+            if current.attempt.id != previous.attempt.id {
                 var used = 0
                 while used < length(seen) {
                     if get(seen, used) == current.attempt.id {
@@ -269,8 +292,8 @@ fn identity_used(tool Text, database Text, id Text) Result[Bool, Text] {
     Result.Ok(integer(get(lines, 0))? > 0)
 }
 
-// A new attempt is allowed only after the previous attempt's effective basis
-// is known. Started/failed/rollback-in-progress never silently becomes success.
+// Pending plans require explicit replacement. Started/failed/rollback-in-progress
+// never silently becomes success or restores a previously observed basis.
 pub fn register(tool Text, database Text, attempt Attempt) Result[Attempt, Text] {
     if !valid(attempt) || attempt.state != DeploymentState.NotDeployed {
         return Result.Err("deployment attempt needs validated identities and a failure policy")
@@ -290,7 +313,10 @@ pub fn register(tool Text, database Text, attempt Attempt) Result[Attempt, Text]
             if previous.attempt.id == attempt.id {
                 return Result.Err("deployment attempt identity was already used")
             }
-            match effective(previous.attempt) {
+            if previous.attempt.state == DeploymentState.NotDeployed {
+                return Result.Err("current deployment plan has not started; replace it explicitly")
+            }
+            match previous.evidence {
                 BasisEvidence.Observed(basis) => {
                     if basis != attempt.from_basis {
                         return Result.Err("starting basis differs from effective deployment")
@@ -309,6 +335,31 @@ pub fn register(tool Text, database Text, attempt Attempt) Result[Attempt, Text]
         }
     }
     discard append(tool, database, expected, attempt)?
+    Result.Ok(attempt)
+}
+
+// Replace only the named, never-started plan. Both identities remain in the
+// append-only ledger; an obsolete plan can no longer be started or reused.
+pub fn replace_unstarted_attempt(tool Text, database Text, id Text, attempt Attempt) Result[Attempt, Text] {
+    if !valid(attempt) || attempt.state != DeploymentState.NotDeployed {
+        return Result.Err("deployment attempt needs validated identities and a failure policy")
+    }
+    let previous = match latest(tool, database)? {
+        Option.Some(value) => value
+        Option.None => {
+            return Result.Err("no deployment attempt is registered")
+        }
+    }
+    if previous.attempt.id != id || previous.attempt.state != DeploymentState.NotDeployed {
+        return Result.Err("replacement requires the current unstarted deployment plan")
+    }
+    if !new_attempt(previous, attempt) {
+        return Result.Err("replacement starting basis differs from effective deployment")
+    }
+    if identity_used(tool, database, attempt.id)? {
+        return Result.Err("deployment attempt identity was already used")
+    }
+    discard append(tool, database, previous.sequence, attempt)?
     Result.Ok(attempt)
 }
 
@@ -374,7 +425,7 @@ pub fn assume_historical(tool Text, database Text, id Text, basis Text) Result[A
 
 pub fn current(tool Text, database Text) Result[BasisEvidence, Text] {
     match latest(tool, database)? {
-        Option.Some(value) => Result.Ok(effective(value.attempt)),
+        Option.Some(value) => Result.Ok(value.evidence),
         Option.None => Result.Ok(BasisEvidence.None)
     }
 }

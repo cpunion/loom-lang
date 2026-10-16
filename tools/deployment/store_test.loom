@@ -1,0 +1,79 @@
+fn ledger_event(sequence Int, attempt Attempt) Stored {
+    Stored {
+        sequence = sequence
+        attempt = attempt
+        evidence = BasisEvidence.None
+    }
+}
+
+fn next_ledger(before Stored, sequence Int, attempt Attempt) Stored {
+    match stored_after(before, ledger_event(sequence, attempt)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            before
+        }
+    }
+}
+
+test fn unstarted_plans_preserve_only_recorded_evidence_and_started_work_forgets_it() {
+    let initial = match prepare("initial", "", "basis_a", FailurePolicy.Stop) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let first = ledger_event(1, initial)
+    let replacement = match prepare("replacement", "", "basis_b", FailurePolicy.Stop) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match next_ledger(first, 2, replacement).evidence {
+        BasisEvidence.None => true
+        _ => false
+    }
+    let started = next_ledger(first, 2, moved(initial, Transition.Begin))
+    let completed = next_ledger(started, 3, moved(started.attempt, Transition.Finish))
+    let pending = match prepare("pending", "basis_a", "basis_b", FailurePolicy.Rollback) {
+        Result.Ok(value) => next_ledger(completed, 4, value)
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match pending.evidence {
+        BasisEvidence.Observed(basis) => basis == "basis_a"
+        _ => false
+    }
+    let wrong = match prepare("wrong", "basis_b", "basis_c", FailurePolicy.Stop) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match stored_after(pending, ledger_event(5, wrong)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let active = next_ledger(pending, 5, moved(pending.attempt, Transition.Begin))
+    let failed = next_ledger(active, 6, moved(active.attempt, Transition.Fail))
+    assert match failed.evidence {
+        BasisEvidence.None => true
+        _ => false
+    }
+    assert match stored_after(failed, ledger_event(7, replacement)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let rolling = next_ledger(failed, 7, moved(failed.attempt, Transition.BeginRollback))
+    let restored = next_ledger(rolling, 8, moved(rolling.attempt, Transition.FinishRollback))
+    assert match restored.evidence {
+        BasisEvidence.Observed(basis) => basis == "basis_a"
+        _ => false
+    }
+}

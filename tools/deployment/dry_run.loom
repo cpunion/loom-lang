@@ -12,19 +12,30 @@ pub record PlanInspection {
 pub fn dry_run(tool Text, database Text, from Schema, to Schema,
     catalog MigrationCatalog) Result[PlanInspection, Text] {
     let previous = match latest(tool, database)? {
-        Option.None => { return Result.Err("no deployment basis has been recorded") }
+        Option.None => {
+            return Result.Err("no deployment basis has been recorded")
+        }
         Option.Some(value) => value
     }
-    let evidence = effective(previous.attempt)
+    let evidence = previous.evidence
     match evidence {
-        BasisEvidence.None => { return Result.Err("previous deployment outcome is unresolved") }
+        BasisEvidence.None => {
+            return Result.Err("previous deployment outcome is unresolved")
+        }
         BasisEvidence.Observed(basis) => {
-            if basis != from.basis { return Result.Err("starting basis differs from observed deployment") }
+            if basis != from.basis {
+                return Result.Err("starting basis differs from observed deployment")
+            }
         }
         BasisEvidence.Assumed(basis) => {
-            if basis != from.basis { return Result.Err("starting basis differs from assumed deployment") }
+            if basis != from.basis {
+                return Result.Err("starting basis differs from assumed deployment")
+            }
         }
     }
     let missing = coverage(from, to, catalog)?
-    Result.Ok(PlanInspection { evidence = evidence missing = missing })
+    Result.Ok(PlanInspection {
+            evidence = evidence
+            missing = missing
+        })
 }
