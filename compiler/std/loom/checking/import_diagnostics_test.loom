@@ -1,0 +1,130 @@
+import std.text.contains
+import std.text.starts_with
+import std.list.set
+
+fn qualified_failure(project Project, tests Bool) Failure {
+    let source = match bind(project, tests) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return failed
+        }
+    }
+    match check(source) {
+        Result.Err(failed) => failed
+        Result.Ok(_) => {
+            assert false
+            qualified_failure(project, tests)
+        }
+    }
+}
+
+fn import_fixture(source Text, dependency Text) List[TestFile] {
+    let files = source_files(source)
+    push(files, source_file("util.api", dependency, false))
+    files
+}
+
+test fn import_diagnostics_explain_qualified_calls_and_function_references() {
+    let dependency = """
+        pub fn seed() Int { 1 }
+        pub fn count(values List[Int]) Int { 0 }
+        pub fn identity[T](value T) T { value }
+        """
+    let statements = [
+        "discard util.api.count([1])",
+        "let callback fn(List[Int]) Int = util.api.count\ndiscard callback",
+        "let callback = util.api.identity[Int]\ndiscard callback",
+        "discard util.api.count([])"
+    ]
+    var index = 0
+    while index < length(statements) {
+        let path = if index == 2 {
+            "util.api.identity"
+        } else {
+            "util.api.count"
+        }
+        let source = concat("import util.api.seed\nfn main() {\n", concat(get(statements, index), "\n}"))
+        let failed = qualified_failure(fixture_project(import_fixture(source, dependency)), false)
+        assert failed.diagnostic.message == concat("function ", concat(path, concat(" is not imported; add import ", path)))
+        assert failed.source == 0 && starts_with(slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end), path)
+        let fixed = concat("import ", concat(path, concat("\n", source)))
+        assert match checked(import_fixture(fixed, dependency)) {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn import_diagnostics_preserve_privacy_test_isolation_and_existing_resolution_errors() {
+    let dependency = """
+        pub fn seed() Int { 1 }
+        pub fn count(values List[Int]) Int { 0 }
+        fn hidden() Int { 2 }
+        """
+    let sources = [
+        "import util.api.seed\nfn main() { discard util.api.hidden() }",
+        "import util.api.seed\nfn main() { discard util.api.absent() }",
+        "import util.api.count\nfn main() { discard util.api.count(true) }"
+    ]
+    var index = 0
+    while index < length(sources) {
+        let failed = qualified_failure(fixture_project(import_fixture(get(sources, index), dependency)), false)
+        assert !contains(failed.diagnostic.message, "is not imported")
+        index = index + 1
+    }
+
+    // A visible nominal prefix owns variant resolution even if a loaded
+    // package has the same spelling and a public function with that member name.
+    let files = source_files("""
+        import Namespace.seed
+        enum Namespace {
+            Good
+        }
+        fn main() {
+            let value = Namespace.missing
+            discard value
+        }
+        """)
+    push(files, source_file("Namespace", "pub fn seed() {}\npub fn missing() Int { 1 }", false))
+    assert !contains(qualified_failure(fixture_project(files), false).diagnostic.message, "is not imported")
+
+    let testing = import_fixture("import util.api.seed\ntest fn probe() { discard util.api.testing() }", dependency)
+    let hidden = source_file("util.api", "pub fn testing() Int { 7 }", false)
+    push(testing, TestFile {
+            package = hidden.package
+            path = "dep_test.loom"
+            text = hidden.text
+            tree = hidden.tree
+            test_only = true
+            trusted_std = false
+        })
+    assert !contains(qualified_failure(fixture_project(testing), true).diagnostic.message, "is not imported")
+}
+
+test fn import_diagnostics_use_package_edges_instead_of_coalescing_fork_names() {
+    let aliases = ["left.api", "right.api"]
+    var index = 0
+    while index < length(aliases) {
+        let path = concat(get(aliases, index), ".count")
+        let files = source_files(concat("import left.api.seed\nimport right.api.seed\nfn main() { discard ", concat(path, "([1]) }")))
+        push(files, source_file("left.api", "pub fn seed() {}\npub fn count(values List[Int]) Int { 1 }", false))
+        push(files, source_file("right.api", "pub fn seed() {}", false))
+        let project = fixture_project(files)
+        set(project.modules, 1, ModuleInstance {
+                name = "same"
+                source = "memory:left"
+            })
+        set(project.modules, 2, ModuleInstance {
+                name = "same"
+                source = "memory:right"
+            })
+        let failed = qualified_failure(project, false)
+        if index == 0 {
+            assert failed.diagnostic.message == concat("function ", concat(path, concat(" is not imported; add import ", path)))
+        } else {
+            assert !contains(failed.diagnostic.message, "is not imported")
+        }
+        index = index + 1
+    }
+}

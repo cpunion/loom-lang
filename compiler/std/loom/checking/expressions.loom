@@ -57,7 +57,7 @@ fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     if local < 0 {
         let options = referenced_functions(context, node.value)
-        if length(options) != 0 { return function_value(context, node, options, new[Node](), expected) }
+        if length(options) != 0 { return function_value(context, node, options, new[Node](), expected, -1) }
         if meta_named(context, node) { return meta_literal(context, node, context_type(context, node)?) }
         if end < length(node.value) { return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected) }
         return Result.Err(error(context, node, "unknown local value"))

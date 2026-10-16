@@ -4,6 +4,38 @@ mod common;
 use common::success;
 
 #[test]
+fn length32_frames_keep_binary_boundaries_limits_and_real_tcp_cleanup() {
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::executable(temporary.path(), "framed-stream");
+    for package in [
+        "compiler/std/stream/length32",
+        "compiler/examples/framed_tcp",
+    ] {
+        success(&common::loom(&["check", package]));
+        for level in ["0", "2"] {
+            success(
+                &common::command(&["test", package, "--no-run"])
+                    .arg("--output")
+                    .arg(&executable)
+                    .env("LOOM_OPT_LEVEL", level)
+                    .output()
+                    .unwrap(),
+            );
+            success(&common::run_tasks(&executable));
+        }
+    }
+    success(
+        &common::command(&["build", "compiler/examples/framed_tcp"])
+            .arg("--output")
+            .arg(&executable)
+            .env("LOOM_OPT_LEVEL", "2")
+            .output()
+            .unwrap(),
+    );
+    success(&common::run_tasks(&executable));
+}
+
+#[test]
 fn source_streams_keep_typed_pulls_real_io_and_task_cleanup() {
     let temporary = tempfile::tempdir().unwrap();
     for package in ["compiler/std/stream", "compiler/std/net/tcp/chunks"] {

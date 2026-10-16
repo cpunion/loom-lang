@@ -47,7 +47,8 @@ fn function_shape(env Environment, current Signature) Int {
     intern(env, TypeKind.Function, -1, arguments)
 }
 
-fn function_value(context Context, node Node, options List[Int], supplied_types List[Node], expected Int) Result[Expr, Failure] {
+fn function_value(context Context, node Node, options List[Int], supplied_types List[Node], expected Int,
+    arity Int) Result[Expr, Failure] {
     let desired = if expected >= 0 && get(context.env.types, expected).kind == TypeKind.Function {
         expected
     } else {
@@ -65,7 +66,8 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         let candidate = get(context.env.signatures, id)
         static_only = static_only || has_static(candidate)
         let count = candidate.parameters - parameter_offset(context.env, candidate.symbol)
-        if !has_static(candidate) && (type_count < 0 || type_count == count) {
+        if (arity < 0 || length(candidate.params) == arity) &&
+        !has_static(candidate) && (type_count < 0 || type_count == count) {
             let inferred = supplied_call(context, node, supplied_types, candidate)?
             if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments

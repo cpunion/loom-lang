@@ -363,7 +363,8 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
         find_data(context.env, context.signature.symbol, node, package(node.value))?
     }
     if declaration < 0 {
-        return Result.Err(error(context, node, "unknown enum type"))
+        let message = unimported_function_message(context, node.value)
+        return Result.Err(error(context, node, if message == "" { "unknown enum type" } else { message }))
     }
     let desired = if selected_type >= 0 {
         selected_type
@@ -547,6 +548,10 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     if package(node.value) != "" && find_data(context.env, context.signature.symbol, node, package(node.value))? >= 0 {
         return variant(context, node, types, inputs, expected)
     }
+    if length(available) == 0 {
+        let message = unimported_function_message(context, node.value)
+        if message != "" { return Result.Err(error(context, node, message)) }
+    }
     let type_count = call_type_count(node, types)
     let options = call_signature_options(context.env, available, length(inputs.nodes), type_count)
     var index = 0
@@ -635,7 +640,17 @@ fn invoke_shared(context Context, node Node, options List[Int], types List[Node]
             expected_argument = hint(context, get(get(context.env.signatures, get(options, 0)).params, index), inferred, node)?
         }
         let probe = probing && static_position(context, options, index)
-        let value = input_value(context, inputs, index, expected_argument, probe)?
+        let input = get(inputs.nodes, index)
+        let arity = if expected_argument < 0 && (input.kind == NodeKind.Name || input.kind == NodeKind.Apply) {
+            shared_callback_arity(context.env, options, index)
+        } else {
+            -1
+        }
+        let value = if arity >= 0 {
+            function_input_arity(context, inputs, index, arity, probe)?
+        } else {
+            input_value(context, inputs, index, expected_argument, probe)?
+        }
         if probing {
             push(probes, probe)
         }
