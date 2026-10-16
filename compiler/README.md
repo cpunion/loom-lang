@@ -2329,6 +2329,12 @@ An expected function type selects an exact signature from overloads and can
 infer generic arguments; `identity[Int]` explicitly specializes a named generic
 function. Unresolved references require an annotation or type arguments. Calls
 through values use their fixed signatures; function types are not covariant.
+Before generic types finish inference, a callback's fixed parameter count can
+discard differently shaped references when all remaining consumer overloads
+agree on that count. Same-arity ambiguity, missing concept evidence and differing
+consumer shapes still require explicit context; no declaration-order preference
+or inferred requirement is introduced. This also applies to fresh scoped stream
+factories and named async callbacks.
 Original callee preconditions still execute at entry. `fn(Int)` has no result;
 `fn(Int) Unit` is rejected just like an explicit Unit return on a declaration.
 

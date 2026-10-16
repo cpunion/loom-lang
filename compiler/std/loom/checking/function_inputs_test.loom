@@ -1,0 +1,183 @@
+test fn partial_callback_types_select_only_their_declared_arity() {
+    discard accepted("""
+        fn create(value Int) Int {
+            value + 1
+        }
+
+        fn create(first Int, second Int) Int {
+            first + second
+        }
+
+        fn identity[T](value T) T {
+            value
+        }
+
+        fn identity[T](first T, second T) T {
+            first
+        }
+
+        fn zero() Int {
+            42
+        }
+
+        fn zero(ignored Int) Int {
+            ignored
+        }
+
+        fn apply[A, R](action fn(A) R, value A) R {
+            action(value)
+        }
+
+        fn run[R](action fn() R) R {
+            action()
+        }
+
+        fn main() {
+            assert apply(create, 6) == 7
+            assert apply(identity[Text], "value") == "value"
+            assert run(zero) == 42
+            assert comptime { apply(create, 8) } == 9
+        }
+        """)
+}
+
+test fn overloaded_consumers_share_only_callback_shape_not_type_evidence() {
+    let definitions = """
+        concept Source {
+            fn size(self Self) Int
+        }
+
+        record Value {
+            count Int
+        }
+
+        impl Source for Value {
+            fn size(self Value) Int {
+                self.count
+            }
+        }
+
+        enum Fallible[T] {
+            Ok(T)
+            Missing
+        }
+
+        fn create(value Int) Value {
+            Value { count = value }
+        }
+
+        fn create(value Int, extra Int) Value {
+            Value { count = value + extra }
+        }
+
+        fn maybe(value Int) Fallible[Value] {
+            Fallible.Ok(Value { count = value })
+        }
+
+        fn maybe(value Int, extra Int) Fallible[Value] {
+            Fallible.Ok(Value { count = value + extra })
+        }
+
+        fn consume[A, S Source](create fn(A) S, input A, extra Int) Int {
+            create(input).size() + extra
+        }
+
+        fn consume[A, S Source](create fn(A) Fallible[S], input A, extra Int) Int {
+            match create(input) {
+                Fallible.Ok(value) => value.size() + extra
+                Fallible.Missing => 0
+            }
+        }
+
+        """
+    discard accepted(concat(definitions, """
+        fn main() {
+            assert consume(create, 6, 1) == 7
+            assert consume(maybe, 8, 2) == 10
+        }
+        """))
+    rejects(concat(definitions, """
+        fn missing(value Int) Bool {
+            true
+        }
+
+        fn missing(value Int, extra Int) Bool {
+            false
+        }
+
+        fn main() {
+            discard consume(missing, 6, 1)
+        }
+        """))
+}
+
+test fn callback_arity_does_not_resolve_disagreement_or_shadowed_names() {
+    let definitions = """
+        fn create(value Int) Int {
+            value
+        }
+
+        fn create(first Int, second Int) Int {
+            first + second
+        }
+
+        fn apply[A, R](action fn(A) R, value A) R {
+            action(value)
+        }
+
+        """
+    rejects(concat(definitions, """
+        fn apply[A, R](action fn(A, A) R, value A) R {
+            action(value, value)
+        }
+
+        fn main() {
+            discard apply(create, 1)
+        }
+        """))
+    rejects(concat(definitions, """
+        fn create(value Bool) Bool {
+            value
+        }
+
+        fn main() {
+            discard apply(create, 1)
+        }
+        """))
+    rejects(concat(definitions, """
+        fn main() {
+            let create fn(Int, Int) Int = create
+            discard apply(create, 1)
+        }
+        """))
+    rejects(concat(definitions, """
+        fn apply[A](action A, value Int) Int {
+            value
+        }
+
+        fn main() {
+            discard apply(create, 1)
+        }
+        """))
+}
+
+test fn callback_arity_preserves_static_argument_selection() {
+    discard accepted("""
+        fn create(value Int) Int {
+            value + 1
+        }
+
+        fn create(first Int, second Int) Int {
+            first + second
+        }
+
+        fn apply[A, R](comptime action fn(A) R, value A) R {
+            action(value)
+        }
+
+        fn main() {
+            assert apply(create, 6) == 7
+            assert comptime { apply(create, 8) } == 9
+        }
+        """)
+}

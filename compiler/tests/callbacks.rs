@@ -3,6 +3,70 @@ mod common;
 use common::{loom, success};
 
 #[test]
+fn partial_callback_arity_works_in_native_code_and_scoped_stream_factories() {
+    let package = "compiler/examples/callbacks";
+    for mode in ["check", "test", "run"] {
+        success(&common::loom(&[mode, package]));
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::executable(temporary.path(), "callback-arity-tests");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["test", package, "--no-run"])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+    }
+}
+
+#[test]
+fn callback_arity_cache_revalidates_new_overload_candidates() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("functions.loom");
+    let definitions = r#"
+fn create(value Int) Int {
+    value + 1
+}
+
+fn apply[A, R](action fn(A) R, value A) R {
+    action(value)
+}
+"#;
+    fs::write(&source, definitions).unwrap();
+    fs::write(
+        temporary.path().join("main.loom"),
+        "pub fn entry() Int {\n    apply(create, 1)\n}\n\nfn main() {\n    assert entry() == 2\n}\n",
+    )
+    .unwrap();
+    let cache = temporary.path().join("cache");
+    let check = || {
+        common::command(&["check", temporary.path().to_str().unwrap()])
+            .arg("--frontend-cache")
+            .arg(&cache)
+            .output()
+            .unwrap()
+    };
+    success(&check());
+    let different =
+        format!("{definitions}\nfn create(first Int, second Int) Int {{\n    first + second\n}}\n");
+    fs::write(&source, &different).unwrap();
+    success(&check());
+    success(&check());
+    fs::write(
+        &source,
+        format!("{different}\nfn create(value Bool) Bool {{\n    value\n}}\n"),
+    )
+    .unwrap();
+    let changed = check();
+    assert_eq!(changed.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("ambiguous function reference"));
+}
+
+#[test]
 fn named_callbacks_keep_native_layouts_and_exact_reference_reachability() {
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "callbacks");

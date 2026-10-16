@@ -1,0 +1,72 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.typed.Expr
+import std.loom.typed.TypeKind
+import std.option.Option
+import std.result.Result
+import std.list.new
+import std.list.get
+import std.list.length
+
+// A partial callback type still has a fixed arity. Use it only when every
+// remaining call candidate declares the same shape at this input position.
+fn shared_callback_arity(env Environment, options List[Int], position Int) Int {
+    var arity = -1
+    var index = 0
+    while index < length(options) {
+        let parameters = get(env.signatures, get(options, index)).params
+        if position >= length(parameters) {
+            return -1
+        }
+        let pattern = get(env.types, get(parameters, position))
+        if pattern.kind != TypeKind.Function {
+            return -1
+        }
+        let count = length(pattern.arguments) - 1
+        if arity >= 0 && arity != count {
+            return -1
+        }
+        arity = count
+        index = index + 1
+    }
+    arity
+}
+
+fn function_input_arity(context Context, inputs CallInputs, index Int, arity Int, probe Bool) Result[Expr, Failure] {
+    match saved_input(inputs, index) {
+        Option.Some(_) => {
+            return input_value(context, inputs, index, -1, probe)
+        }
+        Option.None => {
+        }
+    }
+    let node = get(inputs.nodes, index)
+    let receiver = if node.kind == NodeKind.Apply {
+        child(node, 0)
+    } else {
+        node
+    }
+    if receiver.kind != NodeKind.Name {
+        return input_value(context, inputs, index, -1, probe)
+    }
+    let options = referenced_functions(context, receiver.value)
+    if length(options) == 0 {
+        return input_value(context, inputs, index, -1, probe)
+    }
+    let types = if node.kind == NodeKind.Apply {
+        child(node, 1).children
+    } else {
+        new[Node]()
+    }
+    let selected = if probe {
+        static_probe_context(context, node)?
+    } else {
+        context
+    }
+    let value = function_value(selected, node, options, types, -1, arity)?
+    Result.Ok(if probe {
+            value
+        } else {
+            input_effects(context, inputs, index, node, value)
+        })
+}
