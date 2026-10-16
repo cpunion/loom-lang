@@ -1,0 +1,167 @@
+fn body_family_parameters(reuse BodyReuse, ty Int) List[Int] {
+    let shape = get(get(reuse.prior, 0).types, ty)
+    let parameters = new[Int]()
+    var index = 0
+    while index < shape.symbol {
+        push(parameters, get(shape.arguments, index))
+        index = index + 1
+    }
+    parameters
+}
+
+fn body_family_supported(reuse BodyReuse, ty Int, stored Bool) Bool {
+    body_family_shape(reuse, ty, stored, new[FamilyAliases](), -1, new[(Int, Int)](), 0)
+}
+
+fn body_family_member(reuse BodyReuse, member Int) Int {
+    let known = body_symbol(reuse, member)
+    if known >= 0 {
+        return known
+    }
+    let entries = get(reuse.prior, 0).definitions.entries
+    let previous = get(entries, member)
+    let owner = body_symbol(reuse, previous.owner)
+    if owner < 0 || !definition_same(get(entries, previous.owner).node, get(reuse.current, owner).node, true) {
+        return -1
+    }
+    var index = 0
+    while index < length(reuse.current) {
+        let current = get(reuse.current, index)
+        if current.owner == owner && definition_same(previous.node, current.node, false) {
+            set(reuse.symbols, member, index)
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+// This walk has a private scope-keyed memo. Its successes must never publish
+// lambda-local rigids/projections to the ordinary executable-type memo.
+fn body_family_shape(reuse BodyReuse, ty Int, stored Bool, scopes List[FamilyAliases],
+    scope Int, seen List[(Int, Int)], depth Int) Bool {
+    if depth >= 64 {
+        return false
+    }
+    let shape = get(get(reuse.prior, 0).types, ty)
+    if shape.kind == TypeKind.Rigid {
+        return family_alias(scopes, scope, ty, true) >= 0
+    }
+    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Frame ||
+    (shape.kind == TypeKind.Meta && !stored) {
+        return false
+    }
+    if shape.kind == TypeKind.Associated && (scope < 0 || body_family_member(reuse, shape.symbol) < 0) {
+        return false
+    }
+    if (shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum ||
+        shape.kind == TypeKind.Refined) && body_symbol(reuse, shape.symbol) < 0 {
+        return false
+    }
+    if shape.kind == TypeKind.Dyn &&
+    body_symbol(reuse, get(get(reuse.prior, 0).interfaces, shape.symbol).symbol) < 0 {
+        return false
+    }
+    var index = 0
+    while index < length(seen) {
+        let earlier = get(seen, index)
+        if earlier.0 == ty && earlier.1 == scope {
+            return true
+        }
+        index = index + 1
+    }
+    push(seen, (ty, scope))
+    if shape.kind == TypeKind.Family {
+        let parameters = body_family_parameters(reuse, ty)
+        let nested = family_scope(scopes, scope, parameters, parameters)
+        return body_family_shape(reuse, get(shape.arguments, shape.symbol), stored,
+            scopes, nested, seen, depth + 1)
+    }
+    index = 0
+    while index < length(shape.arguments) {
+        if !body_family_shape(reuse, get(shape.arguments, index), stored, scopes, scope, seen, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.fields) {
+        if !body_family_shape(reuse, get(shape.fields, index).ty, stored, scopes, scope, seen, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if !body_family_shape(reuse, get(fields, field), stored, scopes, scope, seen, depth + 1) {
+                return false
+            }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+record BodyFamilyReplay {
+    previous Int
+    scope Int
+    current Int
+}
+
+// Rekey symbolic metadata without exporting its bound variables to reuse.types.
+// Nested templates freshen their binders before mapping enclosing captures.
+fn body_family_type(env Environment, reuse BodyReuse, ty Int, scopes List[FamilyAliases],
+    scope Int, known List[BodyFamilyReplay]) Result[Int, Failure] {
+    let shape = get(get(reuse.prior, 0).types, ty)
+    if shape.kind == TypeKind.Rigid {
+        let mapped = family_alias(scopes, scope, ty, true)
+        // Eligibility proved this binder belongs to an enclosing template.
+        assert mapped >= 0
+        return Result.Ok(mapped)
+    }
+    var index = 0
+    while index < length(known) {
+        let earlier = get(known, index)
+        if earlier.previous == ty && earlier.scope == scope {
+            return Result.Ok(earlier.current)
+        }
+        index = index + 1
+    }
+    var mapped = -1
+    if shape.kind == TypeKind.Family {
+        let parameters = fresh_family_parameters(env, shape.symbol)
+        let nested = family_scope(scopes, scope, body_family_parameters(reuse, ty), parameters)
+        let body = body_family_type(env, reuse, get(shape.arguments, shape.symbol), scopes, nested, known)?
+        mapped = type_family(env, parameters, body)
+    } else {
+        let arguments = new[Int]()
+        index = 0
+        while index < length(shape.arguments) {
+            push(arguments, body_family_type(env, reuse, get(shape.arguments, index), scopes, scope, known)?)
+            index = index + 1
+        }
+        if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
+            mapped = data_type_grouped(env, body_symbol(reuse, shape.symbol), arguments, shape.pack_widths, 0)?
+        } else if shape.kind == TypeKind.Dyn {
+            let capability = body_symbol(reuse, get(get(reuse.prior, 0).interfaces, shape.symbol).symbol)
+            mapped = dynamic_instance(env, capability, capability, arguments, symbol(env, capability).node)?
+            discard fill_interface(env, mapped)?
+        } else {
+            mapped = intern(env, shape.kind, if shape.kind == TypeKind.Associated {
+                    body_family_member(reuse, shape.symbol)
+                } else {
+                    -1
+                }, arguments)
+        }
+    }
+    push(known, BodyFamilyReplay {
+            previous = ty
+            scope = scope
+            current = mapped
+        })
+    Result.Ok(mapped)
+}

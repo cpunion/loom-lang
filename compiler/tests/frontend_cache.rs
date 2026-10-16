@@ -38,15 +38,25 @@ fn dynamic_family_snapshots_recheck_changed_bindings_and_keep_native_captures() 
     let path = package.join("main.loom");
     let source = include_str!("../examples/dyn_families/main.loom");
     fs::write(&path, source).unwrap();
+    fs::write(
+        package.join("projection.loom"),
+        include_str!("../examples/dyn_families/projection.loom"),
+    )
+    .unwrap();
     checked(&cached("emit-checked", &package, &cache, &[]), false);
     checked(&cached("emit-checked", &package, &cache, &[]), true);
 
     // Shift source/type IDs and import the persisted definition snapshot.
     // Family-bearing bodies may be rechecked, never restored with stale binders.
-    fs::write(package.join("aaa.loom"), "fn unrelated() {}\n").unwrap();
+    fs::write(&path, format!("fn unrelated() {{}}\n{source}")).unwrap();
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
-    // Rechecking introduces fresh, unused rigid metadata IDs; byte equality is
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(
+        trace.contains("bodies reused ") && !trace.contains("bodies reused 0"),
+        "{trace}"
+    );
+    // Rekeying introduces fresh, unused rigid metadata IDs; byte equality is
     // not a semantic requirement. Both artifacts must preserve native behavior.
     checked(&cached("run", &package, &cache, &[]), true);
     success(&common::loom(&["run", package.to_str().unwrap()]));

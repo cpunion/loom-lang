@@ -2051,7 +2051,9 @@ inference into an enclosing parameter.
 Templates normalize structural types and associated projections. A `comptime`
 computation that depends on a template-local parameter is not yet a symbolic
 template and rejects. Templates are compile-time metadata, not runtime type
-functions. Bodies containing them currently bypass incremental body reuse.
+functions. Incremental body reuse reconstructs closed templates with fresh bound
+variables and current declaration identities; free captures or unsupported
+metadata still require a fresh check.
 The [dynamic family example](examples/dyn_families/main.loom) exercises native
 generic dispatch, outer captures, nested templates and unreachable-slot removal.
 
