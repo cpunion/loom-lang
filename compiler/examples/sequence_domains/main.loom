@@ -61,7 +61,7 @@ fn ordered(values List[Int]) Bool {
 
 type Sorted = List[Int] where ordered(self)
 
-fn opaque_size(values List[Int]) Bool {
+fn opaque_size[T](values List[T]) Bool {
     var remaining = length(values)
     var total = 0
     while remaining > 0 {
@@ -88,6 +88,18 @@ fn preserve_sevens(values Sevens) {
     values[0] = 7
 }
 
+type DecimalHeader = List[Float] where opaque_size(self) && length(self) > 0 && self[0] == 7.25
+
+fn preserve_decimal(values DecimalHeader) {
+    values[0] = 7.25
+}
+
+type NegativeZeroHeader = List[Float] where opaque_size(self) && length(self) > 0 && self[0] == 0.0 && 1.0 / self[0] < 0.0
+
+fn preserve_negative_zero(values NegativeZeroHeader) {
+    values[0] = -0.0
+}
+
 fn set_last(values List[Int]) {
     values[length(values) - 1] = 9223372036854775807
 }
@@ -101,6 +113,13 @@ fn exercise() {
     let sevens = Sevens([7, 7])
     preserve_sevens(sevens)
     assert all_sevens(sevens)
+    let decimals = DecimalHeader([7.25, -0.0])
+    let decimal_alias = decimals
+    preserve_decimal(decimals)
+    assert decimal_alias[0] == 7.25 && 1.0 / decimal_alias[1] < 0.0
+    let zero = NegativeZeroHeader([-0.0])
+    preserve_negative_zero(zero)
+    assert 1.0 / zero[0] < 0.0
     let extremes = [-9223372036854775808, 0, 9223372036854775807]
     let rows = [Row {
             amount = -9223372036854775808

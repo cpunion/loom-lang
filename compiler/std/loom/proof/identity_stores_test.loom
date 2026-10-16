@@ -81,11 +81,39 @@ test fn stored_identity_is_not_ieee_equality_or_opaque_graph_provenance() {
     }
     assert match stored_identity(proof, Value.Float(FloatValue.Literal("0")), Value.Float(FloatValue.Literal("-0")), 0) {
         Result.Err(_) => true
-        Result.Ok(_) => false
+        Result.Ok(equal) => !holds(equal, [])
     }
     let opaque = Value.Opaque(10, [])
     assert match stored_identity(proof, opaque, opaque, 0) {
         Result.Err(_) => true
         Result.Ok(_) => false
+    }
+}
+
+test fn stored_float_identity_uses_ieee_values_without_collapsing_signed_zero() {
+    let current = FloatValue.Variable(1)
+    let replacement = FloatValue.Variable(2)
+    let equal = match stored_float_identity(current, replacement) {
+        Result.Ok(predicate) => predicate
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let numeric = Predicate.FloatCompare("==", current, replacement)
+    // Equal numeric values alone may be opposite signed zeros.
+    assert !holds(equal, [numeric])
+    assert holds(equal, [numeric, Predicate.FloatCompare("==", current, FloatValue.Literal("7.25"))])
+    assert holds(equal, [numeric, Predicate.FloatCompare("==", current, FloatValue.Literal("inf"))])
+    let inverse = FloatValue.Apply("/", [FloatValue.Literal("1"), current])
+    assert match stored_float_identity(current, FloatValue.Literal("-0")) {
+        Result.Ok(predicate) => holds(predicate, [
+                Predicate.FloatCompare("==", current, FloatValue.Literal("0")),
+                Predicate.FloatCompare("==", inverse, FloatValue.Literal("-inf"))])
+        Result.Err(_) => false
+    }
+    assert match stored_float_identity(current, FloatValue.Literal("NaN")) {
+        Result.Ok(predicate) => !holds(predicate, [])
+        Result.Err(_) => true
     }
 }

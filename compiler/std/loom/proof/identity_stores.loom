@@ -42,11 +42,30 @@ fn stored_identity(proof Verification, left Value, right Value, depth Int) Resul
                 return Result.Ok(Predicate.Constant(true))
             }
             if scalar_domain(first) == ScalarDomain.Float || scalar_domain(second) == ScalarDomain.Float {
-                return Result.Err("Float identity needs the same stored snapshot")
+                return match left {
+                    Value.Float(a) => match right {
+                        Value.Float(b) => stored_float_identity(a, b)
+                        _ => Result.Err("stored representations differ")
+                    }
+                    _ => Result.Err("stored representations differ")
+                }
             }
             boolean(binary("==", left, right)?)
         }
     }
+}
+
+fn stored_float_identity(left FloatValue, right FloatValue) Result[Predicate, Text] {
+    // Nonzero equal binary64 values have the same representation. At zero,
+    // reciprocal equality distinguishes the signs; numeric equality excludes
+    // NaNs. The same-snapshot fast path above still admits an unchanged NaN.
+    // These are proof terms, not additional executable reads or divisions.
+    let equal = boolean(float_binary("==", left, right)?)?
+    let nonzero = boolean(float_binary("!=", left, FloatValue.Literal("0"))?)?
+    let first = float_binary("/", FloatValue.Literal("1"), left)?
+    let second = float_binary("/", FloatValue.Literal("1"), right)?
+    let same_sign = boolean(binary("==", first, second)?)?
+    Result.Ok(Predicate.And(predicates(equal, Predicate.Or(predicates(nonzero, same_sign)))))
 }
 
 fn stored_field_identity(proof Verification, left List[Value], right List[Value], depth Int) Result[Predicate, Text] {

@@ -23,3 +23,7 @@ preserve the complete predicate themselves, including in shared builds.
 constraint. Its literal store is proved unchanged using the current cell's
 quantified facts; it does not need to expand the size predicate or execute a
 runtime preservation check.
+
+The Float headers exercise nonzero and negative-zero identity. Equal nonzero
+binary64 values have one representation; zero additionally needs its sign proved.
+Opposite signed zeros and unproved NaN replacements are not identity stores.
