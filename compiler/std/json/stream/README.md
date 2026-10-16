@@ -37,8 +37,10 @@ closure of a borrowed producer. Its pending child still drains normally.
 `lines(create, input, bytes)` also accepts a fresh `Stream + Dispose + MustScope`
 factory, including a fallible one. The returned adapter is then a scoped owner;
 early exit and cancellation drain pending pulls before ordinary source disposal.
-It cannot retain a borrow of an already scoped producer. Other document framing
-remains open.
+It cannot retain a borrow of an already scoped producer.
+[`std.stream.length32`](../../stream/length32/README.md) provides binary
+length-prefixed records; decoding each payload remains explicit rather than
+changing this JSON parser's EOF policy.
 
 `decode(source, bytes).await` constructs a visible typed shape after the same
 EOF check, using `std.json.from_value`. Infer the target from the result type:

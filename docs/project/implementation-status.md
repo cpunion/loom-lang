@@ -161,7 +161,9 @@ iterators and async streams. JSON policy has no special runtime implementation.
 [streams](../../compiler/std/stream/README.md) support ordered, short-circuiting
 consumers and owned scoped pipelines. JSON streaming handles chunk boundaries,
 backpressure and LF-framed records without requiring a full document Text.
-Other framing and general borrow-retaining adapters remain open.
+Source-written [length-prefixed framing](../../compiler/std/stream/length32/README.md)
+handles bounded binary messages over arbitrary chunks, including scoped factories
+and real TCP. Other framing and general borrow-retaining adapters remain open.
 
 Stop-the-world copying GC preserves precise roots, sharing and cycles.
 Nonallocating functions stay root-free; liveness retires dead roots at checked
