@@ -148,7 +148,7 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
 // A successful typed boundary establishes the value's own predicate, not facts
 // about another invocation or the storage from which this value was read.
 fn typed_value_state(proof Verification, ty Int, value Value, state State) State {
-    let bounded = task_private_value(proof, ty, value, bounded(value, list_bounds(value, state)))
+    let bounded = task_private_value(proof, ty, value, bounded(value, state))
     let protected = if length(proof.protected) != 0 {
         protected_input(proof.program.types, proof.protected, ty, value, bounded, 0)
     } else {
