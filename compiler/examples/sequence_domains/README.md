@@ -15,3 +15,6 @@ The example proves scan contracts without executing them at runtime. It also
 updates a constrained sorted List's endpoints using the machine extrema. The
 ordinary per-store proof establishes ordering after each write; aliases still
 share the same storage. No sorting-specific update permission is added.
+Both direct `values[length(values) - 1]` assignment and an extracted source
+helper retain their index dependencies. Argument effects stay ordered and must
+preserve the complete predicate themselves, including in shared builds.

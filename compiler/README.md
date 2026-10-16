@@ -2634,6 +2634,9 @@ scan may bind the current element locally and finish with an ordinary Boolean
 expression, such as nonemptiness. Replacement, append and finite source helpers
 must prove the whole predicate after every store. Unobserved shared siblings
 remain mutable; the proof neither freezes them nor infers their contents.
+Dependent store arguments retain their checked receiver/index relationships and
+evaluation order. Shared builds re-prove them with interference; an earlier read
+does not freeze a cell until its later write.
 Field equations are not whole-record equality or permutation evidence. See
 [projections.loom](examples/list_contracts/projections.loom) for nested field
 constraints and arbitrary-index write/restore contracts, and
