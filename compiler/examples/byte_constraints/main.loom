@@ -1,0 +1,99 @@
+import std.bytes.new
+import std.bytes.push
+import std.bytes.set
+import std.bytes.length
+import std.bytes.clone
+import std.bytes.is_utf8
+import std.bytes.decode_utf8
+import std.text.to_bytes
+import std.result.Result
+import std.result.ConstraintError
+import std.time.sleep_ms
+import std.task.outcome
+import std.task.Outcome
+
+type Byte = Int where self >= 0 && self <= 255
+
+type PositiveByte = Int where self > 0 && self <= 255
+
+type Head = Bytes where length(self) > 0 && self[0] > 0
+
+type Utf8 = Bytes where is_utf8(self)
+
+fn build(value Byte) Result[Head, ConstraintError] {
+    let draft = new()
+    push(draft, value)
+    Head(draft)
+}
+
+fn checked_text(input Bytes) Result[Utf8, ConstraintError] {
+    Utf8(clone(input))
+}
+
+fn first(value Head) Int
+ensures result > 0
+{
+    value[0]
+}
+
+fn fill(values Bytes, value PositiveByte) {
+    var index = 0
+    while index < length(values) {
+        set(values, index, value)
+        index = index + 1
+    }
+}
+
+fn update(value Head) {
+    value[0] = PositiveByte(9)
+    fill(value, PositiveByte(11))
+    push(value, 0)
+}
+
+async fn retained(value Head) Head {
+    sleep_ms(1).await
+    value
+}
+
+async fn fault_before_store(value Head) {
+    value[0] = 256
+}
+
+async fn exercise() Bool {
+    assert match build(Byte(0)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let valid = build(Byte(7))
+    match valid {
+        Result.Ok(value) => {
+            let alias = value
+            let pending = retained(value)
+            update(alias)
+            let after = pending.await
+            assert first(after) == 11 && length(after) == 2 && after[1] == 0
+            let copy = clone(value)
+            copy[0] = 0
+            assert first(value) == 11
+            assert match outcome(fault_before_store(value)).await {
+                Outcome.Faulted(_) => true
+                _ => false
+            }
+            assert first(alias) == 11
+            match checked_text(to_bytes("hé")) {
+                Result.Ok(text) => {
+                    match decode_utf8(text) {
+                        Result.Ok(decoded) => decoded == "hé"
+                        Result.Err(_) => false
+                    }
+                }
+                Result.Err(_) => false
+            }
+        }
+        Result.Err(_) => false
+    }
+}
+
+async fn main() {
+    assert exercise().await
+}

@@ -70,13 +70,13 @@ fn constraint_content_updates(env Environment, program std.loom.typed.Program, o
                     Result.Ok(proved) => proved
                     Result.Err(failed) => {
                         return Result.Err(list_constraint_error(env, owner, value,
-                                concat("constrained List mutation is not proved interference-safe: ",
+                                concat("constrained sequence mutation is not proved interference-safe: ",
                                     failed.diagnostic.message)))
                     }
                 }
                 if !preserved {
                     return Result.Err(list_constraint_error(env, owner, value,
-                            "constrained List mutation is not proved interference-safe"))
+                            "constrained sequence mutation is not proved interference-safe"))
                 }
                 index = 0
                 while index < length(value.children) {
@@ -146,7 +146,7 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     let protected = new[InputGuarantee]()
     index = 6
     while env.has_refinements && index < length(env.types) {
-        if constrained_list(env, index) {
+        if constrained_sequence(env, index) {
             var writes = get(env.type_states, index).list_writes
             var changed = 0
             while changed < length(modified) {

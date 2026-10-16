@@ -61,7 +61,7 @@ fn draft_stable_assignments(env Environment, functions List[Function], current F
             return false
         }
     }
-    if value.kind == ExprKind.Block && value.text == "checked list" {
+    if value.kind == ExprKind.Block && value.text == "checked sequence" {
         return draft_stable_assignments(env, functions, current, draft_input(value),
             local, path, root, identities, budget, depth + 1)
     }

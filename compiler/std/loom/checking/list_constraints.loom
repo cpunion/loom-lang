@@ -1,15 +1,16 @@
 import std.loom.proof.fresh_list_factory
 import std.loom.proof.single_list_write
 
-// A constrained List has no pre-existing writable outer aliases. Content
+// A constrained sequence has no pre-existing writable outer aliases. Content
 // predicates may observe immutable fields, not nested shared mutable storage.
 // Copies retain the constrained type and ordinary sharing.
 // Plain List borrows must not escape. Stores require a proved preserving
 // operation; no runtime monitor is needed.
-fn constrained_list(env Environment, ty Int) Bool {
+fn constrained_sequence(env Environment, ty Int) Bool {
     let shape = get(env.types, ty)
     shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
-    get(env.types, get(shape.fields, 0).ty).kind == TypeKind.List
+    (get(env.types, get(shape.fields, 0).ty).kind == TypeKind.List ||
+        get(env.types, get(shape.fields, 0).ty).kind == TypeKind.Bytes)
 }
 
 fn closed_list_value(value Expr) Bool {
@@ -31,7 +32,7 @@ fn list_constraint_required(env Environment, value Expr) Bool {
     if !env.has_refinements {
         return false
     }
-    if value.text == "checked list" || constrained_list(env, value.ty) {
+    if value.text == "checked sequence" || constrained_sequence(env, value.ty) {
         return true
     }
     var index = 0
@@ -68,7 +69,7 @@ fn list_constraint_error(env Environment, owner Int, value Expr, message Text) F
 
 fn constraint_weakened(env Environment, value Expr) Bool {
     value.kind == ExprKind.Coerce && length(value.children) == 1 &&
-    constrained_list(env, get(value.children, 0).ty) &&
+    constrained_sequence(env, get(value.children, 0).ty) &&
     value.ty == base_type(env, get(value.children, 0).ty)
 }
 
@@ -251,11 +252,11 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
 fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr, drafts List[Expr]) Result[Bool, Failure] {
     // Only original typing can emit this certificate. Cached bodies retain its
     // definition dependencies; recheck the non-publishing operation structure.
-    if value.kind == ExprKind.Block && value.text == "proved list update" && length(value.children) == 1 {
+    if value.kind == ExprKind.Block && value.text == "proved sequence update" && length(value.children) == 1 {
         let operation = get(value.children, 0)
         if !constraint_operation(env, functions, operation, true) {
             return Result.Err(list_constraint_error(env, owner, operation,
-                    "this operation may invalidate or expose constrained List storage; use a proved preserving operation or an explicit copy"))
+                    "this operation may invalidate or expose constrained sequence storage; use a proved preserving operation or an explicit copy"))
         }
         var index = 0
         while index < length(operation.children) {
@@ -271,21 +272,21 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
     }
     // Compiler-emitted checked construction: the private raw temporary is used
     // only by the validated predicate and the successful refined result.
-    if value.kind == ExprKind.Block && value.text == "checked list" {
+    if value.kind == ExprKind.Block && value.text == "checked sequence" {
         let input = get(get(value.children, 0).children, 0)
         if !constraint_fresh(env, functions, input) && !established_draft(value, drafts) {
             return Result.Err(list_constraint_error(env, owner, input,
-                    "a List constraint requires fresh unpublished storage; use a fresh literal, a proved factory, an unpublished local draft or an explicit copy"))
+                    "a sequence constraint requires fresh unpublished storage; use a fresh literal, a proved factory, an unpublished local draft or an explicit copy"))
         }
         discard list_constraint_expression(env, functions, owner, input, drafts)?
         discard list_constraint_expression(env, functions, owner, get(get(value.children, 1).children, 0), drafts)?
         return Result.Ok(true)
     }
-    if value.kind == ExprKind.Coerce && constrained_list(env, value.ty) &&
+    if value.kind == ExprKind.Coerce && constrained_sequence(env, value.ty) &&
     !constraint_restored(env, value) && !constraint_fresh(env, functions, get(value.children, 0)) &&
     !established_draft(value, drafts) {
         return Result.Err(list_constraint_error(env, owner, value,
-                "a List constraint requires fresh unpublished storage; use a fresh literal, a proved factory, an unpublished local draft or an explicit copy"))
+                "a sequence constraint requires fresh unpublished storage; use a fresh literal, a proved factory, an unpublished local draft or an explicit copy"))
     }
     var borrowed = false
     var index = 0
@@ -297,11 +298,11 @@ fn list_constraint_expression(env Environment, functions List[Function], owner I
     }
     if borrowed && !constraint_operation(env, functions, value) {
         return Result.Err(list_constraint_error(env, owner, value,
-                "this operation may invalidate or expose constrained List storage; use a proved preserving operation or an explicit copy"))
+                "this operation may invalidate or expose constrained sequence storage; use a proved preserving operation or an explicit copy"))
     }
     if constraint_weakened(env, value) {
         return Result.Err(list_constraint_error(env, owner, value,
-                "constrained List storage cannot escape as an unrestricted List"))
+                "constrained sequence storage cannot escape as an unrestricted sequence"))
     }
     index = 0
     while index < length(value.children) {

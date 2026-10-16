@@ -1,0 +1,270 @@
+fn byte_constraint_files(source Text) List[TestFile] {
+    let files = list_constraint_files(source)
+    push(files, source_file("std.bytes", """
+        intrinsic fn bytes_new() Bytes
+        intrinsic fn bytes_len(value Bytes) Int
+        intrinsic fn bytes_get(value Bytes, index Int) Int
+        intrinsic fn bytes_set(value Bytes, index Int, byte Int)
+        intrinsic fn bytes_push(value Bytes, byte Int)
+        intrinsic fn bytes_utf8(value Bytes) Bool
+        intrinsic fn bytes_text_copy(value Bytes) Text
+
+        pub fn new() Bytes {
+            bytes_new()
+        }
+
+        pub fn length(value Bytes) Int {
+            bytes_len(value)
+        }
+
+        pub fn set(value Bytes, index Int, byte Int)
+        requires byte >= 0 && byte <= 255
+        {
+            bytes_set(value, index, byte)
+        }
+
+        pub fn push(value Bytes, byte Int)
+        requires byte >= 0 && byte <= 255
+        {
+            bytes_push(value, byte)
+        }
+
+        pub fn clone(value Bytes) Bytes {
+            let output = new()
+            var index = 0
+            while index < length(value) {
+                push(output, bytes_get(value, index))
+                index = index + 1
+            }
+            output
+        }
+
+        pub fn valid_utf8(value Bytes) Bool {
+            bytes_utf8(value)
+        }
+
+        pub fn text(value Bytes) Text {
+            bytes_text_copy(value)
+        }
+        """, true))
+    files
+}
+
+fn byte_constraint_check(source Text) Result[std.loom.typed.Program, Failure] {
+    checked(byte_constraint_files(source))
+}
+
+fn byte_constraint_accept(source Text) {
+    let files = byte_constraint_files(source)
+    match checked(files) {
+        Result.Ok(_) => {
+        }
+        Result.Err(failed) => {
+            show_failure(fixture_project(files), failed)
+            assert false
+        }
+    }
+}
+
+fn byte_constraint_reject(source Text) {
+    assert match byte_constraint_check(source) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+fn byte_constraint_source() Text {
+    """
+    import std.bytes.new
+    import std.bytes.length
+    import std.bytes.clone
+    import std.bytes.set
+    import std.bytes.push
+    import std.result.Result
+    import std.result.ConstraintError
+
+    type Head = Bytes where length(self) > 0 && self[0] > 0
+    type Byte = Int where self >= 0 && self <= 255
+    type PositiveByte = Int where self > 0 && self <= 255
+
+    """
+}
+
+fn shared_byte_contracts(source Text) Bool {
+    let program = match byte_constraint_check(source) {
+        Result.Ok(program) => program
+        Result.Err(failed) => {
+            show_failure(fixture_project(byte_constraint_files(source)), failed)
+            assert false
+            return false
+        }
+    }
+    let protected = new[std.loom.proof.InputGuarantee]()
+    var index = 6
+    while index < length(program.types) {
+        let shape = get(program.types, index)
+        if shape.kind == std.loom.typed.TypeKind.Refined && length(shape.fields) == 1 &&
+        get(shape.fields, 0).ty == 4 {
+            push(protected, std.loom.proof.InputGuarantee {
+                    ty = index
+                    writes = 2
+                })
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        if length(function.postconditions) > 0 {
+            match std.loom.proof.verify_shared(program, function,
+                std.loom.proof.no_proof_backend(), protected) {
+                Result.Ok(_) => {
+                }
+                Result.Err(_) => {
+                    return false
+                }
+            }
+        }
+        index = index + 1
+    }
+    true
+}
+
+test fn byte_constraints_sample_invariants_without_equating_shared_reads() {
+    assert shared_byte_contracts(concat(byte_constraint_source(), """
+        pub fn read(value Head) Int
+        ensures result > 0
+        {
+            value[0]
+        }
+        """))
+    assert !shared_byte_contracts(concat(byte_constraint_source(), """
+        pub fn read(value Head) Int
+        ensures result == old(value[0])
+        {
+            value[0]
+        }
+        """))
+    assert !shared_byte_contracts(concat(byte_constraint_source(), """
+        pub fn read(value Head) Int
+        ensures result == value[0]
+        {
+            value[0]
+        }
+        """))
+}
+
+test fn byte_constraints_publish_only_fresh_storage_and_keep_aliases() {
+    byte_constraint_accept(concat(byte_constraint_source(), """
+        pub fn copied(input Bytes) Result[Head, ConstraintError] {
+            Head(clone(input))
+        }
+
+        pub fn build(value Byte) Result[Head, ConstraintError] {
+            let draft = new()
+            push(draft, value)
+            let alias = draft
+            let checked = Head(draft)
+            alias[0] = 7
+            checked
+        }
+
+        pub fn read(value Head) Int
+        ensures result > 0
+        {
+            value[0]
+        }
+        """))
+    byte_constraint_reject(concat(byte_constraint_source(), """
+        pub fn external(input Bytes) Result[Head, ConstraintError] {
+            Head(input)
+        }
+        """))
+    byte_constraint_reject(concat(byte_constraint_source(), """
+        pub fn escape(value Head) Bytes {
+            value
+        }
+        """))
+    byte_constraint_reject(concat(byte_constraint_source(), """
+        pub fn broken(value Byte) Result[Head, ConstraintError] {
+            let draft = new()
+            push(draft, value)
+            let checked = Head(draft)
+            draft[0] = 0
+            checked
+        }
+        """))
+}
+
+test fn byte_constraints_use_the_sequence_store_and_helper_algebra() {
+    byte_constraint_accept(concat(byte_constraint_source(), """
+        fn fill(values Bytes, value PositiveByte) {
+            set(values, 0, value)
+        }
+
+        pub fn update(values Head, value PositiveByte) {
+            values[0] = value
+            fill(values, value)
+            push(values, 0)
+        }
+
+        type Nonempty = Bytes where length(self) > 0
+
+        pub fn extend(values Nonempty, value Byte) {
+            values[0] = value
+            push(values, value)
+        }
+
+        type Tag = Bytes where length(self) > 0 && self[0] == 7
+
+        pub fn invalid_byte_faults_before_the_store(values Tag) {
+            values[0] = 256
+        }
+        """))
+    byte_constraint_reject(concat(byte_constraint_source(), """
+        pub fn invalid(values Head) {
+            set(values, 0, 0)
+        }
+        """))
+    byte_constraint_reject(concat(byte_constraint_source(), """
+        fn transient(values Bytes) {
+            values[0] = 0
+            values[0] = 7
+        }
+
+        pub fn invalid(values Head) {
+            transient(values)
+        }
+        """))
+    byte_constraint_reject(concat(byte_constraint_source(), """
+        type Pair = Bytes where length(self) == 2
+
+        pub fn invalid(values Pair) {
+            push(values, 1)
+        }
+        """))
+}
+
+test fn byte_constraints_allow_opaque_reads_but_not_unproved_mutation() {
+    let definitions = concat(byte_constraint_source(), """
+        import std.bytes.valid_utf8
+        import std.bytes.text
+
+        type Utf8 = Bytes where valid_utf8(self)
+
+        """)
+    byte_constraint_accept(concat(definitions, """
+        pub fn checked(input Bytes) Result[Utf8, ConstraintError] {
+            Utf8(clone(input))
+        }
+
+        pub fn decoded(value Utf8) Text {
+            text(value)
+        }
+        """))
+    byte_constraint_reject(concat(definitions, """
+        pub fn invalid(value Utf8) {
+            value[0] = 255
+        }
+        """))
+}

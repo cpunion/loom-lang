@@ -33,7 +33,7 @@ fn draft_definitions(value Expr, local Int, definitions List[Expr], depth Int) B
     if value.kind == ExprKind.Let && value.index == local {
         push(definitions, value)
     }
-    if value.kind == ExprKind.Block && value.text == "checked list" {
+    if value.kind == ExprKind.Block && value.text == "checked sequence" {
         return draft_definitions(draft_input(value), local, definitions, depth + 1)
     }
     var index = 0
@@ -205,7 +205,7 @@ fn draft_path(scope DraftPublication, value Expr, depth Int) Bool {
         return false
     }
     if value.kind == ExprKind.Block {
-        if value.text == "checked list" {
+        if value.text == "checked sequence" {
             return draft_path(scope, draft_input(value), depth + 1)
         } else {
             return draft_sequence(scope, value.children, depth + 1)

@@ -11,7 +11,7 @@ fn draft_type(candidate Expr) Int {
     if candidate.kind == ExprKind.Coerce {
         candidate.ty
     } else {
-        // checked list: saved input; if predicate { Ok(refined input) } else ...
+        // Checked sequence: saved input; if predicate { Ok(refined input) } else ...
         let condition = get(candidate.children, 1)
         let accepted = get(get(condition.children, 1).children, 0)
         get(accepted.children, 0).ty

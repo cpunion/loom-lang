@@ -1,0 +1,52 @@
+import std.task.worker.run
+import std.list.length
+import std.list.push
+
+type ListHead = List[Int] where std.list.length(self) > 0 && self[0] > 0
+
+fn list_first(value ListHead) Int
+ensures result > 0
+{
+    value[0]
+}
+
+fn update_list(value ListHead) {
+    value[0] = 7
+    std.list.push(value, 0)
+}
+
+test async fn workers_revalidate_byte_invariants_for_every_shared_store() {
+    match build(Byte(7)) {
+        Result.Ok(value) => {
+            let first_worker = run(fn() Int {
+                    update(value)
+                    first(value)
+                })
+            let second_worker = run(fn() Int {
+                    update(value)
+                    first(value)
+                })
+            let left, right = (first_worker, second_worker).await
+            assert left > 0 && right > 0 && first(value) > 0
+            assert length(value) == 3
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
+test async fn workers_apply_the_same_observation_rules_to_lists() {
+    let value = ListHead([1])
+    let first_worker = run(fn() Int {
+            update_list(value)
+            list_first(value)
+        })
+    let second_worker = run(fn() Int {
+            update_list(value)
+            list_first(value)
+        })
+    let left, right = (first_worker, second_worker).await
+    assert left > 0 && right > 0 && list_first(value) > 0
+    assert std.list.length(value) == 3
+}
