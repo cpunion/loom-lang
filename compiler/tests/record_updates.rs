@@ -128,15 +128,21 @@ fn record_updates_preserve_source_semantics_without_new_runtime_operations() {
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "updates");
     for level in ["0", "2"] {
-        success(
-            &common::command(&["build", package])
-                .arg("--output")
-                .arg(&executable)
-                .env("LOOM_OPT_LEVEL", level)
-                .output()
-                .unwrap(),
-        );
-        success(&common::run_tasks(&executable));
+        for mode in ["build", "test"] {
+            let mut command = common::command(&[mode, package]);
+            if mode == "test" {
+                command.arg("--no-run");
+            }
+            success(
+                &command
+                    .arg("--output")
+                    .arg(&executable)
+                    .env("LOOM_OPT_LEVEL", level)
+                    .output()
+                    .unwrap(),
+            );
+            success(&common::run_tasks(&executable));
+        }
     }
 
     let scalar = temporary.path().join("scalar");

@@ -655,6 +655,7 @@ pub(super) fn root_function<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     program: &checked::Program,
+    target_data: &TargetData,
     shared: bool,
     allocating: &BTreeSet<usize>,
     source: &checked::Function,
@@ -676,21 +677,31 @@ pub(super) fn root_function<'ctx>(
             && !borrowed.contains_key(&index)
             && !handoffs.contains(&index)
         {
-            // Keep normal locals nonescaping so LLVM can promote them to SSA.
-            // The collector rewrites a separate shadow slot; allocating calls
-            // restore ordinary locals from it before source execution resumes.
             let native = native_type(context, program, *ty)?;
-            let slot = builder.build_alloca(native, "gc.local")?;
-            let initial = if callback_body.is_none() && index < source.params.len() {
-                builder.build_load(
-                    native,
-                    locals[index].ok_or("missing managed parameter")?,
-                    "gc.parameter",
-                )?
+            // Keep compact values promotable through separate shadow roots.
+            // Large inline headers are scanned in their actual local storage;
+            // copying every field after each safe point only bloats the IR.
+            let in_place = matches!(native, BasicTypeEnum::StructType(_))
+                && target_data.get_abi_size(&native)
+                    > 2 * u64::from(target_data.get_pointer_byte_size(None));
+            let slot = if in_place {
+                locals[index].ok_or("missing managed local")?
             } else {
-                native.const_zero()
+                builder.build_alloca(native, "gc.local")?
             };
-            builder.build_store(slot, initial)?;
+            let parameter = callback_body.is_none() && index < source.params.len();
+            if !in_place || !parameter {
+                let initial = if parameter {
+                    builder.build_load(
+                        native,
+                        locals[index].ok_or("missing managed parameter")?,
+                        "gc.parameter",
+                    )?
+                } else {
+                    native.const_zero()
+                };
+                builder.build_store(slot, initial)?;
+            }
             rooted_locals.insert(index, slot);
             slots.push((slot, *ty));
         }

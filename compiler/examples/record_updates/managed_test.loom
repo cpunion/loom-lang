@@ -1,0 +1,52 @@
+import std.list.get
+import std.list.length
+import std.list.push
+import std.text.concat
+
+record ManagedSnapshot {
+    label Text
+    values List[Int]
+    count Int
+}
+
+fn allocating_snapshot(value ManagedSnapshot, marker Int) ManagedSnapshot {
+    assert marker == 9
+    assert concat(value.label, value.label) == "beforebefore"
+    assert value.count == 7 && get(value.values, 0) == 1
+    value
+}
+
+test fn managed_record_snapshots_survive_rebinding_and_lexical_cleanup() {
+    let children = [1]
+    var original = ManagedSnapshot {
+        label = "before"
+        values = children
+        count = 7
+    }
+    let selected = allocating_snapshot(original, {
+            original = ManagedSnapshot {
+                label = "after"
+                values = [9]
+                count = 8
+            }
+            push(children, 2)
+            9
+        })
+    assert selected.label == "before" && selected.count == 7
+    assert original.label == "after" && get(original.values, 0) == 9
+    assert length(selected.values) == 2
+    var cleanup = selected
+    {
+        defer {
+            cleanup = ManagedSnapshot {
+                label = concat(cleanup.label, "!")
+                count = cleanup.count + 1
+                ..cleanup
+            }
+        }
+        push(cleanup.values, 3)
+    }
+    assert cleanup.label == "before!" && cleanup.count == 8
+    assert selected.label == "before" && selected.count == 7
+    assert length(children) == 3 && get(selected.values, 2) == 3
+}
