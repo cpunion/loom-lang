@@ -1,0 +1,153 @@
+fn private_batch_case(name Text, path Text, body Text, caller Text) List[PackageRevision] {
+    let packages = batch_fixture(false, false, false, false)
+    let library = get(packages, 0)
+    let files = std.list.clone(library.revision.files)
+    set(files, 0, File {
+            path = "value.loom"
+            text = """
+                fn balance() Int {
+                    1
+                }
+
+                pub fn amount() Int {
+                    balance()
+                }
+                """
+        })
+    set(packages, 0, package_fixture(library.revision.package_name, library.directory, files))
+    let selected = renamed_case(name, path, body,
+        concat(caller, concat("\ntest fn embedded_private() { assert ", concat(name, "() > 0 }\n"))))
+    push(selected.identities, Identity {
+            id = "embedded-test-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "embedded_private"
+            key = "-"
+        })
+    let testing = File {
+        path = "private_test.loom"
+        text = concat("test fn private_value() { assert ", concat(name, "() > 0 }\n"))
+    }
+    push(selected.files, testing)
+    push(selected.identities, Identity {
+            id = "private-test-id"
+            path = testing.path
+            kind = NodeKind.Function
+            name = "private_value"
+            key = "-"
+        })
+    set(packages, 1, PackageRevision {
+            directory = "/module/app"
+            revision = Revision {
+                package_name = "sample.app"
+                ..selected
+            }
+        })
+    packages
+}
+
+test fn package_batch_composes_private_rename_move_and_edit_in_both_branch_orders() {
+    let base = private_batch_case("amount", "value.loom", """
+        fn amount() Int {
+            1
+        }
+        """, """
+        fn entry() Int {
+            amount()
+        }
+        """)
+    let renamed = private_batch_case("balance", "app.loom", """
+        fn balance() Int {
+            1
+        }
+        """, """
+        fn entry() Int {
+            balance()
+        }
+        """)
+    let edited = private_batch_case("amount", "value.loom", """
+        fn amount() Int {
+            // Kept from the other branch.
+            2
+        }
+        """, """
+        fn entry() Int {
+            amount()
+        }
+        """)
+    let production = batch_context(base, false)
+    let tests = batch_context(base, true)
+    let branches = [renamed, edited]
+    var order = 0
+    while order < 2 {
+        let merged = match merge_packages(base, get(branches, order), get(branches, 1 - order), production, tests) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        let app = get(merged, 1).revision
+        assert get(app.files, 0).text == ""
+        assert contains(get(app.files, 1).text, "fn balance()")
+        assert contains(get(app.files, 1).text, "// Kept from the other branch.")
+        assert contains(get(app.files, 2).text, "balance() > 0")
+        assert get(app.identities, 0).id == "amount-id"
+        assert get(app.identities, 0).name == "balance"
+        assert get(get(merged, 0).revision.files, 0).text == get(get(base, 0).revision.files, 0).text
+        order = order + 1
+    }
+}
+
+test fn package_batch_rename_rejects_local_capture_and_public_targets() {
+    let base = private_batch_case("amount", "value.loom", """
+        fn amount() Int {
+            1
+        }
+        """, """
+        fn entry() Int {
+            amount()
+        }
+        """)
+    let renamed = private_batch_case("balance", "value.loom", """
+        fn balance() Int {
+            1
+        }
+        """, """
+        fn entry() Int {
+            balance()
+        }
+        """)
+    let captured = private_batch_case("amount", "value.loom", """
+        fn amount() Int {
+            2
+        }
+        """, """
+        fn entry() Int {
+            let balance = fn() Int {
+                7
+            }
+            discard balance
+            amount()
+        }
+        """)
+    assert match merge_packages(base, renamed, captured, batch_context(base, false), batch_context(base, true)) {
+        Result.Err(message) => contains(message, "reference binding")
+        Result.Ok(_) => false
+    }
+    let public_base = private_batch_case("amount", "value.loom", """
+        pub fn amount() Int {
+            1
+        }
+        """, """
+        fn entry() Int {
+            amount()
+        }
+        """)
+    assert match merge_packages(public_base, renamed, public_base,
+        batch_context(public_base, false), batch_context(public_base, true)) {
+        Result.Err(message) => contains(message, "requires a private function")
+        Result.Ok(_) => false
+    }
+}
