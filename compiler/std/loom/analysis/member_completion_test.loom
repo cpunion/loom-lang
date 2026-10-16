@@ -9,6 +9,128 @@ fn member_completion(text Text, fragment Text, cursor Int) Completion {
     }
 }
 
+test fn comptime_block_members_use_staged_locals_without_checking_the_incomplete_tail() {
+    let text = """
+        record Box[T] {
+            value T
+        }
+        fn make() Box[Int] {
+            Box { value = 7 }
+        }
+        fn demo[T](comptime enabled Bool) {
+            let computed = comptime {
+                let box = make()
+                discard box.va
+                missing()
+            }
+        }
+        """
+    assert completion_found(member_completion(text, "box.va", 6), "value").detail == "value Int"
+    let generic = """
+        record Box[T] {
+            value T
+        }
+        fn demo[T](comptime value T) {
+            discard comptime {
+                let box = Box { value = value }
+                discard box.va
+            }
+        }
+        """
+    assert completion_found(member_completion(generic, "box.va", 6), "value").detail == "value T"
+    let nested = """
+        record Box {
+            value Bool
+        }
+        fn demo() {
+            discard comptime {
+                discard comptime {
+                    let box = Box { value = true }
+                    if box.value {
+                        discard box.va
+                    }
+                }
+            }
+        }
+        """
+    assert completion_found(member_completion(nested, "discard box.va", 14), "value").detail == "value Bool"
+}
+
+test fn comptime_block_completion_rejects_runtime_captures_and_invalid_prefixes() {
+    let prefix = """
+        record Box {
+            value Int
+        }
+        fn demo(box Box) {
+            discard comptime {
+
+        """
+    let bodies = [
+        "discard box.va",
+        "let copied = box\ndiscard copied.va",
+        "if box.value > 0 { let local = Box { value = 1 }\ndiscard local.va }",
+        "let local = Box { value = 1 }\nreturn\ndiscard local.va",
+        "let local Bool = Box { value = 1 }\ndiscard local.va",
+        "let local = Box { value = 1 }\ndiscard comptime { discard local.va }"
+    ]
+    let receivers = ["box", "copied", "local", "local", "local", "local"]
+    var index = 0
+    while index < length(bodies) {
+        let text = concat(prefix, concat(get(bodies, index), "\n}\n}"))
+        let fragment = concat("discard ", concat(get(receivers, index), ".va"))
+        let offset = query_offset(text, fragment) + length(fragment)
+        assert match complete_at(query_bindings(input(text)), 0, offset) {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn comptime_block_completion_keeps_selected_branch_and_match_bindings() {
+    let text = """
+        record Box {
+            value Int
+        }
+        enum Choice {
+            Some(Box)
+            None
+        }
+        fn demo() {
+            discard comptime {
+                comptime if true {
+                    match Choice.Some(Box { value = 7 }) {
+                        Choice.Some(box) if box.value > 0 => {
+                            discard box.va
+                        }
+                        _ => {}
+                    }
+                } else {
+                    missing()
+                }
+            }
+        }
+        """
+    assert completion_found(member_completion(text, "discard box.va", 14), "value").detail == "value Int"
+    let unknown = """
+        record Box {
+            value Int
+        }
+        fn demo(comptime enabled Bool) {
+            discard comptime {
+                comptime if enabled {
+                    let box = Box { value = 7 }
+                    discard box.va
+                } else {}
+            }
+        }
+        """
+    assert match complete_at(query_bindings(input(unknown)), 0, query_offset(unknown, "box.va") + 6) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
+
 test fn members_infer_records_calls_indexing_tuples_and_local_shadowing() {
     let header = "record Box[T] { value T }\nfn make() Box[Int] { Box { value = 3 } }\n"
     let tails = ["fn main() { let box = make()\ndiscard box.va }",

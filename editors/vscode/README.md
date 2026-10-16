@@ -236,8 +236,11 @@ After `.`, member completion infers the receiver from the enclosing signature an
 preceding statements. It offers visible record fields, tuple indices, methods
 supported by explicit concept evidence (including generic bounds and `dyn`), and
 `.await` for Tasks in async functions. Match bindings and determined `comptime if`
-branches reuse the checker. Unknown receiver types, earlier typing errors,
-undetermined compile-time branches and `comptime` execution blocks have no result.
+branches reuse the checker. Execution blocks (`comptime { ... }`) check their
+local prefix in a separate staging scope, including nested blocks; runtime
+captures and returns across the staging boundary reject. Generic field details
+retain lexical type-parameter names. Unknown receiver types, earlier typing
+errors and undetermined compile-time branches have no result.
 These are type-based hints, not verification of the unfinished body, callees,
 contracts or resource flow; method overloads retain declaration signatures and
 still require arguments. Names and members replace the entire partial token.
