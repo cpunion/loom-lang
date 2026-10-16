@@ -1,4 +1,5 @@
 import std.loom.ast.has
+import std.loom.checking.macro_generator_candidates
 
 record FunctionRename {
     id Text
@@ -319,6 +320,23 @@ fn normalize_rename(revision Revision, renames List[FunctionRename], directory T
     backend ProofBackend) Result[Revision, Text] {
     let original = indexed(revision)?
     let before = rename_analysis(revision, directory, production, tests, true, backend)?
+    // An exported generator can retain definition-context references in Text
+    // or AST output, including calls outside this package's checked closure.
+    // Source-token comparison cannot account for those generated bindings.
+    let generators = match macro_generator_candidates(before.bindings, proof_inputs(backend)) {
+        Result.Ok(value) => value
+        Result.Err(problem) => {
+            return Result.Err(problem.diagnostic.message)
+        }
+    }
+    var generator = 0
+    while generator < length(generators) {
+        let item = get(before.bindings.symbols, get(generators, generator))
+        if item.public && get(before.bindings.files, item.file).package == before.bindings.root {
+            return Result.Err("rename cannot account for generated definition-context references; explicit resolution required")
+        }
+        generator = generator + 1
+    }
     let edits = rename_edits(original, renames, before, directory)?
     let renamed = renamed_revision(original, renames, edits)
     let updated = indexed(renamed)?

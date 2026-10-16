@@ -292,6 +292,8 @@ additions within one package or a fixed-package module, using explicit identitie
 and pinned source/test bases.
 Selected overload renames use the same checked binding normalizer; names alone
 neither identify a declaration nor justify an overload conflict.
+Private rename composition rejects exported macro providers whose generated
+definition-context references cannot be completely compared.
 All merge APIs accept an optional explicit proof capability; the CLI uses the
 shared Z3 adapter for ordinary contract checks, including rename/binding checks
 and each package's private tests. Defaults stay I/O-free; unknown proofs reject.

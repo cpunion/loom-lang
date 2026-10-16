@@ -63,6 +63,9 @@ Local capture, ambiguous overloads,
 public/generic targets and missing binding evidence require resolution; names
 in other packages are not rewritten. The combined result still passes the
 normal production and per-package test checks.
+Exported macro providers require explicit resolution for private rename
+composition, even without a current invocation in the selected package.
+Source-token checks cannot preserve their hidden definition-context references.
 
 The output includes its manifest and lock, not external dependencies or ignored
 build caches. Keep relative path dependencies valid at the new location and
