@@ -293,3 +293,28 @@ test fn byte_constraints_allow_opaque_reads_but_not_unproved_mutation() {
         }
         """))
 }
+
+test fn literal_identity_stores_keep_opaque_constraints_and_guarded_read_facts() {
+    let header = concat(byte_constraint_source(), """
+        import std.bytes.valid_utf8
+        type Header = Bytes where valid_utf8(self) && length(self) > 0 && self[0] == 7
+
+        """)
+    byte_constraint_accept(concat(header, """
+        pub fn unchanged(value Header) {
+            value[0] = 7
+        }
+        """))
+    byte_constraint_reject(concat(header, """
+        pub fn invalid(value Header) {
+            value[0] = 8
+        }
+        """))
+    byte_constraint_reject(concat(byte_constraint_source(), """
+        import std.bytes.valid_utf8
+        type Header = Bytes where valid_utf8(self) || (length(self) > 1 && self[0] == 7 && self[1] == 0)
+        pub fn invalid(value Header) {
+            value[0] = 7
+        }
+        """))
+}

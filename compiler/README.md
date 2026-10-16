@@ -2677,6 +2677,8 @@ into existing storage in argument helpers too, not only the final contents.
 Fresh, unpublished scratch can be modified using its ordinary sequence laws;
 an allocation label alone does not prove privacy. Float representation identity
 is not IEEE equality; an earlier shared read is not the current store snapshot.
+Literal stores use the same identity rule with established scalar or quantified
+cell facts at that atomic snapshot, even beside an unexpanded pure conjunct.
 See the [unchanged-store example](examples/byte_constraints/identity/main.loom).
 Atomic replacement and append also reuse stable caller evidence: `requires`, successful assertions,
 selected branches, early exits and immutable scalar copies. Pure helper conditions

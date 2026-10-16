@@ -150,6 +150,8 @@ supported theories and boundaries. The central rules are:
   compares the current representation, not IEEE equality or a cached shared read.
   Pure argument helpers may modify fresh unpublished scratch; an allocation
   label or local variable alone does not establish that separation.
+  Literal stores also use proved scalar/quantified cell facts at the atomic
+  snapshot, including beside an unexpanded pure conjunct.
   Shared atomic element reads can use the continuing predicate at that snapshot;
   separate reads still cannot assume equal contents.
 - Fresh drafts and selected known aliases can publish a constrained outer header

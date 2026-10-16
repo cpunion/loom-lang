@@ -20,6 +20,8 @@ type Head = Bytes where length(self) > 0 && self[0] > 0
 
 type Utf8 = Bytes where is_utf8(self)
 
+type Header = Bytes where is_utf8(self) && length(self) > 0 && self[0] == 35
+
 fn build(value Byte) Result[Head, ConstraintError] {
     let draft = new()
     push(draft, value)
@@ -28,6 +30,30 @@ fn build(value Byte) Result[Head, ConstraintError] {
 
 fn checked_text(input Bytes) Result[Utf8, ConstraintError] {
     Utf8(clone(input))
+}
+
+fn checked_header(input Bytes) Result[Header, ConstraintError] {
+    Header(clone(input))
+}
+
+fn preserve_header(value Header) {
+    value[0] = 35
+}
+
+fn header_byte(value Header) Int
+ensures result == 35 && result == old(value[0])
+{
+    value[0]
+}
+
+fn constant_header() Bool {
+    match checked_header(to_bytes("#hé")) {
+        Result.Ok(value) => {
+            preserve_header(value)
+            header_byte(value) == 35 && is_utf8(value)
+        }
+        Result.Err(_) => false
+    }
 }
 
 fn first(value Head) Int
@@ -60,6 +86,7 @@ async fn fault_before_store(value Head) {
 }
 
 async fn exercise() Bool {
+    assert constant_header()
     assert match build(Byte(0)) {
         Result.Err(_) => true
         Result.Ok(_) => false

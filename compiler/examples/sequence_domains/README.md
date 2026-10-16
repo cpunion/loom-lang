@@ -18,3 +18,8 @@ share the same storage. No sorting-specific update permission is added.
 Both direct `values[length(values) - 1]` assignment and an extracted source
 helper retain their index dependencies. Argument effects stay ordered and must
 preserve the complete predicate themselves, including in shared builds.
+
+`Sevens` combines an unexpanded pure size predicate with a quantified element
+constraint. Its literal store is proved unchanged using the current cell's
+quantified facts; it does not need to expand the size predicate or execute a
+runtime preservation check.
