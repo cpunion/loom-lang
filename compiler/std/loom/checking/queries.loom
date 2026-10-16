@@ -11,8 +11,9 @@ import std.list.length
 import std.result.Result
 
 // Query-local IDs belong to these bindings and checked function tables, not a
-// compilable package. Call/FunctionRef indices retain closure function ordering.
-// Signature headers contain no body or proof-success claim.
+// compilable package. Ordinary body queries retain runtime closure indices;
+// abstract body queries retain logical-only call targets instead. Signature
+// headers contain no body or proof-success claim.
 pub record SignatureHeader {
     symbol Int
     params List[Int]
@@ -128,8 +129,9 @@ fn query_templates(env Environment) Result[Bool, Failure] {
 // and template body failures do not block this query. Binding/global declaration
 // failures remain fatal; this is not a whole-program build-success claim.
 // Generic headers retain their original abstract types, not concrete instances.
-// Generic/comptime body owners have no concrete query instance and return an
-// empty function list; no arbitrary type or static arguments are invented.
+// Generic/comptime body queries retain the checked abstract declaration, not a
+// concrete runtime closure. No type or static arguments are invented; logical
+// call targets do not index the returned function list.
 pub fn check_query(source std.loom.binding.Program, file Int, offset Int) Result[CheckedQuery, Failure] {
     check_query(source, file, offset, build_inputs(no_input_reader))
 }
@@ -165,7 +167,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
                 functions = emit_functions_in(env, true, no_body_reuse(), false, true)?
             }
         }
-        discard query_required_templates(env)?
+        discard query_required_templates(env, owner, functions)?
     } else {
         discard layouts(env)?
     }

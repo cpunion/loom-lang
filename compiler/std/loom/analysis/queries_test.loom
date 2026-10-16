@@ -562,7 +562,7 @@ test fn async_function_values_keep_source_types_in_editor_queries() {
     only_definition(inspection(analysis, text, "item\n"), declaration, declaration + 4)
 }
 
-test fn inspections_do_not_invent_results_for_comments_punctuation_or_unchecked_bodies() {
+test fn inspections_keep_real_bindings_without_inventing_comment_or_punctuation_results() {
     let text = "fn unused[T](value T) T { value }\nfn main() {\nlet 数量 = 3\n// 数量 has no reference here\nassert 数量 == 3\n}"
     let analysis = accepted(input(text))
     let local = inspection(analysis, text, "数量 ==")
@@ -572,11 +572,13 @@ test fn inspections_do_not_invent_results_for_comments_punctuation_or_unchecked_
     absent(analysis, query_offset(text, "数量 has"))
     absent(analysis, query_offset(text, "=="))
     absent(analysis, query_offset(text, "let 数量") + 3)
-    absent(analysis, query_offset(text, "value }"))
     let parameter = inspection(analysis, text, "value T")
     only_type(parameter, "T")
     let declared = query_offset(text, "value T")
     only_definition(parameter, declared, declared + 5)
+    let abstract = inspection(analysis, text, "value }")
+    only_type(abstract, "T")
+    only_definition(abstract, declared, declared + 5)
     absent(analysis, length(text))
 }
 

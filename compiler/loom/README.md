@@ -121,8 +121,9 @@ renames cover loaded module consumers and independent test roots; external
 consumers and unaccounted/generated references still reject. Completion
 can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
-queries use concrete body instances. If package checking fails, an independently
-checked ordinary function can still provide hover and navigation; its own errors
+queries use concrete body instances when available, or checked abstract
+generic/comptime bodies without inventing an instance. If package checking fails,
+an independently checked function can still provide hover and navigation; its own errors
 or a failing dependency suppress the result. Required template declarations are
 checked abstractly, including CTFE/callback/witness dependencies; unrelated
 template bodies no longer block the selected query. Syntax and global declaration
@@ -308,7 +309,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | `type_name(analysis, ty)` | Display name for a type in that analysis |
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
-| `inspect_independent(bindings, file, offset)` | Checked declaration headers or an isolated concrete function closure; no executable program |
+| `inspect_independent(bindings, file, offset)` | Checked headers, an isolated concrete closure or abstract declaration body; no executable program |
 | `complete_names(bindings, file, offset)` | `Option[Completion]`: visible names and declaration signatures, using binding only |
 | `complete_at(bindings, file, offset)` | Names, qualified paths or receiver-type member hints, with a UTF-8 replacement span |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
@@ -437,10 +438,11 @@ the declaration's abstract type identities. Type-parameter declarations and
 static value/callback slots retain their original checked source positions,
 without evaluating the body. Unexpanded packs and dependent compile-time type
 values retain their conservative query paths.
-Body queries still require global declarations and generic/comptime templates to
-pass. Only a containing non-generic, non-comptime-parameter function can be
-selected; its dependency closure, contracts and resource flows must pass before
-body facts are returned. Normal `analyze`, `check` and `build` remain whole-package
+Body queries require global declarations and the selected call/template dependency
+closure, including contracts and resource flows. Generic/comptime owners retain
+their checked abstract body and lexical type labels; no concrete arguments are
+guessed. Unselected static branches, unexpanded packs and erased static values
+do not acquire invented evidence. Normal `analyze`, `check` and `build` remain whole-package
 checks. Query tables are a separate `CheckedQuery`, not a partial `typed.Program`.
 
 `Type.constraint` is predicate-template metadata, not executable IR: `self`

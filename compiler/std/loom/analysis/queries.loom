@@ -576,7 +576,7 @@ fn inspect_capture_read(analysis CheckedQuery, report Inspection, function Funct
     get(shape.fields, slot.index).name != target.token.value || source_local_type(analysis, slot.ty) != value.ty {
         return false
     }
-    add_type(report, query_type_name(analysis, value.ty))
+    add_type(report, header_type_name(analysis, function.symbol, value.ty))
     capture_location(analysis, report, function, target.token.value)
     true
 }
@@ -605,14 +605,14 @@ fn inspect_expression(analysis CheckedQuery, report Inspection, function Functio
         }
         if (path && target.segment == 0) || kind == NodeKind.Let || kind == NodeKind.Var ||
         kind == NodeKind.Scoped || kind == NodeKind.Pattern || kind == NodeKind.Assign {
-            add_type(report, query_type_name(analysis, source_local_type(analysis, get(function.locals, value.index).ty)))
+            add_type(report, header_type_name(analysis, function.symbol, source_local_type(analysis, get(function.locals, value.index).ty)))
             local_location(analysis, report, function, value.index)
         }
         return
     }
     if value.kind == ExprKind.Field {
         if kind == NodeKind.Field || kind == NodeKind.Select || (path && path_depth(analysis, value) == target.segment) {
-            add_type(report, query_type_name(analysis, value.ty))
+            add_type(report, header_type_name(analysis, function.symbol, value.ty))
             let ty = if kind == NodeKind.Field {
                 parent_type
             } else {
@@ -626,7 +626,7 @@ fn inspect_expression(analysis CheckedQuery, report Inspection, function Functio
     }
     let final = target.segment + 1 == target.segments
     if final && (path || kind == NodeKind.Select) && bound_method_reference(analysis, value) {
-        add_type(report, query_type_name(analysis, value.ty))
+        add_type(report, header_type_name(analysis, function.symbol, value.ty))
         let body = get(analysis.functions, value.index).body
         match bound_method_call(body) {
             Option.Some(call) => {
@@ -668,7 +668,7 @@ fn inspect_expression(analysis CheckedQuery, report Inspection, function Functio
     if (kind == NodeKind.Construct && final && value.kind == ExprKind.Record) ||
     (path && final && value.kind == ExprKind.Variant) ||
     (kind == NodeKind.Call && final && value.kind == ExprKind.Coerce && get(analysis.types, value.ty).kind == TypeKind.Refined) {
-        add_type(report, query_type_name(analysis, value.ty))
+        add_type(report, header_type_name(analysis, function.symbol, value.ty))
         if value.kind == ExprKind.Variant {
             // The final segment is a variant, not the nominal type name.
             symbol_location(analysis, report, get(analysis.types, value.ty).symbol)
@@ -682,7 +682,7 @@ fn inspect_expression(analysis CheckedQuery, report Inspection, function Functio
     (kind == NodeKind.Float && value.kind == ExprKind.Float) ||
     (kind == NodeKind.Bool && value.kind == ExprKind.Bool) ||
     (kind == NodeKind.Text && value.kind == ExprKind.Text) {
-        add_type(report, query_type_name(analysis, value.ty))
+        add_type(report, header_type_name(analysis, function.symbol, value.ty))
     }
 }
 
@@ -693,7 +693,7 @@ fn inspect_tree(analysis CheckedQuery, report Inspection, function Function, tar
     if target.node.kind == NodeKind.MacroCall && value.kind == ExprKind.Block &&
     value.text == "macro" && same_span(value.span, target.node.span) {
         if target.segment + 1 == target.segments {
-            add_type(report, query_type_name(analysis, value.ty))
+            add_type(report, header_type_name(analysis, function.symbol, value.ty))
             symbol_location(analysis, report, value.index)
         }
         return
@@ -703,7 +703,7 @@ fn inspect_tree(analysis CheckedQuery, report Inspection, function Function, tar
     // evidence; its synthetic children are not references written by the user.
     if target.node.kind == NodeKind.Call && value.kind == ExprKind.Block && same_span(value.span, target.node.span) {
         if target.segment + 1 == target.segments && get(analysis.types, value.ty).kind != TypeKind.Frame {
-            add_type(report, query_type_name(analysis, value.ty))
+            add_type(report, header_type_name(analysis, function.symbol, value.ty))
         }
         return
     }
@@ -816,7 +816,7 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
     match inspect_view(view, file, offset) {
         Option.Some(found) => Option.Some(found)
         Option.None => {
-            match inspect_source_header(analysis, file, offset) {
+            match inspect_source_scope(analysis, file, offset) {
                 Option.Some(found) => Option.Some(found)
                 Option.None => inspect_declaration_at(analysis, view, file, offset)
             }
@@ -958,7 +958,7 @@ fn inspect_binding_declaration(analysis CheckedQuery, report Inspection, functio
                 let shape = get(analysis.types, local.ty)
                 if defined.file == file && same_span(defined.span, target.token.span) &&
                 !(shape.kind == TypeKind.Frame && shape.symbol >= 0) {
-                    add_type(report, query_type_name(analysis, source_local_type(analysis, local.ty)))
+                    add_type(report, header_type_name(analysis, function.symbol, source_local_type(analysis, local.ty)))
                     add_location(report, defined.file, defined.span)
                 }
                 location = location + 1

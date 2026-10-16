@@ -517,7 +517,12 @@ async function main() {
     const helper = path.join(folder, 'overlay_helper.loom');
     const helperText = 'fn helper() Int { 42 }\n';
     await client.open(helper, helperText);
-    const source = 'fn main(){discard "é😀"\nlet value=helper()\nassert value==42}\n';
+    const source = 'fn main(){discard "é😀"\nlet value=helper()\nassert value==42}\n' + `
+fn identity[T](input T) T {
+    let copied = input
+    copied
+}
+`;
     await client.change(file, source, 2);
     assert.deepEqual((await client.wait(file, 2)).diagnostics, []);
     const params = { textDocument: { uri: URI.file(file).toString() }, position: { line: 2, character: 7 } };
@@ -529,6 +534,14 @@ async function main() {
     const helperDocument = TextDocument.create(definitions[0].uri, 'loom', 1, helperText);
     assert.match(helperDocument.getText(definitions[0].range), /helper/);
     const sourceDocument = TextDocument.create(params.textDocument.uri, 'loom', 2, source);
+    const abstractInput = { ...params, position: sourceDocument.positionAt(source.indexOf('input\n')) };
+    const abstractHover = await client.rpc.sendRequest('textDocument/hover', abstractInput);
+    assert.ok(abstractHover.contents.some(item => item.value === 'T'), JSON.stringify(abstractHover));
+    const abstractDefinitions = await client.rpc.sendRequest('textDocument/definition', abstractInput);
+    assert.equal(abstractDefinitions.length, 1);
+    assert.equal(abstractDefinitions[0].uri, params.textDocument.uri);
+    assert.equal(sourceDocument.getText(abstractDefinitions[0].range), 'input');
+    assert.equal(sourceDocument.offsetAt(abstractDefinitions[0].range.start), source.indexOf('input T'));
     const helperParams = { ...params, position: sourceDocument.positionAt(source.indexOf('helper()')) };
     const helperReferences = await client.rpc.sendRequest('textDocument/references', { ...helperParams, context: { includeDeclaration: true } });
     assert.equal(helperReferences.length, 2);

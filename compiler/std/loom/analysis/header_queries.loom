@@ -57,11 +57,11 @@ fn header_type_name(analysis CheckedQuery, owner Int, ty Int) Text {
     std.loom.checking.type_name(analysis.bindings, analysis.types, analysis.interfaces, ty, labels)
 }
 
-fn inspect_source_header(analysis Analysis, file Int, offset Int) Option[Inspection] {
+fn inspect_source_scope(analysis Analysis, file Int, offset Int) Option[Inspection] {
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let item = get(analysis.bindings.symbols, index)
-        if item.file == file && item.node.kind == NodeKind.Function && !macro_generated(item.node) {
+        if item.file == file && item.node.kind == NodeKind.Function && inside(item.node.span, offset) && !macro_generated(item.node) {
             var group = 0
             while group < length(item.node.children) {
                 let node = get(item.node.children, group)
@@ -69,6 +69,16 @@ fn inspect_source_header(analysis Analysis, file Int, offset Int) Option[Inspect
                     return inspect_independent(analysis.bindings, file, offset, analysis_query_inputs(analysis))
                 }
                 group = group + 1
+            }
+            let parent = if item.owner >= 0 {
+                get(analysis.bindings.symbols, item.owner).node
+            } else {
+                item.node
+            }
+            if !ordinary_query_owner(item.node) || !ordinary_query_owner(parent) || parent.kind == NodeKind.Concept {
+                // An unused template has no runtime instance. Its checked
+                // abstract body still supplies local types and binding IDs.
+                return inspect_independent(analysis.bindings, file, offset, analysis_query_inputs(analysis))
             }
         }
         index = index + 1
@@ -351,7 +361,7 @@ fn inspect_variant_type(analysis CheckedQuery, report Inspection, function Funct
         end = end - 1
     }
     if end > 0 {
-        add_type(report, query_type_name(analysis, ty))
+        add_type(report, header_type_name(analysis, function.symbol, ty))
         nominal_body_location(analysis, report, function, target, ty, std.text.slice(target.node.value, 0, end))
     }
 }

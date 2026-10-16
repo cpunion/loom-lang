@@ -1,0 +1,128 @@
+test fn abstract_body_queries_retain_checked_local_types_and_source_bindings() {
+    let text = """
+        record Item {
+            count Int
+        }
+        record Box[T] {
+            value T
+        }
+        fn identity[Item](value Item) Item {
+            let copied = value
+            copied
+        }
+        fn unwrap[T](box Box[T]) T {
+            let payload = box.value
+            payload
+        }
+        fn broken() Int {
+            false
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let before = length(bindings.symbols)
+    let parameter = query_offset(text, "value Item")
+    let value = independent_found(bindings, text, "value\n")
+    only_type(value, "Item")
+    only_definition(value, parameter, parameter + 5)
+    let copied = independent_found(bindings, text, "copied\n")
+    only_type(copied, "Item")
+    let local = query_offset(text, "copied =")
+    only_definition(copied, local, local + 6)
+    only_type(independent_found(bindings, text, "box.value"), "app.Box[T]")
+    let payload = independent_found(bindings, text, "payload\n")
+    only_type(payload, "T")
+    let declared = query_offset(text, "payload =")
+    only_definition(payload, declared, declared + 7)
+    assert length(bindings.symbols) == before
+}
+
+test fn abstract_body_queries_keep_runtime_slots_after_static_parameters() {
+    let text = """
+        fn choose[T](comptime enabled Bool, value T) T {
+            let copied = value
+            comptime if enabled {
+                copied
+            } else {
+                copied
+            }
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let found = independent_found(bindings, text, "value\n")
+    only_type(found, "T")
+    let parameter = query_offset(text, "value T")
+    only_definition(found, parameter, parameter + 5)
+    only_type(independent_found(bindings, text, "copied ="), "T")
+}
+
+test fn abstract_body_queries_do_not_publish_before_required_dependencies_pass() {
+    let text = """
+        fn invalid[T](value T) Int {
+            value + 1
+        }
+        fn selected[T](input T) Int {
+            let copied = input
+            invalid(copied)
+        }
+        """
+    assert match inspect_independent(query_bindings(input(text)), 0, query_offset(text, "input\n")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    let staged = """
+        fn choose(comptime enabled Bool) Int {
+            comptime if enabled {
+                let hidden = 1
+                hidden
+            } else {
+                0
+            }
+        }
+        """
+    assert match inspect_independent(query_bindings(input(staged)), 0, query_offset(staged, "hidden\n")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
+
+test fn unused_generic_body_queries_work_after_successful_application_analysis() {
+    let text = """
+        fn identity[T](value T) T {
+            let copied = value
+            copied
+        }
+        fn main() {
+        }
+        """
+    let analysis = accepted(input(text))
+    let found = inspection(analysis, text, "value\n")
+    only_type(found, "T")
+    let parameter = query_offset(text, "value T")
+    only_definition(found, parameter, parameter + 5)
+    only_type(inspection(analysis, text, "copied\n"), "T")
+}
+
+test fn unused_generic_impl_body_queries_keep_impl_type_parameters() {
+    let text = """
+        concept Copy {
+            fn copy(self Self) Self
+        }
+        record Box[T] {
+            value T
+        }
+        impl[T] Copy for Box[T] {
+            fn copy(self Box[T]) Box[T] {
+                let copied = self
+                copied
+            }
+        }
+        fn main() {
+        }
+        """
+    let analysis = accepted(input(text))
+    let found = inspection(analysis, text, "self\n")
+    only_type(found, "app.Box[T]")
+    let parameter = query_offset(text, "self Box[T]")
+    only_definition(found, parameter, parameter + 4)
+    only_type(inspection(analysis, text, "copied\n"), "app.Box[T]")
+}
