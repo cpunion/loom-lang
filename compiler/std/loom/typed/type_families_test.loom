@@ -1,0 +1,38 @@
+test fn family_closedness_tracks_binders_and_captures_instead_of_concrete_samples() {
+    let types = new[Type]()
+    let primitives = [TypeKind.Unit, TypeKind.Int, TypeKind.Bool, TypeKind.Text, TypeKind.Bytes, TypeKind.Float]
+    var index = 0
+    while index < length(primitives) {
+        push(types, relation_shape(get(primitives, index), -1))
+        index = index + 1
+    }
+    let t = structural_type(types, TypeKind.Rigid, 0, new[Int]())
+    let u = structural_type(types, TypeKind.Rigid, 1, new[Int]())
+    let free = structural_type(types, TypeKind.Parameter, 0, new[Int]())
+    let pair = structural_type(types, TypeKind.Tuple, -1, [t, u])
+    let inner = structural_type(types, TypeKind.Family, 1, [u, pair])
+    let outer = structural_type(types, TypeKind.Family, 1, [t, inner])
+    assert !concrete_type(types, t)
+    assert !concrete_type(types, inner)
+    assert concrete_type(types, outer)
+    assert !concrete_type(types, structural_type(types, TypeKind.Family, 1, [u, free]))
+    assert type_relation(types, t, 1) == -1
+    assert type_relation(types, t, u) == -1
+    let projection = structural_type(types, TypeKind.Associated, 0, [t])
+    let projected = structural_type(types, TypeKind.Family, 1, [t, projection])
+    let constant = structural_type(types, TypeKind.Family, 1, [u, 1])
+    let left = structural_type(types, TypeKind.Dyn, 0, [projected])
+    let right = structural_type(types, TypeKind.Dyn, 1, [constant])
+    assert type_relation(types, left, right) == -1
+    // The valid path must not memoize the same captured body as valid under a
+    // different binder scope in its sibling path.
+    let wrong_scope = structural_type(types, TypeKind.Family, 1, [u, inner])
+    assert !concrete_type(types, structural_type(types, TypeKind.Tuple, -1, [outer, wrong_scope]))
+    var repeated = structural_type(types, TypeKind.List, -1, [t])
+    index = 0
+    while index < 24 {
+        repeated = structural_type(types, TypeKind.Tuple, -1, [repeated, repeated])
+        index = index + 1
+    }
+    assert concrete_type(types, structural_type(types, TypeKind.Family, 1, [t, repeated]))
+}

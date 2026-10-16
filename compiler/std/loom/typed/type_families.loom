@@ -1,0 +1,113 @@
+record FamilyScope {
+    parent Int
+    family Int
+}
+
+// A closed lambda can still contain a projection on its quantified input.
+// Different normalized IDs alone do not prove such functions unequal.
+fn family_projection(types List[Type], ty Int, seen List[Int]) Bool {
+    let shape = get(types, ty)
+    if shape.kind == TypeKind.Associated {
+        return true
+    }
+    var index = 0
+    while index < length(seen) {
+        if get(seen, index) == ty {
+            return false
+        }
+        index = index + 1
+    }
+    push(seen, ty)
+    index = 0
+    while index < length(shape.arguments) {
+        if family_projection(types, get(shape.arguments, index), seen) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Scope is part of the memo key: the same captured rigid variable can be bound
+// under one enclosing lambda and free under another. Completed walks alone are
+// memoized; a provisional visit is not a closedness proof.
+fn family_closed(types List[Type], ty Int) Bool {
+    family_closed_in(types, ty, new[FamilyScope](), -1, new[(Int, Int)](), 0)
+}
+
+fn family_closed_in(types List[Type], ty Int, scopes List[FamilyScope], scope Int,
+    known List[(Int, Int)], depth Int) Bool {
+    if ty <= 5 {
+        return true
+    }
+    if depth >= 64 {
+        return false
+    }
+    let shape = get(types, ty)
+    if shape.kind == TypeKind.Parameter {
+        return false
+    }
+    if shape.kind == TypeKind.Rigid {
+        var current = scope
+        while current >= 0 {
+            let entry = get(scopes, current)
+            let family = get(types, entry.family)
+            var parameter = 0
+            while parameter < family.symbol {
+                if get(family.arguments, parameter) == ty {
+                    return true
+                }
+                parameter = parameter + 1
+            }
+            current = entry.parent
+        }
+        return false
+    }
+    if shape.kind == TypeKind.Associated && scope < 0 {
+        return false
+    }
+    var index = 0
+    while index < length(known) {
+        let previous = get(known, index)
+        if previous.0 == ty && previous.1 == scope {
+            return true
+        }
+        index = index + 1
+    }
+    if shape.kind == TypeKind.Family {
+        if shape.symbol <= 0 || length(shape.arguments) != shape.symbol + 1 {
+            return false
+        }
+        index = 0
+        while index < shape.symbol {
+            if get(types, get(shape.arguments, index)).kind != TypeKind.Rigid {
+                return false
+            }
+            index = index + 1
+        }
+        var child_scope = 0
+        while child_scope < length(scopes) &&
+        !(get(scopes, child_scope).parent == scope && get(scopes, child_scope).family == ty) {
+            child_scope = child_scope + 1
+        }
+        if child_scope == length(scopes) {
+            push(scopes, FamilyScope {
+                    parent = scope
+                    family = ty
+                })
+        }
+        if !family_closed_in(types, get(shape.arguments, shape.symbol), scopes, child_scope, known, depth + 1) {
+            return false
+        }
+    } else {
+        index = 0
+        while index < length(shape.arguments) {
+            if !family_closed_in(types, get(shape.arguments, index), scopes, scope, known, depth + 1) {
+                return false
+            }
+            index = index + 1
+        }
+    }
+    push(known, (ty, scope))
+    true
+}

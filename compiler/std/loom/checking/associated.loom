@@ -225,12 +225,14 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, argumen
     let shape = get(env.types, receiver)
     let capability = symbol(env, member).owner
     if shape.kind == TypeKind.Dyn && get(env.interfaces, shape.symbol).symbol == capability {
-        if length(arguments) != 0 {
-            return Result.Err(failure(env, owner, node, "dyn does not yet support generic associated type families"))
-        }
         let members = get(env.concepts, concept_index(env, capability)).associated
         var index = 0
         while get(members, index) != member { index = index + 1 }
+        if length(arguments) != 0 {
+            let output = apply_type_family(env, owner, get(shape.arguments, index), arguments, node)?
+            register_family_application(env, member, receiver, arguments, output)
+            return Result.Ok(output)
+        }
         return Result.Ok(get(shape.arguments, index))
     }
     if length(get(env.concepts, concept_index(env, capability)).families) != 0 {
@@ -244,7 +246,7 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, argumen
         let active = get(env.associations, env.association_depth - 1)
         if active.receiver == receiver && symbol(env, active.member).owner == capability { own = true }
     }
-    if (shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated) && !own {
+    if (shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated || shape.kind == TypeKind.Rigid) && !own {
         return Result.Ok(intern(env, TypeKind.Associated, member, member_arguments(ints(receiver), arguments)))
     }
     if selected.implementation < 0 { return Result.Err(failure(env, owner, node, "associated type requires an explicit conformance")) }

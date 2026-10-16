@@ -114,7 +114,7 @@ fn method_options(context Context, node Node, source Node, receiver Expr, method
             if concept_method(context.env, capability, method_name, length(inputs.nodes) + 1, type_count, choices) &&
             ((selected < 0 && visible_concept(context, capability.symbol) &&
                     (!bound || evidence(context, receiver.ty, capability.symbol)?)) || selected == capability.symbol) {
-                let provided = if receiver_type.kind == TypeKind.Parameter || receiver_type.kind == TypeKind.Associated {
+                let provided = if receiver_type.kind == TypeKind.Parameter || receiver_type.kind == TypeKind.Associated || receiver_type.kind == TypeKind.Rigid {
                     -1
                 } else {
                     implementation(context, receiver.ty, capability.symbol)?

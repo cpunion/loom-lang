@@ -60,6 +60,14 @@ record Prepared {
     project Project
 }
 
+fn driver_value_option(argument Text) Bool {
+    argument == "--std" || argument == "--output" || argument == "-o" ||
+    argument == "--emit-ir" || argument == "--native-tool" || argument == "--git-tool" ||
+    argument == "--git-credential-tool" || argument == "--object-cache" ||
+    argument == "--frontend-cache" || argument == "--receipt" ||
+    argument == "--build-option" || argument == "--filter"
+}
+
 fn options(args List[Text]) Result[Options, Text] {
     let command = get(args, 1)
     var path = "."
@@ -114,7 +122,7 @@ fn options(args List[Text]) Result[Options, Text] {
                         }
                         no_run = true
                     } else {
-                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--git-credential-tool" || arg == "--object-cache" || arg == "--frontend-cache" || arg == "--receipt" || arg == "--build-option" || arg == "--filter" {
+                        if driver_value_option(arg) {
                             index = index + 1
                             if index == length(args) {
                                 return Result.Err(concat(arg, " needs a value"))

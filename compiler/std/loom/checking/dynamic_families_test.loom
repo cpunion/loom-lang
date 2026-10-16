@@ -1,0 +1,187 @@
+fn dynamic_family_source() Text {
+    """
+    concept Family {
+        type Item[T]
+        fn unused(self Self) Int { 99 }
+        fn echo[T](self Self, value Self.Item[T]) Self.Item[T]
+    }
+    impl Family for Bool {
+        type Item[U] = List[U]
+        fn echo[T](self Bool, value List[T]) List[T] {
+            value
+        }
+    }
+    fn use_family(source dyn Family[Item[T] = List[T]]) Int {
+        let values = source.echo[Int]([7])
+        values[0]
+    }
+    fn main() {
+        assert use_family(true) == 7
+    }
+    """
+}
+
+test fn dynamic_families_use_uniform_templates_and_finite_generic_method_slots() {
+    let program = accepted(dynamic_family_source())
+    assert length(program.witnesses) == 1
+    let methods = get(program.witnesses, 0).methods
+    var used = 0
+    var index = 0
+    while index < length(methods) {
+        if get(methods, index) >= 0 {
+            used = used + 1
+        }
+        index = index + 1
+    }
+    assert length(methods) > used && used == 1
+}
+
+test fn dynamic_families_check_domains_outputs_and_conversion_for_every_legal_argument() {
+    let declarations = """
+        concept Value {
+            fn number(self Self) Int
+        }
+        impl Value for Int {
+            fn number(self Int) Int { self }
+        }
+        concept Extra {}
+        concept Family {
+            type Item[T Value] Value
+        }
+        impl Family for Bool {
+            type Item[T] = T
+        }
+        """
+    discard accepted(concat(declarations, """
+        fn same(value dyn Family[Item[U] = U]) dyn Family[Item[V Value] = V] {
+            value
+        }
+        fn main() {
+            discard same(true)
+        }
+        """))
+    rejects(concat(declarations, """
+        pub fn wrong(value dyn Family[Item[T] = Bool]) {}
+        """))
+    rejects(concat(declarations, """
+        pub fn strengthened(value dyn Family[Item[T Extra] = Int]) {}
+        """))
+    // Int is the only declared Value implementation, but that catalog is not a
+    // proof that the family domain is Int. Checking only used Int slots is wrong.
+    rejects(concat(declarations, """
+        fn main() {
+            let wrong dyn Family[Item[T] = Int] = true
+            discard wrong
+        }
+        """))
+}
+
+test fn dynamic_families_infer_captures_but_do_not_export_local_binders() {
+    let declarations = """
+        concept Family {
+            type Item[T]
+        }
+        record Box[X] {
+            value X
+        }
+        impl[X] Family for Box[X] {
+            type Item[U] = (X, U)
+        }
+        """
+    discard accepted(concat(declarations, """
+        fn guess[X](source dyn Family[Item[U] = (X, U)]) Int {
+            comptime if X == Text { 1 } else { 0 }
+        }
+        fn evidence() Int ensures result == 1 {
+            comptime {
+                let source dyn Family[Item[U] = (Text, U)] = Box { value = "captured" }
+                guess(source)
+            }
+        }
+        fn main() {
+            assert evidence() == 1
+        }
+        """))
+    rejects("""
+        concept Family { type Item[T] }
+        impl Family for Bool { type Item[U] = U }
+        fn guess[X](source dyn Family[Item[U] = X]) Int { 1 }
+        fn main() {
+            let source dyn Family[Item[U] = U] = true
+            discard guess(source)
+        }
+        """)
+}
+
+test fn dynamic_families_compare_impl_targets_modulo_binder_spelling() {
+    let declarations = """
+        concept Family { type Item[T] }
+        concept Marker {}
+        record Box[X] { value X }
+        """
+    rejects(concat(declarations, """
+        impl[X] Marker for Box[dyn Family[Item[U] = (X, U)]] {}
+        impl Marker for Box[dyn Family[Item[V] = (Int, V)]] {}
+        """))
+    discard accepted(concat(declarations, """
+        impl Marker for Box[dyn Family[Item[U] = (Int, U)]] {}
+        impl Marker for Box[dyn Family[Item[V] = (Bool, V)]] {}
+        """))
+    // An outer constant cannot be instantiated with a lambda-local variable.
+    discard accepted(concat(declarations, """
+        impl[X] Marker for Box[dyn Family[Item[U] = X]] {}
+        impl Marker for Box[dyn Family[Item[V] = V]] {}
+        """))
+}
+
+test fn dynamic_families_shadow_outer_type_values_and_reject_concrete_sampling() {
+    let declarations = """
+        concept Family {
+            type Item[T]
+            fn echo[T](self Self, value Self.Item[T]) Self.Item[T]
+        }
+        impl Family for Bool {
+            type Item[U] = U
+            fn echo[T](self Bool, value T) T { value }
+        }
+        """
+    discard accepted(concat(declarations, """
+        fn main() {
+            let T = Text
+            comptime if T == Text {} else { missing() }
+            let source dyn Family[Item[T] = T] = true
+            assert source.echo[Bool](false) == false
+        }
+        """))
+    rejects(concat(declarations, """
+        fn main() {
+            let source dyn Family[Item[T] = comptime { if T == Int { Int } else { Bool } }] = true
+            discard source
+        }
+        """))
+}
+
+test fn dynamic_families_keep_argument_promises_scoped_to_their_domains() {
+    let declarations = """
+        concept Value {}
+        impl Value for Int {}
+        concept Family {
+            type Item[T Value] Value
+        }
+        concept Mark {}
+        concept Source {
+            type Wrapped[T Family] Mark
+        }
+        fn need[T Mark](value T) {}
+        """
+    discard accepted(concat(declarations, """
+        pub fn forward[S Source](source S, value S.Wrapped[dyn Family[Item[U] = U]]) {
+            need(value)
+        }
+        """))
+    rejects(concat(declarations, """
+        pub fn wrong[S Source](source S, value S.Wrapped[dyn Family[Item[U] = Bool]]) {
+            need(value)
+        }
+        """))
+}

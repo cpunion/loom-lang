@@ -3,6 +3,45 @@ mod common;
 use common::{loom, success};
 
 #[test]
+fn dynamic_family_templates_preserve_captures_and_only_emit_reachable_slots() {
+    let temporary = tempfile::tempdir().unwrap();
+    let example = common::root().join("compiler/examples/dyn_families");
+    success(&loom(&["check", example.to_str().unwrap()]));
+    let executable = common::executable(temporary.path(), "dyn-families");
+    let ir = temporary.path().join("dyn-families.ll");
+    success(
+        &common::command(&[
+            "build",
+            example.to_str().unwrap(),
+            "--output",
+            executable.to_str().unwrap(),
+            "--emit-ir",
+            ir.to_str().unwrap(),
+        ])
+        .env("LOOM_OPT_LEVEL", "0")
+        .output()
+        .unwrap(),
+    );
+    success(
+        &Command::new(executable)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        !fs::read_to_string(ir)
+            .unwrap()
+            .contains("unreachable-dyn-family-method")
+    );
+    success(
+        &common::command(&["test", example.to_str().unwrap()])
+            .env("LOOM_OPT_LEVEL", "0")
+            .output()
+            .unwrap(),
+    );
+}
+
+#[test]
 fn associated_results_and_bounded_data_use_native_value_layouts() {
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "associated");

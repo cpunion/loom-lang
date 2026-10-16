@@ -210,7 +210,13 @@ fn body_type_shape_walk(reuse BodyReuse, ty Int, seen List[Int], stored Bool) Bo
     push(seen, ty)
     let shape = get(get(reuse.prior, 0).types, ty)
     let kind = shape.kind
-    if kind == TypeKind.Parameter || kind == TypeKind.Associated || (kind == TypeKind.Meta && !stored) ||
+    if kind == TypeKind.Family {
+        // Only the complete closed template is a reusable root. A child proved
+        // under its binders must not become globally admissible metadata.
+        return body_family_supported(reuse, ty, stored)
+    }
+    if kind == TypeKind.Parameter || kind == TypeKind.Associated ||
+    kind == TypeKind.Rigid || (kind == TypeKind.Meta && !stored) ||
     kind == TypeKind.Frame {
         return false
     }
@@ -401,6 +407,11 @@ fn body_type(env Environment, reuse BodyReuse, ty Int) Result[Int, Failure] {
         return Result.Ok(get(reuse.types, ty))
     }
     let shape = get(get(reuse.prior, 0).types, ty)
+    if shape.kind == TypeKind.Family {
+        let mapped = body_family_type(env, reuse, ty, new[FamilyAliases](), -1, new[BodyFamilyReplay]())?
+        set(reuse.types, ty, mapped)
+        return Result.Ok(mapped)
+    }
     let arguments = new[Int]()
     var index = 0
     while index < length(shape.arguments) {

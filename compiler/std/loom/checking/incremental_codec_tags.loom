@@ -19,6 +19,8 @@ fn cache_type_tag(value TypeKind) Int {
         TypeKind.Task => 15
         TypeKind.Frame => 16
         TypeKind.Meta => 17
+        TypeKind.Family => 18
+        TypeKind.Rigid => 19
     }
 }
 
@@ -76,6 +78,12 @@ fn cache_type_kind(value Int) Result[TypeKind, Text] {
     }
     if value == 17 {
         return Result.Ok(TypeKind.Meta)
+    }
+    if value == 18 {
+        return Result.Ok(TypeKind.Family)
+    }
+    if value == 19 {
+        return Result.Ok(TypeKind.Rigid)
     }
     Result.Err("unknown cached type kind")
 }
