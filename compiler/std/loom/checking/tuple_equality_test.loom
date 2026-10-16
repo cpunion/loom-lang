@@ -1,0 +1,119 @@
+test fn tuple_comparisons_reuse_scalar_proofs_and_exact_structural_types() {
+    discard accepted("""
+        type Positive = Int where self > 0
+        type One = Int where (self, true) == (1, true)
+        enum Ready {
+            No
+            Yes
+        }
+        fn echo(value (Int, (Bool, Text))) (Int, (Bool, Text))
+        ensures result == value
+        {
+            value
+        }
+        fn same_first(left (Int, Bool), right (Int, Bool)) Int
+        requires left == right
+        ensures result == right.0
+        {
+            left.0
+        }
+        fn relay(value (Int, Bool)) Int
+        ensures result == value.0
+        {
+            same_first(value, value)
+        }
+        fn exact(value One) Int
+        ensures result == 1
+        {
+            value
+        }
+        fn weaken(value One) Positive {
+            Positive(value)
+        }
+        fn main() {
+            assert (1, true) == (1, true)
+            assert ((1,), (true, "x")) != ((2,), (true, "x"))
+            assert (Positive(1), Ready.Yes) == (Positive(1), Ready.Yes)
+            assert comptime { (1, (true, "x")) == (1, (true, "x")) }
+            assert comptime { (Int, Bool) == (Int, Bool) }
+            assert echo((3, (true, "x"))) == (3, (true, "x"))
+            assert relay((4, false)) == 4
+            assert exact(One(1)) == 1
+            assert weaken(One(1)) == 1
+        }
+        """)
+    rejects("""
+        fn eager_definedness() Int
+        ensures (0, 1 / 0) != (1, 0)
+        {
+            0
+        }
+        """)
+    rejects("""
+        fn wrong(value Int) (Int, Bool)
+        ensures result == (value, false)
+        {
+            (value, true)
+        }
+        """)
+    rejects("""
+        fn reflexive(value (Float,)) (Float,)
+        ensures result == value
+        {
+            value
+        }
+        """)
+    rejects("""
+        fn main() {
+            assert (1,) == (1, true)
+        }
+        """)
+    rejects("""
+        fn main() {
+            assert ([1],) == ([1],)
+        }
+        """)
+    rejects("""
+        record Item {
+            value Int
+        }
+        fn main() {
+            assert (Item { value = 1 },) == (Item { value = 1 },)
+        }
+        """)
+    rejects("""
+        fn compare[T](left (T,), right (T,)) Bool {
+            left == right
+        }
+        """)
+}
+
+test fn tuple_comparisons_in_constraints_preserve_sequence_updates() {
+    let definitions = concat("""
+        import std.list.length
+        import std.list.set
+        import std.list.push
+        import std.result.Result
+        import std.result.ConstraintError
+        type Pair = List[Int] where (length(self), self[0]) == (2, 1) && (length(self) > 0,) == (true,)
+        """, "\n")
+    list_constraint_accept(concat(definitions, """
+        fn main() {
+            let values = Pair([1, 2])
+            set(values, 1, 3)
+            assert length(values) == 2
+        }
+        """))
+    list_constraint_reject(concat(definitions, """
+        fn main() {
+            let values = Pair([1, 2])
+            set(values, 0, 3)
+        }
+        """))
+    list_constraint_reject(concat(definitions, """
+        fn main() {
+            let values = Pair([1, 2])
+            push(values, 3)
+        }
+        """))
+}

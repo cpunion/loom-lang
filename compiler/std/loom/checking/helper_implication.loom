@@ -5,16 +5,17 @@ import std.list.get
 import std.list.length
 import std.result.Result
 
-fn predicate_calls(value Expr, depth Int) Bool {
+// Calls and lowering-introduced bindings share guarded expression expansion.
+fn predicate_expansion(value Expr, depth Int) Bool {
     if depth >= 64 {
         return false
     }
-    if value.kind == ExprKind.Call {
+    if value.kind == ExprKind.Call || value.kind == ExprKind.Block {
         return true
     }
     var index = 0
     while index < length(value.children) {
-        if predicate_calls(get(value.children, index), depth + 1) {
+        if predicate_expansion(get(value.children, index), depth + 1) {
             return true
         }
         index = index + 1
@@ -61,7 +62,7 @@ fn prepared_implication(context Context, node Node, source Int, target Int) Resu
     let left_scope = predicate_context(env, source, stage.locals, 0, true)?
     let left = refinement_expression(left_scope, source)?
     let right = refinement_expression(predicate_context(env, target, stage.locals, 0, true)?, target)?
-    Result.Ok(implies_with_helpers(prepared(left_scope)?, left, right, get(env.inputs, 0).build.proof_backend))
+    Result.Ok(implies_with_helpers(prepared(left_scope)?, stage.locals, left, right, get(env.inputs, 0).build.proof_backend))
 }
 
 fn helpers_imply(context Context, node Node, source Int, target Int) Bool {

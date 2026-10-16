@@ -2,6 +2,7 @@ import std.loom.proof.verify_preservation
 import std.loom.proof.sequence_operation
 import std.loom.proof.preserves_update_expression
 import std.loom.proof.preserves_update_identity
+import std.loom.proof.normalized_predicates
 
 fn update_literal(value Expr) Bool {
     value.kind == ExprKind.Integer || value.kind == ExprKind.Bool ||
@@ -53,7 +54,7 @@ fn update_expression_proof(env Environment, functions List[Function], locals Lis
     // Optional expanded type facts may be partial. A preservation obligation
     // must instead expand the entire predicate successfully, including every
     // conjunct and its safety conditions; opaque parts cannot be omitted.
-    let predicates = match std.loom.proof.invariant_predicates(isolated, receiver.ty, predicate) {
+    let predicates = match std.loom.proof.established_predicates(isolated, stage.locals, predicate) {
         Result.Ok(predicates) => predicates
         Result.Err(_) => new[Expr]()
     }
@@ -148,7 +149,7 @@ fn update_input(env Environment, value Expr) Expr {
 // Reuse the already prepared constructor closure for constant operands. This
 // proves a different property from predicate preservation: no cell changes,
 // even if some pure conjunct cannot be expanded. No caller reads are replayed.
-fn literal_identity_update(env Environment, program std.loom.typed.Program, value Expr, predicate Expr, writes Int) Bool {
+fn literal_identity_update(env Environment, program std.loom.typed.Program, value Expr, predicate Expr, predicate_locals List[Local], writes Int) Bool {
     let receiver = get(value.children, 0)
     if writes != 1 || get(receiver.children, 0).kind != ExprKind.Local {
         return false
@@ -171,7 +172,7 @@ fn literal_identity_update(env Environment, program std.loom.typed.Program, valu
     }
     let shape = get(program.types, ty)
     let clauses = std.list.clone(shape.constraint)
-    expanded_invariant_parts(program, receiver.ty, predicate, clauses, 0)
+    expanded_invariant_parts(program, predicate_locals, predicate, clauses, 0)
     let types = std.list.clone(program.types)
     set(types, ty, Type {
             kind = shape.kind
@@ -252,6 +253,21 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
             })
         index = index + 1
     }
+    var before = [predicate]
+    var after = before
+    if contract_block(predicate) {
+        // Clause temporaries belong to the predicate's own scope, not these
+        // store-argument slots. Entry facts and hypothetical exit safety have
+        // different obligations even though their predicate text is the same.
+        before = match std.loom.proof.established_predicates(program, stage.locals, predicate) {
+            Result.Ok(parts) => parts
+            Result.Err(_) => before
+        }
+        after = match std.loom.proof.normalized_predicates(program, stage.locals, [predicate]) {
+            Result.Ok(parts) => parts
+            Result.Err(_) => after
+        }
+    }
     // Construction established the complete predicate immediately before this
     // atomic operation. Normal continuation models one store and any bounds
     // check; a bounds fault happens before any mutation. No transient broken
@@ -263,8 +279,8 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
         params = params
         result = 0
         locals = locals
-        preconditions = [predicate]
-        postconditions = [predicate]
+        preconditions = before
+        postconditions = after
         result_cleanup = new[Expr]()
         result_local = -1
         body = expression(ExprKind.Intrinsic, 0, node,
@@ -277,7 +293,7 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
     match std.loom.proof.verify_with_helpers(program, probe, std.loom.proof.no_proof_backend()) {
         Result.Ok(_) => true
         Result.Err(_) => {
-            if literal_identity_update(env, program, value, predicate, writes) {
+            if literal_identity_update(env, program, value, predicate, stage.locals, writes) {
                 return true
             }
             match expanded_invariant_types(stage, probe) {

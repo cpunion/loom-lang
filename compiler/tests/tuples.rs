@@ -54,8 +54,22 @@ fn tuple_errors_are_source_diagnostics_not_native_failures() {
 #[test]
 fn scalar_tuple_expansion_has_no_runtime_container_or_scheduler() {
     let source = tempfile::tempdir().unwrap();
-    fs::write(source.path().join("main.loom"),
-        "fn sum(a Int, b Int) Int { a + b }\nfn expanded(values (Int, Int)) Int { sum(values...) }\nfn main() { assert expanded((20, 22)) == 42 }").unwrap();
+    fs::write(
+        source.path().join("main.loom"),
+        r#"
+fn sum(a Int, b Int) Int {
+    a + b
+}
+fn expanded(values (Int, Int)) Int {
+    sum(values...)
+}
+fn main() {
+    assert expanded((20, 22)) == 42
+    assert (20, (true, 22)) == (20, (true, 22))
+}
+"#,
+    )
+    .unwrap();
     let executable = common::executable(source.path(), "expanded");
     let ir = source.path().join("expanded.ll");
     success(
@@ -75,4 +89,35 @@ fn scalar_tuple_expansion_has_no_runtime_container_or_scheduler() {
     assert!(!ir.contains("call ptr @loom_"));
     assert!(!ir.contains("@loom_task_"));
     success(&Command::new(executable).output().unwrap());
+}
+
+#[test]
+fn tuple_equality_eagerly_evaluates_a_faulting_right_operand() {
+    let source = tempfile::tempdir().unwrap();
+    fs::write(
+        source.path().join("main.loom"),
+        r#"
+fn main() {
+    discard (0, true) == {
+        assert false
+        (1, true)
+    }
+}
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(source.path(), "equality");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", source.path().to_str().unwrap()])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        let output = Command::new(&executable).output().unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("assertion failed"));
+    }
 }

@@ -81,6 +81,8 @@ Their IDs and spans belong to a snapshot, not persistent semantic history.
 
 Native code supports scalar types, Text/Bytes, records/enums, tuples, shared
 Lists, overloads, generic data/functions, closures and pattern matching.
+Tuple equality composes comparable leaves through ordinary scalar rules,
+including CTFE and contracts; operands remain eager, once-only snapshots.
 List-backed recursive data works; infinite inline layouts reject.
 Record updates construct new values and validate any requested refinement.
 See the [implemented subset](../../compiler/README.md#implemented-subset).

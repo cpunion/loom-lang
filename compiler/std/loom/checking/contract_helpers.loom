@@ -42,14 +42,45 @@ fn contract_helpers(node Node) Bool {
     false
 }
 
+// Source syntax alone cannot detect temporaries introduced by typed lowering.
+// Let the ordinary guarded helper expander substitute such bindings as well.
+fn contract_block(value Expr) Bool {
+    if value.kind == ExprKind.Block {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if contract_block(get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn contract_blocks(conditions List[Expr]) Bool {
+    var index = 0
+    while index < length(conditions) {
+        if contract_block(get(conditions, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
 fn with_contracts(function Function, preconditions List[Expr], postconditions List[Expr]) Function {
+    with_contracts(function, function.locals, preconditions, postconditions)
+}
+
+fn with_contracts(function Function, locals List[Local], preconditions List[Expr], postconditions List[Expr]) Function {
     Function {
         is_async = function.is_async
         symbol = function.symbol
         arguments = function.arguments
         params = function.params
         result = function.result
-        locals = function.locals
+        locals = locals
         preconditions = preconditions
         postconditions = postconditions
         result_cleanup = function.result_cleanup
@@ -201,11 +232,16 @@ fn checked_contracts(context Context, id Int, source Function) Result[Function, 
     }
     let family_proved = has_ensures && completed_pack_contract(context.env, id)
     let body_calls = has_ensures && !family_proved && proof_body_calls(function.body)
-    if !contract_helpers(node) && !inherited_method_helpers(context.env, context.signature.symbol) && !body_calls {
+    let call_free = !contract_helpers(node) && !inherited_method_helpers(context.env, context.signature.symbol) && !body_calls
+    let conditions = if call_free && has_ensures {
+        add_contracts(contracts(context, node, NodeKind.Ensures)?, inherited_contracts(context, NodeKind.Ensures)?)
+    } else {
+        function.postconditions
+    }
+    if call_free && !contract_blocks(function.preconditions) && !contract_blocks(conditions) {
         if !has_ensures {
             return Result.Ok(function)
         }
-        let conditions = add_contracts(contracts(context, node, NodeKind.Ensures)?, inherited_contracts(context, NodeKind.Ensures)?)
         let checked = with_source_contracts(context, function, function.preconditions, conditions)
         if family_proved {
             return certified_contract(context, id, checked)

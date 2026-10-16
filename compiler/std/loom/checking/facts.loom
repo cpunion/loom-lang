@@ -322,7 +322,7 @@ fn facts_imply(context Context, value Expr, goal Expr) Bool {
     var steps = 0
     while head >= 0 && steps < 256 {
         let fact = get(context.facts, head)
-        if !predicate_calls(fact.predicate, 0) {
+        if !predicate_expansion(fact.predicate, 0) {
             push(premises, fact.predicate)
         }
         head = fact.previous
@@ -336,7 +336,7 @@ fn helper_facts(context Context) Bool {
     var steps = 0
     while head >= 0 && steps < 256 {
         let fact = get(context.facts, head)
-        if predicate_calls(fact.predicate, 0) {
+        if predicate_expansion(fact.predicate, 0) {
             return true
         }
         head = fact.previous
