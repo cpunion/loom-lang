@@ -41,3 +41,6 @@ a formal cryptographic verification or a certification claim.
 ```sh
 target/loom test compiler/std/hash/sha256
 ```
+
+The [checksums application](../../../examples/checksums/README.md) combines this
+API with scoped async file chunks, constrained configuration and dynamic joins.

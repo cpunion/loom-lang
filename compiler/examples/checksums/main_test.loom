@@ -1,0 +1,58 @@
+test fn parses_defaults_and_rejects_invalid_chunk_sizes() {
+    match parse_options(["checksums", "first", "second"]) {
+        Result.Ok(options) => {
+            assert options.limit == 8192
+            assert length(options.paths) == 2 && options.paths[1] == "second"
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    match parse_options(["checksums", "--chunk-size", "7", "first"]) {
+        Result.Ok(options) => {
+            assert options.limit == 7 && options.paths[0] == "first"
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    let invalid = ["0", "-1", "1048577", "not-a-number"]
+    var index = 0
+    while index < length(invalid) {
+        assert match parse_options(["checksums", "--chunk-size", invalid[index], "first"]) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+    assert match parse_options(["checksums"]) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn batch_end_keeps_short_tails_and_avoids_integer_overflow() {
+    assert batch_end(0, 0) == 0
+    assert batch_end(2, 10) == 6
+    assert batch_end(9223372036854775806, 9223372036854775807) == 9223372036854775807
+}
+
+test async fn dynamic_batches_keep_every_result_and_allow_empty_inputs() {
+    assert length(checksum_files([], ChunkSize(1)).await) == 0
+    let paths = new[Text]()
+    var index = 0
+    while index < 6 {
+        push(paths, "\0invalid")
+        index = index + 1
+    }
+    let results = checksum_files(paths, ChunkSize(7)).await
+    assert length(results) == 6
+    index = 0
+    while index < length(results) {
+        assert match results[index] {
+            Result.Err(error) => error == FileError.Open
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}

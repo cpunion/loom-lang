@@ -220,6 +220,99 @@ fn main() {{
 }
 
 #[test]
+fn source_checksum_application_combines_packages_constraints_and_async_io() {
+    use sha2::{Digest, Sha256};
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixture = root.join("examples/checksums");
+    let directory = tempfile::tempdir().unwrap();
+    let tests = common::command(&["test", path(&fixture), "--recursive"])
+        .env("LOOM_OPT_LEVEL", "0")
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    success(&tests);
+    assert!(String::from_utf8_lossy(&tests.stdout).contains("2 packages tested"));
+
+    let executable = common::executable(directory.path(), "checksums");
+    let ir = directory.path().join("checksums.ll");
+    success(&loom(&[
+        "build",
+        path(&fixture),
+        "--output",
+        path(&executable),
+        "--emit-ir",
+        path(&ir),
+    ]));
+    let llvm = fs::read_to_string(ir).unwrap();
+    let files_ir = directory.path().join("files.ll");
+    success(&loom(&[
+        "build",
+        path(&fixture.join("files")),
+        "--output",
+        path(&directory.path().join("files.o")),
+        "--emit-ir",
+        path(&files_ir),
+    ]));
+    let library = fs::read_to_string(files_ir).unwrap();
+    for excluded in [
+        "known_chunk_size_is_a_direct_value",
+        "hashes_binary_chunks_and_reports_missing_files",
+        "parses_defaults_and_rejects_invalid_chunk_sizes",
+    ] {
+        assert!(
+            !llvm.contains(excluded) && !library.contains(excluded),
+            "production includes {excluded}"
+        );
+    }
+
+    let names = [
+        "empty.bin",
+        "plain text.bin",
+        "unicode-é😀.bin",
+        "padding.bin",
+        "multiple.bin",
+    ];
+    let mut expected = String::new();
+    for (name, size) in names.iter().zip([0, 3, 65, 257, 4097]) {
+        let input: Vec<u8> = (0..size).map(|index| (index % 256) as u8).collect();
+        fs::write(directory.path().join(name), &input).unwrap();
+        expected.push_str(&format!("{:x}  {name}\n", Sha256::digest(input)));
+    }
+    let run = |files: &[&str], limit: &str| {
+        common::run_task_command(
+            Command::new(&executable)
+                .args(["--chunk-size", limit])
+                .args(files)
+                .current_dir(directory.path())
+                .env("LOOM_GC_STRESS", "1"),
+        )
+    };
+    let completed = run(&names, "7");
+    success(&completed);
+    assert_eq!(String::from_utf8_lossy(&completed.stdout), expected);
+    let mixed = [
+        names[0],
+        "missing.bin",
+        names[1],
+        names[2],
+        names[3],
+        names[4],
+    ];
+    let failed = run(&mixed, "7");
+    assert_eq!(failed.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&failed.stdout), expected);
+    assert_eq!(
+        String::from_utf8_lossy(&failed.stderr),
+        "cannot hash file: missing.bin\n"
+    );
+    let invalid = run(&names, "0");
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(invalid.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("chunk size must be"));
+}
+
+#[test]
 fn source_process_run_preserves_arguments_and_nonzero_exit_codes() {
     let child = source(
         "import std.process.arguments\nimport std.process.exit_code\n\

@@ -1,0 +1,81 @@
+import checksums.files.ChunkSize
+import checksums.files.checksum
+import std.file.FileError
+import std.task.all
+import std.list.new
+import std.list.push
+import std.list.length
+import std.list.transfer.append
+import std.result.Result
+import std.process.arguments
+import std.process.exit_code
+import std.io.write_text
+import std.io.write_error
+import std.text.concat
+
+fn batch_end(offset Int, count Int) Int
+requires offset >= 0 && count >= offset
+ensures result >= offset && result <= count && result - offset <= 4 {
+    if count - offset < 4 {
+        count
+    } else {
+        offset + 4
+    }
+}
+
+async fn checksum_files(paths List[Text], limit ChunkSize) List[Result[Text, FileError]] {
+    let results = new[Result[Text, FileError]]()
+    var offset = 0
+    while offset < length(paths) {
+        var tasks = new[Task[Result[Text, FileError]]]()
+        var index = offset
+        let end = batch_end(offset, length(paths))
+        while index < end {
+            tasks = append(tasks, checksum(paths[index], limit))
+            index = index + 1
+        }
+        let batch = all(tasks).await
+        index = 0
+        while index < length(batch) {
+            push(results, batch[index])
+            index = index + 1
+        }
+        offset = end
+    }
+    results
+}
+
+async fn main() {
+    let options = match parse_options(arguments()) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(concat(message, "\n"))
+            exit_code(2)
+            return
+        }
+    }
+    let results = checksum_files(options.paths, options.limit).await
+    var failed = false
+    var index = 0
+    while index < length(results) {
+        match results[index] {
+            Result.Ok(value) => {
+                match write_text(concat(value, concat("  ", concat(options.paths[index], "\n")))) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(_) => {
+                        failed = true
+                    }
+                }
+            }
+            Result.Err(_) => {
+                discard write_error(concat("cannot hash file: ", concat(options.paths[index], "\n")))
+                failed = true
+            }
+        }
+        index = index + 1
+    }
+    if failed {
+        exit_code(1)
+    }
+}

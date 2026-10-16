@@ -752,6 +752,8 @@ timings; local variables remain conservatively rooted for the function.
   limits. `new_hasher()` and `update` process chunks or byte ranges without
   retaining input buffers; `digest(hasher)` and `hex(hasher)` take nondestructive
   snapshots and permit further updates. Assignment shares the mutable hasher.
+  The [checksums application](examples/checksums/README.md) combines these APIs
+  with scoped async file streams, constrained configuration and package tests.
   Inputs must be shorter than 2^61 bytes. No hashing runtime operation
   is added; the library is neither a password hash nor an authentication scheme.
 - Source `std.semver` parses SemVer 2.0.0 with `parse_version(Text)`, compares
