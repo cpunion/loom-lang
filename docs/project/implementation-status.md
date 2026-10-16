@@ -283,6 +283,8 @@ The [semantic merge trial](../../tools/semantic_change_trial/README.md) supports
 reviewed move-plus-edit, private nongeneric rename-plus-edit and independent
 additions within one package or a fixed-package module, using explicit identities
 and pinned source/test bases.
+Selected overload renames use the same checked binding normalizer; names alone
+neither identify a declaration nor justify an overload conflict.
 Ambiguities can persist as source-bound drafts; compilation ignores that metadata.
 Checked bindings prevent silent nominal/field drift.
 Public/generic rename composition, automatic identities, arbitrary edits and
