@@ -23,6 +23,12 @@ pub enum TypeKind {
     Frame
     // Compile-time type identity, with no runtime representation.
     Meta
+    // Compile-time type lambda: symbol is its arity; arguments are its opaque
+    // binder type IDs followed by its body. Binder spelling is not identity.
+    Family
+    // Fresh rigid variables used to establish a universally quantified binding.
+    // They are neither inference variables nor runtime layouts.
+    Rigid
 }
 
 pub record Field {

@@ -65,7 +65,7 @@ fn pack_call_overlap_schema(env Environment, schema Node, depth Int) Node {
         match std.int.parse(schema.value) {
             Result.Ok(ty) => {
                 let kind = get(env.types, ty).kind
-                if kind == TypeKind.Parameter || kind == TypeKind.Associated ||
+                if kind == TypeKind.Parameter || kind == TypeKind.Associated || kind == TypeKind.Rigid || kind == TypeKind.Family ||
                 kind == TypeKind.Refined || kind == TypeKind.Dyn {
                     return unknown
                 }

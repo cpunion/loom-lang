@@ -58,6 +58,12 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
     if value.kind == TypeKind.Meta {
         return "type"
     }
+    if value.kind == TypeKind.Family {
+        return "<type family>"
+    }
+    if value.kind == TypeKind.Rigid {
+        return "<bound type>"
+    }
     if value.kind == TypeKind.Dyn {
         let interface = get(interfaces, value.symbol)
         let symbol = get(bindings.symbols, interface.symbol)

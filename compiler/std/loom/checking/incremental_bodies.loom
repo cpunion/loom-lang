@@ -210,7 +210,8 @@ fn body_type_shape_walk(reuse BodyReuse, ty Int, seen List[Int], stored Bool) Bo
     push(seen, ty)
     let shape = get(get(reuse.prior, 0).types, ty)
     let kind = shape.kind
-    if kind == TypeKind.Parameter || kind == TypeKind.Associated || (kind == TypeKind.Meta && !stored) ||
+    if kind == TypeKind.Parameter || kind == TypeKind.Associated || kind == TypeKind.Family ||
+    kind == TypeKind.Rigid || (kind == TypeKind.Meta && !stored) ||
     kind == TypeKind.Frame {
         return false
     }

@@ -54,7 +54,7 @@ pub fn structural_type(types List[Type], kind TypeKind, symbol Int, arguments Li
 
 pub fn type_depth(types List[Type], ty Int) Int {
     let source = get(types, ty)
-    if source.kind == TypeKind.Parameter || ty <= 5 {
+    if source.kind == TypeKind.Parameter || source.kind == TypeKind.Rigid || ty <= 5 {
         return 0
     }
     if length(source.arguments) == 0 {
@@ -78,7 +78,7 @@ fn depth_in(types List[Type], ty Int, known List[(Int, Int)], nesting Int) Int {
         return 64
     }
     let source = get(types, ty)
-    if source.kind == TypeKind.Parameter || ty <= 5 {
+    if source.kind == TypeKind.Parameter || source.kind == TypeKind.Rigid || ty <= 5 {
         return 0
     }
     var index = 0

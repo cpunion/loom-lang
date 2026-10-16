@@ -1,0 +1,191 @@
+record FamilyAliases {
+    parent Int
+    from List[Int]
+    to List[Int]
+}
+
+record FamilyEquality {
+    left Int
+    right Int
+    scope Int
+}
+
+fn fresh_family_parameters(env Environment, count Int) List[Int] {
+    let parameters = new[Int]()
+    var index = 0
+    while index < count {
+        push(parameters, intern(env, TypeKind.Rigid, length(env.types), new[Int]()))
+        index = index + 1
+    }
+    parameters
+}
+
+fn family_parameters(env Environment, ty Int) List[Int] {
+    let shape = get(env.types, ty)
+    let parameters = new[Int]()
+    var index = 0
+    while index < shape.symbol {
+        push(parameters, get(shape.arguments, index))
+        index = index + 1
+    }
+    parameters
+}
+
+fn family_alias(scopes List[FamilyAliases], scope Int, ty Int, forward Bool) Int {
+    var current = scope
+    while current >= 0 {
+        let aliases = get(scopes, current)
+        let from = if forward {
+            aliases.from
+        } else {
+            aliases.to
+        }
+        let to = if forward {
+            aliases.to
+        } else {
+            aliases.from
+        }
+        var index = 0
+        while index < length(from) {
+            if get(from, index) == ty {
+                return get(to, index)
+            }
+            index = index + 1
+        }
+        current = aliases.parent
+    }
+    -1
+}
+
+fn family_scope(scopes List[FamilyAliases], parent Int, from List[Int], to List[Int]) Int {
+    var index = 0
+    while index < length(scopes) {
+        let scope = get(scopes, index)
+        if scope.parent == parent && same(scope.from, from) && same(scope.to, to) {
+            return index
+        }
+        index = index + 1
+    }
+    push(scopes, FamilyAliases {
+            parent = parent
+            from = from
+            to = to
+        })
+    index
+}
+
+// Alpha equivalence is structural and nominal identities stay nominal. A
+// captured rigid variable is not equated with another lambda's binder merely
+// because it has the same position. No concrete type sampling supplies proof.
+fn family_equal(env Environment, left Int, right Int, scopes List[FamilyAliases],
+    scope Int, known List[FamilyEquality], depth Int) Bool {
+    if depth >= 64 {
+        return false
+    }
+    let a = get(env.types, left)
+    let b = get(env.types, right)
+    if a.kind == TypeKind.Rigid || b.kind == TypeKind.Rigid {
+        if a.kind != b.kind {
+            return false
+        }
+        let mapped = family_alias(scopes, scope, left, true)
+        if mapped >= 0 {
+            return mapped == right
+        }
+        return family_alias(scopes, scope, right, false) < 0 && left == right
+    }
+    if scope < 0 && left == right {
+        return true
+    }
+    if !same_constructor(env, a, b) {
+        return false
+    }
+    var index = 0
+    while index < length(known) {
+        let entry = get(known, index)
+        if entry.left == left && entry.right == right && entry.scope == scope {
+            return true
+        }
+        index = index + 1
+    }
+    if a.kind == TypeKind.Family {
+        let nested = family_scope(scopes, scope, family_parameters(env, left), family_parameters(env, right))
+        if !family_equal(env, get(a.arguments, a.symbol), get(b.arguments, b.symbol), scopes, nested, known, depth + 1) {
+            return false
+        }
+    } else {
+        index = 0
+        while index < length(a.arguments) {
+            if !family_equal(env, get(a.arguments, index), get(b.arguments, index), scopes, scope, known, depth + 1) {
+                return false
+            }
+            index = index + 1
+        }
+    }
+    push(known, FamilyEquality {
+            left = left
+            right = right
+            scope = scope
+        })
+    true
+}
+
+fn type_family(env Environment, parameters List[Int], body Int) Int {
+    var index = 0
+    while index < length(env.types) {
+        let candidate = get(env.types, index)
+        if candidate.kind == TypeKind.Family && candidate.symbol == length(parameters) {
+            let scopes = new[FamilyAliases]()
+            let scope = family_scope(scopes, -1, family_parameters(env, index), parameters)
+            if family_equal(env, get(candidate.arguments, candidate.symbol), body, scopes, scope, new[FamilyEquality](), 0) {
+                return index
+            }
+        }
+        index = index + 1
+    }
+    intern(env, TypeKind.Family, length(parameters), member_arguments(parameters, ints(body)))
+}
+
+fn apply_type_family(env Environment, owner Int, ty Int, arguments List[Int], node Node) Result[Int, Failure] {
+    let family = get(env.types, ty)
+    if family.kind != TypeKind.Family || family.symbol != length(arguments) {
+        return Result.Err(failure(env, owner, node, "wrong number of dynamic associated type arguments"))
+    }
+    let scopes = new[FamilyAliases]()
+    let scope = family_scope(scopes, -1, family_parameters(env, ty), arguments)
+    replace_family_type(env, owner, get(family.arguments, family.symbol), scopes, scope, node, 0)
+}
+
+fn replace_family_type(env Environment, owner Int, ty Int, scopes List[FamilyAliases],
+    scope Int, node Node, depth Int) Result[Int, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, node, "type family application must be finite"))
+    }
+    let source = get(env.types, ty)
+    if source.kind == TypeKind.Rigid {
+        let replacement = family_alias(scopes, scope, ty, true)
+        return Result.Ok(if replacement >= 0 {
+                replacement
+            } else {
+                ty
+            })
+    }
+    if source.kind == TypeKind.Family {
+        // Freshen before substituting captures. Reusing a canonical template's
+        // binder IDs here could capture a replacement from an enclosing scope.
+        let fresh = fresh_family_parameters(env, source.symbol)
+        let nested = family_scope(scopes, scope, family_parameters(env, ty), fresh)
+        let body = replace_family_type(env, owner, get(source.arguments, source.symbol), scopes, nested, node, depth + 1)?
+        return Result.Ok(type_family(env, fresh, body))
+    }
+    if length(source.arguments) == 0 {
+        return Result.Ok(ty)
+    }
+    let arguments = new[Int]()
+    var index = 0
+    while index < length(source.arguments) {
+        push(arguments, replace_family_type(env, owner, get(source.arguments, index), scopes, scope, node, depth + 1)?)
+        index = index + 1
+    }
+    rebuild_type(env, owner, ty, arguments, node)
+}

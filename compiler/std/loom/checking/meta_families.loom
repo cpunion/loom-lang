@@ -1,0 +1,56 @@
+fn family_node_mentions(node Node, parameters List[Node]) Bool {
+    if node.kind == NodeKind.Type || node.kind == NodeKind.Name ||
+    node.kind == NodeKind.Call || node.kind == NodeKind.Construct {
+        if family_parameter_index(parameters, slice(node.value, 0, first_dot(node.value))) >= 0 {
+            return true
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        if family_node_mentions(child(node, index), parameters) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Capture outer type values without treating a template binder as a same-named
+// static value. Type computations depending on that binder cannot be executed
+// as though a rigid variable were one particular concrete type.
+fn meta_family_node(context Context, node Node, outer List[Node]) Result[Node, Failure] {
+    if node.kind == NodeKind.TypeParameters {
+        return Result.Ok(node)
+    }
+    let parameters = std.list.clone(outer)
+    if node.kind == NodeKind.AssociatedType {
+        let local = group(node, NodeKind.TypeParameters)
+        var index = 0
+        while index < length(local) {
+            push(parameters, get(local, index))
+            index = index + 1
+        }
+    }
+    if node.kind == NodeKind.Comptime {
+        if family_node_mentions(node, parameters) {
+            return Result.Err(error(context, node, "dynamic associated family needs a uniform symbolic type template"))
+        }
+        return meta_type_node(context, node)
+    }
+    if (node.kind == NodeKind.Type || node.kind == NodeKind.Name) &&
+    family_parameter_index(parameters, slice(node.value, 0, first_dot(node.value))) < 0 {
+        let selected = meta_binding(context, slice(node.value, 0, first_dot(node.value)))
+        if selected >= 0 {
+            let reference = meta_reference(node, selected)
+            return Result.Ok(pack_node(node, node.kind,
+                    concat(reference.value, slice(node.value, first_dot(node.value), length(node.value))), node.children))
+        }
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, meta_family_node(context, child(node, index), parameters)?)
+        index = index + 1
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}

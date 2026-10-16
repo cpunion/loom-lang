@@ -1,0 +1,83 @@
+concept Lists {
+    type Item[T]
+
+    fn echo[T](self Self, value Self.Item[T]) Self.Item[T]
+
+    fn unused(self Self) Text {
+        "unreachable-dyn-family-method"
+    }
+}
+
+impl Lists for Bool {
+    type Item[U] = List[U]
+
+    fn echo[T](self Bool, value List[T]) List[T] {
+        value
+    }
+}
+
+fn relabel(value dyn Lists[Item[T] = List[T]]) dyn Lists[Item[Renamed] = List[Renamed]] {
+    value
+}
+
+record Box[T] {
+    value T
+}
+
+concept Pairing {
+    type Item[T]
+
+    fn pair[T](self Self, value T) Self.Item[T]
+}
+
+impl[X] Pairing for Box[X] {
+    type Item[U] = (X, U)
+
+    fn pair[T](self Box[X], value T) (X, T) {
+        (self.value, value)
+    }
+}
+
+fn erase[X](value Box[X]) dyn Pairing[Item[U] = (X, U)] {
+    value
+}
+
+concept Nested {
+    type Entry[T]
+
+    fn wrap[T](self Self, value T) Self.Entry[T]
+}
+
+impl Nested for Bool {
+    type Entry[T] = dyn Pairing[Item[U] = (T, U)]
+
+    fn wrap[T](self Bool, value T) dyn Pairing[Item[U] = (T, U)] {
+        erase(Box {
+                value = value
+            })
+    }
+}
+
+fn exercise() {
+    let lists dyn Lists[Item[T] = List[T]] = true
+    let values = relabel(lists).echo[Int]([7, 9])
+    assert values[0] == 7 && values[1] == 9
+
+    let pair = erase(Box {
+            value = "captured"
+        }).pair[Int](42)
+    assert pair.0 == "captured" && pair.1 == 42
+
+    let nested dyn Nested[Entry[T] = dyn Pairing[Item[U] = (T, U)]] = true
+    let inner = nested.wrap[Text]("nested")
+    let joined = inner.pair[Bool](true)
+    assert joined.0 == "nested" && joined.1
+}
+
+fn main() {
+    exercise()
+}
+
+test fn associated_family_dispatch_preserves_captures_and_payloads() {
+    exercise()
+}

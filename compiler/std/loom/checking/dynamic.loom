@@ -150,13 +150,21 @@ fn emitted_type(env Environment, owner Int, ty Int, node Node, seen List[Int]) R
     }
     push(seen, ty)
     let shape = get(env.types, ty)
-    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
+    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated ||
+    shape.kind == TypeKind.Rigid || shape.kind == TypeKind.Family {
         return Result.Err(failure(env, owner, node, "emitted function types must be concrete"))
     }
     if shape.kind == TypeKind.Dyn { discard fill_interface(env, ty)? }
     index = 0
     while index < length(shape.arguments) {
-        discard emitted_type(env, owner, get(shape.arguments, index), node, seen)?
+        let argument = get(shape.arguments, index)
+        if shape.kind == TypeKind.Dyn && get(env.types, argument).kind == TypeKind.Family {
+            if !concrete(env, argument) {
+                return Result.Err(failure(env, owner, node, "dynamic associated family has an unbound capture"))
+            }
+        } else {
+            discard emitted_type(env, owner, argument, node, seen)?
+        }
         index = index + 1
     }
     index = 0
@@ -181,9 +189,6 @@ fn dynamic_type(env Environment, owner Int, node Node, arguments List[Int], obli
     let bindings = new[Int]()
     var index = 0
     while index < length(members) {
-        if length(member_parameters(env, get(members, index))) != 0 {
-            return Result.Err(failure(env, owner, node, "dyn does not yet support generic associated type families"))
-        }
         push(bindings, -1)
         index = index + 1 }
     index = 0
@@ -193,7 +198,7 @@ fn dynamic_type(env Environment, owner Int, node Node, arguments List[Int], obli
         while member < length(members) && symbol(env, get(members, member)).name != binding.value { member = member + 1 }
         if member == length(members) { return Result.Err(failure(env, owner, binding, "unknown dynamic associated type binding")) }
         if get(bindings, member) >= 0 { return Result.Err(failure(env, owner, binding, "duplicate dynamic associated type binding")) }
-        set(bindings, member, resolve_bound(env, owner, child(binding, 0), arguments, obligations, depth)?)
+        set(bindings, member, dynamic_binding(env, owner, get(members, member), binding, arguments, obligations, depth)?)
         index = index + 1
     }
     if !complete(bindings) { return Result.Err(failure(env, owner, node, "dyn requires an explicit binding for every associated type")) }
@@ -215,9 +220,17 @@ fn can_widen(context Context, source Int, target Int) Result[Bool, Failure] {
     let members = get(context.env.concepts, concept_index(context.env, capability)).associated
     var index = 0
     while index < length(members) {
-        let actual = associated_type(context.env, context.signature.symbol, get(members, index), source, new[Int](),
+        let member = get(members, index)
+        let supplied = fresh_family_parameters(context.env, length(member_parameters(context.env, member)))
+        let actual = associated_type(context.env, context.signature.symbol, member, source, supplied,
             symbol(context.env, context.signature.symbol).node, 0)?
-        if actual != get(desired.arguments, index) { return Result.Ok(false) }
+        let expected = if length(supplied) == 0 {
+            get(desired.arguments, index)
+        } else {
+            apply_type_family(context.env, context.signature.symbol, get(desired.arguments, index), supplied,
+                symbol(context.env, context.signature.symbol).node)?
+        }
+        if actual != expected { return Result.Ok(false) }
         index = index + 1
     }
     Result.Ok(true)

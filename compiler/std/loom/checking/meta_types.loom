@@ -147,6 +147,9 @@ fn meta_arguments(context Context, node Node, ty Int) List[Node] {
 }
 
 fn meta_type_node(context Context, node Node) Result[Node, Failure] {
+    if node.kind == NodeKind.AssociatedType && length(group(node, NodeKind.TypeParameters)) != 0 {
+        return meta_family_node(context, node, new[Node]())
+    }
     if node.kind == NodeKind.Comptime {
         let value = computed(context, node, child(node, 0), meta_type(context.env))?
         return Result.Ok(meta_reference(node, value.number))

@@ -883,7 +883,7 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
             // A nominal receiver can select an implementation even while its
             // arguments remain abstract. Do not guess for evidence-only types,
             // or validate a default body that an implementation overrides.
-            if kind != TypeKind.Parameter && kind != TypeKind.Associated && kind != TypeKind.Dyn &&
+            if kind != TypeKind.Parameter && kind != TypeKind.Associated && kind != TypeKind.Rigid && kind != TypeKind.Dyn &&
             conformance(context.env, receiver, symbol(context.env, signature.symbol).owner).implementation >= 0 {
                 let target = method_target(context.env, instance.signature, instance.arguments, constants)?
                 discard validate_static(context.env, target.signature, constants, symbol(context.env, get(context.env.signatures, target.signature).symbol).node)?

@@ -1,0 +1,77 @@
+fn dynamic_family_source() Text {
+    """
+    concept Family {
+        type Item[T]
+        fn unused(self Self) Int { 99 }
+        fn echo[T](self Self, value Self.Item[T]) Self.Item[T]
+    }
+    impl Family for Bool {
+        type Item[U] = List[U]
+        fn echo[T](self Bool, value List[T]) List[T] {
+            value
+        }
+    }
+    fn use_family(source dyn Family[Item[T] = List[T]]) Int {
+        let values = source.echo[Int]([7])
+        values[0]
+    }
+    fn main() {
+        assert use_family(true) == 7
+    }
+    """
+}
+
+test fn dynamic_families_use_uniform_templates_and_finite_generic_method_slots() {
+    let program = accepted(dynamic_family_source())
+    assert length(program.witnesses) == 1
+    let methods = get(program.witnesses, 0).methods
+    var used = 0
+    var index = 0
+    while index < length(methods) {
+        if get(methods, index) >= 0 {
+            used = used + 1
+        }
+        index = index + 1
+    }
+    assert length(methods) > used && used == 1
+}
+
+test fn dynamic_families_check_domains_outputs_and_conversion_for_every_legal_argument() {
+    let declarations = """
+        concept Value {
+            fn number(self Self) Int
+        }
+        impl Value for Int {
+            fn number(self Int) Int { self }
+        }
+        concept Extra {}
+        concept Family {
+            type Item[T Value] Value
+        }
+        impl Family for Bool {
+            type Item[T] = T
+        }
+        """
+    discard accepted(concat(declarations, """
+        fn same(value dyn Family[Item[U] = U]) dyn Family[Item[V Value] = V] {
+            value
+        }
+        fn main() {
+            discard same(true)
+        }
+        """))
+    rejects(concat(declarations, """
+        pub fn wrong(value dyn Family[Item[T] = Bool]) {}
+        """))
+    rejects(concat(declarations, """
+        pub fn strengthened(value dyn Family[Item[T Extra] = Int]) {}
+        """))
+    // Int is the only declared Value implementation, but that catalog is not a
+    // proof that the family domain is Int. Checking only used Int slots is wrong.
+    rejects(concat(declarations, """
+        fn main() {
+            let wrong dyn Family[Item[T] = Int] = true
+            discard wrong
+        }
+        """))
+}

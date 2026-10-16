@@ -79,7 +79,8 @@ fn admit(env Environment, owner Int, obligations List[Requirement], ty Int, capa
     if get(env.types, ty).kind == TypeKind.Dyn {
         if get(env.interfaces, get(env.types, ty).symbol).symbol == capability { return Result.Ok(true) }
     }
-    if get(env.types, ty).kind == TypeKind.Parameter || get(env.types, ty).kind == TypeKind.Associated {
+    if get(env.types, ty).kind == TypeKind.Parameter || get(env.types, ty).kind == TypeKind.Associated ||
+        get(env.types, ty).kind == TypeKind.Rigid {
         return promised(env, owner, obligations, ty, capability)
     }
     if length(get(env.concepts, concept_index(env, capability)).families) != 0 {

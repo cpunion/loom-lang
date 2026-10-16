@@ -9,8 +9,11 @@ pub fn concrete_type(types List[Type], ty Int) Bool {
     var depth = 0
     while current > 5 {
         let shape = get(types, current)
-        if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
+        if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated || shape.kind == TypeKind.Rigid {
             return false
+        }
+        if shape.kind == TypeKind.Family {
+            return family_closed(types, current)
         }
         let count = length(shape.arguments)
         if count == 0 {
@@ -36,8 +39,11 @@ fn concrete_in(types List[Type], ty Int, seen List[Int], depth Int) Bool {
         return false
     }
     let shape = get(types, ty)
-    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
+    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated || shape.kind == TypeKind.Rigid {
         return false
+    }
+    if shape.kind == TypeKind.Family {
+        return family_closed(types, ty)
     }
     var index = 0
     while index < length(seen) {
@@ -81,8 +87,8 @@ fn relation_in(types List[Type], left Int, right Int, seen List[TypeComparison],
     }
     let a = get(types, left)
     let b = get(types, right)
-    if a.kind == TypeKind.Parameter || a.kind == TypeKind.Associated ||
-    b.kind == TypeKind.Parameter || b.kind == TypeKind.Associated {
+    if a.kind == TypeKind.Parameter || a.kind == TypeKind.Associated || a.kind == TypeKind.Rigid ||
+    b.kind == TypeKind.Parameter || b.kind == TypeKind.Associated || b.kind == TypeKind.Rigid {
         return -1
     }
     if a.kind != b.kind {
