@@ -113,8 +113,11 @@ public `loom` compiler. Invoking that compiler by path locates `compiler/std`
 and `target/debug/loom-native` in its own checkout, so commands work directly
 in an application's directory. `--std` and `--native-tool` select explicit
 paths for other layouts. The local staging layout below also works without a
-checkout; it is not a release package or stable compiler-artifact ABI. `--help` lists
-each tool's command surface.
+checkout; it is not a release package or stable compiler-artifact ABI.
+`loom --help` lists commands; `loom test --help` (likewise for other commands)
+lists the selected command's options without loading source or locating tools.
+`-h` is equivalent. A flag consumed as an option value is not help, and
+`loom run [package] -- --help` forwards `--help` to the application.
 
 `loom test --no-run` produces the native test executable without running it;
 `--output` optionally selects its path. Both forms of source tests and normal

@@ -1,0 +1,144 @@
+fn driver_mode(command Text) Bool {
+    command == "check" || command == "build" || command == "test" ||
+    command == "run" || command == "emit-checked" || command == "resolve"
+}
+
+// Help is handled before source/tool discovery. A value consumed by another
+// option is not a flag, and run's separator belongs to the invoked program.
+fn help_requested(args List[Text]) Bool {
+    if length(args) < 2 {
+        return false
+    }
+    let command = get(args, 1)
+    if command == "--help" || command == "-h" {
+        return true
+    }
+    if !driver_mode(command) && command != "init" && command != "fmt" &&
+    command != "lex" && command != "parse" {
+        return false
+    }
+    var index = 2
+    while index < length(args) {
+        let argument = get(args, index)
+        if argument == "--" {
+            return false
+        }
+        if argument == "--help" || argument == "-h" {
+            return true
+        }
+        if driver_mode(command) && driver_value_option(argument) {
+            index = index + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn help_text(command Text) Text {
+    concat(help_body(command), "\n")
+}
+
+fn help_body(command Text) Text {
+    if command == "init" {
+        return """
+            Usage: loom init <name>
+
+            Create a new module directory with source and colocated tests.
+            The name is a lowercase package identifier other than std.
+            Existing directories are not overwritten.
+            """
+    }
+    if command == "fmt" {
+        return """
+            Usage: loom fmt [--check] [--recursive] [files or directories...]
+                   loom fmt --stdout <file>
+                   loom fmt --stdin
+
+            Format Loom source. With no paths, select the current directory.
+              --check       Report formatting differences without writing.
+              --recursive   Include child directories.
+              --stdout      Print one file without changing it.
+              --stdin       Format standard input to standard output.
+            """
+    }
+    if command == "lex" || command == "parse" {
+        return concat("Usage: loom ", concat(command, " <source files...>\n\nInspect UTF-8 source without building an executable.\n"))
+    }
+    if command == "resolve" {
+        return """
+            Usage: loom resolve [package] [options]
+
+            Resolve dependencies and update loom.lock. Ordinary compilation is offline.
+              --std <path>                  Select the source standard library.
+              --tests                       Include test dependencies.
+              --git-tool <executable>        Select Git (default: git).
+              --git-credential-tool <path>   Explicit trusted credential helper.
+            """
+    }
+    if driver_mode(command) {
+        let common = """
+              --std <path>                  Select the source standard library.
+              --build-option <name=value>    Fixed compile-time input; repeatable, not for secrets.
+              --frontend-cache <path>        Opt-in trusted-local checked-program cache.
+            """
+        let details = if command == "check" {
+            "Check source, types and required proofs without emitting an executable."
+        } else if command == "build" {
+            """
+                Build a native executable.
+                  --output <path>, -o <path>   Select the executable path.
+                  --receipt <path>             Write an artifact-bound build receipt.
+                """
+        } else if command == "test" {
+            """
+                Check and run the selected package's private tests.
+                  --filter <substring>         Literal, case-sensitive test-name selection.
+                  --recursive                  Select packages below one module root.
+                  --no-run                     Compile tests without running them.
+                  --output <path>, -o <path>   Select output with --no-run, not --recursive.
+                """
+        } else if command == "run" {
+            "Build and run fn main(). Arguments after -- are forwarded literally."
+        } else {
+            "Write checked IR to standard output (private bootstrap format)."
+        }
+        let native = if command == "build" || command == "test" || command == "run" {
+            """
+                  --emit-ir <path>             Also write the generated LLVM IR.
+                  --object-cache <path>        Opt-in trusted-local native object cache.
+                  --native-tool <path>         Select the LLVM/platform tool.
+                """
+        } else {
+            ""
+        }
+        let usage = if command == "run" {
+            "Usage: loom run [package] [options] -- [program arguments...]\n\n"
+        } else {
+            concat("Usage: loom ", concat(command, " [package] [options]\n\n"))
+        }
+        let flags = if native == "" {
+            common
+        } else {
+            concat(common, concat("\n", native))
+        }
+        return concat(usage, concat(details, concat("\n\n", flags)))
+    }
+    """
+        Loom source compiler
+
+        Usage: loom <command> [arguments]
+
+          init <name>          Create a module with source and tests.
+          check [package]      Check source, types and required proofs.
+          build [package]      Build a native executable.
+          test [package]       Check and run private package tests.
+          run [package]        Build and run the selected package.
+          resolve [package]    Resolve dependencies and update loom.lock.
+          fmt [paths...]       Format source files.
+          lex <files...>       Inspect source tokens.
+          parse <files...>     Inspect source declarations.
+          emit-checked         Write private bootstrap IR.
+
+        Use loom <command> --help for options, or --version for tool identity.
+        """
+}
