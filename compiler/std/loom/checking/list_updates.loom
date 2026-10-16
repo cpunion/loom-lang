@@ -2,6 +2,11 @@ import std.loom.proof.verify_preservation
 import std.loom.proof.sequence_operation
 import std.loom.proof.preserves_update_expression
 
+fn update_literal(value Expr) Bool {
+    value.kind == ExprKind.Integer || value.kind == ExprKind.Bool ||
+    value.kind == ExprKind.Text || value.kind == ExprKind.Float
+}
+
 fn proved_update_expression(env Environment, functions List[Function], value Expr) Bool {
     if env.expanding_helpers || env.stage_depth >= 32 {
         return false
@@ -14,9 +19,7 @@ fn proved_update_expression(env Environment, functions List[Function], value Exp
         var dependent = false
         var argument = 1
         while argument < length(value.children) {
-            let kind = get(value.children, argument).kind
-            dependent = dependent || (kind != ExprKind.Integer && kind != ExprKind.Bool &&
-                kind != ExprKind.Text && kind != ExprKind.Float)
+            dependent = dependent || !update_literal(get(value.children, argument))
             argument = argument + 1
         }
         // The preceding probe already kept these exact literals. Rebuilding
@@ -181,7 +184,7 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
                 mutable = false
                 is_scoped = false
             })
-        push(arguments, if index != 0 && input.kind == ExprKind.Integer {
+        push(arguments, if index != 0 && update_literal(input) {
                 input
             } else if input.ty != source.ty {
                 expression(ExprKind.Coerce, input.ty, node, "", -1, [source], true)
@@ -355,8 +358,7 @@ fn list_mutation_input(probe ListMutationInputs, argument Expr, depth Int) Resul
                 }
             })
     }
-    Result.Ok(if argument.kind == ExprKind.Integer || argument.kind == ExprKind.Bool ||
-        argument.kind == ExprKind.Text || argument.kind == ExprKind.Float {
+    Result.Ok(if update_literal(argument) {
             argument
         } else if argument.ty != ty {
             expression(ExprKind.Coerce, argument.ty, probe.node, "", -1, expressions(input), true)

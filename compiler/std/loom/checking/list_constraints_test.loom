@@ -112,6 +112,22 @@ test fn atomic_updates_preserve_dependent_arguments_and_receiver_paths() {
         pub fn update_field(store Store) {
             store.values[0] = store.values[1]
         }
+
+        type Flags = List[Bool] where length(self) > 0 && self[0]
+        type Words = List[Text] where length(self) > 0 && self[0] == "ready"
+        type Samples = List[Float] where length(self) > 0 && self[0] >= 0.0
+
+        pub fn set_flag(values Flags) {
+            values[0] = true
+        }
+
+        pub fn set_word(values Words) {
+            values[0] = "ready"
+        }
+
+        pub fn set_sample(values Samples) {
+            values[0] = 0.0
+        }
         """))
     list_constraint_reject(concat(header, """
         pub fn invalid(values Pair) {

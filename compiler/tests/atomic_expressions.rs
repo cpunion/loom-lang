@@ -20,6 +20,22 @@ fn copy_second(values Pair) {
 fn copy_first(values Pair) {
     values[1] = values[0]
 }
+
+type Flags = List[Bool] where length(self) > 0 && self[0]
+type Words = List[Text] where length(self) > 0 && self[0] == "ready"
+type Samples = List[Float] where length(self) > 0 && self[0] >= 0.0
+
+fn set_flag(values Flags) {
+    values[0] = true
+}
+
+fn set_word(values Words) {
+    values[0] = "ready"
+}
+
+fn set_sample(values Samples) {
+    values[0] = 0.0
+}
 "#;
     for shared in [false, true, false] {
         let entry = if shared {
@@ -44,6 +60,13 @@ fn main() {
     copy_second(values)
     copy_first(values)
     assert values[0] == 2 && values[1] == 2
+    let flags = Flags([true])
+    let words = Words(["ready"])
+    let samples = Samples([1.0])
+    set_flag(flags)
+    set_word(words)
+    set_sample(samples)
+    assert flags[0] && words[0] == "ready" && samples[0] == 0.0
 }
 "#
         };
