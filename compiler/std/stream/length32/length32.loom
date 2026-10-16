@@ -29,6 +29,10 @@ record Cursor {
 }
 
 pub record Frames[S Stream, E] {
+    state State[S, E]
+}
+
+record State[S Stream, E] {
     source S
     bytes fn(S.Item) Result[Bytes, E]
     maximum Int
@@ -52,10 +56,12 @@ pub fn frames[S Stream, E](source S, bytes fn(S.Item) Result[Bytes, E], maximum 
 requires maximum >= 0 && maximum <= 4294967295
 {
     Frames[S, E] {
-        source = source
-        bytes = bytes
-        maximum = maximum
-        cursor = cursor()
+        state = State[S, E] {
+            source = source
+            bytes = bytes
+            maximum = maximum
+            cursor = cursor()
+        }
     }
 }
 
@@ -64,10 +70,12 @@ pub fn frames[A, S Stream + Dispose + MustScope, E](create fn(A) S, input A,
 requires maximum >= 0 && maximum <= 4294967295
 {
     Frames[S, E] {
-        source = create(input)
-        bytes = bytes
-        maximum = maximum
-        cursor = cursor()
+        state = State[S, E] {
+            source = create(input)
+            bytes = bytes
+            maximum = maximum
+            cursor = cursor()
+        }
     }
 }
 
@@ -76,10 +84,12 @@ pub fn frames[A, S Stream + Dispose + MustScope, E, F](create fn(A) Result[S, F]
 requires maximum >= 0 && maximum <= 4294967295
 {
     Result.Ok(Frames[S, E] {
-            source = create(input)?
-            bytes = bytes
-            maximum = maximum
-            cursor = cursor()
+            state = State[S, E] {
+                source = create(input)?
+                bytes = bytes
+                maximum = maximum
+                cursor = cursor()
+            }
         })
 }
 
@@ -108,11 +118,11 @@ impl[S Stream, E] Stream for Frames[S, E] {
     type Item = Result[Bytes, FrameError[E]]
 
     async fn next(self Frames[S, E]) Option[Result[Bytes, FrameError[E]]] {
-        if self.cursor[0].ended {
+        if self.state.cursor[0].ended {
             return Option.None
         }
         while true {
-            let current = self.cursor[0]
+            let current = self.state.cursor[0]
             let size = length(current.chunk)
             if current.position < size {
                 if current.header_bytes < 4 {
@@ -124,18 +134,18 @@ impl[S Stream, E] Stream for Frames[S, E] {
                         position = position + 1
                         count = count + 1
                     }
-                    self.cursor[0] = Cursor {
+                    self.state.cursor[0] = Cursor {
                         position = position
                         header_bytes = count
                         announced = announced
                         ..current
                     }
                     if count == 4 {
-                        if announced > self.maximum {
-                            return failed[E](self.cursor, FrameError.TooLarge(announced))
+                        if announced > self.state.maximum {
+                            return failed[E](self.state.cursor, FrameError.TooLarge(announced))
                         }
                         if announced == 0 {
-                            return ready[E](self.cursor)
+                            return ready[E](self.state.cursor)
                         }
                     }
                 } else {
@@ -151,42 +161,42 @@ impl[S Stream, E] Stream for Frames[S, E] {
                         push(current.payload, get(current.chunk, current.position + index))
                         index = index + 1
                     }
-                    self.cursor[0] = Cursor {
+                    self.state.cursor[0] = Cursor {
                         position = current.position + count
                         ..current
                     }
                     if length(current.payload) == current.announced {
-                        return ready[E](self.cursor)
+                        return ready[E](self.state.cursor)
                     }
                 }
             } else {
                 // A failed/cancelled pull or converter cannot replay consumed
                 // input. Retire retained buffers unless this pull completes.
-                self.cursor[0] = Cursor {
+                self.state.cursor[0] = Cursor {
                     chunk = new()
                     payload = new()
                     ended = true
                     ..current
                 }
-                match self.source.next().await {
+                match self.state.source.next().await {
                     Option.None => {
                         if current.header_bytes == 0 {
                             return Option.None
                         }
                         return if current.header_bytes < 4 {
-                            failed[E](self.cursor, FrameError.TruncatedHeader(current.header_bytes))
+                            failed[E](self.state.cursor, FrameError.TruncatedHeader(current.header_bytes))
                         } else {
-                            failed[E](self.cursor, FrameError.TruncatedPayload(current.announced, length(current.payload)))
+                            failed[E](self.state.cursor, FrameError.TruncatedPayload(current.announced, length(current.payload)))
                         }
                     }
                     Option.Some(item) => {
-                        let chunk = match self.bytes(item) {
+                        let chunk = match self.state.bytes(item) {
                             Result.Ok(value) => value
                             Result.Err(error) => {
-                                return failed[E](self.cursor, FrameError.Input(error))
+                                return failed[E](self.state.cursor, FrameError.Input(error))
                             }
                         }
-                        self.cursor[0] = Cursor {
+                        self.state.cursor[0] = Cursor {
                             chunk = chunk
                             position = 0
                             ended = false
@@ -205,6 +215,11 @@ impl[S Stream + Dispose + MustScope, E] MustScope for Frames[S, E] {
 
 impl[S Stream + Dispose + MustScope, E] Dispose for Frames[S, E] {
     fn dispose(self Frames[S, E]) {
+    }
+}
+
+impl[S Stream + Dispose + MustScope, E] Dispose for State[S, E] {
+    fn dispose(self State[S, E]) {
     }
 }
 
