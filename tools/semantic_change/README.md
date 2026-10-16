@@ -36,6 +36,10 @@ join an overload set only if checked calls and function references keep their
 identified targets; ambiguous or changed bindings still require resolution.
 Public/generic renames and moves
 across package identities still require explicit resolution.
+Private rename composition also rejects packages exporting a macro generator:
+generated Text/AST can bind private helpers in the definition context, outside
+the checked import closure. The shared invocation-signature query identifies
+these providers; ordinary functions returning Text are not treated as macros.
 This is not behavior-equivalence proof, an
 arbitrary semantic VCS or an execution engine. Checking does not launch the
 application or replay runtime effects; ordinary compile-time checking still runs.

@@ -1,0 +1,115 @@
+fn generator_revision(name Text, step Text, generator Text, imported Bool) Revision {
+    let source = replace(replace("""
+        fn NAME() Int {
+            STEP
+        }
+        """, "NAME", name), "STEP", step)
+    let caller = replace("""
+        fn entry() Int {
+            NAME()
+        }
+        """, "NAME", name)
+    let revision = renamed_case(name, "value.loom", source, caller)
+    push(revision.files, File {
+            path = "generator.loom"
+            text = concat(if imported {
+                    "import std.reflect.Schema\n"
+                } else {
+                    ""
+                }, generator)
+        })
+    push(revision.identities, Identity {
+            id = "generator-id"
+            path = "generator.loom"
+            kind = NodeKind.Function
+            name = "generated"
+            key = key(generator)
+        })
+    revision
+}
+
+fn generator_context(base Revision) Project {
+    let project = rename_context(base)
+    push(project.modules, ModuleInstance {
+            name = "std"
+            source = "/standard"
+        })
+    push(project.packages, Package {
+            instance = 1
+            relative = "reflect"
+            imports = []
+        })
+    push(get(project.packages, project.root).imports, PackageImport {
+            spelling = "std.reflect"
+            target = 1
+        })
+    // A trusted signature-only fixture, not a runtime Schema implementation.
+    // The real standard library is exercised by the native provider/client trial.
+    let text = """
+        pub record Schema {
+            types List[Int]
+            root Int
+        }
+        """
+    push(project.files, SourceFile {
+            package = 1
+            path = "/standard/reflect/reflect.loom"
+            text = text
+            tree = package_tree(text)
+            test_only = false
+            trusted_std = true
+        })
+    project
+}
+
+test fn exported_generators_block_unaccounted_definition_context_renames() {
+    let generator = """
+        pub fn generated(types List[Schema]) Text {
+            discard types
+            "amount()"
+        }
+        """
+    let base = generator_revision("amount", "1", generator, true)
+    let left = generator_revision("balance", "1", generator, true)
+    let right = generator_revision("amount", "2", generator, true)
+    let context = generator_context(base)
+    match merge_with_context(base, left, right, context, context, "pkg") {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "generated definition-context references")
+        }
+    }
+    match merge_packages(proof_package(base), proof_package(left), proof_package(right), context, context) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "generated definition-context references")
+        }
+    }
+}
+
+test fn ordinary_text_results_do_not_make_a_function_a_generator() {
+    let generator = """
+        pub fn generated(value Int) Text {
+            discard value
+            "amount()"
+        }
+        """
+    let base = generator_revision("amount", "1", generator, false)
+    let left = generator_revision("balance", "1", generator, false)
+    let right = generator_revision("amount", "2", generator, false)
+    match merge(base, left, right) {
+        Result.Ok(value) => {
+            assert contains(get(value.files, 0).text, "fn balance()")
+            assert contains(get(value.files, 0).text, "2")
+            assert contains(get(value.files, 2).text, "\"amount()\"")
+        }
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+        }
+    }
+}
