@@ -166,8 +166,10 @@ virtual edit must pass every selected package's type and contract checks before
 it is offered. Discovery uses the recursive test boundary: nested modules,
 hidden/build directories and directory symlinks are excluded. This is a local
 module edit, not an API migration for external consumers or dependency snapshots.
-It refuses overloads, generated code, unaccounted occurrences, name collisions,
-and invalid identifiers.
+A private function can leave an overload set: only its exact checked calls,
+typed callbacks and private-test references change, not sibling declarations.
+The replacement name must still be unused. Public overload renames, generated
+code, unaccounted occurrences, name collisions and invalid identifiers reject.
 Runtime-local rename also works in compile-time-specialized functions and selected
 branches when checked instances account for every occurrence. Unobserved uses,
 nested closures and compile-time iteration still refuse the edit.

@@ -342,9 +342,9 @@ fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool
     false
 }
 
-// Private declarations cannot be imported by another package. Keep this
-// strictly to one ordinary declaration in the selected package. Public edits
-// use module-wide package checks instead.
+// Private declarations cannot be imported by another package. Select an exact
+// ordinary declaration; a private function may leave an overload set. Public
+// edits use module-wide package checks instead.
 fn editor_declaration_authority(analysis Analysis, target Location, public Bool) Bool {
     let files = analysis.bindings.files
     let root = analysis.bindings.root
@@ -364,6 +364,7 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
     let package = get(files, target.file).package
     var matches = 0
     var selected = false
+    var selected_function = false
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let symbol = get(analysis.bindings.symbols, index)
@@ -378,7 +379,10 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
                     Result.Ok(tokens) => {
                         match editor_name(tokens, symbol.node) {
                             Option.Some(span) => {
-                                selected = editor_same_span(span, target.span)
+                                if editor_same_span(span, target.span) {
+                                    selected = true
+                                    selected_function = kind == NodeKind.Function
+                                }
                             }
                             Option.None => {
                             }
@@ -391,7 +395,7 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
         }
         index = index + 1
     }
-    matches == 1 && selected
+    selected && (matches == 1 || (!public && selected_function))
 }
 
 // An unaccounted same-spelled token could be an unchecked use (for example in

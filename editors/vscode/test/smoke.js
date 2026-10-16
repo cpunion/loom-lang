@@ -407,6 +407,56 @@ fn pending(comptime flag Bool) Int {
     assert.deepEqual((await client.wait(file, 5)).diagnostics, []);
     const publicEdit = await renameAt('utility');
     assert.deepEqual(Object.keys(publicEdit.changes).sort(), [helperUri, testUri, uri].sort());
+
+    const overloaded = `fn helper(value Int) Int {
+    value + 1
+}
+
+fn helper(value Bool) Int {
+    if value { 9 } else { 0 }
+}
+`;
+    const overloadMain = `fn main() {
+    let callback fn(Int) Int = helper
+    assert callback(2) == helper(2)
+    assert helper(true) == 9
+}
+`;
+    const overloadTest = `test fn selected_overloads() {
+    assert helper(3) == 4
+    assert helper(false) == 0
+}
+`;
+    await client.change(helper, overloaded, 6);
+    await client.change(file, overloadMain, 6);
+    await client.change(helperTest, overloadTest, 6);
+    assert.deepEqual((await client.wait(file, 6)).diagnostics, []);
+    const overloadAt = (file, text, offset) => ({
+      textDocument: { uri: URI.file(file).toString() },
+      position: TextDocument.create(URI.file(file).toString(), 'loom', 6, text).positionAt(offset),
+      newName: 'utility',
+    });
+    const selected = overloadAt(file, overloadMain, overloadMain.indexOf('helper(2)'));
+    const split = await client.rpc.sendRequest('textDocument/rename', selected);
+    assert.deepEqual(Object.keys(split.changes).sort(), [helperUri, testUri, uri].sort());
+    assert.equal(split.changes[uri].length, 2); // Exact call and typed callback.
+    assert.equal(split.changes[helperUri].length, 1);
+    assert.equal(split.changes[testUri].length, 1);
+    assert.deepEqual(await client.rpc.sendRequest('textDocument/rename',
+      overloadAt(helper, overloaded, overloaded.indexOf('helper'))), split);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename',
+      { ...selected, newName: 'callback' }), /conflict/);
+    const boolean = await client.rpc.sendRequest('textDocument/rename',
+      overloadAt(helper, overloaded, overloaded.lastIndexOf('helper')));
+    assert.equal(boolean.changes[uri].length, 1);
+    assert.equal(boolean.changes[testUri].length, 1);
+    for (const [target, text] of [[helper, overloaded], [file, overloadMain], [helperTest, overloadTest]]) {
+      const targetUri = URI.file(target).toString();
+      const revised = TextDocument.applyEdits(TextDocument.create(targetUri, 'loom', 6, text), split.changes[targetUri]);
+      assert.ok(revised.includes(target === helper ? 'fn helper(value Bool)' : 'helper('));
+      await client.change(target, revised, 7);
+    }
+    assert.deepEqual((await client.wait(file, 7)).diagnostics, []);
     assert.equal(await fs.readFile(file, 'utf8'), savedMain);
     assert.equal(await fs.readFile(helper, 'utf8'), savedHelper);
     assert.equal(await fs.readFile(helperTest, 'utf8'), savedTest);
