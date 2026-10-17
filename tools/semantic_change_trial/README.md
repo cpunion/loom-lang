@@ -53,16 +53,20 @@ Failed staging is retained for recovery and never replaces the requested output.
 As with single-package apply, publication assumes a trusted local workspace;
 native rename is neither no-clobber against racing writers nor crash-durable.
 
-Explicit private nongeneric function renames also compose with independent
+Explicit private function renames also compose with independent
 body edits and moves within these packages. Each rename uses stable sidecar
 identity and checked reference-token edits in that complete branch's module
 context, including the package's own tests. A selected overload may change name
 without renaming its siblings; creating a valid overload set still requires
 every retained call and function reference to keep its checked target.
 Local capture, ambiguous overloads,
-public/generic targets and missing binding evidence require resolution; names
+public targets and missing binding evidence require resolution; names
 in other packages are not rewritten. The combined result still passes the
 normal production and per-package test checks.
+Generic bodies require checked abstract bindings, not guessed type arguments
+or only the observed concrete instances. Those bindings must agree. Every
+reference must still have a unique checked definition;
+unselected static branches and unsupported generic forms require resolution.
 Exported macro providers require explicit resolution for private rename
 composition, even without a current invocation in the selected package.
 Source-token checks cannot preserve their hidden definition-context references.
@@ -121,8 +125,8 @@ sidecar declaration ID and relative span, or to the same location in the pinned
 dependency closure. Concrete type annotations, record initializer labels and
 each member of a value path use compiler binding evidence; equal field names
 do not unify distinct record owners. Missing or ambiguous checked evidence,
-unsupported source forms and reference-bearing generic
-declarations require explicit resolution. This preserves checked reference
+unsupported source forms and generic references without unique checked
+evidence require explicit resolution. This preserves checked reference
 bindings only in that subset; it does not prove behavior equivalence or
 arbitrary semantic merges. A dependency closure that invalidates the exact
 baseline is rejected even if a proposed package edit would type-check against
@@ -157,12 +161,12 @@ published by rename from a private stage; refresh leaves the prior sidecar
 there as a recovery copy. Source files are never rewritten. `init` accepts
 dotted lowercase package names outside `std`. These commands maintain
 identity metadata for parseable source; they do not prove a successful build.
-`--move` can also record a private, nongeneric function rename. Merge composes
+`--move` can also record a private function rename. Merge composes
 that explicit identity change with an independent move/body edit by normalizing
 declaration and checked reference tokens, then comparing bindings in production
 and test views. Comments and unrelated strings are retained. A local shadow
 that captures a renamed call rejects even if it still type-checks. Conflicting
-renames, overload/name collisions, public API renames, generic targets and
+renames, overload/name collisions, public API renames and
 reference forms without complete evidence still need explicit resolution.
 Keep `.loom-ids-stage-*` recovery directories out of source commits.
 `scan DIR` lists current kind/name/file/key locators without writing metadata;

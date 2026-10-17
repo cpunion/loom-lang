@@ -1,4 +1,5 @@
 import std.loom.analysis.Analysis
+import std.loom.analysis.Inspection
 import std.loom.analysis.inspect_at
 import std.loom.analysis.inspect_independent
 import std.loom.analysis.Location
@@ -61,11 +62,24 @@ record Entry {
     end Int
     body Text
     header Text
+    abstract_body Bool
 }
 
 record Indexed {
     revision Revision
     entries List[Entry]
+}
+
+fn needs_abstract_bindings(node Node) Bool {
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.TypeParameters && length(child.children) > 0 {
+            return true
+        }
+        index = index + 1
+    }
+    false
 }
 
 // A source location is only stable across analyses after it is tied either to
@@ -217,6 +231,7 @@ fn indexed(revision Revision) Result[Indexed, Text] {
                     end = node.span.end
                     body = slice(file.text, node.span.start, node.span.end)
                     header = declaration_header(file.text, node)
+                    abstract_body = needs_abstract_bindings(node)
                 })
             declaration = declaration + 1
         }
@@ -360,9 +375,9 @@ fn reference_sites(entry Entry) Result[List[Int], Text] {
         child = child + 1
     }
     discard source_sites(declaration, NodeKind.File, tokens, parameters, sites)?
-    if length(parameters) > 0 && length(sites) > 0 {
-        return Result.Err("uninstantiated generic references need explicit binding review")
-    }
+    // Generic bodies use the same per-site binding comparison. The compiler
+    // can inspect a checked abstract declaration without a runtime instance;
+    // missing or ambiguous evidence still rejects in reference_inspection.
     Result.Ok(sites)
 }
 
@@ -425,20 +440,16 @@ fn same_target(left BindingTarget, right BindingTarget) Bool {
     left.start == right.start && left.end == right.end
 }
 
-fn target_at(analysis Analysis, revision Indexed, directory Text, entry Entry, offset Int) Result[BindingTarget, Text] {
-    let file = analysis_file(analysis, directory, entry.path)
-    if file < 0 {
-        return Result.Err("retained reference has no analyzed source file")
-    }
-    let inspected = match inspect_at(analysis, file, entry.start + offset) {
+fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body Bool) Result[Inspection, Text] {
+    let inspected = match inspect_at(analysis, file, offset) {
         Option.Some(value) => value
         Option.None => {
-            match inspect_independent(analysis.bindings, file, entry.start + offset,
+            match inspect_independent(analysis.bindings, file, offset,
                 proof_inputs(analysis.proof_backend)) {
                 Option.Some(value) => value
                 Option.None => {
                     return Result.Err(concat("retained reference has no checked binding evidence in ",
-                            concat(entry.id, concat(" at ", to_text(offset)))))
+                            concat(get(analysis.bindings.files, file).path, concat(" at ", to_text(offset)))))
                 }
             }
         }
@@ -446,6 +457,36 @@ fn target_at(analysis Analysis, revision Indexed, directory Text, entry Entry, o
     if length(inspected.definitions) != 1 {
         return Result.Err("retained reference has no unique checked definition")
     }
+    if abstract_body {
+        // Observed specializations alone cannot account for a generic body.
+        // Require declaration-wide evidence too, and retain the concrete check
+        // above so different observed instances cannot silently select targets.
+        let abstract = match inspect_independent(analysis.bindings, file, offset,
+            proof_inputs(analysis.proof_backend)) {
+            Option.Some(value) => value
+            Option.None => {
+                return Result.Err("generic reference has no abstract binding evidence")
+            }
+        }
+        if length(abstract.definitions) != 1 {
+            return Result.Err("generic reference has instance-dependent binding evidence")
+        }
+        let expected = get(abstract.definitions, 0)
+        let observed = get(inspected.definitions, 0)
+        if expected.file != observed.file || expected.span.start != observed.span.start ||
+        expected.span.end != observed.span.end {
+            return Result.Err("generic reference has instance-dependent binding evidence")
+        }
+    }
+    Result.Ok(inspected)
+}
+
+fn target_at(analysis Analysis, revision Indexed, directory Text, entry Entry, offset Int) Result[BindingTarget, Text] {
+    let file = analysis_file(analysis, directory, entry.path)
+    if file < 0 {
+        return Result.Err("retained reference has no analyzed source file")
+    }
+    let inspected = reference_inspection(analysis, file, entry.start + offset, entry.abstract_body)?
     binding_target(analysis, revision, directory, get(inspected.definitions, 0))
 }
 

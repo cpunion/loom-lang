@@ -30,21 +30,13 @@ fn rename_name(entry Entry) Result[Token, Text] {
     if entry.kind != NodeKind.Function || has(declaration, NodeKind.Public) {
         return Result.Err("rename composition requires a private function")
     }
-    var index = 0
-    while index < length(declaration.children) {
-        let group = get(declaration.children, index)
-        if group.kind == NodeKind.TypeParameters && length(group.children) != 0 {
-            return Result.Err("generic rename composition requires explicit resolution")
-        }
-        index = index + 1
-    }
     let tokens = match lex(entry.body) {
         Result.Ok(value) => value
         Result.Err(problem) => {
             return Result.Err(problem.message)
         }
     }
-    index = 0
+    var index = 0
     while index < length(tokens) {
         let token = get(tokens, index)
         if token.kind == Kind.Name && token.value == entry.name {

@@ -1,0 +1,167 @@
+import std.list.set
+import std.text.replace
+
+fn generic_rename_case(name Text, path Text, local Text, caller Text) Revision {
+    let body = replace(replace("""
+        fn FUNCTION[T](value T) T {
+            let LOCAL T = value
+            LOCAL
+        }
+        """, "FUNCTION", name), "LOCAL", local)
+    let revision = renamed_case(name, path, body, caller)
+    set(revision.identities, 0, Identity {
+            key = key(body)
+            ..get(revision.identities, 0)
+        })
+    set(revision.identities, 1, Identity {
+            key = key(caller)
+            ..get(revision.identities, 1)
+        })
+    revision
+}
+
+fn generic_rename_caller(name Text) Text {
+    replace("""
+        fn entry[Item](input Item) Item {
+            FUNCTION(input)
+        }
+        """, "FUNCTION", name)
+}
+
+fn generic_package_case(revision Revision) List[PackageRevision] {
+    [PackageRevision {
+            directory = "pkg"
+            revision = revision
+        }]
+}
+
+fn generic_closure_case(name Text) Revision {
+    let body = replace("""
+        fn FUNCTION[T](value T) T {
+            let apply = fn(inner T) T {
+                inner
+            }
+            apply(value)
+        }
+        """, "FUNCTION", name)
+    let caller = replace("""
+        pub fn entry() Int {
+            FUNCTION(1)
+        }
+        """, "FUNCTION", name)
+    let revision = renamed_case(name, "value.loom", body, caller)
+    set(revision.identities, 0, Identity {
+            key = key(body)
+            ..get(revision.identities, 0)
+        })
+    revision
+}
+
+test fn generic_rename_requires_abstract_evidence_even_with_a_concrete_caller() {
+    // The Int instance exposes the closure's inner binding, but the abstract
+    // query does not yet account for nested closure bodies. Do not substitute
+    // that one observed instance for declaration-wide binding evidence.
+    let base = generic_closure_case("amount")
+    assert match merge(base, generic_closure_case("balance"), base) {
+        Result.Err(message) => contains(message, "generic reference has no abstract binding evidence")
+        Result.Ok(_) => {
+            discard write_error("merge accepted a concrete-only nested closure binding")
+            false
+        }
+    }
+}
+
+test fn generic_function_rename_move_and_edit_use_uninstantiated_bindings() {
+    // Neither function has a concrete caller. Compare the checked abstract
+    // declarations rather than inventing runtime instances or guessing names.
+    let base = generic_rename_case("amount", "value.loom", "saved", generic_rename_caller("amount"))
+    let renamed = generic_rename_case("balance", "app.loom", "saved", generic_rename_caller("balance"))
+    let edited = generic_rename_case("amount", "value.loom", "updated", generic_rename_caller("amount"))
+    let branches = [renamed, edited]
+    var order = 0
+    while order < 2 {
+        match merge(base, get(branches, order), get(branches, 1 - order)) {
+            Result.Ok(merged) => {
+                let source = get(merged.files, 1).text
+                assert get(merged.files, 0).text == ""
+                assert contains(source, "fn balance[T](value T) T")
+                assert contains(source, "let updated T = value")
+                assert contains(source, "balance(input)")
+                assert !contains(source, "amount")
+                assert get(merged.identities, 0).id == "amount-id"
+                assert get(merged.identities, 0).name == "balance"
+                assert get(merged.identities, 0).key == get(base.identities, 0).key
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        let context = rename_context(base)
+        match merge_with_context(base, get(branches, order), get(branches, 1 - order), context, context, "pkg") {
+            Result.Ok(merged) => {
+                assert contains(get(merged.files, 1).text, "fn balance[T]")
+                assert contains(get(merged.files, 1).text, "let updated T = value")
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        match merge_packages(generic_package_case(base), generic_package_case(get(branches, order)),
+            generic_package_case(get(branches, 1 - order)), context, context) {
+            Result.Ok(merged) => {
+                assert length(merged) == 1
+                assert contains(get(get(merged, 0).revision.files, 1).text, "fn balance[T]")
+                assert contains(get(get(merged, 0).revision.files, 1).text, "let updated T = value")
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        order = order + 1
+    }
+}
+
+test fn generic_rename_rejects_a_capturing_local_function() {
+    let caller = """
+        fn entry() Int {
+            amount(1)
+        }
+        """
+    let base = generic_rename_case("amount", "value.loom", "saved", caller)
+    let renamed = generic_rename_case("balance", "value.loom", "saved", replace(caller, "amount", "balance"))
+    let edited = generic_rename_case("amount", "value.loom", "updated", """
+        fn entry() Int {
+            let balance = fn(value Int) Int {
+                value
+            }
+            discard balance
+            amount(1)
+        }
+        """)
+    assert match merge(base, renamed, edited) {
+        Result.Err(message) => contains(message, "reference binding")
+        Result.Ok(_) => false
+    }
+}
+
+test fn generic_rename_does_not_invent_bindings_in_static_branches() {
+    let caller = """
+        fn entry[Item](comptime enabled Bool, input Item) Item {
+            comptime if enabled {
+                amount(input)
+            } else {
+                input
+            }
+        }
+        """
+    let base = generic_rename_case("amount", "value.loom", "saved", caller)
+    let renamed = generic_rename_case("balance", "value.loom", "saved", replace(caller, "amount", "balance"))
+    let edited = generic_rename_case("amount", "value.loom", "updated", caller)
+    assert match merge(base, renamed, edited) {
+        Result.Err(message) => contains(message, "source reference form has no binding comparison support")
+        Result.Ok(_) => false
+    }
+}
