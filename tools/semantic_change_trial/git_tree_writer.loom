@@ -1,13 +1,21 @@
 import std.bytes.to_text
 
 fn git_mode_at(tree GitTree, path Text) Text {
-    var index = 0
-    while index < length(tree.entries) {
+    // Git tree construction sorts metadata once; mode planning performs no
+    // repeated full-repository scans for each proposed file.
+    var low = 0
+    var high = length(tree.entries)
+    while low < high {
+        let index = low + (high - low) / 2
         let entry = get(tree.entries, index)
         if entry.relative == path {
             return entry.mode
         }
-        index = index + 1
+        if git_name_before(entry.relative, path) {
+            low = index + 1
+        } else {
+            high = index
+        }
     }
     ""
 }
@@ -124,6 +132,21 @@ fn git_append(output Bytes, value Text) {
     }
 }
 
+fn git_object_id(value Text, size Int) Bool {
+    if std.text.length(value) != size {
+        return false
+    }
+    var index = 0
+    while index < size {
+        let part = byte(value, index)
+        if !((part >= 48 && part <= 57) || (part >= 97 && part <= 102)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
 fn write_git_result(executable Text, repository Text, stage Text, base GitTree,
     prefix Text, writes List[GitWrite]) Result[Text, Text] {
     let merged = join_path(stage, "merged")
@@ -179,6 +202,9 @@ fn write_git_result(executable Text, repository Text, stage Text, base GitTree,
     index = 0
     while index < length(writes) {
         let write = get(writes, index)
+        if !git_object_id(get(objects, index), std.text.length(base.commit)) {
+            return Result.Err("invalid Git blob object identity")
+        }
         git_append(updates, concat(write.mode, concat(" ", concat(get(objects, index), concat("\t", write.relative)))))
         std.bytes.push(updates, 0)
         index = index + 1
@@ -186,7 +212,13 @@ fn write_git_result(executable Text, repository Text, stage Text, base GitTree,
     discard git_bytes(executable, repository, ["update-index", "-z", "--index-info"], updates, index_file)?
     let tree = git_bytes(executable, repository, ["write-tree"], std.bytes.new(), index_file)?
     match decode_utf8(tree) {
-        Result.Ok(value) => Result.Ok(trim(value))
+        Result.Ok(value) => {
+            let identity = trim(value)
+            if !git_object_id(identity, std.text.length(base.commit)) {
+                return Result.Err("invalid Git result tree identity")
+            }
+            Result.Ok(identity)
+        }
         Result.Err(_) => Result.Err("invalid Git result tree identity")
     }
 }

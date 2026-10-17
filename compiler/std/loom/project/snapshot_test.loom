@@ -154,7 +154,6 @@ test fn git_batch_preserves_binary_files_and_fingerprints_actual_membership() {
     defer {
         discard remove_staging(root)
     }
-    let files = snapshot_parsed(snapshot_tree_line("目录/raw.bin", "100644", snapshot_oid()), 40)
     let output = snapshot_buffer(concat(snapshot_oid(), " blob 3\n"))
     std.bytes.push(output, 0)
     std.bytes.push(output, 255)

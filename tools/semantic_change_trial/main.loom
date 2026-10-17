@@ -313,6 +313,8 @@ fn git_bytes(git_executable Text, repository Text, operation List[Text], input B
     push(command, git_executable)
     push(command, "--no-replace-objects")
     push(command, "--no-optional-locks")
+    push(command, "-c")
+    push(command, "core.fsmonitor=false")
     push(command, "-C")
     push(command, git_path(repository))
     var index = 0
@@ -320,7 +322,14 @@ fn git_bytes(git_executable Text, repository Text, operation List[Text], input B
         push(command, get(operation, index))
         index = index + 1
     }
-    let changes = [EnvChange.Set("GIT_NO_LAZY_FETCH", "1"), EnvChange.Set("GIT_TERMINAL_PROMPT", "0")]
+    let changes = [EnvChange.Set("GIT_NO_LAZY_FETCH", "1"), EnvChange.Set("GIT_TERMINAL_PROMPT", "0"),
+        EnvChange.Set("GIT_ALLOW_PROTOCOL", "")]
+    let overrides = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]
+    index = 0
+    while index < length(overrides) {
+        push(changes, EnvChange.Remove(get(overrides, index)))
+        index = index + 1
+    }
     push(changes, if index_file == "" {
             EnvChange.Remove("GIT_INDEX_FILE")
         } else {

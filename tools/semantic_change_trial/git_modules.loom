@@ -1,4 +1,5 @@
 import std.list.set
+import std.list.sorted
 
 record GitEntry {
     relative Text
@@ -17,6 +18,23 @@ record GitPackageFiles {
     relative Text
     files List[File]
     metadata Text
+}
+
+fn git_name_before(left Text, right Text) Bool {
+    var index = 0
+    while index < std.text.length(left) && index < std.text.length(right) {
+        let a = byte(left, index)
+        let b = byte(right, index)
+        if a != b {
+            return a < b
+        }
+        index = index + 1
+    }
+    std.text.length(left) < std.text.length(right)
+}
+
+fn git_entry_before(left GitEntry, right GitEntry) Bool {
+    git_name_before(left.relative, right.relative)
 }
 
 // One tree listing serves both package and module inputs. Blobs are read by
@@ -70,7 +88,7 @@ fn git_commit_tree(executable Text, repository Text, directory Text, commit Text
     }
     Result.Ok(GitTree {
             commit = commit
-            entries = entries
+            entries = sorted(entries, git_entry_before)
             raw = raw
         })
 }

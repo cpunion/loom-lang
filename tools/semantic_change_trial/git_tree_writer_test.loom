@@ -1,0 +1,41 @@
+fn mode_tree(mode Text) GitTree {
+    GitTree {
+        commit = "commit"
+        raw = std.bytes.new()
+        entries = if mode == "" {
+            new[GitEntry]()
+        } else {
+            [GitEntry {
+                    relative = "file"
+                    object = "object"
+                    mode = mode
+                    regular = true
+                }]
+        }
+    }
+}
+
+test fn git_modes_merge_independently_without_losing_deletion_conflicts() {
+    let base = mode_tree("100644")
+    let changed = mode_tree("100755")
+    let absent = mode_tree("")
+    assert match git_merged_mode("file", base, changed, base) {
+        Result.Ok(value) => value == "100755"
+        Result.Err(_) => false
+    }
+    assert match git_merged_mode("file", absent, base, changed) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let empty = ModuleReview {
+        packages = new[Review]()
+        relative = new[Text]()
+        assets = new[Asset]()
+        token = ""
+    }
+    assert match git_module_writes(empty, "", base, absent, changed) {
+        Result.Err(message) => contains(message, "deletion versus file-mode")
+        Result.Ok(_) => false
+    }
+    assert git_quote_path("a\"b\\c\n") == "\"a\\\"b\\\\c\\012\""
+}
