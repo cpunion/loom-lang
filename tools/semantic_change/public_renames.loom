@@ -101,21 +101,8 @@ fn public_import_name(analysis Analysis, scopes List[PackageScope], renames List
 
 fn public_package_edits(analysis Analysis, scopes List[PackageScope], scope PackageScope,
     renames List[FunctionRename], edits List[SourceRenameEdit], backend ProofBackend) Result[Bool, Text] {
-    let generators = match macro_generator_candidates(analysis.bindings, proof_inputs(backend)) {
-        Result.Ok(value) => value
-        Result.Err(problem) => {
-            return Result.Err(problem.diagnostic.message)
-        }
-    }
+    discard checked_rename_generators(analysis, scope.package, backend)?
     var index = 0
-    while index < length(generators) {
-        let symbol = get(analysis.bindings.symbols, get(generators, index))
-        if symbol.public && get(analysis.bindings.files, symbol.file).package == scope.package {
-            return Result.Err("rename cannot account for generated definition-context references; explicit resolution required")
-        }
-        index = index + 1
-    }
-    index = 0
     while index < length(scope.indexed.entries) {
         let entry = get(scope.indexed.entries, index)
         let sites = reference_sites(entry)?
