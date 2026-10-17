@@ -7,11 +7,17 @@ pub fn load_packages(paths List[Text], std_root Text, tests Bool) Result[Project
 // Read locks and requirements from the selected module, while reusing verified
 // snapshots under cache_base/target/loom-deps. Loading never fetches or writes.
 pub fn load_packages(paths List[Text], std_root Text, tests Bool, cache_base Text) Result[Project, Text] {
+    load_packages(paths, std_root, tests, cache_base, "")
+}
+
+// A staged repository can confine its effective path dependencies without
+// changing the selected graph policy or the verified Git-cache boundary.
+pub fn load_packages(paths List[Text], std_root Text, tests Bool, cache_base Text, source_root Text) Result[Project, Text] {
     if length(paths) == 0 {
         return Result.Err("package roots must not be empty")
     }
     let initial, root, _ = prepare_loader(get(paths, 0), std_root, "git", "",
-        new[OverlayFile](), new[LoadFailure](), cache_base)?
+        new[OverlayFile](), new[LoadFailure](), cache_base, source_root)?
     var loader = initial
     let owner = get(loader.packages, root).instance
     let module = get(loader.modules, owner)

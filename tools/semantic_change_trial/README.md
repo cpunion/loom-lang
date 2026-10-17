@@ -1,7 +1,7 @@
 # Semantic change trial
 
 This tool previews a three-way merge of one Loom package or a fixed-package
-module. Preview reads snapshots and **does not write** source or identity files:
+module. Preview **does not change input source, identity files or Git state**:
 
 ```sh
 target/loom run tools/semantic_change_trial -- \
@@ -99,8 +99,51 @@ Blob reads use one binary-safe batch per snapshot, not one Git process per file.
 Apply rechecks refs and context before publication. Tree exclusions and asset
 merge policy are the same as directory input, including rejection of symlinks,
 submodules, nested modules and unsupported config changes; file modes are not
-preserved. Package/import-graph changes and context loading wholly from Git
-remain unimplemented.
+preserved by this directory-output mode. Package/import-graph changes remain
+unimplemented.
+
+### Git-derived project context
+
+No baseline checkout is needed in automatic mode:
+
+```sh
+scratch="$(mktemp -d)"
+target/loom run tools/semantic_change_trial -- --git-module \
+  "$scratch" compiler/std CACHE_BASE /path/to/git /path/to/repo MODULE_DIR BASE LEFT RIGHT
+target/loom run tools/semantic_change_trial -- --apply TOKEN --git-module \
+  "$scratch" compiler/std CACHE_BASE /path/to/git /path/to/repo MODULE_DIR BASE LEFT RIGHT
+```
+
+`MODULE_DIR` is repository-root-relative (`.` selects the root). The caller must
+provide existing trusted private scratch storage. Each invocation extracts the
+baseline into its own temporary directory and cleans it on normal/error return;
+interrupted invocations or cleanup failures may leave an owned stage to remove.
+Those paths are not source identity. Analysis uses stable logical Git-basis paths,
+so review tokens survive different scratch directories with the same remaining
+inputs. Manifests, locks and monorepo path
+dependencies come from the baseline commit, never its current working copy.
+Path dependencies cannot escape the extracted repository. Locked Git sources
+must already be provisioned under `CACHE_BASE/target/loom-deps`; the ordinary
+loader verifies their actual bytes and membership and never fetches them.
+As with other merge modes, ambient file/target inputs are not enabled for proofs.
+
+Preview writes no Git objects. Apply validates the token and refs, then prints a
+new **Git tree ID**, not a directory or commit. It writes only content-addressed
+blob/tree objects in ordinary or bare repositories, using an invocation-private
+index. Existing refs, index and
+working files remain untouched; repeating the same reviewed operation yields
+the same tree. Inspect it with `git diff BASE TREE`, export it with `git archive`,
+or explicitly commit it through Git. A failed application may leave unreachable
+objects for normal Git garbage collection, but never overwrites current work.
+
+The new tree keeps unchanged repository entries. Within the selected module,
+regular executable modes merge by three-way equality; conflicting modes and
+deletion versus a mode change require resolution. Changes outside that module's
+semantic scope (including excluded tracked build files) also require resolution,
+not silent omission. Repository snapshots currently require regular files with
+portable paths: symlinks, submodules and case aliases reject. Fixed package/import
+graphs and compiler binding/proof restrictions still apply. This is not general
+repository merging or behavioral compatibility proof.
 
 ## Single-package snapshots
 

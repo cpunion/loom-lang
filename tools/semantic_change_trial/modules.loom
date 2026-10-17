@@ -180,14 +180,18 @@ fn module_stamp(snapshot ModuleSnapshot) Text {
 }
 
 fn module_context(base ModuleSnapshot, standard Text) Result[Context, Text] {
+    module_context(base, standard, "", "", "")
+}
+
+fn module_context(base ModuleSnapshot, standard Text, cache_base Text, source_root Text, logical_root Text) Result[Context, Text] {
     let paths = new[Text]()
     var index = 0
     while index < length(base.packages) {
         push(paths, module_path(base.directory, get(base.packages, index).relative))
         index = index + 1
     }
-    let production = load_packages(paths, standard, false)?
-    let tests = load_packages(paths, standard, true)?
+    let production = load_packages(paths, standard, false, cache_base, source_root)?
+    let tests = load_packages(paths, standard, true, cache_base, source_root)?
     let owner = get(production.packages, production.root).instance
     let module = get(production.modules, owner)
     if module.name == "" || module.name == "std" {
@@ -213,12 +217,12 @@ fn module_context(base ModuleSnapshot, standard Text) Result[Context, Text] {
     }
     let bytes = std.bytes.new()
     frame(bytes, "loom-semantic-module-context-v1")
-    discard framed_project(bytes, production)?
-    discard framed_project(bytes, tests)?
+    discard framed_project(bytes, production, source_root, logical_root)?
+    discard framed_project(bytes, tests, source_root, logical_root)?
     Result.Ok(Context {
-            production = production
-            tests = tests
-            directory = module.source
+            production = basis_project(production, source_root, logical_root)
+            tests = basis_project(tests, source_root, logical_root)
+            directory = basis_path(module.source, source_root, logical_root)
             stamp = hex(bytes)
         })
 }
@@ -290,7 +294,7 @@ fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
 }
 
 fn show_module(value ModuleReview) Text {
-    var output = concat("dry-run module semantic merge; no source or Git state written\nreview token: ", concat(value.token, "\n"))
+    var output = concat("dry-run module semantic merge; no input source or Git state changed\nreview token: ", concat(value.token, "\n"))
     var index = 0
     while index < length(value.packages) {
         let relative = get(value.relative, index)

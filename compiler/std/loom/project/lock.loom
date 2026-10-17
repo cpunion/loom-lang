@@ -44,6 +44,7 @@ record Snapshot {
 record Resolution {
     root Text
     cache_base Text
+    source_root Text
     tool Text
     credential_tool Text
     locks List[LockedSource]

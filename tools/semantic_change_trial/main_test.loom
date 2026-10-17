@@ -163,6 +163,36 @@ test fn output_path_rejects_traversal_and_noncanonical_components() {
     assert path_rejected("folder/")
 }
 
+test fn directory_checks_accept_the_hosts_canonical_path_spelling() {
+    let directory = match canonicalize("tools/semantic_change_trial/fixtures/base") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+    assert match checked_source_directory(directory) {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+    assert !path_rejected(join_path(directory, "new-output"))
+    assert match entry_kind(path(directory, "value.loom")) {
+        Result.Ok(FileKind.File) => true
+        _ => false
+    }
+}
+
+test fn git_basis_relocation_preserves_the_destination_path_spelling() {
+    assert path("\\\\?\\D:\\scratch", "value.loom") == "\\\\?\\D:\\scratch\\value.loom"
+    assert basis_path("\\\\?\\D:\\scratch\\source\\lib\\value.loom", "\\\\?\\D:\\scratch\\source",
+        "D:/repo/.loom-git-basis") == "D:/repo/.loom-git-basis/lib/value.loom"
+    assert basis_path("D:/scratch/source/lib/value.loom", "D:/scratch/source",
+        "\\\\?\\D:\\bare\\basis") == "\\\\?\\D:\\bare\\basis\\lib\\value.loom"
+    assert basis_path("\\\\?\\UNC\\server\\share\\source\\lib\\value.loom", "\\\\?\\UNC\\server\\share\\source",
+        "//server/share/basis") == "//server/share/basis/lib/value.loom"
+    assert basis_path("/other/a\\b", "/scratch/source", "/repo/basis") == "/other/a\\b"
+}
+
 test fn identity_allocator_changes_with_sequence_and_overloads_have_distinct_keys() {
     let declaration = Identity {
         id = ""

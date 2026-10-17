@@ -41,7 +41,7 @@ fn shared_cache_lifecycle(stage Text) Result[Bool, Text] {
     // A cache location supplies bytes, never requirements or a fallback lock.
     discard write_text(join_path(shared, "loom.toml"), "not a manifest\n")
     discard write_text(join_path(shared, "loom.lock"), lock)
-    let project = load_packages([selected], "compiler/std", false, shared)?
+    let project = load_packages([selected], "compiler/std", false, shared, selected)?
     var found = false
     var index = 0
     while index < length(project.files) {
@@ -79,6 +79,62 @@ fn shared_cache_lifecycle(stage Text) Result[Bool, Text] {
     assert read(lock_path)? == lock && read(join_path(shared, "loom.lock"))? == lock &&
     read(join_path(shared, "loom.toml"))? == "not a manifest\n"
     Result.Ok(true)
+}
+
+fn bounded_source_lifecycle(stage Text) Result[Bool, Text] {
+    let repository = join_path(stage, "repository")
+    let selected = join_path(repository, "app")
+    let helper = join_path(repository, "helper")
+    let outside = join_path(stage, "outside")
+    discard create_dir(repository)
+    discard create_dir(selected)
+    discard create_dir(helper)
+    discard create_dir(outside)
+    discard write_text(join_path(helper, "loom.toml"), "[module]\nname = \"helper\"\n")
+    discard write_text(join_path(helper, "value.loom"), """
+        pub fn value() Int {
+            7
+        }
+        """)
+    discard write_text(join_path(outside, "loom.toml"), "invalid manifest must not be read\n")
+    discard write_text(join_path(selected, "main.loom"), """
+        import helper.value
+
+        fn main() {
+            discard value()
+        }
+        """)
+    let manifest = "[module]\nname = \"app\"\n[dependencies.helper]\npath = \"../helper\"\n"
+    discard write_text(join_path(selected, "loom.toml"), manifest)
+    discard load_packages([selected], "compiler/std", false, repository, repository)?
+    discard write_text(join_path(selected, "loom.toml"),
+        "[module]\nname = \"app\"\n[dependencies.helper]\npath = \"../../outside\"\n")
+    assert match load_packages([selected], "compiler/std", false, repository, repository) {
+        Result.Err(message) => message == "path dependency escapes the selected source boundary"
+        Result.Ok(_) => false
+    }
+    assert match load_packages([selected], "compiler/std", false, repository, outside) {
+        Result.Err(message) => message == "selected module is outside the source boundary"
+        Result.Ok(_) => false
+    }
+    Result.Ok(true)
+}
+
+test fn staged_path_dependencies_are_checked_at_the_existing_source_boundary() {
+    let stage = match staging(".") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard remove_staging(stage)
+    }
+    assert match bounded_source_lifecycle(stage) {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
 }
 
 test fn shared_source_cache_reuses_only_verified_bytes_and_keeps_selected_policy() {

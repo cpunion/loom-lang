@@ -239,6 +239,15 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
   from `cache_base/target/loom-deps`, but manifests, locks and path-dependency
   origins still belong to the selected module. It verifies actual snapshot
   bytes/membership and never fetches, writes or borrows cache-root policy.
+  A fifth `source_root` argument confines effective path dependencies from that
+  root, while preserving verified Git snapshots and their own containment rules.
+- `std.loom.project.git_snapshot_input(tree, oid_size)` validates a NUL-delimited
+  Git tree and produces binary-safe `cat-file --batch` requests.
+  `extract_git_snapshot(root, tree, output, oid_size)` writes those responses
+  into an empty owned directory and verifies actual names/bytes, returning its
+  fingerprint. Both reuse the dependency loader's regular-file, portable-path
+  rules; extraction does not restore executable bits. `git_path` adapts native
+  Windows paths for Git without changing source identity or Unix backslashes.
 - `std.loom.project.resolve(path, std_root, tests, git_tool)` uses that same
   selected-package traversal, fetching exact Git sources and publishing the
   root module's lock only after successful loading. Ordinary `load` is offline
