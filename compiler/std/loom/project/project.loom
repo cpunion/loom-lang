@@ -496,6 +496,11 @@ pub fn resolve(path Text, std_root Text, tests Bool, git_tool Text, credential_t
 }
 
 fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text, overlays List[OverlayFile], failures List[LoadFailure]) Result[(Loader, Int, Text), Text] {
+    prepare_loader(path, std_root, git_tool, credential_tool, overlays, failures, "")
+}
+
+fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text, overlays List[OverlayFile],
+    failures List[LoadFailure], cache_base Text) Result[(Loader, Int, Text), Text] {
     let directory = canonical(path)?
     let is_directory = match kind(directory) {
         Result.Ok(value) => value == FileKind.Directory
@@ -509,6 +514,11 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
     let files = new[SourceFile]()
     let resolution = Resolution {
         root = module.base
+        cache_base = if cache_base == "" {
+            module.base
+        } else {
+            canonical(cache_base)?
+        }
         tool = git_tool
         credential_tool = credential_tool
         locks = read_lock(module.base)?

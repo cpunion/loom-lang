@@ -1,0 +1,99 @@
+fn shared_cache_lifecycle(stage Text) Result[Bool, Text] {
+    let selected = join_path(stage, "selected")
+    let shared = join_path(stage, "shared")
+    discard create_dir(selected)
+    discard create_dir(shared)
+    let git = "https://example.invalid/codec"
+    let revision = snapshot_oid()
+    let manifest = concat("[module]\nname = \"app\"\n[dependencies.codec]\ngit = \"", concat(git,
+            concat("\"\nrev = \"", concat(revision, "\"\n"))))
+    discard write_text(join_path(selected, "loom.toml"), manifest)
+    discard write_text(join_path(selected, "main.loom"), """
+        import codec.answer
+
+        fn main() {
+            assert answer() == 7
+        }
+        """)
+    discard cache_root(shared)?
+    let source = snapshot_path(shared, git, revision)
+    discard create_dir(source)
+    discard write_text(join_path(source, "loom.toml"), "[module]\nname = \"codec\"\n")
+    let value = join_path(source, "value.loom")
+    discard write_text(value, """
+        pub fn answer() Int {
+            7
+        }
+        """)
+    let declaration = get(read_module(selected)?.dependencies, 0)
+    let lock = encode_lock([LockedSource {
+                owner = hashed("path\n")
+                name = "codec"
+                git = git
+                rev = revision
+                tree = snapshot_fingerprint(source)?
+                subdir = ""
+                request = dependency_request(declaration, declaration)
+                version = ""
+            }])
+    let lock_path = join_path(selected, "loom.lock")
+    discard write_text(lock_path, lock)
+    // A cache location supplies bytes, never requirements or a fallback lock.
+    discard write_text(join_path(shared, "loom.toml"), "not a manifest\n")
+    discard write_text(join_path(shared, "loom.lock"), lock)
+    let project = load_packages([selected], "compiler/std", false, shared)?
+    var found = false
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        if package_label(project.modules, project.packages, file.package) == "codec" {
+            found = true
+            assert !file.test_only && !file.trusted_std && file.path == canonical(value)?
+        }
+        index = index + 1
+    }
+    assert found && package_label(project.modules, project.packages, project.root) == "app"
+    assert match load_packages([selected], "compiler/std", false) {
+        Result.Err(message) => starts_with(message, "dependency cache is missing or changed")
+        Result.Ok(_) => false
+    }
+    assert match cache_entry(join_path(selected, "target"))? {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    discard remove_file(lock_path)
+    assert match load_packages([selected], "compiler/std", false, shared) {
+        Result.Err(message) => starts_with(message, "Git dependency is not locked")
+        Result.Ok(_) => false
+    }
+    discard write_text(lock_path, lock)
+    discard write_text(value, """
+        pub fn answer() Int {
+            8
+        }
+        """)
+    assert match load_packages([selected], "compiler/std", false, shared) {
+        Result.Err(message) => starts_with(message, "dependency cache is missing or changed")
+        Result.Ok(_) => false
+    }
+    assert read(lock_path)? == lock && read(join_path(shared, "loom.lock"))? == lock &&
+    read(join_path(shared, "loom.toml"))? == "not a manifest\n"
+    Result.Ok(true)
+}
+
+test fn shared_source_cache_reuses_only_verified_bytes_and_keeps_selected_policy() {
+    let stage = match staging(".") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard remove_staging(stage)
+    }
+    assert match shared_cache_lifecycle(stage) {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}

@@ -178,7 +178,7 @@ fn fetch_snapshot(resolution Resolution, git Text, rev Text, expected Text) Resu
     if !valid_git(git, rev) {
         return Result.Err("invalid HTTPS Git dependency source")
     }
-    let stage = staging(resolution.root)?
+    let stage = staging(resolution.cache_base)?
     defer {
         discard remove_staging(stage)
     }
@@ -241,7 +241,7 @@ fn fetch_snapshot(resolution Resolution, git Text, rev Text, expected Text) Resu
     if expected != "" && expected != digest {
         return Result.Err("Git snapshot does not match the locked content digest")
     }
-    let destination = snapshot_path(resolution.root, git, rev)
+    let destination = snapshot_path(resolution.cache_base, git, rev)
     match cache_entry(destination)? {
         Option.None => {
         }
@@ -341,12 +341,12 @@ fn resolved_snapshot(resolution Resolution, git Text, rev Text, expected Text, c
         }
         index = index + 1
     }
-    let path = snapshot_path(resolution.root, git, rev)
+    let path = snapshot_path(resolution.cache_base, git, rev)
     // Inspect all cache ancestors without creating anything during an ordinary
     // check/build. Snapshot verification reads actual names/kinds/bytes.
     let ancestors = new[Text]()
-    push(ancestors, join_path(resolution.root, "target"))
-    push(ancestors, join_path(join_path(resolution.root, "target"), "loom-deps"))
+    push(ancestors, join_path(resolution.cache_base, "target"))
+    push(ancestors, join_path(join_path(resolution.cache_base, "target"), "loom-deps"))
     push(ancestors, path)
     var present = true
     index = 0
