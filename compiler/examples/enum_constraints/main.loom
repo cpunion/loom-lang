@@ -1,0 +1,127 @@
+import std.result.Result
+import std.result.ConstraintError
+import std.list.get
+import std.list.push
+import std.list.length
+import std.text.concat
+import std.time.sleep_ms
+
+enum Event {
+    Count(Int, List[Int])
+    Label(Text)
+    Missing
+}
+
+fn accepted_event(value Event) Bool {
+    match value {
+        Event.Count(number, _) => number >= 0
+        Event.Label(label) => label != ""
+        Event.Missing => false
+    }
+}
+
+type ValidEvent = Event where accepted_event(self)
+
+fn checked(value Event) Result[ValidEvent, ConstraintError] {
+    ValidEvent(value)
+}
+
+fn counted(number Int, values List[Int]) ValidEvent
+requires number >= 0
+{
+    ValidEvent(Event.Count(number, values))
+}
+
+fn count(value ValidEvent) Int
+ensures result >= 0
+{
+    match value {
+        Event.Count(number, _) => number
+        Event.Label(_) => 0
+        Event.Missing => 0
+    }
+}
+
+fn retained(value ValidEvent) ValidEvent {
+    match value {
+        Event.Count(0, _) => value
+        whole => whole
+    }
+}
+
+async fn delayed(value ValidEvent) ValidEvent {
+    sleep_ms(1).await
+    value
+}
+
+fn nonnegative_result(value Result[Int, Text]) Bool {
+    match value {
+        Result.Ok(number) => number >= 0
+        Result.Err(_) => true
+    }
+}
+
+type NonnegativeResult = Result[Int, Text] where nonnegative_result(self)
+
+fn normalized(value Result[Int, Text]) NonnegativeResult {
+    let number = value?
+    if number >= 0 {
+        NonnegativeResult(Result.Ok(number))
+    } else {
+        NonnegativeResult(Result.Ok(0))
+    }
+}
+
+fn relay(value NonnegativeResult) NonnegativeResult {
+    NonnegativeResult(Result.Ok(value?))
+}
+
+fn consume(value NonnegativeResult) Result[Int, Text] {
+    Result.Ok(value?)
+}
+
+async fn exercise() Result[Bool, ConstraintError] {
+    let values = [1]
+    let current = retained(counted(2, values))
+    let prepared = comptime {
+        ValidEvent(Event.Label("ready"))
+    }
+    let label = checked(Event.Label(concat("rea", "dy")))?
+    let events = [current, prepared, label]
+    let captured = fn() ValidEvent {
+        get(events, 0)
+    }
+    let pending = delayed(captured())
+    push(values, 2)
+    values[0] = -1
+    let observed = pending.await
+    assert count(observed) == 2
+    assert match observed {
+        Event.Count(_, shared) => length(shared) == 2 && shared[0] == -1
+        _ => false
+    }
+    assert match delayed(label).await {
+        Event.Label(text) => text == "ready"
+        _ => false
+    }
+    assert match checked(Event.Missing) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    assert match consume(relay(normalized(Result.Ok(-1)))) {
+        Result.Ok(number) => number == 0
+        Result.Err(_) => false
+    }
+    assert match consume(relay(normalized(Result.Err(concat("fail", "ure"))))) {
+        Result.Ok(_) => false
+        Result.Err(error) => error == "failure"
+    }
+    Result.Ok(true)
+}
+
+async fn main() {
+    assert match exercise().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}

@@ -594,6 +594,9 @@ the budget on future LLVM upgrades; these tuning options are not a stable API.
 - Postfix `?` unwraps source `std.result.Result`, or returns its error from the
   current function. Error types must match; the success value can then widen
   normally. Chained `??` and field selection work without a runtime protocol.
+  Constrained Results can also be read. An automatic return into a constrained
+  Result must retain an identical incoming guarantee or statically prove the
+  destination constraint; an unproved error exit rejects.
 - Immutable UTF-8 `Text` and shared mutable `List[T]`. Copying a list binding
   shares its header: aliases observe growth and element replacement. Scalar
   records remain native values; managed fields retain their sharing semantics.
@@ -2842,6 +2845,14 @@ The [tuple constraint example](examples/tuple_constraints) applies the same
 boundary rules to immutable tuple fields, with projections and destructuring.
 As with records, unobserved shared siblings stay mutable; predicates cannot
 depend on their mutable contents or length.
+The [enum constraint example](examples/enum_constraints) applies these same
+rules to tags and immutable payloads, including guarded weakening and `?`
+propagation. Construction supplies the known base type for contextual inference,
+without erasing the input's original nominal guarantee.
+Supported conditional, block and match inputs retain their normal-value facts;
+an exit to the source caller produces no constructor input. Mutable temporaries,
+sequence-content control proofs and opaque branch-only nominal results remain
+conservative rather than becoming assumptions.
 
 ```loom
 type Positive = Int where self > 0

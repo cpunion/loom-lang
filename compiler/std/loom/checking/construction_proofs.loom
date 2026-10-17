@@ -46,17 +46,29 @@ fn refuted_scalar_construction(context Context, value Expr, target Int) Bool {
     false
 }
 
-// A constructor may reuse a checked call's normal-return guarantees. Re-type
-// only its input and predicate in a private helper queue; neither proof helpers
+// A constructor may reuse a checked call's normal-return guarantees. Prepare
+// its selected invocation and predicate in a private queue; neither proof helpers
 // nor a second evaluation enter executable code. Unsupported proofs retain the
 // ordinary checked Result boundary, including the separate List isolation check.
-fn construction_proof(context Context, node Node, source Node, target Int) Result[Bool, Failure] {
+fn construction_proof(context Context, node Node, source Node, expected Int, value Expr, target Int) Result[Bool, Failure] {
     let base = base_type(context.env, target)
     let stage = staging(context, node)?
-    // Match the original call's inference, without a new result-type hint.
-    let input = expr(stage, source, -1)?
+    // Executable/fact calls retain their selected instance. Non-executable
+    // templates intentionally have no queued target; instantiate those with
+    // the original contextual hint, never a newly inferred result hint.
+    let input = if value.index == -1 {
+        expr_mode(stage, source, expected, false)?
+    } else {
+        value
+    }
     if input.kind != ExprKind.Call || input.ty != base {
         return Result.Ok(false)
+    }
+    let callee = if value.index == -1 {
+        input.index
+    } else {
+        let instance = fact_instance(context.env, input.index)
+        schedule(stage.env, instance.signature, instance.arguments, instance.constants, node)?
     }
     // Argument effects have already happened when the callee is entered.
     // Prove over arbitrary typed invocation snapshots, not by replaying those
@@ -64,16 +76,34 @@ fn construction_proof(context Context, node Node, source Node, target Int) Resul
     let bindings = new[Int]()
     let params = new[Int]()
     let locals = new[Local]()
+    let control = ConstructionControl {
+        context = context
+        bindings = bindings
+        params = params
+        locals = locals
+        bound = []
+    }
     let arguments = new[Expr]()
     var index = 0
     while index < length(input.children) {
         let argument = get(input.children, index)
-        push(arguments, construction_input(context, argument, bindings, params, locals, 0))
+        let value = if construction_controlled(argument, 0) {
+            match construction_control_input(control, argument, 0, 0) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Ok(false)
+                }
+            }
+        } else {
+            construction_input(context, argument, bindings, params, locals, 0)
+        }
+        push(arguments, value)
         index = index + 1
     }
     let premises = construction_premises(context, stage, node, bindings, params, locals)
+    let body = expression(input.kind, input.ty, node, input.text, callee, arguments, input.falls)
     construction_body_proof(stage, node,
-        expression(input.kind, input.ty, source, input.text, input.index, arguments, input.falls),
+        construction_control_finish(control, body),
         params, locals, premises, target)
 }
 
@@ -105,10 +135,19 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
         runtime_name = ""
         span = node.span
     }
-    Result.Ok(match verify_with_helpers(program, proof, get(stage.env.inputs, 0).build.proof_backend) {
-            Result.Ok(_) => true
-            Result.Err(_) => false
-        })
+    Result.Ok(proves_with_input_invariants(stage, program, proof, true))
+}
+
+// An immutable outer value can keep its nominal input facts while exposing its
+// base representation. Controlled mutable sequence headers use their own rules.
+fn construction_view(env Environment, value Expr) Bool {
+    if value.kind != ExprKind.Coerce || length(value.children) != 1 {
+        return false
+    }
+    let input = get(value.children, 0)
+    let kind = get(env.types, value.ty).kind
+    (kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum) &&
+    get(env.types, input.ty).kind == TypeKind.Refined && base_type(env, input.ty) == value.ty
 }
 
 fn established_construction_premises(program std.loom.typed.Program, locals List[Local], premises List[Expr]) List[Expr] {
@@ -190,12 +229,25 @@ fn construction_input(context Context, value Expr, bindings List[Int],
     if fact_size(context, value, 0) > 0 {
         return construction_fact(context, value, bindings, params, locals)
     }
-    if depth < 64 && (value.kind == ExprKind.Record || value.kind == ExprKind.List) {
+    if depth < 64 && construction_view(context.env, value) {
+        let input = construction_input(context, get(value.children, 0), bindings, params, locals, depth + 1)
+        return Expr {
+            kind = value.kind
+            ty = value.ty
+            span = value.span
+            text = value.text
+            index = value.index
+            children = expressions(input)
+            arms = value.arms
+            falls = value.falls
+        }
+    }
+    if depth < 64 && (value.kind == ExprKind.Record || value.kind == ExprKind.List || value.kind == ExprKind.Variant) {
         let fields = new[Expr]()
         var index = 0
         while index < length(value.children) {
             let field = get(value.children, index)
-            if value.kind == ExprKind.List {
+            if value.kind == ExprKind.List || value.kind == ExprKind.Variant {
                 push(fields, construction_input(context, field, bindings, params, locals, depth + 1))
                 index = index + 1
                 continue
@@ -311,22 +363,45 @@ fn construction_premises(context Context, stage Context, node Node, bindings Lis
 
 fn flow_construction_proof(context Context, node Node, value Expr,
     target Int) Result[Bool, Failure] {
+    let controlled = construction_controlled(value, 0)
+    let kind = get(context.env.types, base_type(context.env, target)).kind
+    if controlled && (kind == TypeKind.List || kind == TypeKind.Bytes) {
+        return Result.Ok(false)
+    }
     let stage = staging(context, node)?
     let env = helper_environment(stage.env)
     let bindings = new[Int]()
     let params = new[Int]()
     let locals = new[Local]()
-    let body = construction_input(context, value, bindings, params, locals, 0)
+    let control = ConstructionControl {
+        context = context
+        bindings = bindings
+        params = params
+        locals = locals
+        bound = []
+    }
+    let input = if controlled {
+        match construction_control_input(control, value, 0, 0) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Ok(false)
+            }
+        }
+    } else {
+        construction_input(context, value, bindings, params, locals, 0)
+    }
     let premises = construction_premises(context, stage, node, bindings, params, locals)
+    let body = construction_control_finish(control, input)
     let scope = predicate_context(env, target, locals, 0, true)?
     construction_body_proof(scope, node, body, params, locals, premises, target)
 }
 
-fn proved_construction(context Context, node Node, source Node, value Expr, target Int) Result[Bool, Failure] {
+fn proved_construction(context Context, node Node, source Node, expected Int, value Expr, target Int) Result[Bool, Failure] {
     if context.env.expanding_helpers || context.env.stage_depth >= 32 {
         return Result.Ok(false)
     }
-    if value.kind == ExprKind.Record || value.kind == ExprKind.List {
+    if value.kind == ExprKind.Record || value.kind == ExprKind.List || value.kind == ExprKind.Variant || construction_view(context.env, value) ||
+    (value.kind != ExprKind.Call && construction_controlled(value, 0)) {
         return flow_construction_proof(context, node, value, target)
     }
     if value.kind != ExprKind.Call {
@@ -344,5 +419,5 @@ fn proved_construction(context Context, node Node, source Node, value Expr, targ
     }
     // Unknown predicate proofs keep the Result boundary, but a source callee's
     // mandatory checking failure must not be hidden as a constructor mismatch.
-    construction_proof(context, node, source, target)
+    construction_proof(context, node, source, expected, value, target)
 }

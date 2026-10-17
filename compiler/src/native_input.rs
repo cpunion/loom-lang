@@ -478,8 +478,11 @@ fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
             }
         }
         c::DataKind::Refined(base) => {
-            let inline_record = if let Type::Data(base_id) = base {
-                matches!(&program.types[*base_id].kind, c::DataKind::Record(_))
+            let inline_data = if let Type::Data(base_id) = base {
+                matches!(
+                    &program.types[*base_id].kind,
+                    c::DataKind::Record(_) | c::DataKind::Enum(_)
+                )
             } else {
                 false
             };
@@ -489,10 +492,10 @@ fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
                 && *base != Type::Text
                 && *base != Type::Bytes
                 && !matches!(base, Type::List(_))
-                && !inline_record
+                && !inline_data
             {
                 return Err(
-                    "native refined layout needs Int, Bool, Float, Text, Bytes, a record/tuple or a List"
+                    "native refined layout needs Int, Bool, Float, Text, Bytes, a record/tuple, an enum or a List"
                         .into(),
                 );
             }
