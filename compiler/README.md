@@ -97,10 +97,13 @@ publishes `target/loom`, using LLVM O1 for this development rebuild.
 `LOOM_BOOTSTRAP_COMPILER` overrides the preceding
 compiler; a missing installed compiler uses the portable checked seed. This
 short path does not compare stages. The no-argument command retains the full
-stage 1/2/3 verification at default O2 for CI and bootstrap-boundary changes.
-`LOOM_OPT_LEVEL=0..3` explicitly selects the native optimization level; this
-never disables source integer checks or contract obligations. The runtime is
-optimized even in Cargo dev builds, with dev assertions and overflow checks
+stage 1/2/3 verification for CI and bootstrap-boundary changes. The temporary
+checked seed and full-bootstrap stage 1 use O0; stages 2/3 independently use
+the final optimization level (default O2) and must still match byte-for-byte.
+`LOOM_OPT_LEVEL=0..3` selects the final native optimization level, including
+the single development stage; it never disables source integer checks or
+contract obligations. The runtime is optimized even in Cargo dev builds,
+with dev assertions and overflow checks
 retained, so managed Loom code does not call an unoptimized allocation layer.
 
 `LOOM_TARGET_CPU=generic` emits the host architecture's generic CPU baseline

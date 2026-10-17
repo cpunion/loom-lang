@@ -79,8 +79,8 @@ if [[ -z "$seed_compiler" && -z "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
 fi
 if [[ -n "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
     seed_compiler="$target_root/loom-stage0$exe_suffix"
-    printf 'Building the initial native compiler from checked input...\n'
-    "$target_root/debug/loom-native$exe_suffix" "$LOOM_BOOTSTRAP_INPUT" --output "$seed_compiler"
+    printf 'Building the initial native compiler from checked input (O0)...\n'
+    LOOM_OPT_LEVEL=0 "$target_root/debug/loom-native$exe_suffix" "$LOOM_BOOTSTRAP_INPUT" --output "$seed_compiler"
 fi
 
 # Every current stage uses one current native backend/runtime. Only the source
@@ -91,8 +91,12 @@ stages=(1 2 3)
 if $development; then stages=(1); fi
 for stage in "${stages[@]}"; do
     candidate="$target_root/loom-stage$stage$exe_suffix"
-    printf 'Building Loom stage %s...\n' "$stage"
-    "$previous" build "$repo_root/compiler/loom" \
+    stage_optimization="${LOOM_OPT_LEVEL:-2}"
+    # Full bootstrap discards stage 1. Only stages 2/3 need the final settings;
+    # both still compile independently before their byte-for-byte comparison.
+    if ! $development && [[ "$stage" == 1 ]]; then stage_optimization=0; fi
+    printf 'Building Loom stage %s (O%s)...\n' "$stage" "$stage_optimization"
+    LOOM_OPT_LEVEL="$stage_optimization" "$previous" build "$repo_root/compiler/loom" \
         --std "$repo_root/compiler/std" \
         --native-tool "$target_root/debug/loom-native$exe_suffix" \
         --output "$candidate"
