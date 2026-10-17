@@ -6,7 +6,11 @@ fn independent_package(label Text, directory Text, value Int, testing Bool) Pack
     if testing {
         push(files, File {
                 path = "value_test.loom"
-                text = "test fn private_value() {\n    assert value() > 0\n}\n"
+                text = """
+                    test fn private_value() {
+                        assert value() > 0
+                    }
+                    """
             })
     }
     package_fixture(label, directory, files)
@@ -116,7 +120,11 @@ test fn package_set_changes_keep_identity_dependency_and_private_test_obligation
     let added = independent_package("sample.extra", "/module/extra", 1, true)
     let bad = package_fixture("sample.extra", added.directory, [get(added.revision.files, 0), File {
                 path = "value_test.loom"
-                text = "test fn bad() {\n    assert value() == true\n}\n"
+                text = """
+                    test fn bad() {
+                        assert value() == true
+                    }
+                    """
             }])
     assert match merge_packages(base, [root, unused, bad], base, production, tests) {
         Result.Err(message) => contains(message, "requires checked source")
@@ -124,7 +132,11 @@ test fn package_set_changes_keep_identity_dependency_and_private_test_obligation
     }
     let false_contract = package_fixture("sample.extra", added.directory, [File {
                 path = "value.loom"
-                text = "fn value() Int ensures result > 0 {\n    0\n}\n"
+                text = """
+                    fn value() Int ensures result > 0 {
+                        0
+                    }
+                    """
             }, get(added.revision.files, 1)])
     assert match merge_packages(base, [root, unused, false_contract], base, production, tests) {
         Result.Err(message) => contains(message, "requires checked source")
@@ -132,7 +144,13 @@ test fn package_set_changes_keep_identity_dependency_and_private_test_obligation
     }
     let importing = package_fixture("sample.extra", added.directory, [File {
                 path = "value.loom"
-                text = "import sample.value\nfn extra() Int {\n    value()\n}\n"
+                text = """
+                    import sample.value
+
+                    fn extra() Int {
+                        value()
+                    }
+                    """
             }])
     assert match merge_packages(base, [root, unused, importing], base, production, tests) {
         Result.Err(message) => contains(message, "expanded pinned project context")
