@@ -3417,12 +3417,15 @@ and recheck dependent facts, exits and early returns. Publication cannot restore
 private storage on a later inference pass. Incorrect counts, fresh replacement
 headers and possible alias interference reject.
 
-Already captured List entry versions also propose retained-prefix equality for
+Already captured List/Bytes entry versions also propose retained-prefix equality for
 modeled immutable scalar columns, including fields of inline records/tuples.
 Shrinking and growing extent candidates compare their common prefix; entry and
 every backedge must prove each proposal. The
 [guarded scan example](examples/smt_contracts/scan_prefixes.loom) preserves the
-original target prefix even during self-append. Mutable children remain opaque, and Float equality
+original target prefix even during self-append. The
+[Bytes prefix example](examples/byte_constraints/prefix/main.loom) constructs a
+reversed entry copy while growing its source, including a record-held buffer.
+Mutable children remain opaque, and Float equality
 retains IEEE NaN behavior rather than becoming storage identity. The
 [content example](examples/loop_contracts/contents.loom) proves consume-and-build
 reversal without auxiliary contracts or counters, including inline headers,
