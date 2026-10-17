@@ -145,3 +145,27 @@ test fn selected_template_queries_do_not_reuse_a_pack_instance_as_its_body_owner
         }
     }
 }
+
+test fn abstract_closure_queries_do_not_create_runtime_targets() {
+    match query_named(source_files("""
+        fn wrap[T](value T) T {
+            let apply = fn(input T) T {
+                input
+            }
+            apply(value)
+        }
+        """), "wrap") {
+        Result.Ok(query) => {
+            assert length(query.functions) == 2
+            let owner = get(query.functions, 0)
+            let literal = get(get(owner.body.children, 0).children, 0)
+            assert literal.kind == ExprKind.FunctionRef && literal.index == -1
+            let closure = get(query.functions, 1)
+            assert get(query.bindings.symbols, closure.symbol).owner == owner.symbol
+        }
+        Result.Err(problem) => {
+            discard write_error(problem.diagnostic.message)
+            assert false
+        }
+    }
+}

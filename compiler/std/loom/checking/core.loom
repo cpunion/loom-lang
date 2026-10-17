@@ -446,6 +446,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, decl
             template_queries = new[Int]()
             template_seen = new[Bool]()
             source_contracts = new[SourceContract]()
+            query_closures = new[Option[Function]]()
             result_shapes = new[ResultShape]()
             constraint_errors = new[Int]()
             contracts = new[List[ContractCertificate]]()

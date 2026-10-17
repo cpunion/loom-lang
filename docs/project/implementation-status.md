@@ -67,6 +67,7 @@ Independent body queries isolate unrelated ordinary/template errors while
 validating the selected template, CTFE and witness dependency closure.
 Uninstantiated generic/comptime bodies retain checked local types and source
 bindings with lexical type labels, without inventing runtime instances.
+Nested closures retain their parameters, captures and enclosing type labels too.
 Dependent type values, unexpanded packs and broader body recovery remain limited.
 Recovered queries provide neither build success nor proof evidence.
 Contract navigation lazily checks source clauses in a separate query snapshot,

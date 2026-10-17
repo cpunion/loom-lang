@@ -14,6 +14,9 @@ fn header_parameters(analysis CheckedQuery, owner Int) List[Node] {
     let item = get(analysis.bindings.symbols, owner)
     if item.owner >= 0 {
         let parent = get(analysis.bindings.symbols, item.owner)
+        if item.node.kind == NodeKind.Function && item.node.value == "" && parent.node.kind == NodeKind.Function {
+            return header_parameters(analysis, item.owner)
+        }
         if parent.node.kind == NodeKind.Concept {
             // Self has no explicit source parameter declaration.
             push(parameters, Node {

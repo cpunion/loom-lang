@@ -57,16 +57,20 @@ fn generic_closure_case(name Text) Revision {
     revision
 }
 
-test fn generic_rename_requires_abstract_evidence_even_with_a_concrete_caller() {
-    // The Int instance exposes the closure's inner binding, but the abstract
-    // query does not yet account for nested closure bodies. Do not substitute
-    // that one observed instance for declaration-wide binding evidence.
+test fn generic_rename_checks_nested_abstract_closures_beside_a_concrete_caller() {
+    // The shared binding rule still requires independent abstract evidence;
+    // nested closure queries now provide it as well as the concrete Int view.
     let base = generic_closure_case("amount")
-    assert match merge(base, generic_closure_case("balance"), base) {
-        Result.Err(message) => contains(message, "generic reference has no abstract binding evidence")
-        Result.Ok(_) => {
-            discard write_error("merge accepted a concrete-only nested closure binding")
-            false
+    match merge(base, generic_closure_case("balance"), base) {
+        Result.Ok(merged) => {
+            let source = get(merged.files, 0).text
+            assert contains(source, "fn balance[T]")
+            assert contains(source, "fn(inner T) T")
+            assert contains(get(merged.files, 1).text, "balance(1)")
+        }
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
         }
     }
 }

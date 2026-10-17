@@ -522,6 +522,14 @@ fn identity[T](input T) T {
     let copied = input
     copied
 }
+
+fn closure[T](value T) T {
+    let action = fn(inner T) T {
+        discard inner
+        value
+    }
+    action(value)
+}
 `;
     await client.change(file, source, 2);
     assert.deepEqual((await client.wait(file, 2)).diagnostics, []);
@@ -542,6 +550,16 @@ fn identity[T](input T) T {
     assert.equal(abstractDefinitions[0].uri, params.textDocument.uri);
     assert.equal(sourceDocument.getText(abstractDefinitions[0].range), 'input');
     assert.equal(sourceDocument.offsetAt(abstractDefinitions[0].range.start), source.indexOf('input T'));
+    for (const [use, declaration] of [['inner\n', 'inner T'], ['value\n', 'value T']]) {
+      const target = { ...params, position: sourceDocument.positionAt(source.indexOf(use)) };
+      const hover = await client.rpc.sendRequest('textDocument/hover', target);
+      assert.ok(hover.contents.some(item => item.value === 'T'), JSON.stringify(hover));
+      const definitions = await client.rpc.sendRequest('textDocument/definition', target);
+      assert.equal(definitions.length, 1);
+      assert.equal(definitions[0].uri, params.textDocument.uri);
+      assert.equal(sourceDocument.offsetAt(definitions[0].range.start), source.indexOf(declaration));
+      assert.equal(sourceDocument.getText(definitions[0].range), declaration.split(' ')[0]);
+    }
     const helperParams = { ...params, position: sourceDocument.positionAt(source.indexOf('helper()')) };
     const helperReferences = await client.rpc.sendRequest('textDocument/references', { ...helperParams, context: { includeDeclaration: true } });
     assert.equal(helperReferences.length, 2);
