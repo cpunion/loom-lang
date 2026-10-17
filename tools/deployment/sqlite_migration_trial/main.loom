@@ -476,8 +476,31 @@ fn failure_policy_roundtrip(database Text, old_receipt Text, new_receipt Text,
     assert inspect_live_sqlite_upgrade(tool, database, following, SqliteLivePhase.RetainedReupgrade)?.status == SqliteLiveStatus.DataOrLineageMismatch
     discard fixture_sql(database, "DROP TABLE notes; DROP TABLE loom_archive_zero_amounts;")?
     discard start_sqlite_migration(tool, database, following)?
-    assert upgrade_sqlite_migration(tool, database, following)?.state == DeploymentState.Complete
-    assert downgrade_sqlite_migration(tool, database, following)?.state == DeploymentState.RollbackComplete
+    let lost_ack = ".github/scripts/sqlite-lose-ack.mjs"
+    assert match upgrade_sqlite_migration(lost_ack, database, following) {
+        Result.Err(message) => contains(message, "outcome needs inspection")
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='rollback_2' ORDER BY sequence;")? == "0\n1\n3\n"
+    assert match current(tool, database)? {
+        BasisEvidence.Observed(basis) => basis == following.to_schema.basis
+        _ => false
+    }
+    let committed_count = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
+    assert match upgrade_sqlite_migration(tool, database, following) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == committed_count
+    assert match downgrade_sqlite_migration(lost_ack, database, following) {
+        Result.Err(message) => contains(message, "outcome needs inspection")
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='rollback_2' ORDER BY sequence;")? == "0\n1\n3\n4\n6\n"
+    assert match current(tool, database)? {
+        BasisEvidence.Observed(basis) => basis == following.from_schema.basis
+        _ => false
+    }
     let after_downgrade = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
     assert match recover_failed_sqlite_upgrade(tool, database, following, SqliteLivePhase.RetainedReupgrade) {
         Result.Err(_) => true
@@ -528,12 +551,22 @@ fn failure_policy_roundtrip(database Text, old_receipt Text, new_receipt Text,
     discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=0 WHERE entity_id=1;")?
     let repair = inspect_live_sqlite_upgrade(tool, database, retained, SqliteLivePhase.RetainedReupgrade)?
     assert repair.status == SqliteLiveStatus.ChecksPassed && repair.recovery == SqliteUpgradeRecovery.Rollback
+    assert match recover_failed_sqlite_upgrade(lost_ack, database, retained, SqliteLivePhase.RetainedReupgrade) {
+        Result.Err(message) => contains(message, "outcome needs inspection")
+        Result.Ok(_) => false
+    }
+    let committed_recovery_count = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
     assert recover_failed_sqlite_upgrade(tool, database, retained, SqliteLivePhase.RetainedReupgrade)?.state == DeploymentState.RollbackComplete
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == committed_recovery_count
     assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events WHERE attempt_id='rollback_3' AND state=3;")? == "0\n"
     assert fixture_sql(database, "SELECT body FROM notes WHERE id=7;")? == "retained\n"
     let final = migration("rollback_final", "rollback_4", 2, FailurePolicy.Rollback, old_receipt, new_receipt)?
     discard start_sqlite_migration(tool, database, final)?
-    assert reupgrade_sqlite_migration(tool, database, final)?.state == DeploymentState.Complete
+    assert match reupgrade_sqlite_migration(lost_ack, database, final) {
+        Result.Err(message) => contains(message, "outcome needs inspection")
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='rollback_4' ORDER BY sequence;")? == "0\n1\n3\n"
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|2\n"
     assert fixture_sql(database, "SELECT body FROM notes WHERE id=7;")? == "retained\n"
     Result.Ok(true)
