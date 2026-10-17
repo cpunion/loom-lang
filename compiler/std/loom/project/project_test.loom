@@ -238,6 +238,7 @@ test fn production_cycles_still_reject_before_loading_files() {
         complete = new[Int]()
         resolution = Resolution {
             root = "/app"
+            cache_base = "/app"
             tool = "git"
             credential_tool = ""
             locks = new[LockedSource]()
@@ -281,6 +282,7 @@ test fn module_roots_reuse_identity_independently_of_display_names() {
         complete = new[Int]()
         resolution = Resolution {
             root = "/app"
+            cache_base = "/app"
             tool = "git"
             credential_tool = ""
             locks = new[LockedSource]()

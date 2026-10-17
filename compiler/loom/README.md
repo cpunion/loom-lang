@@ -235,6 +235,10 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
   test sources are available for separate re-rooted analyses; binding still admits
   tests only from `Project.root`, never all roots together. Test-only directories
   have an empty production view. Empty/duplicate roots or mixed modules reject.
+  The four-argument overload adds `cache_base`: locked Git snapshots are read
+  from `cache_base/target/loom-deps`, but manifests, locks and path-dependency
+  origins still belong to the selected module. It verifies actual snapshot
+  bytes/membership and never fetches, writes or borrows cache-root policy.
 - `std.loom.project.resolve(path, std_root, tests, git_tool)` uses that same
   selected-package traversal, fetching exact Git sources and publishing the
   root module's lock only after successful loading. Ordinary `load` is offline
