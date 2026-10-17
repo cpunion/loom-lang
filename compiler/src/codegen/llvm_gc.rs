@@ -750,7 +750,7 @@ pub(super) fn root_function<'ctx>(
                 builder.build_store(slot, initial)?;
             }
             rooted_locals.insert(index, slot);
-            slots.push((slot, *ty));
+            slots.push((slot, *ty, true));
         }
     }
     let mut temporary = TemporarySlots {
@@ -768,9 +768,8 @@ pub(super) fn root_function<'ctx>(
     for ty in temporary.types {
         let native = native_type(context, program, ty)?;
         let slot = builder.build_alloca(native, "gc.temporary")?;
-        builder.build_store(slot, native.const_zero())?;
         storage.push(slot);
-        slots.push((slot, ty));
+        slots.push((slot, ty, false));
     }
     let expressions = temporary
         .expressions
@@ -787,14 +786,18 @@ pub(super) fn root_function<'ctx>(
         .into_iter()
         .map(|(value, slots)| (value, slots.into_iter().map(|slot| storage[slot]).collect()))
         .collect();
-    for (slot, ty) in &slots {
+    for (slot, ty, active) in &slots {
         let trace = tracer(context, module, program, *ty, tracers)?
             .as_global_value()
             .as_pointer_value();
-        super::gc_lower::begin(context, module, builder, *slot, trace)?;
+        if *active {
+            super::gc_lower::begin(context, module, builder, *slot, trace)?;
+        } else {
+            super::gc_lower::declare(context, module, builder, *slot, trace)?;
+        }
     }
     Ok(RootFrame {
-        slots: slots.into_iter().map(|(slot, _)| slot).collect(),
+        slots: slots.into_iter().map(|(slot, _, _)| slot).collect(),
         locals: rooted_locals,
         expressions,
         retired,
