@@ -1,0 +1,44 @@
+import std.bytes.new
+import std.bytes.push
+import std.file.write_bytes
+import std.fs.create_dir
+import std.fs.remove_file
+import std.fs.remove_empty_dir
+
+test async fn hashes_binary_chunks_and_reports_missing_files() {
+    // Exclusive creation refuses to overwrite a preexisting fixture directory.
+    let directory = "loom-checksums-test"
+    assert match create_dir(directory) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let path = "loom-checksums-test/sample.bin"
+    defer {
+        discard remove_file(path)
+        discard remove_empty_dir(directory)
+    }
+    let input = new()
+    var index = 0
+    while index < 1025 {
+        push(input, index % 256)
+        index = index + 1
+    }
+    assert match write_bytes(path, input) {
+        Result.Ok(count) => count == 1025
+        Result.Err(_) => false
+    }
+    let expected = hex(input)
+    assert match checksum(path, ChunkSize(7)).await {
+        Result.Ok(value) => value == expected
+        Result.Err(_) => false
+    }
+    // Remove eagerly; defer still cleans up after an earlier assertion failure.
+    assert match remove_file(path) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match checksum("\0invalid", ChunkSize(1)).await {
+        Result.Err(error) => error == FileError.Open
+        Result.Ok(_) => false
+    }
+}

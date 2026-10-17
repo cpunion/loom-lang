@@ -1,0 +1,31 @@
+import std.file.chunks.stream
+import std.file.FileError
+import std.stream.Stream
+import std.hash.sha256.new_hasher
+import std.hash.sha256.update
+import std.hash.sha256.hex
+import std.option.Option
+import std.result.Result
+
+pub type ChunkSize = Int where self > 0 && self <= 1048576
+
+pub async fn checksum(path Text, limit ChunkSize) Result[Text, FileError] {
+    scoped source = stream(path, limit)
+    let state = new_hasher()
+    while true {
+        match source.next().await {
+            Option.Some(chunk) => {
+                update(state, chunk?)
+            }
+            Option.None => {
+                return Result.Ok(hex(state))
+            }
+        }
+    }
+}
+
+test fn known_chunk_size_is_a_direct_value() {
+    let size = ChunkSize(8192)
+    let base Int = size
+    assert base == 8192
+}

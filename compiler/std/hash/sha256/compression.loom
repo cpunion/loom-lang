@@ -1,0 +1,175 @@
+import std.bytes.new
+import std.bytes.get
+import std.bytes.set
+import std.bytes.push
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+
+record Chain {
+    h0 Int
+    h1 Int
+    h2 Int
+    h3 Int
+    h4 Int
+    h5 Int
+    h6 Int
+    h7 Int
+}
+
+fn initial() Chain {
+    Chain {
+        h0 = 1779033703
+        h1 = 3144134277
+        h2 = 1013904242
+        h3 = 2773480762
+        h4 = 1359893119
+        h5 = 2600822924
+        h6 = 528734635
+        h7 = 1541459225
+    }
+}
+
+fn new_words() List[Int] {
+    let words = std.list.new[Int]()
+    var index = 0
+    while index < 64 {
+        push(words, 0)
+        index = index + 1
+    }
+    words
+}
+
+fn zeroes(size Int) Bytes {
+    let value = std.bytes.new()
+    var index = 0
+    while index < size {
+        push(value, 0)
+        index = index + 1
+    }
+    value
+}
+
+// Words stay in 0..2^32-1. Masking makes additions modulo 2^32 explicit;
+// even the five-word round sum fits Int before masking.
+fn rotate(value Int, count Int) Int {
+    ((value >> count) | (value << (32 - count))) & 4294967295
+}
+
+fn load_block(words List[Int], value Bytes, start Int) {
+    var index = 0
+    while index < 16 {
+        let position = start + index * 4
+        set(words, index, (get(value, position) << 24) |
+            (get(value, position + 1) << 16) |
+            (get(value, position + 2) << 8) | get(value, position + 3))
+        index = index + 1
+    }
+}
+
+fn padded_byte(value Bytes, start Int, index Int, size Int, end Int, message_size Int) Int {
+    if index < size {
+        return get(value, start + index)
+    }
+    if index == size {
+        return 128
+    }
+    if index < end - 8 {
+        return 0
+    }
+    // FIPS 180-4 sections 5.1.1 and 6.2.2: encode the entire message length,
+    // not just this tail. Shift rather than multiply when its high bit is set.
+    ((message_size << 3) >> ((end - 1 - index) * 8)) & 255
+}
+
+fn compress(chain Chain, words List[Int], k List[Int]) Chain {
+    var index = 16
+    while index < 64 {
+        let x = get(words, index - 15)
+        let y = get(words, index - 2)
+        let sigma0 = rotate(x, 7) ^ rotate(x, 18) ^ (x >> 3)
+        let sigma1 = rotate(y, 17) ^ rotate(y, 19) ^ (y >> 10)
+        set(words, index, (get(words, index - 16) + sigma0 + get(words, index - 7) + sigma1) & 4294967295)
+        index = index + 1
+    }
+    var a = chain.h0
+    var b = chain.h1
+    var c = chain.h2
+    var d = chain.h3
+    var e = chain.h4
+    var f = chain.h5
+    var g = chain.h6
+    var h = chain.h7
+    index = 0
+    while index < 64 {
+        let sum1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25)
+        let choose = (e & f) ^ (~e & g)
+        let first = (h + sum1 + choose + get(k, index) + get(words, index)) & 4294967295
+        let sum0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22)
+        let majority = (a & b) ^ (a & c) ^ (b & c)
+        let second = (sum0 + majority) & 4294967295
+        h = g
+        g = f
+        f = e
+        e = (d + first) & 4294967295
+        d = c
+        c = b
+        b = a
+        a = (first + second) & 4294967295
+        index = index + 1
+    }
+    Chain {
+        h0 = (chain.h0 + a) & 4294967295
+        h1 = (chain.h1 + b) & 4294967295
+        h2 = (chain.h2 + c) & 4294967295
+        h3 = (chain.h3 + d) & 4294967295
+        h4 = (chain.h4 + e) & 4294967295
+        h5 = (chain.h5 + f) & 4294967295
+        h6 = (chain.h6 + g) & 4294967295
+        h7 = (chain.h7 + h) & 4294967295
+    }
+}
+
+fn write_word(output Bytes, index Int, value Int) {
+    set(output, index, (value >> 24) & 255)
+    set(output, index + 1, (value >> 16) & 255)
+    set(output, index + 2, (value >> 8) & 255)
+    set(output, index + 3, value & 255)
+}
+
+fn finish(chain Chain, value Bytes, start Int, size Int, message_size Int,
+    words List[Int], k List[Int]) Bytes {
+    let end = if size < 56 {
+        64
+    } else {
+        128
+    }
+    var current = chain
+    var offset = 0
+    while offset < end {
+        var index = 0
+        while index < 16 {
+            var word = 0
+            var part = 0
+            while part < 4 {
+                word = (word << 8) | padded_byte(value, start, offset + index * 4 + part, size, end, message_size)
+                part = part + 1
+            }
+            set(words, index, word)
+            index = index + 1
+        }
+        current = compress(current, words, k)
+        offset = offset + 64
+    }
+    let output = zeroes(32)
+    write_word(output, 0, current.h0)
+    write_word(output, 4, current.h1)
+    write_word(output, 8, current.h2)
+    write_word(output, 12, current.h3)
+    write_word(output, 16, current.h4)
+    write_word(output, 20, current.h5)
+    write_word(output, 24, current.h6)
+    write_word(output, 28, current.h7)
+    output
+}

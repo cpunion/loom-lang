@@ -190,24 +190,126 @@ fn main() {
 #[test]
 fn source_sha256_ranges_fault_before_reading_invalid_bounds() {
     for bounds in ["-1, 0", "1, 0", "0, 2", "9223372036854775807, 0"] {
-        let directory = source(&format!(
-            r#"
+        for incremental in [false, true] {
+            let operation = if incremental {
+                format!("update(new_hasher(), value, {bounds})")
+            } else {
+                format!("discard hex(value, {bounds})")
+            };
+            let directory = source(&format!(
+                r#"
 import std.bytes.new
 import std.bytes.push
 import std.hash.sha256.hex
+import std.hash.sha256.new_hasher
+import std.hash.sha256.update
 fn main() {{
     let value = new()
     push(value, 97)
-    discard hex(value, {bounds})
+    {operation}
 }}
 "#
-        ));
-        let output = loom(&["run", path(directory.path())]);
-        assert!(!output.status.success());
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("assertion failed"), "{stderr}");
-        assert!(!stderr.contains("overflow"), "{stderr}");
+            ));
+            let output = loom(&["run", path(directory.path())]);
+            assert!(!output.status.success());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("assertion failed"), "{stderr}");
+            assert!(!stderr.contains("overflow"), "{stderr}");
+        }
     }
+}
+
+#[test]
+fn source_checksum_application_combines_packages_constraints_and_async_io() {
+    use sha2::{Digest, Sha256};
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixture = root.join("examples/checksums");
+    let directory = tempfile::tempdir().unwrap();
+    let tests = common::command(&["test", path(&fixture), "--recursive"])
+        .env("LOOM_OPT_LEVEL", "0")
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    success(&tests);
+    assert!(String::from_utf8_lossy(&tests.stdout).contains("2 packages tested"));
+
+    let executable = common::executable(directory.path(), "checksums");
+    let ir = directory.path().join("checksums.ll");
+    success(&loom(&[
+        "build",
+        path(&fixture),
+        "--output",
+        path(&executable),
+        "--emit-ir",
+        path(&ir),
+    ]));
+    let llvm = fs::read_to_string(ir).unwrap();
+    let files_ir = directory.path().join("files.ll");
+    success(&loom(&[
+        "build",
+        path(&fixture.join("files")),
+        "--output",
+        path(&directory.path().join("files.o")),
+        "--emit-ir",
+        path(&files_ir),
+    ]));
+    let library = fs::read_to_string(files_ir).unwrap();
+    for excluded in [
+        "known_chunk_size_is_a_direct_value",
+        "hashes_binary_chunks_and_reports_missing_files",
+        "parses_defaults_and_rejects_invalid_chunk_sizes",
+    ] {
+        assert!(
+            !llvm.contains(excluded) && !library.contains(excluded),
+            "production includes {excluded}"
+        );
+    }
+
+    let names = [
+        "empty.bin",
+        "plain text.bin",
+        "unicode-é😀.bin",
+        "padding.bin",
+        "multiple.bin",
+    ];
+    let mut expected = String::new();
+    for (name, size) in names.iter().zip([0, 3, 65, 257, 4097]) {
+        let input: Vec<u8> = (0..size).map(|index| (index % 256) as u8).collect();
+        fs::write(directory.path().join(name), &input).unwrap();
+        expected.push_str(&format!("{:x}  {name}\n", Sha256::digest(input)));
+    }
+    let run = |files: &[&str], limit: &str| {
+        common::run_task_command(
+            Command::new(&executable)
+                .args(["--chunk-size", limit])
+                .args(files)
+                .current_dir(directory.path())
+                .env("LOOM_GC_STRESS", "1"),
+        )
+    };
+    let completed = run(&names, "7");
+    success(&completed);
+    assert_eq!(String::from_utf8_lossy(&completed.stdout), expected);
+    let mixed = [
+        names[0],
+        "missing.bin",
+        names[1],
+        names[2],
+        names[3],
+        names[4],
+    ];
+    let failed = run(&mixed, "7");
+    assert_eq!(failed.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&failed.stdout), expected);
+    assert_eq!(
+        String::from_utf8_lossy(&failed.stderr),
+        "cannot hash file: missing.bin\n"
+    );
+    let invalid = run(&names, "0");
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(invalid.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("chunk size must be"));
 }
 
 #[test]

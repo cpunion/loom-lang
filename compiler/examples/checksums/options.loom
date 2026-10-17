@@ -1,0 +1,46 @@
+import checksums.files.ChunkSize
+import std.int.parse
+import std.list.new
+import std.list.push
+import std.list.length
+import std.result.Result
+
+record Options {
+    limit ChunkSize
+    paths List[Text]
+}
+
+fn parse_options(args List[Text]) Result[Options, Text] {
+    var index = 1
+    var limit = ChunkSize(8192)
+    if length(args) > 1 && args[1] == "--chunk-size" {
+        if length(args) < 4 {
+            return Result.Err("usage: checksums [--chunk-size BYTES] FILE...")
+        }
+        let count = match parse(args[2]) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("chunk size must be an integer from 1 through 1048576")
+            }
+        }
+        limit = match ChunkSize(count) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("chunk size must be an integer from 1 through 1048576")
+            }
+        }
+        index = 3
+    }
+    if index >= length(args) {
+        return Result.Err("usage: checksums [--chunk-size BYTES] FILE...")
+    }
+    let paths = new[Text]()
+    while index < length(args) {
+        push(paths, args[index])
+        index = index + 1
+    }
+    Result.Ok(Options {
+            limit = limit
+            paths = paths
+        })
+}

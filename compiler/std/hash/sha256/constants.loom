@@ -71,4 +71,3 @@ fn constants() List[Int] {
     push(values, 3329325298)
     values
 }
-
