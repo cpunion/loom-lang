@@ -1,4 +1,47 @@
 import std.loom.proof.established_predicates
+import std.loom.eval.number
+import std.loom.eval.floating
+
+// A bare, unconstrained scalar input admits these concrete values. One false
+// predicate refutes universal construction; successful probes never prove it.
+// Reuse CTFE, including helper bodies, rather than asking SMT to rediscover
+// obvious counterexamples at an ordinary checked conversion boundary.
+fn refuted_scalar_construction(context Context, value Expr, target Int) Bool {
+    if context.fact_head >= 0 || value.kind != ExprKind.Local {
+        return false
+    }
+    let inputs = if value.ty == 1 {
+        [number(0), number(1)]
+    } else if value.ty == 5 {
+        [floating(0.0), floating(1.0), floating(0.0 / 0.0)]
+    } else if value.ty == 3 {
+        [Value {
+                ty = 3,
+                text = "",
+                ..unknown()
+            }, Value {
+                ty = 3,
+                text = "x",
+                ..unknown()
+            }]
+    } else {
+        new[Value]()
+    }
+    var index = 0
+    while index < length(inputs) {
+        match folded_predicate(context.env, target, get(inputs, index)) {
+            Result.Ok(checked) => {
+                if checked.ty == 2 && checked.number == 0 {
+                    return true
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+        index = index + 1
+    }
+    false
+}
 
 // A constructor may reuse a checked call's normal-return guarantees. Re-type
 // only its input and predicate in a private helper queue; neither proof helpers
@@ -286,10 +329,12 @@ fn proved_construction(context Context, node Node, source Node, value Expr, targ
     if value.kind != ExprKind.Call {
         // Preserve bounded pure scalar computations, not just bare bindings.
         // fact_size excludes mutable locals, heap observations and calls.
-        let destination = get(context.env.types, target)
-        if context.fact_head >= 0 && fact_size(context, value, 0) > 0 &&
-        (contract_call(predicate_node(context.env, destination.symbol)) ||
-            (length(destination.constraint) == 1 && predicate_expansion(get(destination.constraint, 0), 0)) || helper_facts(context)) {
+        // This is the same normal-return proof for every immutable scalar
+        // expression. A direct predicate needs no helper call to qualify.
+        if fact_size(context, value, 0) > 0 {
+            if refuted_scalar_construction(context, value, target) {
+                return Result.Ok(false)
+            }
             return flow_construction_proof(context, node, value, target)
         }
         return Result.Ok(false)

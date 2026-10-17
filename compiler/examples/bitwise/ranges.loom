@@ -1,0 +1,67 @@
+type Byte = Int where self >= 0 && self <= 255
+
+fn masked_byte(value Int) Byte {
+    Byte(value & 255)
+}
+
+fn flagged(value Int) Int
+requires value >= 0 && value <= 127
+ensures result >= 128 && result <= 255
+{
+    value | 128
+}
+
+fn encoded(value Int) Byte
+requires value >= 0 && value <= 127
+{
+    Byte(flagged(value))
+}
+
+fn inverted(value Int) Int
+requires value >= 0 && value <= 255
+ensures result >= -256 && result <= -1
+{
+    ~value
+}
+
+fn toggled(value Int) Int
+requires value >= 0 && value <= 15
+ensures result >= 0 && result <= 15
+{
+    value ^ 10
+}
+
+fn extracted(value Int, count Int) Int
+requires value >= -8 && value <= 7 && count >= 1 && count <= 3
+ensures result >= -4 && result <= 3
+{
+    value >> count
+}
+
+fn scaled(value Int, count Int) Int
+requires value >= -3 && value <= 5 && count >= 1 && count <= 3
+ensures result >= -24 && result <= 40
+{
+    value << count
+}
+
+fn signed_bit(value Int) Int
+ensures result >= -1 && result <= 0
+{
+    value >> 63
+}
+
+fn range_cases() {
+    assert masked_byte(-1) == 255 && masked_byte(256) == 0
+    assert encoded(42) == 170
+    assert inverted(255) == -256 && inverted(0) == -1
+    assert toggled(5) == 15
+    assert extracted(-8, 1) == -4 && extracted(7, 3) == 0
+    assert scaled(-3, 3) == -24 && scaled(5, 3) == 40
+    assert signed_bit(-9223372036854775808) == -1
+    assert signed_bit(9223372036854775807) == 0
+}
+
+test fn bit_ranges_run_without_an_external_proof_backend() {
+    range_cases()
+}

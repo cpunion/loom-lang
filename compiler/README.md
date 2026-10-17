@@ -565,8 +565,9 @@ the budget on future LLVM upgrades; these tuning options are not a stable API.
   other counts fault. Left shift discards high bits, right shift sign-extends.
   Ordinary arithmetic still checks overflow. Bitwise operators bind more tightly
   than comparisons; shifts bind less tightly than arithmetic. See the
-  [bitwise example](examples/bitwise/main.loom). Symbolic bitwise proofs remain
-  unsupported and cannot satisfy required postconditions.
+  [bitwise example](examples/bitwise/main.loom). Signed-word contracts use local
+  algebra/range rules and the optional compile-time SMT backend; unknown proofs
+  still reject.
 - IEEE binary64 `Float`, decimal/exponent literals, arithmetic and comparisons.
   Float division/remainder follow IEEE rules rather than integer faults; NaN,
   infinities and signed zero are retained. No implicit Int/Float conversion or
@@ -2972,7 +2973,9 @@ initial cell table. UTF-8 conversion laws and constrained shared-graph publicati
 are not implied. See [mutable byte contracts](examples/byte_contracts/main.loom).
 
 Signed 64-bit `~`, `&`, `|`, `^`, `<<` and `>>` compose in the same proof model.
-Nonnegative mask bounds and XOR factor parity prove locally; other supported
+Mask/sign/complement bounds, bounded shifts and XOR factor parity prove locally;
+OR/XOR upper masks include all lower bits, not just their operands' endpoints.
+Possible left-shift truncation supplies no narrowed interval. Other supported
 relationships use exact word operations in SMT, with arithmetic right shift.
 Shift counts independently require 0–63, and neither masking nor cancellation
 erases an eager operand fault. See [bit contracts](examples/smt_contracts/bitwise.loom).

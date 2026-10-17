@@ -1,3 +1,5 @@
+import std.text.contains
+
 test fn call_guarantees_prove_scalar_and_inline_construction_without_caller_assumptions() {
     discard accepted_result("""
 type Positive = Int where self > 0
@@ -71,4 +73,41 @@ pub fn different_instance() Positive {
     Positive(fixed(-1, false))
 }
 """)
+}
+
+test fn concrete_refutations_never_accept_samples_or_hide_required_proofs() {
+    discard accepted_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        type Binary = Int where self >= 0 && self <= 1
+        type AnyInt = Int where self >= -9223372036854775808 && self <= 9223372036854775807
+        type Positive = Int where self > 0
+
+        // Both quick probes pass, but an arbitrary input is not universally binary.
+        fn checked(value Int) Result[Binary, ConstraintError] {
+            Binary(value)
+        }
+
+        fn always(value Int) AnyInt {
+            AnyInt(value)
+        }
+
+        fn admitted(value Int) Positive requires value > 0 {
+            Positive(value)
+        }
+        """)
+    assert match with_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        type Broken = Int where promised(self)
+        fn promised(value Int) Bool ensures result {
+            value > 0
+        }
+        fn checked(value Int) Result[Broken, ConstraintError] {
+            Broken(value)
+        }
+        """) {
+        Result.Err(failed) => contains(failed.diagnostic.message, "prov")
+        Result.Ok(_) => false
+    }
 }

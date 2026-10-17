@@ -1,0 +1,188 @@
+fn signed_word_bounds() Bounds {
+    Bounds {
+        low = integer(-9223372036854775808)
+        high = integer(9223372036854775807)
+    }
+}
+
+// Missing, exhausted or non-machine input intervals supply no narrowing. Word
+// results still have their representation domain; eager safety is independent.
+fn word_input_bounds(value IntegerTerm, facts List[Predicate], budget List[Int]) Bounds {
+    let full = signed_word_bounds()
+    match integer_bounds(value, facts, budget) {
+        Result.Ok(bounds) => {
+            if compare(bounds.low, full.low) >= 0 && compare(bounds.high, full.high) <= 0 &&
+            compare(bounds.low, bounds.high) <= 0 {
+                return bounds
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    full
+}
+
+// Fill every bit below the highest possible set bit. OR/XOR of nonnegative
+// values bounded by maximum cannot set a higher bit, even across holes in it.
+fn word_mask(maximum Number) Result[Number, Text] {
+    var mask = machine(maximum)?
+    if mask < 0 {
+        return Result.Err("unsigned mask needs a nonnegative word bound")
+    }
+    var shift = 1
+    while shift < 64 {
+        mask = mask | (mask >> shift)
+        shift = shift * 2
+    }
+    Result.Ok(integer(mask))
+}
+
+fn word_shift_bounds(operator Text, left Bounds, right Bounds) Result[Bounds, Text] {
+    let first = machine(left.low)?
+    let last = machine(left.high)?
+    let low = machine(right.low)?
+    let high = machine(right.high)?
+    if low < 0 || high >= 64 {
+        return Result.Ok(signed_word_bounds())
+    }
+    if operator == ">>" {
+        // Arithmetic right shift is monotone in the value. Increasing the
+        // count approaches zero for nonnegative values and -1 for negatives.
+        return Result.Ok(Bounds {
+                low = integer(first >> if first < 0 {
+                        low
+                    } else {
+                        high
+                    })
+                high = integer(last >> if last < 0 {
+                        high
+                    } else {
+                        low
+                    })
+            })
+    }
+    // Left shift is monotone only before truncation. Check the whole count
+    // interval against both signed endpoints; a possible wrap gets no narrowing.
+    if first < (-9223372036854775808 >> high) || last > (9223372036854775807 >> high) {
+        return Result.Ok(signed_word_bounds())
+    }
+    Result.Ok(Bounds {
+            low = integer(first << if first < 0 {
+                    high
+                } else {
+                    low
+                })
+            high = integer(last << if last < 0 {
+                    low
+                } else {
+                    high
+                })
+        })
+}
+
+fn integer_bitwise_bounds(operator Text, inputs List[IntegerTerm], facts List[Predicate],
+    budget List[Int]) Result[Bounds, Text] {
+    if length(inputs) != (if operator == "~" {
+            1
+        } else {
+            2
+        }) {
+        return Result.Err("invalid bit operation operands")
+    }
+    let left = word_input_bounds(get(inputs, 0), facts, budget)
+    if operator == "~" {
+        // Complement is -1-x, including MIN/MAX, without a source negation.
+        return Result.Ok(Bounds {
+                low = subtract(integer(-1), left.high)
+                high = subtract(integer(-1), left.low)
+            })
+    }
+    let right = word_input_bounds(get(inputs, 1), facts, budget)
+    let a_positive = compare(left.low, integer(0)) >= 0
+    let b_positive = compare(right.low, integer(0)) >= 0
+    let a_negative = compare(left.high, integer(0)) < 0
+    let b_negative = compare(right.high, integer(0)) < 0
+    let full = signed_word_bounds()
+    if operator == "&" {
+        if a_positive || b_positive {
+            return Result.Ok(Bounds {
+                    low = integer(0)
+                    high = if !b_positive || (a_positive && compare(left.high, right.high) < 0) {
+                        left.high
+                    } else {
+                        right.high
+                    }
+                })
+        }
+        if a_negative && b_negative {
+            return Result.Ok(Bounds {
+                    low = full.low
+                    high = if compare(left.high, right.high) < 0 {
+                        left.high
+                    } else {
+                        right.high
+                    }
+                })
+        }
+    }
+    if operator == "|" {
+        if a_negative || b_negative {
+            return Result.Ok(Bounds {
+                    low = if !b_negative || (a_negative && compare(left.low, right.low) > 0) {
+                        left.low
+                    } else {
+                        right.low
+                    }
+                    high = integer(-1)
+                })
+        }
+        if a_positive && b_positive {
+            return Result.Ok(Bounds {
+                    low = if compare(left.low, right.low) > 0 {
+                        left.low
+                    } else {
+                        right.low
+                    }
+                    high = word_mask(if compare(left.high, right.high) > 0 {
+                            left.high
+                        } else {
+                            right.high
+                        })?
+                })
+        }
+    }
+    if operator == "^" && (a_positive || a_negative) && (b_positive || b_negative) {
+        // Complement negative operands to nonnegative magnitudes. XOR of two
+        // negatives has the same parity; opposite signs complement the result.
+        let a = if a_negative {
+            subtract(integer(-1), left.low)
+        } else {
+            left.high
+        }
+        let b = if b_negative {
+            subtract(integer(-1), right.low)
+        } else {
+            right.high
+        }
+        let mask = word_mask(if compare(a, b) > 0 {
+                a
+            } else {
+                b
+            })?
+        return Result.Ok(if a_negative == b_negative {
+                Bounds {
+                    low = integer(0)
+                    high = mask
+                }
+            } else {
+                Bounds {
+                    low = subtract(integer(-1), mask)
+                    high = integer(-1)
+                }
+            })
+    }
+    if operator == "<<" || operator == ">>" {
+        return word_shift_bounds(operator, left, right)
+    }
+    Result.Ok(full)
+}
