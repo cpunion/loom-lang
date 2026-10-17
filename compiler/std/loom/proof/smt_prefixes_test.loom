@@ -1,0 +1,42 @@
+import std.text.contains
+
+test fn prefix_frames_close_column_chains_and_preserve_representation_sorts() {
+    let index = variable(1)
+    let size = variable(2)
+    let query = encoding([Obligation {
+                facts = [Predicate.ArrayPrefix(10, 11, size), Predicate.ArrayPrefix(11, 12, size)]
+                conclusion = Predicate.And([
+                        Predicate.IntegerCompare("==", IntegerTerm.Select(12, [1], index),
+                            IntegerTerm.Select(10, [1], index)),
+                        Predicate.And([
+                                Predicate.TextEqual(TextValue.Select(12, [2], index), TextValue.Select(10, [2], index)),
+                                Predicate.FloatCompare("==", FloatValue.Select(12, [3], index), FloatValue.Select(10, [3], index)),
+                            ])
+                    ])
+            }])
+    assert contains(query, "(declare-const a11_f1 (Array Int Int))")
+    assert contains(query, "(declare-const a11_f2_text (Array Int (Seq (_ BitVec 8))))")
+    assert contains(query, "(declare-const a11_f3_float (Array Int (_ FloatingPoint 11 53)))")
+    assert contains(query, "(=> loom_prefix_0 (and true")
+    assert contains(query, "(=> loom_prefix_1 (and true")
+    assert contains(query, "(= (select a10_f3_float loom_prefix_index) (select a11_f3_float loom_prefix_index))")
+    assert contains(query, "(fp.eq (select a12_f3_float")
+}
+
+test fn prefix_frames_do_not_establish_an_unobserved_goal_or_capture_bound_extents() {
+    let plain = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.ArrayPrefix(10, 11, variable(2))
+            }])
+    assert contains(plain, "(declare-const loom_prefix_0 Bool)")
+    assert contains(plain, "(=> loom_prefix_0 (and true))")
+    assert !contains(plain, "(= loom_prefix_0")
+    let quantified = encoding([Obligation {
+                facts = []
+                conclusion = Predicate.Forall(-7, constant(integer(0)), constant(integer(3)),
+                    [Predicate.ArrayPrefix(10, 11, variable(-7))])
+            }])
+    assert contains(quantified, "(declare-fun loom_prefix_0 ( Int) Bool)")
+    assert contains(quantified, "(loom_prefix_0 n-7)")
+    assert contains(quantified, "(assert (forall ((n-7 Int)) (=> (loom_prefix_0 n-7)")
+}

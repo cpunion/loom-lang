@@ -178,6 +178,7 @@ fn captured_array_facts(entry State, current State) State {
         let array = match fact {
             Predicate.ArrayRead(_, _, _, _, _) => true
             Predicate.ArrayWrite(_, _, _, _, _) => true
+            Predicate.ArrayPrefix(_, _, _) => true
             _ => false
         }
         var found = false

@@ -49,7 +49,7 @@ fn smt_count(writer SmtWriter, identity Int, inputs List[IntegerTerm], depth Int
             return Result.Err("histogram count needs a linear extent")
         }
     }
-    let array = smt_name(writer, "a", identity, "(Array Int Int)")
+    let array = smt_array(writer, identity, [])
     let bag = smt_bag(writer, array, size)?
     let needle = smt_integer(writer, get(inputs, 1), depth + 1)?
     let count = concat("(select ", concat(bag, " bv)"))

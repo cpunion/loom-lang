@@ -9,6 +9,8 @@ record SmtWriter {
     names List[Text]
     budget List[Int]
     counts List[Linear]
+    columns List[SmtColumn]
+    prefixes List[SmtPrefix]
 }
 
 fn smt_append(output Bytes, value Text) {
@@ -63,7 +65,17 @@ fn smt_array(writer SmtWriter, identity Int, path List[Int], domain ScalarDomain
         ScalarDomain.Text => ("_text", "(Seq (_ BitVec 8))")
         ScalarDomain.Float => ("_float", "(_ FloatingPoint 11 53)")
     }
-    smt_named(writer, concat(name, suffix), concat("(Array Int ", concat(sort, ")")))
+    let before = length(writer.names)
+    let encoded = smt_named(writer, concat(name, suffix), concat("(Array Int ", concat(sort, ")")))
+    if length(writer.names) != before {
+        push(writer.columns, SmtColumn {
+                identity = identity
+                path = path
+                domain = domain
+                name = encoded
+            })
+    }
+    encoded
 }
 
 fn smt_select(writer SmtWriter, identity Int, path List[Int], index Linear,
@@ -353,6 +365,7 @@ fn smt_truncated_division(operator Text, left Text, right Text) Text {
 fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text] {
     discard smt_step(writer, depth)?
     match value {
+        Predicate.ArrayPrefix(before, after, size) => smt_prefix(writer, before, after, size)
         Predicate.Select(identity, path, index) => smt_select(writer, identity, path, index, ScalarDomain.Boolean)
         Predicate.Constant(value) => Result.Ok(if value {
                 "true"
@@ -367,8 +380,8 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
         }
         Predicate.Variable(id) => Result.Ok(smt_name(writer, "b", id, "Bool"))
         Predicate.BagEqual(before, size, after, count) => {
-            let first = smt_bag(writer, smt_name(writer, "a", before, "(Array Int Int)"), size)?
-            let second = smt_bag(writer, smt_name(writer, "a", after, "(Array Int Int)"), count)?
+            let first = smt_bag(writer, smt_array(writer, before, []), size)?
+            let second = smt_bag(writer, smt_array(writer, after, []), count)?
             Result.Ok(concat("(= ", concat(first, concat(" ", concat(second, ")")))))
         }
         Predicate.IntegerCompare(relation, left, right) => {
@@ -449,6 +462,8 @@ fn smt_query(obligations List[Obligation]) Result[Text, Text] {
         names = new[Text]()
         budget = budget
         counts = counts
+        columns = new[SmtColumn]()
+        prefixes = new[SmtPrefix]()
     }
     let body = std.bytes.new()
     smt_append(body, "(assert (not (and true")
@@ -476,5 +491,6 @@ fn smt_query(obligations List[Obligation]) Result[Text, Text] {
     // equalities before lowering arithmetic. Every branch must still be unsat;
     // default preserves Z3's theory selection and the backend's time budget.
     smt_append(body, ")))\n(check-sat-using (then simplify solve-eqs simplify (or-else split-clause skip) solve-eqs simplify default))\n")
+    discard smt_prefix_frames(writer)?
     Result.Ok(concat(std.bytes.to_text(writer.declarations), std.bytes.to_text(body)))
 }

@@ -1,0 +1,44 @@
+import std.list.get
+import std.list.length
+import std.list.push
+
+fn segment(first List[Int], second List[Int], offset Int) Bool {
+    if offset < 0 || offset > length(first) || length(second) > length(first) - offset {
+        return false
+    }
+    var index = 0
+    while index < length(second) {
+        if get(first, offset + index) != get(second, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+pub fn append(target List[Int], source List[Int])
+ensures length(target) - old(length(target)) == old(length(source))
+ensures segment(target, old(target), 0)
+ensures segment(target, old(source), old(length(target)))
+{
+    let count = length(source)
+    var index = 0
+    while index < count {
+        push(target, get(source, index))
+        index = index + 1
+    }
+}
+
+fn main() {
+    let target = [8, 9]
+    let source = [1, 2, 3]
+    append(target, source)
+    assert segment(target, [8, 9, 1, 2, 3], 0)
+    assert segment(source, [1, 2, 3], 0)
+    append(source, source)
+    assert segment(source, [1, 2, 3, 1, 2, 3], 0)
+    append(target, source)
+    assert segment(target, [8, 9, 1, 2, 3, 1, 2, 3, 1, 2, 3], 0)
+    append(target, [])
+    append([], [])
+}

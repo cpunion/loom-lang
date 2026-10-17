@@ -173,7 +173,10 @@ supported theories and boundaries. The central rules are:
   versioned storage rules. Quantified valid-index views retain the ordinary
   element domains, including Int/byte ranges and immutable inline fields; no
   fact grants an out-of-range access or transfers to a different storage version.
-  Unknown aliases, opaque effects and interference
+  Checked append preserves existing cells and immutable columns even through
+  possible aliases, while only the exact receiver gets its precise new length
+  and tail. This frame does not restore observations lost to argument effects
+  or shared interference. Other unknown alias writes and opaque effects
   invalidate facts. Constrained writes must preserve the complete predicate after
   every actual store, not merely at normal return. Both sequence types support
   fresh constrained construction and checked representation borrows; byte-range
@@ -207,7 +210,8 @@ Representative native trials include
 [draft publication](../../compiler/examples/record_refinement/drafts.loom),
 [loop contracts](../../compiler/examples/loop_contracts),
 [sorting/permutation](../../compiler/examples/smt_contracts/quantified.loom),
-[copy/sort composition](../../compiler/examples/smt_contracts/copies.loom) and
+[copy/sort composition](../../compiler/examples/smt_contracts/copies.loom),
+[alias-safe append](../../compiler/examples/list_append/README.md) and
 [async guarantees](../../compiler/examples/async_contracts/main.loom).
 These are bounded proved stories, not general mutable-graph or content induction.
 

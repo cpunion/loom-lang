@@ -1,0 +1,104 @@
+record SmtColumn {
+    identity Int
+    path List[Int]
+    domain ScalarDomain
+    name Text
+}
+
+record SmtPrefix {
+    before Int
+    after Int
+    size Linear
+    reference Text
+}
+
+fn smt_prefix(writer SmtWriter, before Int, after Int, size Linear) Result[Text, Text] {
+    if before == after {
+        return Result.Ok("true")
+    }
+    let name = concat("loom_prefix_", std.int.to_text(length(writer.prefixes)))
+    let sorts = std.bytes.new()
+    let arguments = std.bytes.new()
+    var index = 0
+    while index < length(size.terms) {
+        let term = get(size.terms, index)
+        if term.id < 0 {
+            smt_append(sorts, " Int")
+            smt_append(arguments, concat(" n", std.int.to_text(term.id)))
+        }
+        index = index + 1
+    }
+    let parameters = std.bytes.to_text(arguments)
+    let reference = if parameters == "" {
+        smt_named(writer, name, "Bool")
+    } else {
+        smt_append(writer.declarations, concat("(declare-fun ",
+                concat(name, concat(" (", concat(std.bytes.to_text(sorts), ") Bool)\n")))))
+        concat("(", concat(name, concat(parameters, ")")))
+    }
+    push(writer.prefixes, SmtPrefix {
+            before = before
+            after = after
+            size = size
+            reference = reference
+        })
+    Result.Ok(reference)
+}
+
+// Close the observed column vocabulary across version frames before encoding
+// any frame. New keys enter a worklist, so chains/cycles need no sampling or
+// fixed number of closure passes. Unsupported/exhausted encoding still rejects.
+fn smt_prefix_frames(writer SmtWriter) Result[Bool, Text] {
+    if length(writer.prefixes) == 0 {
+        return Result.Ok(true)
+    }
+    var column = 0
+    while column < length(writer.columns) {
+        let selected = get(writer.columns, column)
+        var index = 0
+        while index < length(writer.prefixes) {
+            discard smt_step(writer, 0)?
+            let frame = get(writer.prefixes, index)
+            if selected.identity == frame.before {
+                discard smt_array(writer, frame.after, selected.path, selected.domain)
+            }
+            if selected.identity == frame.after {
+                discard smt_array(writer, frame.before, selected.path, selected.domain)
+            }
+            index = index + 1
+        }
+        column = column + 1
+    }
+    var index = 0
+    while index < length(writer.prefixes) {
+        let frame = get(writer.prefixes, index)
+        let output = std.bytes.new()
+        smt_append(output, concat("(=> ", concat(frame.reference, " (and true")))
+        let limit = smt_linear(writer, frame.size)?
+        column = 0
+        while column < length(writer.columns) {
+            discard smt_step(writer, 0)?
+            let selected = get(writer.columns, column)
+            if selected.identity == frame.before {
+                let after = smt_array(writer, frame.after, selected.path, selected.domain)
+                // SMT '=' preserves representations, including signed zero;
+                // source floating comparisons still use IEEE fp.eq.
+                smt_append(output, " (forall ((loom_prefix_index Int)) (=> (and (<= 0 loom_prefix_index) (< loom_prefix_index ")
+                smt_append(output, limit)
+                smt_append(output, ")) (= (select ")
+                smt_append(output, selected.name)
+                smt_append(output, " loom_prefix_index) (select ")
+                smt_append(output, after)
+                smt_append(output, " loom_prefix_index))))")
+            }
+            column = column + 1
+        }
+        smt_append(output, "))")
+        // Only this implication is needed. In particular, an unobserved column
+        // cannot make a prefix goal true merely because no arrays were encoded.
+        smt_append(writer.declarations, concat("(assert ",
+                concat(bag_bound_scope(std.bytes.to_text(output), frame.size), ")\n")))
+        index = index + 1
+    }
+    Result.Ok(true)
+}

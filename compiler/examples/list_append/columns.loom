@@ -1,0 +1,15 @@
+record Row {
+    flag Bool
+    label Text
+    ratio Float
+}
+
+fn preserve_row(target List[Row], source List[Row], index Int)
+requires index >= 0 && index < length(source)
+requires get(source, index).ratio == get(source, index).ratio
+ensures get(source, index).flag == old(get(source, index).flag)
+ensures get(source, index).label == old(get(source, index).label)
+ensures get(source, index).ratio == old(get(source, index).ratio)
+{
+    push(target, get(source, index))
+}

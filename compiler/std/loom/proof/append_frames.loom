@@ -1,0 +1,30 @@
+// A checked append writes a new slot. It never inserts before an existing
+// element, runs a source finalizer, or detaches retained cells. Argument effects
+// and shared interference have already been applied to this incoming state.
+fn appended_alias_frames(proof Verification, target ListExtent, before State) State {
+    let modified = [target.identity]
+    var current = forget_modified_extents(proof, before, modified)
+    var index = 0
+    while index < length(before.extents) {
+        let previous = get(before.extents, index)
+        if previous.identity != target.identity && extent_overlap(previous, target) &&
+        (!proof.shared || stable_storage(previous)) {
+            match list_state(previous.identity, current) {
+                Result.Ok(next) => {
+                    current = assume(current, Predicate.Compare(">=",
+                            add(next.size, scale(previous.size, integer(-1)))))
+                    current = with_cells(previous.identity, previous.cells, current)
+                    if previous.contents >= 0 {
+                        let contents = array_identity(proof)
+                        current = with_contents(previous.identity, contents, current)
+                        current = assume(current, Predicate.ArrayPrefix(previous.contents, contents, previous.size))
+                    }
+                }
+                Result.Err(_) => {
+                }
+            }
+        }
+        index = index + 1
+    }
+    current
+}

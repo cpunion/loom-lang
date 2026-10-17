@@ -228,12 +228,10 @@ fn list_operation_outcomes(proof Verification, primitive Text, ty Int, receiver_
         return list_replace_outcomes(proof, ty, receiver_type, identity, inputs.values, state)
     }
     if (name == "list_push" || name == "list_append") && length(inputs.values) == 2 {
-        // Other handles may alias this receiver. Only exact handle copies keep
-        // the precise update; every possibly overlapping extent is forgotten.
-        let modified = new[Int]()
-        push(modified, identity)
+        // Exact copies get the store. Possible aliases keep only the frame of
+        // pre-existing cells and a nondecreasing extent, not the new tail value.
         let previous = list_state(identity, state)?
-        let after = forget_modified_extents(proof, state, modified)
+        let after = appended_alias_frames(proof, previous, state)
         let grown = with_extent(identity, add(size, constant(integer(1))), previous.allocated, after)
         let written = remember_element(identity, size, get(inputs.values, 1),
             with_cells(identity, previous.cells, grown))?
