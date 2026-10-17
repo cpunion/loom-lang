@@ -383,21 +383,22 @@ fn apply_module(expected Text, destination Text, standard Text, base Text, left 
     let b = read_module(right)?
     let context = module_context(original, standard)?
     let value = review_module(original, a, b, context)?
+    let stage = create_module_stage(expected, destination, value)?
+    let outcome = publish_module(stage, destination, value, original, a, b, context, standard)
+    match outcome {
+        Result.Ok(summary) => Result.Ok(summary)
+        Result.Err(message) => Result.Err(concat(message, concat("; module stage retained at ", stage)))
+    }
+}
+
+fn create_module_stage(expected Text, destination Text, value ModuleReview) Result[Text, Text] {
     if value.token != expected {
         return Result.Err("review token does not match this module closure or merged bytes")
     }
     let stage = concat(destination, concat("-loom-stage-", value.token))
     match create_dir(stage) {
-        Result.Ok(_) => {
-        }
-        Result.Err(_) => {
-            return Result.Err(concat("cannot create exclusive module stage; inspect recovery state: ", stage))
-        }
-    }
-    let outcome = publish_module(stage, destination, value, original, a, b, context, standard)
-    match outcome {
-        Result.Ok(summary) => Result.Ok(summary)
-        Result.Err(message) => Result.Err(concat(message, concat("; module stage retained at ", stage)))
+        Result.Ok(_) => Result.Ok(stage)
+        Result.Err(_) => Result.Err(concat("cannot create exclusive module stage; inspect recovery state: ", stage))
     }
 }
 

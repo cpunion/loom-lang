@@ -83,7 +83,24 @@ Source-token checks cannot preserve their hidden definition-context references.
 The output includes its manifest and lock, not external dependencies or ignored
 build caches. Keep relative path dependencies valid at the new location and
 provision locked Git snapshots before an offline build. Module Git-object input,
-package/import-graph changes are not implemented.
+with an explicit baseline context, is also available:
+
+```sh
+target/loom run tools/semantic_change_trial -- --module BASE_MODULE_DIR compiler/std \
+  --git /path/to/git /path/to/repo module/directory BASE_REV LEFT_REV RIGHT_REV
+```
+
+Prepend `--apply TOKEN NEW_MODULE_DIR` to publish a reviewed result. The ordinary
+offline `BASE_MODULE_DIR` must exactly match the Git baseline's selected sources,
+sidecars and assets, including manifest and lock presence/bytes. It supplies the
+dependency context, not branch source substitutions. All branch packages and
+binary assets come from resolved Git objects; no checkout or worktree is created.
+Blob reads use one binary-safe batch per snapshot, not one Git process per file.
+Apply rechecks refs and context before publication. Tree exclusions and asset
+merge policy are the same as directory input, including rejection of symlinks,
+submodules, nested modules and unsupported config changes; file modes are not
+preserved. Package/import-graph changes and context loading wholly from Git
+remain unimplemented.
 
 ## Single-package snapshots
 
