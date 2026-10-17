@@ -17,7 +17,7 @@ The [roadmap](../../ROADMAP.md) defines the remaining gates; the
 | Metaprogramming | Pure CTFE, type/value/function parameters, packs, typed macros, reflection and tracked inputs. | Visibility and staging apply; no arbitrary compile-time I/O. |
 | Resources and async | Moving GC, lexical cleanup, stackless Tasks, real I/O and explicit shared CPU workers. | Resource transfer and shared-state proofs remain conservative. |
 | Programming tools | Directory tests, formatter, LSP/VS Code and public parser/analysis libraries. | Unaccounted/generated references and broader erroneous-source queries remain open. |
-| Evolution tools | Reviewed semantic merges and a real offline SQLite migration trial. | Not general semantic VCS or deployment compatibility proof. |
+| Evolution tools | Reviewed semantic merges, an append-only deployment ledger and a real offline SQLite migration trial. | Not general semantic VCS or deployment compatibility proof. |
 
 ## Build and programming experience
 
@@ -366,6 +366,9 @@ The [SQLite migration trial](../../tools/deployment/sqlite_migration_trial/READM
 executes an offline orders upgrade, data-preserving downgrade and re-upgrade.
 Append-only events distinguish assumptions from observations; plans bind retry
 inputs, transactional preflights and rehashed artifact receipts.
+Unstarted plans can be explicitly replaced or cancelled without creating a
+deployed basis. Historical attempt queries validate the full ledger; repeating
+cancellation returns its recorded outcome without appending an event.
 The fixed SQLite package supports predetermined Stop or Rollback policy.
 Failed-upgrade recovery verifies the old source transactionally before restoring
 an observed basis; failed recovery stays unresolved and needs explicit repair.

@@ -16,6 +16,50 @@ fn next_ledger(before Stored, sequence Int, attempt Attempt) Stored {
     }
 }
 
+test fn cancelling_plans_preserves_absent_assumed_and_observed_basis_evidence() {
+    let first = match prepare("first", "", "basis_a", FailurePolicy.Stop) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let initial = ledger_event(1, first)
+    let cancelled = next_ledger(initial, 2, moved(first, Transition.Cancel))
+    assert match cancelled.evidence {
+        BasisEvidence.None => true
+        _ => false
+    }
+    assert match prepare("fresh", "", "basis_b", FailurePolicy.Rollback) {
+        Result.Ok(value) => new_attempt(cancelled, value)
+        Result.Err(_) => false
+    }
+    var mode = 0
+    while mode < 2 {
+        let basis = if mode == 0 {
+            next_ledger(initial, 3, moved(first, Transition.AssumeComplete))
+        } else {
+            let started = next_ledger(initial, 2, moved(first, Transition.Begin))
+            next_ledger(started, 3, moved(started.attempt, Transition.Finish))
+        }
+        let plan = match prepare("unused", "basis_a", "basis_b", FailurePolicy.Rollback) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                assert false
+                return
+            }
+        }
+        let planned = next_ledger(basis, 4, plan)
+        let withdrawn = next_ledger(planned, 5, moved(plan, Transition.Cancel))
+        assert match withdrawn.evidence {
+            BasisEvidence.Assumed(value) => mode == 0 && value == "basis_a"
+            BasisEvidence.Observed(value) => mode == 1 && value == "basis_a"
+            BasisEvidence.None => false
+        }
+        mode = mode + 1
+    }
+}
+
 test fn unstarted_plans_preserve_only_recorded_evidence_and_started_work_forgets_it() {
     let initial = match prepare("initial", "", "basis_a", FailurePolicy.Stop) {
         Result.Ok(value) => value

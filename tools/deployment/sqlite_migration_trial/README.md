@@ -72,8 +72,13 @@ its rollback, unaffected by later unused plans.
 A registered `NotDeployed` plan leaves the preceding observed or assumed basis
 effective for inspection. `replace_unstarted_attempt` explicitly replaces that
 named plan without treating its unused target as deployed; the obsolete identity
-cannot be started or reused. Started, failed and rollback-in-progress attempts
-remain unresolved. The [ledger trial](../sqlite_trial/main.loom) exercises this
+cannot be started or reused. `cancel_unstarted_attempt` withdraws a plan by
+appending `Cancelled`, preserving the preceding basis and closing its identity.
+Repeating cancellation returns the recorded result, even after a later plan.
+`inspect_attempt` reads a named attempt's recorded outcome after validating the
+whole ledger; it does not observe current application data. Started, failed and
+rollback-in-progress attempts cannot be cancelled and remain unresolved.
+The [ledger trial](../sqlite_trial/main.loom) exercises this
 planning lifecycle against SQLite without changing application data.
 `start_sqlite_migration` can start an already registered package plan only when
 its identity, bases, digest and failure policy match. The migration trial replaces

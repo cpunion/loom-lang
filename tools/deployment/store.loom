@@ -71,6 +71,7 @@ fn state_number(state DeploymentState) Int {
         DeploymentState.RollbackFailed => 5,
         DeploymentState.RollbackComplete => 6,
         DeploymentState.AssumedComplete => 7
+        DeploymentState.Cancelled => 8
     }
 }
 
@@ -108,6 +109,9 @@ fn from_state(value Int) Result[DeploymentState, Text] {
     }
     if value == 7 {
         return Result.Ok(DeploymentState.AssumedComplete)
+    }
+    if value == 8 {
+        return Result.Ok(DeploymentState.Cancelled)
     }
     Result.Err("invalid stored deployment state")
 }
@@ -155,7 +159,7 @@ fn next_state(before Attempt, after Attempt) Bool {
     }
     match before.state {
         DeploymentState.NotDeployed => after.state == DeploymentState.Started ||
-        after.state == DeploymentState.AssumedComplete,
+        after.state == DeploymentState.AssumedComplete || after.state == DeploymentState.Cancelled,
         DeploymentState.Started => after.state == DeploymentState.Failed ||
         after.state == DeploymentState.Complete,
         DeploymentState.Failed => after.state == DeploymentState.RollbackStarted ||
@@ -175,7 +179,8 @@ fn new_attempt(before Stored, after Attempt) Bool {
     match before.evidence {
         BasisEvidence.Observed(basis) => basis == after.from_basis,
         BasisEvidence.Assumed(basis) => basis == after.from_basis,
-        BasisEvidence.None => before.attempt.state == DeploymentState.NotDeployed &&
+        BasisEvidence.None => (before.attempt.state == DeploymentState.NotDeployed ||
+            before.attempt.state == DeploymentState.Cancelled) &&
         before.attempt.from_basis == "" && after.from_basis == ""
     }
 }
@@ -198,7 +203,8 @@ fn stored_after(before Stored, after Stored) Result[Stored, Text] {
     Result.Ok(Stored {
             sequence = after.sequence
             attempt = after.attempt
-            evidence = if after.attempt.state == DeploymentState.NotDeployed {
+            evidence = if after.attempt.state == DeploymentState.NotDeployed ||
+            after.attempt.state == DeploymentState.Cancelled {
                 before.evidence
             } else {
                 effective(after.attempt)
@@ -214,7 +220,7 @@ pub fn initialize(tool Text, database Text) Result[Bool, Text] {
     Result.Ok(true)
 }
 
-fn latest(tool Text, database Text) Result[Option[Stored], Text] {
+fn recorded(tool Text, database Text, id Text) Result[Option[Stored], Text] {
     let exists = inspect(tool, database,
         "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='loom_deploy_events';")?
     if to_text(exists) == "0\n" {
@@ -234,6 +240,11 @@ fn latest(tool Text, database Text) Result[Option[Stored], Text] {
     if previous.attempt.state != DeploymentState.NotDeployed || previous.attempt.from_basis != "" {
         return Result.Err("invalid initial deployment event")
     }
+    var selected = if previous.attempt.id == id {
+        Option.Some(previous)
+    } else {
+        Option.None
+    }
     std.list.push(seen, previous.attempt.id)
     var index = 1
     while index < length(lines) {
@@ -251,6 +262,9 @@ fn latest(tool Text, database Text) Result[Option[Stored], Text] {
                 std.list.push(seen, current.attempt.id)
             }
             previous = current
+            if current.attempt.id == id {
+                selected = Option.Some(current)
+            }
         } else {
             if index + 1 != length(lines) {
                 return Result.Err("deployment ledger contains an empty event")
@@ -258,7 +272,27 @@ fn latest(tool Text, database Text) Result[Option[Stored], Text] {
         }
         index = index + 1
     }
-    Result.Ok(Option.Some(previous))
+    Result.Ok(if id == "" {
+            Option.Some(previous)
+        } else {
+            selected
+        })
+}
+
+fn latest(tool Text, database Text) Result[Option[Stored], Text] {
+    recorded(tool, database, "")
+}
+
+// Historical inspection validates the complete ledger, not only the requested
+// row. It reports recorded outcomes, never a fresh observation of application data.
+pub fn inspect_attempt(tool Text, database Text, id Text) Result[Option[Attempt], Text] {
+    if !identifier(id) {
+        return Result.Err("invalid deployment identity")
+    }
+    match recorded(tool, database, id)? {
+        Option.Some(value) => Result.Ok(Option.Some(value.attempt))
+        Option.None => Result.Ok(Option.None)
+    }
 }
 
 fn event_values(attempt Attempt) Text {
@@ -328,7 +362,9 @@ pub fn register(tool Text, database Text, attempt Attempt) Result[Attempt, Text]
                     }
                 }
                 BasisEvidence.None => {
-                    return Result.Err("previous deployment outcome is unresolved")
+                    if !new_attempt(previous, attempt) {
+                        return Result.Err("previous deployment outcome is unresolved")
+                    }
                 }
             }
             previous.sequence
@@ -385,6 +421,23 @@ fn record_event(tool Text, database Text, id Text, event Transition) Result[Atte
 // manufacture observed success. Completion belongs to a checked executor.
 pub fn start_attempt(tool Text, database Text, id Text) Result[Attempt, Text] {
     record_event(tool, database, id, Transition.Begin)
+}
+
+// Only a plan that has never started can be withdrawn without executing a
+// recovery. Its old record stays in the ledger; its unused target is not basis
+// evidence, and the cancelled identity can never be started or reused.
+pub fn cancel_unstarted_attempt(tool Text, database Text, id Text) Result[Attempt, Text] {
+    match inspect_attempt(tool, database, id)? {
+        Option.Some(previous) => {
+            if previous.state == DeploymentState.Cancelled {
+                return Result.Ok(previous)
+            }
+        }
+        Option.None => {
+            return Result.Err("no deployment attempt is registered")
+        }
+    }
+    record_event(tool, database, id, Transition.Cancel)
 }
 
 pub fn note_failure(tool Text, database Text, id Text) Result[Attempt, Text] {
