@@ -1,0 +1,184 @@
+import std.loom.project.load
+
+fn refined_rename_case(name Text, path Text, edited Bool) Revision {
+    let body = replace(if edited {
+            """
+            fn FUNCTION(value Int) Bool {
+                let lower = 0
+                value >= lower
+            }
+            """
+        } else {
+            """
+            fn FUNCTION(value Int) Bool {
+                value >= 0
+            }
+            """
+        }, "FUNCTION", name)
+    let source = replace("""
+        record Balance {
+            amount Int
+            limit Int
+        }
+        type Money = Balance where FUNCTION(self.amount) && self.amount <= self.limit
+        type NonNegative = Int where FUNCTION(self)
+        fn entry() Money {
+            Money(Balance { amount = 7, limit = 10 })
+        }
+        """, "FUNCTION", name)
+    let revision = renamed_case(name, path, body, source)
+    set(revision.identities, 0, Identity {
+            key = key(body)
+            ..get(revision.identities, 0)
+        })
+    let names = ["Balance", "Money", "NonNegative"]
+    var index = 0
+    while index < length(names) {
+        let label = get(names, index)
+        push(revision.identities, Identity {
+                id = concat("type-", label)
+                path = "app.loom"
+                kind = if index == 0 {
+                    NodeKind.Record
+                } else {
+                    NodeKind.Refined
+                }
+                name = label
+                key = "-"
+            })
+        index = index + 1
+    }
+    revision
+}
+
+test fn constraint_helpers_compose_rename_move_and_pure_body_edits() {
+    let base = refined_rename_case("positive", "value.loom", false)
+    let moved = refined_rename_case("nonnegative", "app.loom", false)
+    let edited = refined_rename_case("positive", "value.loom", true)
+    // Refinements implicitly depend on the real std Result/Error declarations;
+    // keep the import-free API's pinned-context requirement intact.
+    assert match merge(base, moved, edited) {
+        Result.Err(message) => contains(message, "explicit pinned project context")
+        Result.Ok(_) => false
+    }
+    let loaded = match load("tools/semantic_change/fixtures/constrained", "compiler/std", false) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            rename_context(base)
+        }
+    }
+    let directory = get(loaded.modules, get(loaded.packages, loaded.root).instance).source
+    let context = match contextual(loaded, directory, base) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            loaded
+        }
+    }
+    let branches = [moved, edited]
+    var order = 0
+    while order < 2 {
+        let a = get(branches, order)
+        let b = get(branches, 1 - order)
+        let merged = match merge_with_context(base, a, b, context, context, directory) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        let source = get(merged.files, 1).text
+        assert contains(source, "nonnegative(self.amount)")
+        assert contains(source, "nonnegative(self)")
+        assert contains(source, "let lower = 0")
+        assert match merge_packages([PackageRevision {
+                    directory = directory
+                    revision = base
+                }],
+            [PackageRevision {
+                    directory = directory
+                    revision = a
+                }],
+            [PackageRevision {
+                    directory = directory
+                    revision = b
+                }], context, context) {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        order = order + 1
+    }
+}
+
+fn dynamic_rename_case(name Text, path Text, value Text) Revision {
+    let revision = default_case(name, path, value, false)
+    var index = 0
+    while index < length(revision.files) {
+        let file = get(revision.files, index)
+        set(revision.files, index, File {
+                text = replace(file.text, "concept Read {", "concept Read {\n    type Item = Int")
+                ..file
+            })
+        index = index + 1
+    }
+    let consumer = """
+        fn consume(value dyn Read[Item = Int]) Int {
+            value.read()
+        }
+        """
+    push(revision.files, File {
+            path = "consumer.loom"
+            text = consumer
+        })
+    push(revision.identities, Identity {
+            id = "consumer-id"
+            path = "consumer.loom"
+            kind = NodeKind.Function
+            name = "consume"
+            key = key(consumer)
+        })
+    revision
+}
+
+test fn dynamic_associated_bindings_compose_without_inventing_a_witness() {
+    let base = dynamic_rename_case("amount", "value.loom", "1")
+    let moved = dynamic_rename_case("balance", "app.loom", "1")
+    let edited = dynamic_rename_case("amount", "value.loom", "2")
+    let context = rename_context(base)
+    let branches = [moved, edited]
+    var order = 0
+    while order < 2 {
+        let a = get(branches, order)
+        let b = get(branches, 1 - order)
+        assert match merge(base, a, b) {
+            Result.Ok(value) => contains(get(value.files, 1).text, "balance()")
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        assert match merge_with_context(base, a, b, context, context, "pkg") {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        assert match merge_packages(generic_package_case(base), generic_package_case(a),
+            generic_package_case(b), context, context) {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        order = order + 1
+    }
+}

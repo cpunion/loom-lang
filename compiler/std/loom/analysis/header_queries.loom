@@ -157,6 +157,33 @@ fn inspect_header_type(analysis CheckedQuery, report Inspection, target Query,
         }
         return
     }
+    if node.kind == NodeKind.DynType && shape.kind == TypeKind.Dyn {
+        let capability = get(analysis.bindings.symbols, get(analysis.interfaces, shape.symbol).symbol)
+        var binding = 0
+        while binding < length(node.children) {
+            let selected = get(node.children, binding)
+            if selected.kind == NodeKind.AssociatedType && length(selected.children) == 1 &&
+            inside(selected.span, target.token.span.start) {
+                // Source bindings may be reordered. Checked arguments follow
+                // the concept's associated declarations, not the source list.
+                var member = 0
+                var slot = 0
+                while member < length(capability.node.children) {
+                    let declaration_node = get(capability.node.children, member)
+                    if declaration_node.kind == NodeKind.AssociatedType {
+                        if declaration_node.value == selected.value && slot < length(shape.arguments) {
+                            inspect_header_type(analysis, report, target, owner, get(selected.children, 0),
+                                get(shape.arguments, slot), depth + 1)
+                        }
+                        slot = slot + 1
+                    }
+                    member = member + 1
+                }
+                return
+            }
+            binding = binding + 1
+        }
+    }
     if (node.kind == NodeKind.Type || node.kind == NodeKind.TupleType) && length(node.children) == length(shape.arguments) {
         var index = 0
         while index < length(node.children) {

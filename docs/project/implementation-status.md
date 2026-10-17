@@ -63,6 +63,10 @@ Query-only pattern evidence retains nested record fields and enum variants
 through decision-tree lowering. Semantic merge compares match guards/bodies and
 destructuring without treating the new pattern bindings as external references;
 missing or ambiguous checked definitions still reject.
+Constrained aliases now compare pure helper/field references in a pinned standard
+library context. Dynamic associated labels retain the actual concept member,
+including when a same-spelled generic type parameter is in scope. This is source
+binding evidence, not behavioral compatibility or migration proof.
 
 Resident workers reuse valid analyses while revalidating source and observed
 inputs. Query-only declaration headers support ordinary/generic and impl

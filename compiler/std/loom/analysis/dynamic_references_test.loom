@@ -1,0 +1,75 @@
+fn dynamic_reference_source() Text {
+    """
+    concept Marker {
+    }
+    concept Read {
+        type Item
+        type Tag
+        fn read(self Self) Self.Item
+    }
+    fn entry[Read Marker, Item](value dyn Read[Tag = Bool, Item = Item]) Item {
+        value.read()
+    }
+    """
+}
+
+test fn dynamic_queries_keep_associated_labels_in_the_concept_namespace() {
+    let source = dynamic_reference_source()
+    let analysis = accepted(input(source))
+    let declared = query_offset(source, "Read {\n")
+    only_definition(inspection(analysis, source, "Read[Tag"), declared, declared + 4)
+    let item = query_offset(source, "Item\n")
+    only_definition(inspection(analysis, source, "Item = Item"), item, item + 4)
+    let parameter = query_offset(source, "Item](value")
+    only_definition(inspection(analysis, source, "Item]) Item"), parameter, parameter + 4)
+    only_definition(inspection(analysis, source, "Item\n}"), item, item + 4)
+    let method = query_offset(source, "read(self")
+    only_definition(independent_found(analysis.bindings, source, "read()"), method, method + 4)
+}
+
+test fn dynamic_obligations_keep_bindings_bounds_and_projection_roles() {
+    let source = dynamic_reference_source()
+    let obligations = source_obligations(source)
+    assert length(obligations.unknown) == 0
+    let references = ["Marker, Item]", "Item\n}", "Read[Tag", "Tag = Bool", "Item = Item", "read()"]
+    var index = 0
+    while index < length(references) {
+        let present = reference_bound_offsets(obligations.offsets, query_offset(source, get(references, index)))
+        if !present {
+            discard std.io.write_error(concat("missing dynamic obligation: ", get(references, index)))
+        }
+        assert present
+        index = index + 1
+    }
+    assert !reference_bound_offsets(obligations.offsets, query_offset(source, "Read Marker"))
+    assert !reference_bound_offsets(obligations.offsets, query_offset(source, "Item]) Item"))
+}
+
+test fn implementation_obligations_keep_concepts_distinct_from_lexical_aliases() {
+    let source = """
+        concept Marker {
+        }
+        concept Keep {
+            type Item[U Marker]
+            fn keep(self Self) Self
+        }
+        record Box[T] {
+            value T
+        }
+        impl[Keep Marker] Keep for Box[Keep] {
+            type Item[V Marker] = (Keep, V)
+            fn keep(self Self) Self {
+                self
+            }
+        }
+        """
+    let obligations = source_obligations(source)
+    assert length(obligations.unknown) == 0
+    assert reference_bound_offsets(obligations.offsets, query_offset(source, "Keep for"))
+    assert reference_bound_offsets(obligations.offsets, query_offset(source, "Box[Keep]"))
+    assert !reference_bound_offsets(obligations.offsets, query_offset(source, "Keep] {"))
+    assert !reference_bound_offsets(obligations.offsets, query_offset(source, "V)\n"))
+    let analysis = accepted(input(source))
+    let declared = query_offset(source, "Keep {\n")
+    only_definition(inspection(analysis, source, "Keep for"), declared, declared + 4)
+}
