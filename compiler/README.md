@@ -3660,8 +3660,10 @@ ordinary managed data. The argument's pure construction materializes once per
 source call; forwarding passes its current shared state, and a separate
 construction starts fresh. Captured contents do not duplicate native instances
 with the same target and layout. A nested `comptime` block cannot read this live
-environment; the whole call can instead execute at compile time. Merely
-constructing an effectful or async callback is allowed; actually invoking it in
+environment; the whole call can instead execute at compile time. Forwarding
+it through a pure function or wrapping it in another callback retains
+the live shared environment without using its state to select the static target.
+Merely constructing an effectful or async callback is allowed; actually invoking it in
 the evaluator still rejects I/O and Tasks. Indirect purity checking considers
 all discovered targets of the checked shape, not only the observed branch.
 See the [captured callback example](examples/comptime_closures/README.md).

@@ -1,0 +1,68 @@
+fn static_forwarding_header() Text {
+    """
+    fn counter() fn() Int {
+        var value = 0
+        fn() Int {
+            value = value + 1
+            value
+        }
+    }
+    fn identity[T](value T) T {
+        value
+    }
+    fn invoke(comptime next fn() Int) Int {
+        next()
+    }
+    """
+}
+
+test fn static_forwarding_keeps_live_captures_through_pure_calls_and_wrappers() {
+    discard accepted(concat(static_forwarding_header(), """
+        fn forwarded(comptime next fn() Int) {
+            assert next() == 1
+            assert invoke(identity(next)) == 2
+            assert invoke(fn() Int {
+                next() + 40
+            }) == 43
+            assert next() == 4
+        }
+        fn main() {
+            forwarded(counter())
+            comptime {
+                forwarded(counter())
+            }
+        }
+        """))
+}
+
+test fn static_forwarding_cannot_inspect_live_state_or_promote_runtime_bindings() {
+    let source = concat(static_forwarding_header(), """
+        fn choose(next fn() Int) fn() Int {
+            if next() > 0 {
+                next
+            } else {
+                counter()
+            }
+        }
+        fn forwarded(comptime next fn() Int) {
+            discard invoke(choose(next))
+        }
+        fn main() {
+            forwarded(counter())
+        }
+        """)
+    match checked(source_files(source)) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "comptime cannot inspect a live captured environment"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+    rejects(concat(static_forwarding_header(), """
+        fn main() {
+            let runtime = counter()
+            discard invoke(identity(runtime))
+        }
+        """))
+}

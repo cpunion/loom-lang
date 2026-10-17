@@ -52,6 +52,11 @@ fn static_environment_argument(context Context, node Node, value StaticValue) Re
         let binding = get(context.bindings, forwarded)
         return Result.Ok(atom(ExprKind.Local, static_environment_type(context.env, value), node, binding.local))
     }
+    if static_identity_input(context, node) {
+        // Identity staging proved the target without reading live state. Run
+        // the pure transport once in source order, retaining that same state.
+        return static_field_environment(context, node, value, expr(context, node, value.ty)?)
+    }
     // Materialize the full graph once at this source argument, retaining cycles
     // and aliases. Its final expression is the environment passed to the callee.
     let snapshot = get(context.env.computations, value.storage).value

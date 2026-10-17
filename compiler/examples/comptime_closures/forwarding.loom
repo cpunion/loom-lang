@@ -1,0 +1,19 @@
+fn identity[T](value T) T {
+    value
+}
+
+fn transported(comptime next fn() Int) {
+    assert next() == 1
+    assert step(identity(next)) == 2
+    assert step(fn() Int {
+            next() + 40
+        }) == 43
+    assert next() == 4
+}
+
+fn transported_captures() {
+    transported(counter(0))
+    comptime {
+        transported(counter(0))
+    }
+}
