@@ -31,13 +31,32 @@ fn storage_frame(value Value, target ListExtent, state State) Bool {
 // An opaque completion cannot return storage it could not reach. This runs
 // after argument publication and interference, not before evaluating inputs.
 fn opaque_completion(value Value, state State) Value {
+    opaque_completion(value, state, -1)
+}
+
+// A read inherits only exclusions established for its source graph. An opaque
+// call instead excludes every still-private allocation after publishing inputs.
+fn storage_excluded(extent ListExtent, state State, source Int) Bool {
+    if !extent.allocated || !extent.private_storage {
+        return false
+    }
+    if source < 0 {
+        return true
+    }
+    match list_state(source, state) {
+        Result.Ok(root) => list_graph_frame(root, extent)
+        Result.Err(_) => false
+    }
+}
+
+fn opaque_completion(value Value, state State, source Int) Value {
     match value {
         Value.Opaque(frontier, _) => {
             let excluded = new[Int]()
             var index = 0
             while index < length(state.extents) {
                 let extent = get(state.extents, index)
-                if extent.allocated && extent.private_storage {
+                if storage_excluded(extent, state, source) {
                     push(excluded, extent.identity)
                 }
                 index = index + 1
@@ -48,7 +67,7 @@ fn opaque_completion(value Value, state State) Value {
             let values = new[Value]()
             var index = 0
             while index < length(fields) {
-                push(values, opaque_completion(get(fields, index), state))
+                push(values, opaque_completion(get(fields, index), state, source))
                 index = index + 1
             }
             Value.Record(values)
@@ -60,7 +79,7 @@ fn opaque_completion(value Value, state State) Value {
                 let fields = new[Value]()
                 var field = 0
                 while field < length(get(payloads, variant)) {
-                    push(fields, opaque_completion(get(get(payloads, variant), field), state))
+                    push(fields, opaque_completion(get(get(payloads, variant), field), state, source))
                     field = field + 1
                 }
                 push(variants, fields)
@@ -119,13 +138,17 @@ fn separate_storage(identity Int, excluded List[Int], state State) State {
 // A completion graph cannot contain an allocation inaccessible to the call.
 // This is not separation between its fields or between any shared children.
 fn completion_separation(value Value, state State) State {
+    completion_separation(value, state, -1)
+}
+
+fn completion_separation(value Value, state State, source Int) State {
     match value {
         Value.List(identity) => {
             let excluded = new[Int]()
             var index = 0
             while index < length(state.extents) {
                 let extent = get(state.extents, index)
-                if extent.allocated && extent.private_storage && extent.identity != identity {
+                if extent.identity != identity && storage_excluded(extent, state, source) {
                     push(excluded, extent.identity)
                 }
                 index = index + 1
@@ -136,7 +159,7 @@ fn completion_separation(value Value, state State) State {
             var current = state
             var index = 0
             while index < length(fields) {
-                current = completion_separation(get(fields, index), current)
+                current = completion_separation(get(fields, index), current, source)
                 index = index + 1
             }
             current
@@ -145,7 +168,7 @@ fn completion_separation(value Value, state State) State {
             var current = state
             var variant = 0
             while variant < length(payloads) {
-                current = completion_separation(Value.Record(get(payloads, variant)), current)
+                current = completion_separation(Value.Record(get(payloads, variant)), current, source)
                 variant = variant + 1
             }
             current

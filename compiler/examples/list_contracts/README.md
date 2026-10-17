@@ -31,6 +31,15 @@ predicate check. A saved Task can also yield a local draft for checked
 construction: its raw alias may replace an element, but cannot resize the
 published length-two value. Unknown Task origins supply no freshness promise.
 
+`transforms.loom` proves length contracts for ordinary generic wrappers over
+source `map` and `filter`, using each input's entry length even when callbacks
+append to that input. A read projects its source graph's established exclusions:
+its shared children cannot expose a later private output merely because they
+are passed to a callback. Published graphs lose this frame. Shared notes remain
+shared across suspension; no input snapshot or runtime copy is introduced.
+These wrapper contracts inspect the source bodies; they are not new public
+`std.list.map/filter` guarantees or a promise of worker-safe input lengths.
+
 `refinements.loom` uses `Nonempty[T]` with shared nested Lists. Its predicate
 observes only the outer length, so inner mutations do not invalidate it. Outer
 replacement and append preserve nonemptiness through generic helpers and

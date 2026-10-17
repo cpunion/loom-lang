@@ -91,6 +91,7 @@ async fn main() {
     exercise_scalar_contents().await
     exercise_typed_entry_snapshots()
     exercise_generated().await
+    exercise_transforms().await
 }
 
 test async fn shared_lengths_survive_updates_loops_and_suspension() {

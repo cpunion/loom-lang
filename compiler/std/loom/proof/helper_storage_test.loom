@@ -102,3 +102,25 @@ test fn protected_storage_is_stable_without_inventing_private_or_disjoint_origin
         }, published)
     assert !get(growing.extents, 1).fixed_extent
 }
+
+test fn projected_reads_inherit_only_the_current_source_graph_frame() {
+    let entry = State {
+        locals = []
+        facts = []
+        extents = []
+        observations = []
+    }
+    let state = fresh_storage(Value.List(12), list_bounds(Value.List(10), entry))
+    let target = get(state.extents, 1)
+    let opaque = opaque_completion(Value.Opaque(20, []), state, 10)
+    assert opaque_frame(opaque, target)
+    assert !opaque_frame(opaque_completion(Value.Opaque(20, []), state, 99), target)
+    let sampled = list_bounds(Value.List(20), state)
+    let separated = completion_separation(Value.Record([Value.List(20)]), sampled, 10)
+    assert !extent_overlap(get(separated.extents, 2), get(separated.extents, 1))
+    let published = published_storage(state)
+    assert !opaque_frame(opaque_completion(Value.Opaque(20, []), published, 10),
+        get(published.extents, 1))
+    let connected = unframed_graphs(state, [10])
+    assert !opaque_frame(opaque_completion(Value.Opaque(20, []), connected, 10), target)
+}
