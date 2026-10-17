@@ -543,24 +543,31 @@ fn read_context(directory Text, standard Text) Result[Context, Text] {
         return Result.Err("project context needs a named non-standard module")
     }
     let lock = join_path(root.source, "loom.lock")
-    match entry_kind(lock) {
-        Result.Ok(FileKind.File) => {
-        }
-        _ => {
-            return Result.Err("project context needs an explicit regular loom.lock")
-        }
-    }
-    let locked = match read_text(lock) {
-        Result.Ok(value) => value,
-        Result.Err(_) => {
-            return Result.Err("cannot read project context loom.lock")
-        }
-    }
     let bytes = std.bytes.new()
-    frame(bytes, "loom-semantic-context-v1")
+    frame(bytes, "loom-semantic-context-v2")
     frame(bytes, canonical)
     frame(bytes, std_root)
-    frame(bytes, locked)
+    // Loading above validates all reached Git edges without resolving them.
+    // Preserve lock absence as input too: creating an empty lock invalidates
+    // a review just as changing an existing lock does.
+    match entry_kind(lock) {
+        Result.Err(FsError.NotFound) => {
+            frame(bytes, "absent")
+        }
+        Result.Ok(FileKind.File) => {
+            frame(bytes, "present")
+            let locked = match read_text(lock) {
+                Result.Ok(value) => value,
+                Result.Err(_) => {
+                    return Result.Err("cannot read project context loom.lock")
+                }
+            }
+            frame(bytes, locked)
+        }
+        _ => {
+            return Result.Err("project context loom.lock must be absent or a regular file")
+        }
+    }
     discard framed_project(bytes, production)?
     discard framed_project(bytes, tests)?
     Result.Ok(Context {

@@ -1,0 +1,51 @@
+test fn default_method_abstract_queries_need_no_witness_instance() {
+    let text = """
+        fn helper(value Int) Int {
+            value
+        }
+        concept Read {
+            fn raw(self Self) Int
+            fn read(self Self, offset Int) Int {
+                let copied = self
+                helper(offset) + copied.raw()
+            }
+        }
+        fn main() {
+        }
+        """
+    let analysis = accepted(input(text))
+    let symbols = length(analysis.bindings.symbols)
+    let helper = match inspect_independent(analysis, 0, query_offset(text, "helper(offset)")) {
+        Option.Some(found) => found
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    let declared = query_offset(text, "helper(value")
+    only_definition(helper, declared, declared + 6)
+    let method = match inspect_independent(analysis, 0, query_offset(text, "raw()")) {
+        Option.Some(found) => found
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    let prototype = query_offset(text, "raw(self Self)")
+    only_definition(method, prototype, prototype + 3)
+    assert length(analysis.bindings.symbols) == symbols
+}
+
+test fn default_method_abstract_queries_keep_failed_bodies_unproved() {
+    let text = """
+        concept Read {
+            fn read(self Self) Int {
+                self + 1
+            }
+        }
+        """
+    assert match inspect_independent(query_bindings(input(text)), 0, query_offset(text, "self +")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}

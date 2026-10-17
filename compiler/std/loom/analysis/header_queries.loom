@@ -78,7 +78,7 @@ fn inspect_source_scope(analysis Analysis, file Int, offset Int, tokens List[Tok
             } else {
                 item.node
             }
-            if !ordinary_query_owner(item.node) || !ordinary_query_owner(parent) || parent.kind == NodeKind.Concept {
+            if abstract_reference_scope(item.node) || abstract_reference_scope(parent) {
                 // An unused template has no runtime instance. Its checked
                 // abstract body still supplies local types and binding IDs.
                 return independent_inspection(analysis, file, offset, tokens)

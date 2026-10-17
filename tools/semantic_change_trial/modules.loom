@@ -121,17 +121,24 @@ fn module_tree(directory Text, relative Text, packages List[ModulePackage], asse
 
 fn read_module(directory Text) Result[ModuleSnapshot, Text] {
     discard checked_source_directory(directory)?
-    let required = ["loom.toml", "loom.lock"]
-    var index = 0
-    while index < length(required) {
-        match entry_kind(path(directory, get(required, index))) {
-            Result.Ok(FileKind.File) => {
-            }
-            _ => {
-                return Result.Err("module snapshots require regular loom.toml and loom.lock files")
-            }
+    match entry_kind(path(directory, "loom.toml")) {
+        Result.Ok(FileKind.File) => {
         }
-        index = index + 1
+        _ => {
+            return Result.Err("module snapshots require a regular loom.toml")
+        }
+    }
+    // The offline loader requires locks for reached Git dependencies. A graph
+    // with no Git edges needs no empty lock; module_tree still rejects special
+    // entries and snapshots any existing lock as a configuration asset.
+    match entry_kind(path(directory, "loom.lock")) {
+        Result.Ok(FileKind.File) => {
+        }
+        Result.Err(FsError.NotFound) => {
+        }
+        _ => {
+            return Result.Err("module snapshot loom.lock must be absent or a regular file")
+        }
     }
     let packages = new[ModulePackage]()
     let assets = new[Asset]()

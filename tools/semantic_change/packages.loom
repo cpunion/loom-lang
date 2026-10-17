@@ -246,7 +246,7 @@ fn compare_packages(before Analysis, original List[PackageRevision], after Analy
                         end = node.span.end
                         body = slice(file.text, node.span.start, node.span.end)
                         header = ""
-                        abstract_body = needs_abstract_bindings(node)
+                        abstract_body = abstract_reference_scope(node)
                     }
                     if package_entry_active(after, file.package, entry)? {
                         discard compare_package_entry(before, old_scopes, entry, after, new_scopes,

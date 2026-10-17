@@ -1,0 +1,112 @@
+fn optional_lock_lifecycle(staging Text) Result[Text, Text] {
+    discard module_fixture_branches(staging)?
+    let base = path(staging, "base")
+    let left = path(staging, "left")
+    let right = path(staging, "right")
+    let original = read_module(base)?
+    let context = module_context(original, "compiler/std")?
+    let reviewed = review_module(original, read_module(left)?, read_module(right)?, context)?
+    let package_context = read_context(base, "compiler/std")?
+    discard vacant(path(base, "loom.lock"))?
+
+    discard write_text(path(right, "loom.lock"), "loom-lock 3\n")
+    let output = path(staging, "output")
+    assert match apply_module(reviewed.token, output, "compiler/std", base, left, right) {
+        Result.Err(message) => contains(message, "manifest or lock changed")
+        Result.Ok(_) => false
+    }
+    discard vacant(output)?
+    discard write_text(path(base, "loom.lock"), "loom-lock 3\n")
+    discard write_text(path(left, "loom.lock"), "loom-lock 3\n")
+    assert read_context(base, "compiler/std")?.stamp != package_context.stamp
+    let locked = read_module(base)?
+    let updated = review_module(locked, read_module(left)?, read_module(right)?, module_context(locked, "compiler/std")?)?
+    assert updated.token != reviewed.token
+    discard apply_module(updated.token, output, "compiler/std", base, left, right)?
+    assert text_at(path(output, "loom.lock")) == "loom-lock 3\n"
+
+    discard remove_file(path(base, "loom.lock"))
+    discard create_dir(path(base, "loom.lock"))
+    assert match read_module(base) {
+        Result.Err(message) => contains(message, "regular file")
+        Result.Ok(_) => false
+    }
+    assert match read_context(base, "compiler/std") {
+        Result.Err(message) => contains(message, "regular file")
+        Result.Ok(_) => false
+    }
+    remove_module_fixture(staging)
+    Result.Ok("optional lock lifecycle completed")
+}
+
+test fn optional_lock_presence_is_reviewed_and_existing_locks_are_preserved() {
+    let staging = module_test_directory("optional-lock")
+    assert successful(optional_lock_lifecycle(staging)) == "optional lock lifecycle completed"
+}
+
+fn require_unlocked_git_rejection(directory Text) Result[Bool, Text] {
+    assert match module_context(read_module(directory)?, "compiler/std") {
+        Result.Err(message) => contains(message, "Git dependency is not locked")
+        Result.Ok(_) => false
+    }
+    assert match read_context(directory, "compiler/std") {
+        Result.Err(message) => contains(message, "Git dependency is not locked")
+        Result.Ok(_) => false
+    }
+    discard vacant(path(directory, "loom.lock"))?
+    Result.Ok(true)
+}
+
+fn unlocked_git_lifecycle(staging Text) Result[Text, Text] {
+    let base = path(staging, "base")
+    let bridge = path(staging, "bridge")
+    discard create_dir(base)
+    discard create_dir(bridge)
+    let git_dependency = """
+        [dependencies.codec]
+        git = "https://example.invalid/codec"
+        rev = "0123456789abcdef0123456789abcdef01234567"
+        """
+    discard write_text(path(base, "loom.toml"), concat("[module]\nname = \"sample\"\n", git_dependency))
+    discard write_text(path(base, "main.loom"), """
+        import codec.value
+
+        pub fn main() {
+            assert value() == 1
+        }
+        """)
+    discard initialize("sample", base)?
+    discard require_unlocked_git_rejection(base)?
+
+    discard write_text(path(base, "loom.toml"), """
+        [module]
+        name = "sample"
+
+        [dependencies.bridge]
+        path = "../bridge"
+        """)
+    discard write_text(path(base, "main.loom"), """
+        import bridge.read
+
+        pub fn main() {
+            assert read() == 1
+        }
+        """)
+    discard write_text(path(bridge, "loom.toml"), concat("[module]\nname = \"bridge\"\n", git_dependency))
+    discard write_text(path(bridge, "value.loom"), """
+        import codec.value
+
+        pub fn read() Int {
+            value()
+        }
+        """)
+    discard refresh(base, [], false)?
+    discard require_unlocked_git_rejection(base)?
+    remove_module_fixture(staging)
+    Result.Ok("unlocked Git closures rejected")
+}
+
+test fn optional_lock_does_not_resolve_direct_or_transitive_git_dependencies() {
+    let staging = module_test_directory("unlocked-git")
+    assert successful(unlocked_git_lifecycle(staging)) == "unlocked Git closures rejected"
+}

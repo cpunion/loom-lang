@@ -87,12 +87,50 @@ test fn reference_obligations_cover_cleanup_and_keep_unknown_ranges() {
             }
         }
         """)
-    assert length(implicit.unknown) == 1
-    assert length(implicit.offsets) == 0
+    assert length(implicit.unknown) == 0
+    assert length(implicit.offsets) == 1
     assert match reference_obligations("fn broken(") {
         Result.Err(_) => true
         Result.Ok(_) => false
     }
+}
+
+test fn abstract_reference_scopes_include_implicit_self_and_static_parameters() {
+    let declarations = ["""
+        concept Read {
+            fn read(self Self) Int {
+                helper()
+            }
+        }
+        """, """
+        fn apply(comptime action fn() Int) Int {
+            action()
+        }
+        """, """
+        fn identity[T](value T) T {
+            value
+        }
+        """]
+    var index = 0
+    while index < length(declarations) {
+        let tree = match parse(get(declarations, index)) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                assert false
+                return
+            }
+        }
+        assert abstract_reference_scope(get(tree.children, 0))
+        index = index + 1
+    }
+    let ordinary = match parse("fn read(value Int) Int { value }") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert !abstract_reference_scope(get(ordinary.children, 0))
 }
 
 test fn reference_obligations_do_not_turn_missing_source_tokens_into_coverage() {

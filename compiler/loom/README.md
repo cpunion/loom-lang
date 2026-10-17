@@ -316,6 +316,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | `inspect_references(analysis, file, spelling)` | Source name-token candidates with the same evidence; comments/text literals are excluded and source lookup failures return `Err` |
 | `reference_obligations(tree, tokens)` | Explicit named-binding obligations and unaccounted source ranges for a declaration subtree in the same snapshot |
 | `reference_obligations(source)` | The same syntax coverage from source text, preserving structured parse/lex diagnostics |
+| `abstract_reference_scope(node)` | Whether the declaration requires generic/static binding evidence, including a concept's implicit `Self` |
 | `complete_names(bindings, file, offset)` | `Option[Completion]`: visible names and declaration signatures, using binding only |
 | `complete_at(bindings, file, offset)` | Names, qualified paths or receiver-type member hints, with a UTF-8 replacement span |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
@@ -463,8 +464,9 @@ checks. The editor and semantic-change tool share these queries while retaining
 their separate scope, abstract-binding and unaccounted-use checks.
 Obligations omit declaration labels and lexical type binders, but include their
 concept bounds. Cleanup blocks retain their ordinary references. Unsupported
-syntax, generated declarations and implicit default-method bodies remain explicit
-unknown ranges. Empty `unknown` establishes syntax coverage only, not binding,
+syntax and generated declarations remain explicit unknown ranges. Default-method
+bodies require abstract binding evidence rather than a guessed witness instance.
+Empty `unknown` establishes syntax coverage only, not binding,
 implicit-effect, behavioral compatibility or proof success.
 
 `Type.constraint` is predicate-template metadata, not executable IR: `self`

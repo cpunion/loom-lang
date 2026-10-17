@@ -1,0 +1,95 @@
+fn default_caller(name Text, captured Bool) Text {
+    let source = if captured {
+        """
+        concept Read {
+            fn read(self Self) Int {
+                discard self
+                let balance = fn() Int {
+                    3
+                }
+                discard balance
+                FUNCTION()
+            }
+        }
+        """
+    } else {
+        """
+        concept Read {
+            fn read(self Self) Int {
+                discard self
+                FUNCTION()
+            }
+        }
+        """
+    }
+    replace(source, "FUNCTION", name)
+}
+
+fn default_case(name Text, path Text, value Text, captured Bool) Revision {
+    let revision = renamed_case(name, path, replace(replace("""
+                fn FUNCTION() Int {
+                    VALUE
+                }
+                """, "FUNCTION", name), "VALUE", value), default_caller(name, captured))
+    set(revision.identities, 1, Identity {
+            kind = NodeKind.Concept
+            name = "Read"
+            ..get(revision.identities, 1)
+        })
+    revision
+}
+
+test fn default_methods_compose_rename_move_and_independent_body_edits() {
+    let base = default_case("amount", "value.loom", "1", false)
+    let moved = default_case("balance", "app.loom", "1", false)
+    let edited = default_case("amount", "value.loom", "2", false)
+    let branches = [moved, edited]
+    var order = 0
+    while order < 2 {
+        match merge(base, get(branches, order), get(branches, 1 - order)) {
+            Result.Ok(merged) => {
+                let source = get(merged.files, 1).text
+                assert contains(source, "concept Read")
+                assert contains(source, "balance()")
+                assert !contains(source, "amount")
+                assert get(merged.identities, 0).id == "amount-id"
+                assert get(merged.identities, 1).id == "entry-id"
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        let context = rename_context(base)
+        match merge_with_context(base, get(branches, order), get(branches, 1 - order), context, context, "pkg") {
+            Result.Ok(merged) => {
+                assert contains(get(merged.files, 1).text, "balance()")
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        match merge_packages(generic_package_case(base), generic_package_case(get(branches, order)),
+            generic_package_case(get(branches, 1 - order)), context, context) {
+            Result.Ok(merged) => {
+                assert contains(get(get(merged, 0).revision.files, 1).text, "balance()")
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        order = order + 1
+    }
+}
+
+test fn default_methods_reject_a_capturing_rename_without_witness_guesses() {
+    let base = default_case("amount", "value.loom", "1", false)
+    let moved = default_case("balance", "app.loom", "1", false)
+    let edited = default_case("amount", "value.loom", "2", true)
+    assert match merge(base, moved, edited) {
+        Result.Err(message) => contains(message, "binding") && !contains(message, "source reference form")
+        Result.Ok(_) => false
+    }
+}
