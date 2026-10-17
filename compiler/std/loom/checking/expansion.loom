@@ -94,7 +94,11 @@ fn input_effects(context Context, inputs CallInputs, index Int, node Node, value
                             })
                         push(body, expression(ExprKind.Let, 0, node, "", saved, expressions(value), value.falls))
                     }
-                    push(body, expression(ExprKind.Discard, 0, node, "", -1, expressions(effect.value), effect.value.falls))
+                    push(body, if effect.value.kind == ExprKind.Let {
+                            effect.value
+                        } else {
+                            expression(ExprKind.Discard, 0, node, "", -1, expressions(effect.value), effect.value.falls)
+                        })
                 }
                 current = current + 1
             }
