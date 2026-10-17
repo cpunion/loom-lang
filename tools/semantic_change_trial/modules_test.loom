@@ -8,7 +8,6 @@ import std.text.replace
 fn module_fixture(directory Text) Result[Text, Text] {
     discard create_dir(directory)
     discard std.file.write_text(path(directory, "loom.toml"), "[module]\nname = \"sample\"\nversion = \"0.1.0\"\n")
-    discard std.file.write_text(path(directory, "loom.lock"), "loom-lock 3\n")
     discard std.file.write_text(path(directory, "obsolete.txt"), "old documentation\n")
     discard std.file.write_text(path(directory, "main.loom"), """
         import sample.app.entry
@@ -230,7 +229,10 @@ fn module_lifecycle(staging Text) Result[Text, Text] {
     assert text_at(path(output, "README.txt")) == "updated alongside the application\n"
     assert text_at(path(output, "docs/usage.txt")) == "updated alongside the library\n"
     discard vacant(path(output, "obsolete.txt"))?
-    assert text_at(path(output, "loom.lock")) == text_at(path(base, "loom.lock"))
+    discard vacant(path(output, "loom.lock"))?
+    discard vacant(path(base, "loom.lock"))?
+    discard vacant(path(left, "loom.lock"))?
+    discard vacant(path(right, "loom.lock"))?
     let published = read_module(output)?
     let reloaded = module_context(published, "compiler/std")?
     discard review_module(published, published, published, reloaded)?

@@ -26,15 +26,17 @@ target/loom run tools/semantic_change_trial -- --apply TOKEN NEW_MODULE_DIR \
   --module compiler/std BASE LEFT RIGHT
 ```
 
-Each snapshot has regular `loom.toml` and `loom.lock` files and a `.loom-ids`
+Each snapshot has a regular `loom.toml` file and a `.loom-ids`
 sidecar in every directory package, including test-only packages. For example,
 initialize `sample` at the module root and `sample.parser` in its `parser`
 directory with the existing `init` command; carry those sidecars between branches.
 The package set and import graph remain fixed. Cross-package header/contract or
 deletion changes compose with edits only across disconnected production/test
 import components; shared consumers or dependencies still require resolution.
-Manifest and lock bytes must match
-in all three snapshots. Other assets use whole-file three-way byte comparison:
+The offline loader requires a lock for reached Git dependencies; modules with
+only local dependencies need no empty `loom.lock`. An existing lock must be a
+regular file. Manifest bytes and lock presence/bytes must match in all three
+snapshots. Other assets use whole-file three-way byte comparison:
 one-sided edits/additions/deletions and identical concurrent edits combine;
 different concurrent edits, deletion versus edit and file/directory conflicts
 require explicit resolution. There is no guessed textual or binary merge. Asset
@@ -100,11 +102,12 @@ The Git executable path is explicit; the tool never invokes a shell.
 that location; source blobs are read by their tree object IDs.
 
 Import-bearing packages require an explicit offline project context. This must
-be the exact base package in a named module with `loom.toml` and a regular
-`loom.lock` (an empty lock is `loom-lock 3` followed by a newline). The tool
+be the exact base package in a named module with `loom.toml`. A `loom.lock` is
+optional when the selected closure has no Git edges; when present it must be a
+regular file. The tool
 loads the production and test import closures without resolving or fetching
 dependencies, checks both the merged and baseline packages against them, and
-includes selected source bytes, module manifests, lock bytes, resolved import
+includes selected source bytes, module manifests, lock presence/bytes, resolved import
 edges, and canonical project/standard-library roots in the review token. Apply
 reloads that context and rejects changes before creating an output directory:
 
