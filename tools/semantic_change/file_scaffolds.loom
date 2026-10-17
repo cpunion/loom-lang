@@ -46,6 +46,100 @@ fn file_carrier(base Indexed, left Indexed, right Indexed, path Text) Result[Ind
     Result.Err(concat("conflicting file layout or text outside declaration bodies: ", path))
 }
 
+fn joined_source_gap(base Text, left Text, right Text, path Text) Result[Text, Text] {
+    if left == right || base == right {
+        return Result.Ok(left)
+    }
+    if base == left {
+        return Result.Ok(right)
+    }
+    Result.Err(concat("conflicting text outside declaration bodies: ", path))
+}
+
+// Gap boundaries are comparable only with the same declaration-ID sequence in
+// all three files. Never infer comment attachment across a move or reorder.
+fn joined_file_gaps(base Indexed, left Indexed, right Indexed, path Text) Result[File, Text] {
+    let a = file_index(base.revision.files, path)
+    let b = file_index(left.revision.files, path)
+    let c = file_index(right.revision.files, path)
+    let conflict = concat("conflicting file layout or text outside declaration bodies: ", path)
+    if a < 0 || b < 0 || c < 0 {
+        return Result.Err(conflict)
+    }
+    let original = get(base.revision.files, a)
+    let edited_left = get(left.revision.files, b)
+    let edited_right = get(right.revision.files, c)
+    var before = 0
+    var left_offset = 0
+    var right_offset = 0
+    var ordinal = 0
+    var output = ""
+    while true {
+        let a_entry = entry_in_file(base.entries, path, ordinal)
+        let b_entry = entry_in_file(left.entries, path, ordinal)
+        let c_entry = entry_in_file(right.entries, path, ordinal)
+        if a_entry < 0 || b_entry < 0 || c_entry < 0 {
+            if a_entry >= 0 || b_entry >= 0 || c_entry >= 0 {
+                return Result.Err(conflict)
+            }
+            break
+        }
+        let entry = get(base.entries, a_entry)
+        let a_changed = get(left.entries, b_entry)
+        let b_changed = get(right.entries, c_entry)
+        if entry.id != a_changed.id || entry.id != b_changed.id {
+            return Result.Err(conflict)
+        }
+        let gap = joined_source_gap(slice(original.text, before, entry.start),
+            slice(edited_left.text, left_offset, a_changed.start),
+            slice(edited_right.text, right_offset, b_changed.start), path)?
+        output = concat(output, concat(gap, chosen_entry(base, left, right, entry.id).body))
+        before = entry.end
+        left_offset = a_changed.end
+        right_offset = b_changed.end
+        ordinal = ordinal + 1
+    }
+    let tail = joined_source_gap(slice(original.text, before, length(original.text)),
+        slice(edited_left.text, left_offset, length(edited_left.text)),
+        slice(edited_right.text, right_offset, length(edited_right.text)), path)?
+    Result.Ok(File {
+            path = path
+            text = concat(output, tail)
+        })
+}
+
+fn rendered_file(base Indexed, left Indexed, right Indexed, path Text) Result[Option[File], Text] {
+    let carrier = match file_carrier(base, left, right, path) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Ok(Option.Some(joined_file_gaps(base, left, right, path)?))
+        }
+    }
+    let selected = file_index(carrier.revision.files, path)
+    if selected < 0 {
+        return Result.Ok(Option.None)
+    }
+    let file = get(carrier.revision.files, selected)
+    var output = ""
+    var offset = 0
+    var ordinal = 0
+    while true {
+        let position = entry_in_file(carrier.entries, path, ordinal)
+        if position < 0 {
+            break
+        }
+        let entry = get(carrier.entries, position)
+        output = concat(output, slice(file.text, offset, entry.start))
+        output = concat(output, chosen_entry(base, left, right, entry.id).body)
+        offset = entry.end
+        ordinal = ordinal + 1
+    }
+    Result.Ok(Option.Some(File {
+                path = path
+                text = concat(output, slice(file.text, offset, length(file.text)))
+            }))
+}
+
 fn source_files(base Indexed, left Indexed, right Indexed) List[File] {
     let files = new[File]()
     let branches = [base, left, right]

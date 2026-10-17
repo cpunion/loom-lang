@@ -167,3 +167,41 @@ test fn conflicting_destinations_common_additions_and_same_file_scaffolds_requir
         Result.Ok(_) => false
     }
 }
+
+fn gap_fixture(header Text, middle Text, tail Text, alpha Int, beta Int) Revision {
+    file_fixture([File {
+                path = "app.loom"
+                text = concat(header, concat(file_function("", "alpha", alpha).text,
+                        concat(middle, concat(file_function("", "beta", beta).text, tail))))
+            }])
+}
+
+test fn independent_same_file_gaps_compose_with_body_edits_in_either_order() {
+    let base = gap_fixture("// original header\n", "\n// between declarations\n", "", 1, 2)
+    let left = gap_fixture("// revised header\r\n", "\n// between declarations\n", "", 1, 20)
+    let right = gap_fixture("// original header\n", "\n// between declarations\n", "\n// final note\n", 10, 2)
+    let expected = gap_fixture("// revised header\r\n", "\n// between declarations\n", "\n// final note\n", 10, 20)
+    let merged = accepted_file_merge(base, left, right)
+    assert same_file_result(merged, expected)
+    assert same_file_result(merged, accepted_file_merge(base, right, left))
+    assert get(merged.identities, 0).id == get(base.identities, 0).id
+    assert get(merged.identities, 1).id == get(base.identities, 1).id
+}
+
+test fn same_file_gaps_require_the_same_identity_sequence_without_guessed_attachment() {
+    let base = gap_fixture("", "", "", 1, 2)
+    let left = gap_fixture("// file note\n", "", "", 1, 2)
+    let right = file_fixture([File {
+                path = "app.loom"
+                text = concat(file_function("", "beta", 2).text,
+                    concat(file_function("", "alpha", 1).text, "// final note\n"))
+            }])
+    assert match merge(base, left, right) {
+        Result.Err(message) => contains(message, "outside declaration bodies")
+        Result.Ok(_) => false
+    }
+    assert match merge(base, left, gap_fixture("// different file note\n", "", "", 1, 2)) {
+        Result.Err(message) => contains(message, "outside declaration bodies")
+        Result.Ok(_) => false
+    }
+}
