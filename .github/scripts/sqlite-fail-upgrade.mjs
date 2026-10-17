@@ -12,4 +12,4 @@ if (input.includes(Buffer.from("CREATE TRIGGER loom_positive_insert"))) {
 const result = spawnSync("/usr/bin/sqlite3", process.argv.slice(2), { input });
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
-process.exit(result.status ?? 1);
+process.exitCode = result.status ?? 1;
