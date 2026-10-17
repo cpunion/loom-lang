@@ -1,0 +1,37 @@
+test fn expression_proofs_check_values_but_not_exits_to_the_source_caller() {
+    let condition = operation(">", local(0), literal("0"))
+    let returned = expression(ExprKind.Return, 0, "", -1, nodes(literal("-1")))
+    let values = nodes(condition, expression(ExprKind.Block, 0, "", -1, nodes(returned)))
+    push(values, expression(ExprKind.Block, 1, "", -1, nodes(literal("1"))))
+    let body = expression(ExprKind.If, 1, "", -1, values)
+    let function = fixture(body, [], operation(">", local(1), literal("0")))
+    assert match verify_with_helpers(empty_proof_program(), function) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match verify_expression_with_helpers(empty_proof_program(), function, no_proof_backend()) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let negative = nodes(condition, expression(ExprKind.Block, 0, "", -1, nodes(returned)))
+    push(negative, expression(ExprKind.Block, 1, "", -1, nodes(literal("-1"))))
+    assert match verify_expression_with_helpers(empty_proof_program(),
+        fixture(expression(ExprKind.If, 1, "", -1, negative), [], operation(">", local(1), literal("0"))),
+        no_proof_backend()) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn expression_proofs_keep_callee_returns_as_expression_values() {
+    let program = empty_proof_program()
+    let callee = fixture(expression(ExprKind.Return, 0, "", -1, nodes(literal("-1"))), [],
+        expression(ExprKind.Bool, 2, "true", -1, []))
+    push(program.functions, callee)
+    let caller = fixture(expression(ExprKind.Call, 1, "", 0, nodes(literal("0"))), [],
+        operation(">", local(1), literal("0")))
+    assert match verify_expression_with_helpers(program, caller, no_proof_backend()) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

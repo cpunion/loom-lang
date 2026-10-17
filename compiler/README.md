@@ -2849,6 +2849,10 @@ The [enum constraint example](examples/enum_constraints) applies these same
 rules to tags and immutable payloads, including guarded weakening and `?`
 propagation. Construction supplies the known base type for contextual inference,
 without erasing the input's original nominal guarantee.
+Supported conditional, block and match inputs retain their normal-value facts;
+an exit to the source caller produces no constructor input. Mutable temporaries,
+sequence-content control proofs and opaque branch-only nominal results remain
+conservative rather than becoming assumptions.
 
 ```loom
 type Positive = Int where self > 0

@@ -76,16 +76,34 @@ fn construction_proof(context Context, node Node, source Node, expected Int, val
     let bindings = new[Int]()
     let params = new[Int]()
     let locals = new[Local]()
+    let control = ConstructionControl {
+        context = context
+        bindings = bindings
+        params = params
+        locals = locals
+        bound = []
+    }
     let arguments = new[Expr]()
     var index = 0
     while index < length(input.children) {
         let argument = get(input.children, index)
-        push(arguments, construction_input(context, argument, bindings, params, locals, 0))
+        let value = if construction_controlled(argument, 0) {
+            match construction_control_input(control, argument, 0, 0) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Ok(false)
+                }
+            }
+        } else {
+            construction_input(context, argument, bindings, params, locals, 0)
+        }
+        push(arguments, value)
         index = index + 1
     }
     let premises = construction_premises(context, stage, node, bindings, params, locals)
+    let body = expression(input.kind, input.ty, node, input.text, callee, arguments, input.falls)
     construction_body_proof(stage, node,
-        expression(input.kind, input.ty, node, input.text, callee, arguments, input.falls),
+        construction_control_finish(control, body),
         params, locals, premises, target)
 }
 
@@ -117,7 +135,7 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
         runtime_name = ""
         span = node.span
     }
-    Result.Ok(proves_with_input_invariants(stage, program, proof))
+    Result.Ok(proves_with_input_invariants(stage, program, proof, true))
 }
 
 // An immutable outer value can keep its nominal input facts while exposing its
@@ -345,13 +363,35 @@ fn construction_premises(context Context, stage Context, node Node, bindings Lis
 
 fn flow_construction_proof(context Context, node Node, value Expr,
     target Int) Result[Bool, Failure] {
+    let controlled = construction_controlled(value, 0)
+    let kind = get(context.env.types, base_type(context.env, target)).kind
+    if controlled && (kind == TypeKind.List || kind == TypeKind.Bytes) {
+        return Result.Ok(false)
+    }
     let stage = staging(context, node)?
     let env = helper_environment(stage.env)
     let bindings = new[Int]()
     let params = new[Int]()
     let locals = new[Local]()
-    let body = construction_input(context, value, bindings, params, locals, 0)
+    let control = ConstructionControl {
+        context = context
+        bindings = bindings
+        params = params
+        locals = locals
+        bound = []
+    }
+    let input = if controlled {
+        match construction_control_input(control, value, 0, 0) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Ok(false)
+            }
+        }
+    } else {
+        construction_input(context, value, bindings, params, locals, 0)
+    }
     let premises = construction_premises(context, stage, node, bindings, params, locals)
+    let body = construction_control_finish(control, input)
     let scope = predicate_context(env, target, locals, 0, true)?
     construction_body_proof(scope, node, body, params, locals, premises, target)
 }
@@ -360,7 +400,8 @@ fn proved_construction(context Context, node Node, source Node, expected Int, va
     if context.env.expanding_helpers || context.env.stage_depth >= 32 {
         return Result.Ok(false)
     }
-    if value.kind == ExprKind.Record || value.kind == ExprKind.List || value.kind == ExprKind.Variant || construction_view(context.env, value) {
+    if value.kind == ExprKind.Record || value.kind == ExprKind.List || value.kind == ExprKind.Variant || construction_view(context.env, value) ||
+    (value.kind != ExprKind.Call && construction_controlled(value, 0)) {
         return flow_construction_proof(context, node, value, target)
     }
     if value.kind != ExprKind.Call {

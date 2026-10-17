@@ -147,6 +147,9 @@ test fn enum_constraints_check_both_sides_of_result_propagation() {
         fn preserve(value Success) Success {
             Success(Result.Ok(value?))
         }
+        fn relay(value Nonnegative) Nonnegative {
+            Nonnegative(Result.Ok(value?))
+        }
         fn converted(value FixedError) Informative {
             Informative(value)
         }
@@ -177,4 +180,37 @@ test fn enum_constraints_check_both_sides_of_result_propagation() {
         Result.Err(failed) => std.text.contains(failed.diagnostic.message, "propagated error")
         Result.Ok(_) => false
     }
+}
+
+test fn constructor_control_proofs_keep_only_reachable_normal_values() {
+    discard accepted_result("""
+        import std.result.Result
+        type Positive = Int where self > 0
+        fn selected(flag Bool) Positive {
+            Positive(if flag { 1 } else { 2 })
+        }
+        fn exited(flag Bool) Result[Positive, Text] {
+            let value = Positive(if flag {
+                return Result.Err("exit")
+            } else {
+                1
+            })
+            Result.Ok(value)
+        }
+        """)
+    rejects_result("""
+        type Positive = Int where self > 0
+        type Never = Int where false
+        fn unreachable_value() Never {
+            while true {}
+        }
+        fn invalid(flag Bool) Positive {
+            Positive(if flag {
+                let unused = unreachable_value()
+                1
+            } else {
+                -1
+            })
+        }
+        """)
 }

@@ -1,0 +1,256 @@
+// A private value-proof slice, not another runtime representation. Stable
+// outer bindings keep their facts; branch bindings keep their lexical scope.
+record ConstructionControl {
+    context Context
+    bindings List[Int]
+    params List[Int]
+    locals List[Local]
+    bound List[Int]
+}
+
+fn construction_controlled(value Expr, depth Int) Bool {
+    if depth >= 64 {
+        return true
+    }
+    if value.kind == ExprKind.If || value.kind == ExprKind.Match || value.kind == ExprKind.Block {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if construction_controlled(get(value.children, index), depth + 1) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn construction_bound(scope ConstructionControl, local Int) Int {
+    var index = 0
+    while index < length(scope.bound) && get(scope.bound, index) != local {
+        index = index + 1
+    }
+    if index == length(scope.bound) {
+        push(scope.bound, local)
+    }
+    // Resolve branch slots only after all parameter snapshots exist.
+    -2 - index
+}
+
+fn construction_rebuilt(value Expr, index Int, children List[Expr], arms List[Arm]) Expr {
+    Expr {
+        kind = value.kind
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = index
+        children = children
+        arms = arms
+        falls = value.falls
+    }
+}
+
+fn construction_control_input(scope ConstructionControl, value Expr, conditional Int, depth Int) Result[Expr, Bool] {
+    if depth >= 64 {
+        return Result.Err(false)
+    }
+    if !value.falls {
+        return Result.Ok(Expr {
+                kind = ExprKind.Return
+                ty = 0
+                span = value.span
+                text = ""
+                index = -1
+                children = []
+                arms = []
+                falls = false
+            })
+    }
+    if value.kind == ExprKind.Local {
+        var index = 0
+        while index < length(scope.bound) && get(scope.bound, index) != value.index {
+            index = index + 1
+        }
+        if index < length(scope.bound) {
+            return Result.Ok(construction_rebuilt(value, -2 - index, [], []))
+        }
+        // This binding already exists before input evaluation, including when
+        // a particular arm does not use it. Its type facts are legitimate entry
+        // facts. Mutable reads are independent snapshots, not stable aliases.
+        return Result.Ok(construction_input(scope.context, value, scope.bindings, scope.params, scope.locals, 0))
+    }
+    let kind = value.kind
+    if kind == ExprKind.Integer || kind == ExprKind.Bool || kind == ExprKind.Float || kind == ExprKind.Text {
+        return Result.Ok(value)
+    }
+    let composite = kind == ExprKind.Block || kind == ExprKind.If || kind == ExprKind.Match ||
+    kind == ExprKind.Record || kind == ExprKind.Variant ||
+    kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce || kind == ExprKind.Let
+    let projection = kind == ExprKind.Field && length(value.children) == 1 &&
+    (get(scope.context.env.types, base_type(scope.context.env, get(value.children, 0).ty)).kind == TypeKind.Record ||
+        get(scope.context.env.types, base_type(scope.context.env, get(value.children, 0).ty)).kind == TypeKind.Tuple)
+    if !composite && !projection {
+        // A branch-only opaque nominal value may be uninhabited. Making it an
+        // unconditional parameter could falsely erase another arm. Raw scalar
+        // domains are inhabited; unsupported branch-only shapes stay unproved.
+        // Raw Bytes/Lists admit an empty value for every element type. Snapshot
+        // their values, never a local allocation's mutable initial contents.
+        let sequence = value.ty == 4 || get(scope.context.env.types, value.ty).kind == TypeKind.List
+        if conditional > 0 && !sequence && value.ty != 1 && value.ty != 2 && value.ty != 3 && value.ty != 5 && value.ty != 0 {
+            return Result.Err(false)
+        }
+        if value.ty == 0 {
+            return Result.Ok(Expr {
+                    kind = ExprKind.Block
+                    ty = 0
+                    span = value.span
+                    text = ""
+                    index = -1
+                    children = []
+                    arms = []
+                    falls = true
+                })
+        }
+        let snapshot = length(scope.params)
+        push(scope.bindings, -1)
+        push(scope.params, value.ty)
+        push(scope.locals, Local {
+                name = "input"
+                ty = value.ty
+                mutable = false
+                is_scoped = false
+            })
+        return Result.Ok(Expr {
+                kind = ExprKind.Local
+                ty = value.ty
+                span = value.span
+                text = ""
+                index = snapshot
+                children = []
+                arms = []
+                falls = true
+            })
+    }
+    if kind == ExprKind.Let && get(scope.context.locals, value.index).mutable {
+        return Result.Err(false)
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        let child = get(value.children, index)
+        let nested = conditional + if (kind == ExprKind.If && index > 0) ||
+        (kind == ExprKind.Binary && index == 1 && (value.text == "&&" || value.text == "||")) {
+            1
+        } else {
+            0
+        }
+        if kind == ExprKind.Record {
+            if child.kind != ExprKind.Field || length(child.children) != 1 {
+                return Result.Err(false)
+            }
+            let input = construction_control_input(scope, get(child.children, 0), nested, depth + 1)?
+            push(children, construction_rebuilt(child, child.index, expressions(input), []))
+        } else {
+            push(children, construction_control_input(scope, child, nested, depth + 1)?)
+        }
+        index = index + 1
+    }
+    let local = if kind == ExprKind.Let {
+        construction_bound(scope, value.index)
+    } else {
+        value.index
+    }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let bindings = new[Int]()
+        var field = 0
+        while field < length(arm.bindings) {
+            let original = get(arm.bindings, field)
+            push(bindings, if original < 0 {
+                    original
+                } else {
+                    construction_bound(scope, original)
+                })
+            field = field + 1
+        }
+        let whole = if arm.whole < 0 {
+            arm.whole
+        } else {
+            construction_bound(scope, arm.whole)
+        }
+        let body = new[Expr]()
+        field = 0
+        while field < length(arm.body) {
+            push(body, construction_control_input(scope, get(arm.body, field), conditional + 1, depth + 1)?)
+            field = field + 1
+        }
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = bindings
+                whole = whole
+                body = body
+            })
+        index = index + 1
+    }
+    Result.Ok(construction_rebuilt(value, local, children, arms))
+}
+
+fn construction_control_slots(value Expr, boundary Int) Expr {
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, construction_control_slots(get(value.children, index), boundary))
+        index = index + 1
+    }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let bindings = new[Int]()
+        var field = 0
+        while field < length(arm.bindings) {
+            let local = get(arm.bindings, field)
+            push(bindings, if local <= -2 {
+                    boundary - 2 - local
+                } else {
+                    local
+                })
+            field = field + 1
+        }
+        let body = new[Expr]()
+        field = 0
+        while field < length(arm.body) {
+            push(body, construction_control_slots(get(arm.body, field), boundary))
+            field = field + 1
+        }
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = bindings
+                whole = if arm.whole <= -2 {
+                    boundary - 2 - arm.whole
+                } else {
+                    arm.whole
+                }
+                body = body
+            })
+        index = index + 1
+    }
+    let local = if (value.kind == ExprKind.Local || value.kind == ExprKind.Let) && value.index <= -2 {
+        boundary - 2 - value.index
+    } else {
+        value.index
+    }
+    construction_rebuilt(value, local, children, arms)
+}
+
+fn construction_control_finish(scope ConstructionControl, value Expr) Expr {
+    let boundary = length(scope.params)
+    var index = 0
+    while index < length(scope.bound) {
+        push(scope.locals, get(scope.context.locals, get(scope.bound, index)))
+        index = index + 1
+    }
+    construction_control_slots(value, boundary)
+}
