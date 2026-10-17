@@ -60,22 +60,31 @@ fn header_type_name(analysis CheckedQuery, owner Int, ty Int) Text {
     std.loom.checking.type_name(analysis.bindings, analysis.types, analysis.interfaces, ty, labels)
 }
 
+fn declaration_type_header(node Node, offset Int) Bool {
+    if macro_generated(node) {
+        return false
+    }
+    if node.kind == NodeKind.AssociatedType {
+        return inside(node.span, offset)
+    }
+    if node.kind == NodeKind.Impl {
+        var part = 0
+        while part < 3 {
+            if inside(get(node.children, part).span, offset) {
+                return true
+            }
+            part = part + 1
+        }
+    }
+    false
+}
+
 fn inspect_source_scope(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let item = get(analysis.bindings.symbols, index)
-        if item.file == file && item.node.kind == NodeKind.AssociatedType &&
-        inside(item.node.span, offset) && !macro_generated(item.node) {
+        if item.file == file && declaration_type_header(item.node, offset) {
             return independent_inspection(analysis, file, offset, tokens)
-        }
-        if item.file == file && item.node.kind == NodeKind.Impl && !macro_generated(item.node) {
-            var part = 0
-            while part < 3 {
-                if inside(get(item.node.children, part).span, offset) {
-                    return independent_inspection(analysis, file, offset, tokens)
-                }
-                part = part + 1
-            }
         }
         if item.file == file && item.node.kind == NodeKind.Function && inside(item.node.span, offset) && !macro_generated(item.node) {
             var group = 0

@@ -34,3 +34,50 @@ test fn implementation_header_queries_do_not_accept_invalid_type_arguments() {
         Option.Some(_) => false
     }
 }
+
+test fn declaration_type_headers_reuse_one_scope_without_publishing_body_evidence() {
+    let source = """
+        concept Read {
+            type Item
+            fn read(self Self) Int
+        }
+        record Box[T] {
+            value T
+        }
+        impl[T] Read for Box[T] {
+            type Item = (Box[T], Box[T])
+            fn read(self Self) Int {
+                discard self
+                7
+            }
+        }
+        """
+    let analysis = accepted(input(source))
+    only_type(cached_inspection(analysis, source, "Box[T] {\n    type"), "app.Box[T]")
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => saved.header && length(saved.view.functions) == 0 &&
+        saved.scope.span.start == query_offset(source, "impl[T]")
+        Option.None => false
+    }
+    let uses = ["Box[T],", "Box[T])"]
+    var index = 0
+    while index < length(uses) {
+        only_type(cached_inspection(analysis, source, get(uses, index)), "app.Box[T]")
+        assert match get(analysis.independent_queries, 0) {
+            Option.Some(saved) => saved.header && length(saved.view.functions) == 0 &&
+            saved.scope.span.start == query_offset(source, "type Item =")
+            Option.None => false
+        }
+        index = index + 1
+    }
+    only_type(cached_inspection(analysis, source, "self\n"), "app.Box[T]")
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => !saved.header && saved.scope.span.start == query_offset(source, "fn read(self Self) Int {\n")
+        Option.None => false
+    }
+    only_type(cached_inspection(analysis, source, "Box[T],"), "app.Box[T]")
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => saved.header && length(saved.view.functions) == 0
+        Option.None => false
+    }
+}

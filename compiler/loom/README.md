@@ -446,6 +446,8 @@ Impl targets and associated-type definitions can be queried with their declared
 symbolic parameters, without a concrete caller. Header checks validate the
 declared type arguments/requirements, not method-body proof success. Unexpanded
 pack arities are never guessed to manufacture a header instance.
+These declarations share the snapshot-local single-scope query cache; selecting
+a method body replaces the header view instead of inheriting its evidence.
 
 The binding-only `inspect_independent` retains the complete bindings and starts a fresh checker
 session; it does not remove erroneous declarations or reuse a failed check's
