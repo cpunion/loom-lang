@@ -8,7 +8,8 @@ implementation, not a compatibility ledger for previous prototypes.
 - Add source `std.list.generate` with a required result-length contract, ordered
   callbacks, shared elements and worker support. Constrained factories can reuse
   bounded body provenance through effects that do not publish their output;
-  unverified summaries never supply freshness or value facts.
+  successful source Task results share this boundary, including saved results
+  used as local drafts. Unverified summaries never supply freshness or value facts.
 
 - Read LF-framed JSON documents as a source Stream, without waiting for EOF or
   adding runtime behavior. Preserve chunked UTF-8, strict record errors, scoped

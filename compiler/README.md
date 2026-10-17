@@ -2545,6 +2545,11 @@ Effects on unrelated inputs and unknown callbacks are permitted only when the
 checked body proves that they cannot publish the new header. The bounded
 provenance projection ignores unverified postconditions and exports no hidden
 value facts; publication, unknown origins and exhausted reasoning still reject.
+Successful await of a known source producer uses the same provenance boundary
+and can reuse its required result contract. Results extracted from saved Tasks
+can become local drafts; later raw aliases still need preservation checks.
+An arbitrary `Task[List[T]]` does not promise a fresh header. Copy explicitly
+when its producer/origin cannot be established.
 Explicit source `std.list.clone` is one such factory, not a
 compiler-recognized public name:
 

@@ -14,6 +14,15 @@ ensures result == count
     length(generate(count, create))
 }
 
+async fn delayed_generation[T](count Int, create fn(Int) T) List[T]
+requires count >= 0
+ensures length(result) == count
+{
+    let values = generate(count, create)
+    sleep_ms(1).await
+    values
+}
+
 async fn exercise_generated() {
     let trace = new[Int]()
     let pair = generated_pair(fn(index Int) Text {
@@ -26,6 +35,20 @@ async fn exercise_generated() {
     assert length(pair) == 2 && get(pair, 1) == "1"
     assert generated_count(0, to_text) == 0
     assert generated_count(3, to_text) == 3
+    let delayed = GeneratedPair(delayed_generation(2, to_text).await)
+    assert length(delayed) == 2 && get(delayed, 1) == "1"
+    let pending = delayed_generation(2, to_text)
+    let raw = pending.await
+    let saved = match GeneratedPair(raw) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    raw[0] = "saved"
+    sleep_ms(1).await
+    assert get(saved, 0) == "saved" && length(saved) == 2
 }
 
 test async fn source_generation_composes_a_proved_shape_without_runtime_rechecking() {

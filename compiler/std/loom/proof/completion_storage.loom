@@ -96,7 +96,7 @@ fn private_factory_body(program Program, target Int) Bool {
     private_body_result(proof, target, function, CallArguments {
             state = state
             values = values
-        }, false, 256)
+        }, function.is_async, 256)
 }
 
 fn body_result_origins(proof Verification, target Int, function Function, input CallArguments,

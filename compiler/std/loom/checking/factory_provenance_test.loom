@@ -64,3 +64,70 @@ test fn constrained_factories_cannot_return_inputs_or_publish_their_result() {
         }
         """))
 }
+
+test fn constrained_factories_project_successful_async_completion() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.list.push
+        import std.result.Result
+        import std.result.ConstraintError
+        type Pair[T] = List[T] where length(self) == 2
+        async fn gathered[T](create fn(Int) T) List[T]
+        ensures length(result) == 2
+        {
+            let output List[T] = []
+            push(output, create(0))
+            push(output, create(1))
+            output
+        }
+        async fn pair[T](create fn(Int) T) Pair[T] {
+            Pair(gathered(create).await)
+        }
+        async fn saved[T](create fn(Int) T) Result[Pair[T], ConstraintError] {
+            let pending = gathered(create)
+            let draft = pending.await
+            Pair(draft)
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        import std.result.Result
+        import std.result.ConstraintError
+        type One = List[Int] where length(self) == 1
+        async fn borrowed(values List[Int]) List[Int] {
+            values
+        }
+        async fn invalid(values List[Int]) Result[One, ConstraintError] {
+            One(borrowed(values).await)
+        }
+        """)
+    assert match list_constraint_checked("""
+        import std.list.length
+        import std.result.Result
+        import std.result.ConstraintError
+        type One = List[Int] where length(self) == 1
+        async fn invalid(pending Task[List[Int]]) Result[One, ConstraintError] {
+            One(pending.await)
+        }
+        """) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "fresh unpublished")
+        Result.Ok(_) => false
+    }
+    list_constraint_reject("""
+        import std.list.length
+        import std.list.push
+        import std.result.Result
+        import std.result.ConstraintError
+        type One = List[Int] where length(self) == 1
+        async fn fresh() List[Int] {
+            [1]
+        }
+        async fn invalid() Result[One, ConstraintError] {
+            let pending = fresh()
+            let draft = pending.await
+            let value = One(draft)?
+            push(draft, 2)
+            Result.Ok(value)
+        }
+        """)
+}

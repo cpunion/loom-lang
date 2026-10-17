@@ -75,7 +75,8 @@ fn private_factory(program Program, function Function) Bool {
 }
 
 // A fresh outer List may retain shared elements. This checks its header and
-// publication separately; callers still validate purity and element constraints.
+// publication separately, including successful async completion. Callers still
+// validate element predicates and escape/write policy independently.
 pub fn fresh_list_factory(program Program, target Int) Bool {
     if target < 0 || target >= length(program.functions) ||
     !proof_sequence_type(program, get(program.functions, target).result) {

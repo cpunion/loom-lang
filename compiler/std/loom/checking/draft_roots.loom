@@ -39,7 +39,7 @@ fn draft_allocation_add(allocations List[DraftAllocation], allocation DraftAlloc
 // between them. The join binding retains its own must-identity.
 fn draft_choice_root(env Environment, functions List[Function], current Function,
     alternatives List[Expr], path List[Int], local Int, fields List[Int],
-    identities List[DraftIdentity], budget List[Int], depth Int, entry Bool) DraftRoot {
+    identities List[DraftIdentity], budget List[Int], depth Int, entry Bool, completion Bool) DraftRoot {
     var first = missing_draft_root()
     var same = true
     let allocations = new[DraftAllocation]()
@@ -47,7 +47,8 @@ fn draft_choice_root(env Environment, functions List[Function], current Function
     while index < length(alternatives) {
         let value = get(alternatives, index)
         if value.falls {
-            let root = draft_value_root(env, functions, current, value, path, local, fields, identities, budget, depth + 1, entry)
+            let root = draft_value_root(env, functions, current, value, path, local, fields,
+                identities, budget, depth + 1, entry, completion)
             if root.local < 0 {
                 return missing_draft_root()
             }
@@ -99,15 +100,21 @@ fn draft_entry_path(env Environment, input Int, path List[Int]) Bool {
 
 fn draft_value_root(env Environment, functions List[Function], current Function, input Expr,
     selected List[Int], anchor Int, anchor_fields List[Int],
-    identities List[DraftIdentity], budget List[Int], level Int, entry Bool) DraftRoot {
+    identities List[DraftIdentity], budget List[Int], level Int, entry Bool, completion Bool) DraftRoot {
     var value = input
     var path = selected
     var local = anchor
     var fields = anchor_fields
     var depth = level
+    var completed = completion
     while depth < 64 && get(budget, 0) > 0 {
         set(budget, 0, get(budget, 0) - 1)
-        if length(path) == 0 && constraint_fresh(env, functions, value) {
+        let fresh = length(path) == 0 && (if completed {
+                constraint_factory_fresh(env, functions, value, true)
+            } else {
+                constraint_fresh(env, functions, value)
+            })
+        if fresh {
             let origin = draft_root_origin(fields)
             return DraftRoot {
                 local = local
@@ -118,9 +125,14 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
                     }]
             }
         }
-        if value.kind == ExprKind.Local {
+        if !completed && value.kind == ExprKind.Await && length(value.children) == 1 && length(path) == 0 {
+            // Resolve the one-shot producer, keeping the header's post-await
+            // binding as its allocation anchor, not the earlier Task binding.
+            completed = true
+            value = get(value.children, 0)
+        } else if value.kind == ExprKind.Local {
             if value.index < length(current.params) {
-                if entry && !get(current.locals, value.index).mutable &&
+                if !completed && entry && !get(current.locals, value.index).mutable &&
                 draft_entry_path(env, get(current.params, value.index), path) {
                     return DraftRoot {
                         local = value.index
@@ -134,6 +146,9 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
                 return missing_draft_root()
             }
             if get(current.locals, value.index).mutable {
+                if completed {
+                    return missing_draft_root()
+                }
                 return draft_stable_root(env, functions, current, value.index, path, identities, budget, depth + 1)
             }
             let definitions = new[Expr]()
@@ -155,13 +170,24 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
                     index = index + 1
                 }
                 return draft_choice_root(env, functions, current, alternatives, path,
-                    -1, new[Int](), identities, budget, depth + 1, entry)
+                    if completed {
+                        local
+                    } else {
+                        -1
+                    }, if completed {
+                        fields
+                    } else {
+                        new[Int]()
+                    },
+                    identities, budget, depth + 1, entry, completed)
             }
             if length(get(definitions, 0).children) != 1 {
                 return missing_draft_root()
             }
-            local = value.index
-            fields = path
+            if !completed {
+                local = value.index
+                fields = path
+            }
             value = get(get(definitions, 0).children, 0)
         } else if value.kind == ExprKind.Field && length(value.children) == 1 {
             let projected = ints(value.index)
@@ -198,7 +224,8 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
             value = get(value.children, length(value.children) - 1)
         } else if value.kind == ExprKind.If && length(value.children) == 3 {
             return draft_choice_root(env, functions, current,
-                [get(value.children, 1), get(value.children, 2)], path, local, fields, identities, budget, depth + 1, entry)
+                [get(value.children, 1), get(value.children, 2)], path, local, fields,
+                identities, budget, depth + 1, entry, completed)
         } else if value.kind == ExprKind.Match {
             let alternatives = new[Expr]()
             var index = 0
@@ -209,7 +236,8 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
                 }
                 index = index + 1
             }
-            return draft_choice_root(env, functions, current, alternatives, path, local, fields, identities, budget, depth + 1, entry)
+            return draft_choice_root(env, functions, current, alternatives, path, local, fields,
+                identities, budget, depth + 1, entry, completed)
         } else {
             return missing_draft_root()
         }
@@ -219,13 +247,13 @@ fn draft_value_root(env Environment, functions List[Function], current Function,
 }
 
 fn draft_root(env Environment, functions List[Function], current Function, input Expr) DraftRoot {
-    draft_value_root(env, functions, current, input, new[Int](), -1, new[Int](), new[DraftIdentity](), ints(256), 0, false)
+    draft_value_root(env, functions, current, input, new[Int](), -1, new[Int](), new[DraftIdentity](), ints(256), 0, false, false)
 }
 
 fn draft_input_root(env Environment, functions List[Function], current Function, input Expr) DraftRoot {
     // Empty allocation sets denote entry headers only in private input probes;
     // they are never evidence that a constraint's storage is unpublished.
-    draft_value_root(env, functions, current, input, new[Int](), -1, new[Int](), new[DraftIdentity](), ints(256), 0, true)
+    draft_value_root(env, functions, current, input, new[Int](), -1, new[Int](), new[DraftIdentity](), ints(256), 0, true, false)
 }
 
 fn draft_protected_root(root DraftRoot, protected DraftRoot) Bool {

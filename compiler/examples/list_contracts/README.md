@@ -25,6 +25,12 @@ callback effects do not become a false global-purity requirement. The result
 survives suspension. Returning an input or exposing the output to an unknown
 callback still cannot establish the required unpublished header.
 
+The asynchronous producer builds its List, waits on a real timer, and returns
+the private header. Direct `.await` composes its proved length without a second
+predicate check. A saved Task can also yield a local draft for checked
+construction: its raw alias may replace an element, but cannot resize the
+published length-two value. Unknown Task origins supply no freshness promise.
+
 `refinements.loom` uses `Nonempty[T]` with shared nested Lists. Its predicate
 observes only the outer length, so inner mutations do not invalidate it. Outer
 replacement and append preserve nonemptiness through generic helpers and

@@ -86,7 +86,19 @@ fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool 
     if value.kind == ExprKind.List {
         return true
     }
-    if value.kind != ExprKind.Call || value.index < 0 || value.index >= length(functions) {
+    let completion = value.kind == ExprKind.Await && length(value.children) == 1
+    let factory = if completion {
+        get(value.children, 0)
+    } else {
+        value
+    }
+    constraint_factory_fresh(env, functions, factory, completion)
+}
+
+fn constraint_factory_fresh(env Environment, functions List[Function], factory Expr, completion Bool) Bool {
+    if (factory.kind != ExprKind.Call && !(completion && factory.kind == ExprKind.TaskCall)) ||
+    factory.index < 0 || factory.index >= length(functions) ||
+    get(functions, factory.index).is_async != completion {
         return false
     }
     // Prove an unpublished outer header, not global purity. Effects on an
@@ -101,7 +113,7 @@ fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool 
         interfaces = env.interfaces
         witnesses = env.witnesses
     }
-    std.loom.proof.fresh_list_factory(program, value.index)
+    std.loom.proof.fresh_list_factory(program, factory.index)
 }
 
 fn constraint_operation(env Environment, functions List[Function], locals List[Local], value Expr) Bool {

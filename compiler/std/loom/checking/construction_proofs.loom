@@ -55,7 +55,14 @@ fn construction_proof(context Context, node Node, source Node, target Int) Resul
     let stage = staging(context, node)?
     // Match the original call's inference, without a new result-type hint.
     let input = expr(stage, source, -1)?
-    if input.kind != ExprKind.Call || input.ty != base {
+    let completion = input.kind == ExprKind.Await && length(input.children) == 1
+    let invoked = if completion {
+        get(input.children, 0)
+    } else {
+        input
+    }
+    if input.ty != base || (invoked.kind != ExprKind.Call &&
+        !(completion && invoked.kind == ExprKind.TaskCall)) {
         return Result.Ok(false)
     }
     // Argument effects have already happened when the callee is entered.
@@ -66,15 +73,19 @@ fn construction_proof(context Context, node Node, source Node, target Int) Resul
     let locals = new[Local]()
     let arguments = new[Expr]()
     var index = 0
-    while index < length(input.children) {
-        let argument = get(input.children, index)
+    while index < length(invoked.children) {
+        let argument = get(invoked.children, index)
         push(arguments, construction_input(context, argument, bindings, params, locals, 0))
         index = index + 1
     }
     let premises = construction_premises(context, stage, node, bindings, params, locals)
-    construction_body_proof(stage, node,
-        expression(input.kind, input.ty, source, input.text, input.index, arguments, input.falls),
-        params, locals, premises, target)
+    let call = expression(invoked.kind, invoked.ty, source, invoked.text, invoked.index, arguments, invoked.falls)
+    let body = if completion {
+        expression(input.kind, input.ty, source, input.text, input.index, expressions(call), input.falls)
+    } else {
+        call
+    }
+    construction_body_proof(stage, node, body, params, locals, premises, target)
 }
 
 fn construction_body_proof(stage Context, node Node, body Expr, params List[Int],
@@ -329,7 +340,13 @@ fn proved_construction(context Context, node Node, source Node, value Expr, targ
     if value.kind == ExprKind.Record || value.kind == ExprKind.List {
         return flow_construction_proof(context, node, value, target)
     }
-    if value.kind != ExprKind.Call {
+    // Re-type only a known invocation, never consume an opaque saved Task a
+    // second time merely to attempt an optional predicate proof.
+    if value.kind == ExprKind.Await && (length(value.children) != 1 ||
+        (get(value.children, 0).kind != ExprKind.Call && get(value.children, 0).kind != ExprKind.TaskCall)) {
+        return Result.Ok(false)
+    }
+    if value.kind != ExprKind.Call && value.kind != ExprKind.Await {
         // Preserve bounded pure scalar computations, not just bare bindings.
         // fact_size excludes mutable locals, heap observations and calls.
         // This is the same normal-return proof for every immutable scalar
