@@ -8,7 +8,8 @@ target/loom run compiler/examples/tuple_constraints
 Tuple predicates use ordinary numeric projections. Proved construction returns
 the constrained tuple directly; unknown inputs return `Result`, and invalid
 constants reject. Projections and destructuring weaken the immutable outer tuple
-without evaluating its source again.
+without evaluating its source again. Structural match patterns use the same
+tuple shape; whole-value fallback bindings retain the constrained type.
 
 Unobserved List siblings remain shared and mutable. A tuple constraint cannot
 observe their contents or length. The example also covers CTFE, generic copies,

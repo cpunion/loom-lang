@@ -1,0 +1,24 @@
+fn retained_tuple(value Ordered) Ordered
+ensures result == value
+{
+    match value {
+        (0, 0) => Ordered((0, 0))
+        whole => whole
+    }
+}
+
+fn nested_tuple(value (Ordered, Bool)) Ordered
+ensures result == value.0
+{
+    match value {
+        ((0, 0), true) => Ordered((0, 0))
+        (whole, _) => whole
+    }
+}
+
+fn retained_price(value Priced) Priced {
+    match value {
+        ("item", 0.0) => Priced(("item", 0.0))
+        whole => whole
+    }
+}
