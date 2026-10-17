@@ -432,9 +432,9 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
         let base = resolve_bound(env, declaration, child(item.node, type_part(item.node)), arguments, obligations, depth + 1)?
         let base_kind = get(env.types, base).kind
         if base != 1 && base != 2 && base != 3 && base != 4 && base != 5 &&
-        base_kind != TypeKind.Record && base_kind != TypeKind.Tuple && base_kind != TypeKind.List {
+        base_kind != TypeKind.Record && base_kind != TypeKind.Tuple && base_kind != TypeKind.Enum && base_kind != TypeKind.List {
             return Result.Err(failure(env, declaration, item.node,
-                    "constraints require Int, Bool, Float, Text, Bytes, a record, a tuple or a List base"))
+                    "constraints require Int, Bool, Float, Text, Bytes, a record, a tuple, an enum or a List base"))
         }
         push(fields, Field {
                 name = "self"

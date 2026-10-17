@@ -420,7 +420,7 @@ fn closed_inline_value(value Expr, depth Int) Bool {
 
 fn proven_inline(context Context, node Node, base Int, value Expr, predicate Expr) Bool {
     let kind = get(context.env.types, base).kind
-    if (kind != TypeKind.Record && kind != TypeKind.Tuple) || !closed_inline_value(value, 0) {
+    if (kind != TypeKind.Record && kind != TypeKind.Tuple && kind != TypeKind.Enum) || !closed_inline_value(value, 0) {
         return false
     }
     let locals = new[Local]()
@@ -458,12 +458,14 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     let count = length(group(symbol(context.env, declaration).node, NodeKind.TypeParameters))
     let arguments = data_arguments(context, node, declaration, types, expected, count)?
     let pattern = base_type(context.env, template(context, declaration, count)?)
-    let hint = if get(inputs.nodes, 0).kind == NodeKind.List {
-        hint(context, pattern, arguments, node)?
-    } else {
-        -1
+    let hint = hint(context, pattern, arguments, node)?
+    // The base supplies contextual inference (for example Result.Ok's error
+    // argument), without erasing an already constrained input's nominal type.
+    let original = match saved_input(inputs, 0) {
+        Option.Some(value) => value
+        Option.None => expr_mode(context, get(inputs.nodes, 0), hint, false)?
     }
-    let input = input_value(context, inputs, 0, hint, false)?
+    let input = input_effects(context, inputs, 0, get(inputs.nodes, 0), original)
     if !complete(arguments) {
         discard infer(context.env, pattern, input.ty, arguments)
     }
@@ -518,11 +520,11 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
             return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
         }
     }
-    if length(destination.constraint) == 1 && proved_construction(context, node, get(inputs.nodes, 0), value, target)? {
+    if length(destination.constraint) == 1 && proved_construction(context, node, get(inputs.nodes, 0), hint, value, target)? {
         return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
     }
     let base_kind = get(context.env.types, base).kind
-    if (base_kind == TypeKind.Record || base_kind == TypeKind.Tuple) && closed_inline_value(value, 0) {
+    if (base_kind == TypeKind.Record || base_kind == TypeKind.Tuple || base_kind == TypeKind.Enum) && closed_inline_value(value, 0) {
         let checked = folded_value_predicate(context.env, target, value)?
         if checked.ty == 2 {
             if checked.number == 0 {

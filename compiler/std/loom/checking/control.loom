@@ -308,6 +308,12 @@ fn matched(context Context, node Node, expected Int, enforce Bool) Result[Expr, 
     if marker >= 0 && !scoped_receiver_root(context, value) && satisfies(context, value.ty, marker)? {
         return Result.Err(error(context, node, "a MustScope value requires scoped; direct resource matching is not yet supported"))
     }
+    if get(context.env.types, value.ty).kind == TypeKind.Refined &&
+    get(context.env.types, base_type(context.env, value.ty)).kind == TypeKind.Enum {
+        // The shared decision path projects the base tag while whole bindings
+        // retain the original constrained snapshot.
+        return nested_match(context, node, value, expected, enforce)
+    }
     var nested = 1
     while nested < length(node.children) {
         let arm = child(node, nested)
@@ -455,14 +461,16 @@ fn result_type(context Context, node Node, shape ResultShape, ok Int, err Int) R
 
 fn propagated(context Context, node Node, expected Int) Result[Expr, Failure] {
     let shape = result_shape(context, node)?
-    let returned = result_types(context, node, shape, context.signature.result)?
+    let returned_base = base_type(context.env, context.signature.result)
+    let returned = result_types(context, node, shape, returned_base)?
     let error_type = get(returned, 1)
     let hint = if expected < 0 {
         -1
     } else {
         result_type(context, node, shape, expected, error_type)?
     }
-    let value = expr_mode(context, child(node, 0), hint, false)?
+    let input = expr_mode(context, child(node, 0), hint, false)?
+    let value = typed(context, node, input, base_type(context.env, input.ty))?
     let arguments = result_types(context, node, shape, value.ty)?
     if get(arguments, 1) != error_type {
         return Result.Err(error(context, node, "`?` error type must match the enclosing function"))
@@ -491,7 +499,15 @@ fn propagated(context Context, node Node, expected Int) Result[Expr, Failure] {
             body = expressions(ok)
         })
     let error_value = atom(ExprKind.Local, error_type, node, success + 1)
-    let rejected = expression(ExprKind.Variant, context.signature.result, node, "", shape.err, expressions(error_value), true)
+    var rejected = expression(ExprKind.Variant, returned_base, node, "", shape.err, expressions(error_value), true)
+    if returned_base != context.signature.result {
+        // Rebuilding this very Err preserves an identical input refinement.
+        // Different nominal types need the ordinary guarded contract proof.
+        if input.ty != context.signature.result && !proved_error_propagation(context, node, shape, input.ty, returned_base)? {
+            return Result.Err(error(context, node, "propagated error is not proved to satisfy the enclosing Result constraint; handle the Result explicitly"))
+        }
+        rejected = expression(ExprKind.Coerce, context.signature.result, node, "", -1, expressions(rejected), true)
+    }
     let exit = returning(context, node, expressions(rejected))?
     let body = expression(ExprKind.Block, 0, node, "", -1, expressions(exit), false)
     push(arms, Arm {
