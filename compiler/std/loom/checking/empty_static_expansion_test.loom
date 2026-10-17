@@ -1,0 +1,62 @@
+test fn empty_expansions_keep_their_effects_when_static_parameters_disappear() {
+    discard accepted("""
+        fn gap[Ts...](log List[Int], digit Int, values Ts...) (Ts...) {
+            log[0] = log[0] * 10 + digit
+            values
+        }
+        fn only(comptime value Int) Int {
+            value
+        }
+        fn first(comptime extra Int, value Int) Int {
+            extra + value
+        }
+        fn last(value Int, comptime extra Int) Int {
+            value + extra
+        }
+        fn main() {
+            assert comptime {
+                let log = [0]
+                let value = only(gap(log, 1)..., 42, gap(log, 2)...)
+                value == 42 && log[0] == 12
+            }
+            assert comptime {
+                let log = [0]
+                let value = first(gap(log, 1)..., 40, gap(log, 2)..., 2, gap(log, 3)...)
+                value == 42 && log[0] == 123
+            }
+            assert comptime {
+                let log = [7]
+                let value = last(log[0], gap(log, 2)..., 35, gap(log, 3)...)
+                value == 42 && log[0] == 723
+            }
+        }
+        """)
+}
+
+test fn empty_expansions_do_not_relax_static_capture_or_tuple_snapshot_rules() {
+    let header = """
+        fn gap[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn selected(comptime value Int) Int {
+            value
+        }
+        """
+    rejects(concat(header, """
+        fn main() {
+            var runtime = 42
+            discard selected(gap()..., runtime)
+        }
+        """))
+    rejects(concat(header, """
+        fn pair() (Int, Int) {
+            (2, 40)
+        }
+        fn choose(comptime extra Int, value Int) Int {
+            extra + value
+        }
+        fn main() {
+            discard choose(gap()..., pair()...)
+        }
+        """))
+}
