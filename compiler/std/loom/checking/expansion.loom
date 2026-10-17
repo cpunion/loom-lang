@@ -59,7 +59,9 @@ fn has_input_effects(inputs CallInputs, index Int) Bool {
         Option.Some(effects) => {
             var current = 0
             while current < length(effects) {
-                if effect_at(inputs, get(effects, current).position, index) { return true }
+                if effect_at(inputs, get(effects, current).position, index) {
+                    return true
+                }
                 current = current + 1
             }
             false
@@ -68,11 +70,14 @@ fn has_input_effects(inputs CallInputs, index Int) Bool {
 }
 
 fn input_effects(context Context, inputs CallInputs, index Int, node Node, value Expr) Expr {
-    if !has_input_effects(inputs, index) { return value }
+    if !has_input_effects(inputs, index) {
+        return value
+    }
     let body = new[Expr]()
     var saved = -1
     match inputs.effects {
-        Option.None => {}
+        Option.None => {
+        }
         Option.Some(effects) => {
             var current = 0
             while current < length(effects) {
@@ -80,7 +85,12 @@ fn input_effects(context Context, inputs CallInputs, index Int, node Node, value
                 if effect_at(inputs, effect.position, index) {
                     if effect.position > index && saved < 0 {
                         saved = length(context.locals)
-                        push(context.locals, Local { name = "" ty = value.ty mutable = false is_scoped = false })
+                        push(context.locals, Local {
+                                name = ""
+                                ty = value.ty
+                                mutable = false
+                                is_scoped = false
+                            })
                         push(body, expression(ExprKind.Let, 0, node, "", saved, expressions(value), value.falls))
                     }
                     push(body, expression(ExprKind.Discard, 0, node, "", -1, expressions(effect.value), effect.value.falls))
@@ -89,12 +99,55 @@ fn input_effects(context Context, inputs CallInputs, index Int, node Node, value
             }
         }
     }
-    push(body, if saved < 0 { value } else { atom(ExprKind.Local, value.ty, node, saved) })
+    push(body, if saved < 0 {
+            value
+        } else {
+            atom(ExprKind.Local, value.ty, node, saved)
+        })
     expression(ExprKind.Block, value.ty, node, "", -1, body, all_fall(body))
 }
 
 fn empty_inputs(context Context, inputs CallInputs, node Node, value Expr) Expr {
-    if length(inputs.nodes) == 0 { input_effects(context, inputs, 0, node, value) } else { value }
+    if length(inputs.nodes) == 0 {
+        input_effects(context, inputs, 0, node, value)
+    } else {
+        value
+    }
+}
+
+// Static argument erasure does not erase empty operands in the surrounding
+// gaps. Reuse ordinary sequencing, including its saved trailing value.
+fn input_range_effects(context Context, inputs CallInputs, start Int, end Int,
+    before Bool, node Node, value Expr) Expr {
+    if start > end {
+        return value
+    }
+    match inputs.effects {
+        Option.None => value
+        Option.Some(effects) => {
+            let selected = new[InputEffect]()
+            var index = 0
+            while index < length(effects) {
+                let effect = get(effects, index)
+                if effect.position >= start && effect.position <= end {
+                    push(selected, InputEffect {
+                            position = if before {
+                                0
+                            } else {
+                                1
+                            }
+                            value = effect.value
+                        })
+                }
+                index = index + 1
+            }
+            input_effects(context, CallInputs {
+                    nodes = source_nodes(node)
+                    ready = Option.None
+                    effects = Option.Some(selected)
+                }, 0, node, value)
+        }
+    }
 }
 
 fn shifted_effects(inputs CallInputs, offset Int) Option[List[InputEffect]] {
@@ -106,11 +159,18 @@ fn shifted_effects(inputs CallInputs, offset Int) Option[List[InputEffect]] {
             while index < length(effects) {
                 let effect = get(effects, index)
                 if offset > 0 || (length(inputs.nodes) > 1 && effect.position > 0) {
-                    push(shifted, InputEffect { position = effect.position + offset value = effect.value })
+                    push(shifted, InputEffect {
+                            position = effect.position + offset
+                            value = effect.value
+                        })
                 }
                 index = index + 1
             }
-            if length(shifted) == 0 { Option.None } else { Option.Some(shifted) }
+            if length(shifted) == 0 {
+                Option.None
+            } else {
+                Option.Some(shifted)
+            }
         }
     }
 }
@@ -207,7 +267,10 @@ fn expand_input(context Context, source Node, nodes List[Node], ready List[Optio
     }
     if length(shape.arguments) == 0 {
         if value.kind != ExprKind.Local && !(value.kind == ExprKind.Record && length(value.children) == 0) {
-            push(effects, InputEffect { position = length(nodes) value = value })
+            push(effects, InputEffect {
+                    position = length(nodes)
+                    value = value
+                })
         }
         return Result.Ok(true)
     }
@@ -263,6 +326,10 @@ fn call_inputs(context Context, sources List[Node]) Result[CallInputs, Failure] 
     Result.Ok(CallInputs {
             nodes = nodes
             ready = Option.Some(ready)
-            effects = if length(effects) == 0 { Option.None } else { Option.Some(effects) }
+            effects = if length(effects) == 0 {
+                Option.None
+            } else {
+                Option.Some(effects)
+            }
         })
 }

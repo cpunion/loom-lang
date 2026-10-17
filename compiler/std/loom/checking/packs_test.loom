@@ -37,7 +37,17 @@ test fn variadic_packs_transfer_tasks_through_ordinary_typed_parameters() {
     discard accepted("fn pack[Ts...](values Ts...) (Ts...) { values }\nasync fn item[T](value T) T { value }\nasync fn forward[Ts...](values Task[Ts]...) (Task[Ts]...) { values }\nasync fn main() { let tasks = forward(item(1), item(\"two\")).await\nassert tasks.0.await == 1\nassert tasks.1.await == \"two\"\nlet gathered = pack(item(3), item(true))\nassert gathered.0.await == 3\nassert gathered.1.await }")
     rejects("fn pack[Ts...](values Ts...) (Ts...) { values }\nasync fn item() Int { 1 }\nasync fn main() { let task = item()\nlet pair = pack(task, task)\ndiscard pair.0.await\ndiscard pair.1.await }")
     discard accepted("fn pack[Ts...](values Ts...) (Ts...) { values }\nfn f() {}\nfn main() { f(pack()...) }")
-    rejects("fn pack[Ts...](values Ts...) (Ts...) { values }\nfn f(comptime value Int) Int { value }\nfn main() { discard f(pack()..., 1) }")
+    discard accepted("""
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn f(comptime value Int) Int {
+            value
+        }
+        fn main() {
+            assert f(pack()..., 1) == 1
+        }
+        """)
 }
 
 test fn static_pack_iteration_checks_each_selected_element_and_lexical_scope() {
@@ -141,6 +151,8 @@ test fn static_map_errors_point_to_the_mutable_tuple_source() {
             assert failed.diagnostic.message == "comptime map requires an immutable tuple or record binding"
             assert slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end) == "pair"
         }
-        Result.Ok(_) => { assert false }
+        Result.Ok(_) => {
+            assert false
+        }
     }
 }

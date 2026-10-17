@@ -1,0 +1,144 @@
+import std.build.option
+import std.option.Option
+import std.time.sleep_ms
+
+fn empty_static_gap[Ts...](log List[Int], digit Int, values Ts...) (Ts...) {
+    log[0] = log[0] * 10 + digit
+    values
+}
+
+fn empty_static_mark(log List[Int], digit Int) Int {
+    log[0] = log[0] * 10 + digit
+    digit
+}
+
+fn empty_static_only(comptime value Int) Int {
+    value
+}
+
+fn empty_static_first(comptime extra Int, value Int) Int {
+    extra + value
+}
+
+fn empty_static_middle(first Int, comptime extra Int, last Int) Int {
+    first + extra + last
+}
+
+fn empty_static_last(value Int, comptime extra Int) Int {
+    value + extra
+}
+
+fn empty_static_consecutive(first Int, comptime a Int, comptime b Int, last Int) Int {
+    first + a + b + last
+}
+
+fn empty_static_counter() fn() Int {
+    let state = [0]
+    fn() Int {
+        state[0] = state[0] + 1
+        state[0]
+    }
+}
+
+fn empty_static_captured(comptime next fn() Int) Int {
+    next() + next()
+}
+
+fn empty_static_forward(comptime next fn() Int) Int {
+    let log = [0]
+    let answer = empty_static_captured(empty_static_gap(log, 1)..., next,
+        empty_static_gap(log, 2)...)
+    assert log[0] == 12
+    answer
+}
+
+concept EmptyStaticAdd {
+    fn mix(self Self, comptime extra Int, last Int) Int
+}
+
+impl EmptyStaticAdd for Int {
+    fn mix(self Int, comptime extra Int, last Int) Int {
+        self + extra + last
+    }
+}
+
+fn empty_static_expansions() {
+    let log = [0]
+    assert empty_static_only(empty_static_gap(log, 1)..., 42, empty_static_gap(log, 2)...) == 42
+    assert log[0] == 12
+    assert empty_static_forward(empty_static_counter()) == 3
+    log[0] = 0
+    assert empty_static_first(empty_static_gap(log, 1)..., 20,
+        empty_static_gap(log, 2)..., empty_static_mark(log, 3), empty_static_gap(log, 4)...) == 23
+    assert log[0] == 1234
+    log[0] = 0
+    assert empty_static_middle(empty_static_mark(log, 1), empty_static_gap(log, 2)..., 20,
+        empty_static_gap(log, 3)..., empty_static_mark(log, 4), empty_static_gap(log, 5)...) == 25
+    assert log[0] == 12345
+    log[0] = 7
+    assert empty_static_last(log[0], empty_static_gap(log, 2)..., 35, empty_static_gap(log, 3)...) == 42
+    assert log[0] == 723
+    log[0] = 0
+    assert empty_static_consecutive(empty_static_mark(log, 1), empty_static_gap(log, 2)..., 20,
+        empty_static_gap(log, 3)..., 30, empty_static_gap(log, 4)...,
+        empty_static_mark(log, 5), empty_static_gap(log, 6)...) == 56
+    assert log[0] == 123456
+    log[0] = 0
+    let receiver dyn EmptyStaticAdd = 3
+    assert receiver.mix(empty_static_gap(log, 1)..., 20,
+        empty_static_mark(log, 2), empty_static_gap(log, 3)...) == 25
+    assert log[0] == 123
+    log[0] = 0
+    assert empty_static_captured(empty_static_gap(log, 1)...,
+        empty_static_counter(), empty_static_gap(log, 2)...) == 3
+    assert log[0] == 12
+    log[0] = 0
+    assert empty_static_mark(log, 1).mix(empty_static_gap(log, 2)..., 20,
+        empty_static_gap(log, 3)..., empty_static_mark(log, 4), empty_static_gap(log, 5)...) == 25
+    assert log[0] == 12345
+    log[0] = 0
+    assert EmptyStaticAdd.mix(empty_static_gap(log, 1)..., empty_static_mark(log, 2),
+        empty_static_gap(log, 3)..., 20, empty_static_gap(log, 4)...,
+        empty_static_mark(log, 5), empty_static_gap(log, 6)...) == 27
+    assert log[0] == 123456
+    log[0] = 0
+    match option(empty_static_gap(log, 1)..., "loom.tuple.example.absent", empty_static_gap(log, 2)...) {
+        Option.None => {
+        }
+        Option.Some(_) => {
+            assert false
+        }
+    }
+    assert log[0] == 12
+    assert comptime {
+        let observed = [0]
+        let answer = empty_static_only(empty_static_gap(observed, 1)..., 42,
+            empty_static_gap(observed, 2)...)
+        answer == 42 && observed[0] == 12
+    }
+}
+
+async fn empty_static_async_gap[Ts...](log List[Int], digit Int, values Ts...) (Ts...) {
+    sleep_ms(1).await
+    log[0] = log[0] * 10 + digit
+    values
+}
+
+async fn empty_static_task_argument(task Task[Int], comptime extra Int) Int {
+    task.await + extra
+}
+
+async fn empty_static_tasks() {
+    let log = [0]
+    assert empty_static_only(empty_static_async_gap(log, 1).await..., 42,
+        empty_static_async_gap(log, 2).await...) == 42
+    assert log[0] == 12
+    log[0] = 7
+    assert empty_static_last(log[0], empty_static_async_gap(log, 2).await..., 35,
+        empty_static_async_gap(log, 3).await...) == 42
+    assert log[0] == 723
+    log[0] = 0
+    assert empty_static_task_argument(spread_task(7), empty_static_async_gap(log, 1).await...,
+        35, empty_static_gap(log, 2)...).await == 42
+    assert log[0] == 12
+}

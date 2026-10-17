@@ -364,7 +364,11 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     }
     if declaration < 0 {
         let message = unimported_function_message(context, node.value)
-        return Result.Err(error(context, node, if message == "" { "unknown enum type" } else { message }))
+        return Result.Err(error(context, node, if message == "" {
+                    "unknown enum type"
+                } else {
+                    message
+                }))
     }
     let desired = if selected_type >= 0 {
         selected_type
@@ -550,7 +554,9 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     if length(available) == 0 {
         let message = unimported_function_message(context, node.value)
-        if message != "" { return Result.Err(error(context, node, message)) }
+        if message != "" {
+            return Result.Err(error(context, node, message))
+        }
     }
     let type_count = call_type_count(node, types)
     let options = call_signature_options(context.env, available, length(inputs.nodes), type_count)
@@ -642,7 +648,7 @@ fn invoke_shared(context Context, node Node, options List[Int], types List[Node]
         let probe = probing && static_position(context, options, index)
         let input = get(inputs.nodes, index)
         let arity = if expected_argument < 0 && (input.kind == NodeKind.Name || input.kind == NodeKind.Apply ||
-        input.kind == NodeKind.Select || input.kind == NodeKind.Index) {
+            input.kind == NodeKind.Select || input.kind == NodeKind.Index) {
             shared_callback_arity(context.env, options, index)
         } else {
             -1
@@ -831,6 +837,11 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
     let signature = get(context.env.signatures, instance.signature)
     let constants = new[StaticValue]()
     let filtered = has_static(signature)
+    let sequencing = filtered && match inputs.effects {
+        Option.Some(_) => true
+        Option.None => false
+    }
+    var first_runtime = -1
     let runtime_values = if filtered {
         new[Expr]()
     } else {
@@ -841,13 +852,15 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
         let target = substitute(context.env, context.signature.symbol, get(signature.params, index), instance.arguments, node)?
         let input = get(inputs.nodes, index)
         if is_static(signature, index) {
-            if has_input_effects(inputs, index) {
-                return Result.Err(error(context, input, "empty tuple evaluation cannot be erased by a comptime parameter; bind the tuple before expansion"))
-            }
             if !saved_tuple_prepared(inputs, signature, index) {
                 return Result.Err(error(context, input, "a comptime field cannot erase the saved tuple evaluation; pass its first field as a runtime argument or supply static arguments explicitly"))
             }
-            let value = static_argument(context, input, get(values, index), target)?
+            let checked = if sequencing && has_input_effects(inputs, index) {
+                static_probe(context, input, target)?
+            } else {
+                get(values, index)
+            }
+            let value = static_argument(context, input, checked, target)?
             match saved_input(inputs, index) {
                 Option.Some(_) => {
                     // Re-evaluating a captured function would materialize a
@@ -862,7 +875,20 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
             }
             push(constants, value)
             if value.storage >= 0 {
-                push(runtime_values, static_environment_argument(context, input, value)?)
+                if first_runtime < 0 {
+                    first_runtime = index
+                }
+                push(runtime_values, input_effects(context, inputs, index, input,
+                        static_environment_argument(context, input, value)?))
+            } else if sequencing && has_input_effects(inputs, index) && length(runtime_values) > 0 {
+                let previous = length(runtime_values) - 1
+                set(runtime_values, previous, input_range_effects(context, inputs, index,
+                        if index == length(values) - 1 {
+                            length(values)
+                        } else {
+                            index
+                        },
+                        false, input, get(runtime_values, previous)))
             }
         } else {
             let value = if length(probes) != 0 && get(probes, index) {
@@ -871,6 +897,9 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
                 typed(context, input, get(values, index), target)?
             }
             if filtered {
+                if first_runtime < 0 {
+                    first_runtime = index
+                }
                 push(runtime_values, value)
             } else {
                 set(runtime_values, index, value)
@@ -878,6 +907,20 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
         }
         index = index + 1
     }
+    if sequencing && first_runtime >= 0 {
+        set(runtime_values, 0, input_range_effects(context, inputs, 0,
+                first_runtime - 1, true, node, get(runtime_values, 0)))
+    }
+    let value = invoke_ready(context, node, instance, signature, constants, runtime_values)?
+    Result.Ok(if sequencing && first_runtime < 0 {
+            input_range_effects(context, inputs, 0, length(values), true, node, value)
+        } else {
+            value
+        })
+}
+
+fn invoke_ready(context Context, node Node, instance Instance, signature Signature, constants List[StaticValue],
+    runtime_values List[Expr]) Result[Expr, Failure] {
     if build_intrinsic(context.env, signature.symbol) {
         discard validate_intrinsic(context.env, instance.signature)?
         return build_call(context, node, signature.symbol, get(constants, 0))

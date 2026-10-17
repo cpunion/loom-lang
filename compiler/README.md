@@ -883,9 +883,10 @@ Task-producing source cannot use this path; supply those static arguments
 explicitly. Lists have runtime-sized contents and cannot expand into a fixed
 call signature. Empty tuple expressions still evaluate
 once at their original operand position, including in zero-argument calls and
-across suspension. They need no runtime pack. An empty expansion adjacent to a
-comptime parameter must currently be bound first; specialization cannot erase its
-runtime evaluation. A tuple of Tasks can be awaited directly; this uses
+across suspension. They need no runtime pack. Empty operands retain their source
+order around erased comptime parameters, including calls with no remaining
+runtime arguments and captured comptime-function environments. A tuple of Tasks
+can be awaited directly; this uses
 `std.task.all`'s input-order policy and preserves heterogeneous result types.
 
 ### Variadic functions

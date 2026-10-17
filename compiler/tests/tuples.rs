@@ -121,3 +121,59 @@ fn main() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("assertion failed"));
     }
 }
+
+#[test]
+fn empty_static_expansions_preserve_fault_order_and_lexical_cleanup() {
+    let source = tempfile::tempdir().unwrap();
+    let program = r#"
+import std.io.write_text
+import std.int.to_text
+
+fn gap[Ts...](log List[Int], digit Int, fail Bool, values Ts...) (Ts...) {
+    log[0] = log[0] * 10 + digit
+    assert !fail
+    values
+}
+
+fn only(comptime value Int) Int {
+    assert value < 0
+    value
+}
+
+fn main() {
+    let log = [0]
+    defer {
+        discard write_text(to_text(log[0]))
+    }
+    discard only(gap(log, 1, GAP_FAIL)..., 42, gap(log, 2, false)...)
+}
+"#;
+    let executable = common::executable(source.path(), "empty-static-fault");
+    for fail_gap in [false, true] {
+        fs::write(
+            source.path().join("main.loom"),
+            program.replace("GAP_FAIL", if fail_gap { "true" } else { "false" }),
+        )
+        .unwrap();
+        for level in ["0", "2"] {
+            success(
+                &common::command(&["build", source.path().to_str().unwrap()])
+                    .arg("--output")
+                    .arg(&executable)
+                    .env("LOOM_OPT_LEVEL", level)
+                    .output()
+                    .unwrap(),
+            );
+            let output = Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "{output:?}");
+            assert_eq!(
+                output.stdout,
+                if fail_gap { b"1".as_slice() } else { b"12" }
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("assertion failed"));
+        }
+    }
+}
