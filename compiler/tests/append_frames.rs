@@ -10,6 +10,8 @@ fn append_frames_prove_entry_segments_without_hiding_destructive_or_shared_write
     let program = include_str!("../examples/list_append/main.loom");
     let columns_path = package.path().join("columns.loom");
     let columns = include_str!("../examples/list_append/columns.loom");
+    let histograms_path = package.path().join("histograms.loom");
+    let histograms = include_str!("../examples/list_append/histograms.loom");
     let cache = package.path().join("cache");
     let check = || {
         common::command(&["check", package.path().to_str().unwrap()])
@@ -20,6 +22,7 @@ fn append_frames_prove_entry_segments_without_hiding_destructive_or_shared_write
     };
     fs::write(&source, program).unwrap();
     fs::write(&columns_path, columns).unwrap();
+    fs::write(&histograms_path, histograms).unwrap();
     success(&check());
     success(&check());
     fs::write(
@@ -40,6 +43,30 @@ fn append_frames_prove_entry_segments_without_hiding_destructive_or_shared_write
         "{output:?}"
     );
     fs::write(&columns_path, columns).unwrap();
+    for changed in [
+        histograms.replace(
+            "    push(target, 7)",
+            "    if length(source) > 0 {\n        source[0] = 0\n    }\n    push(target, 7)",
+        ),
+        histograms.replace(
+            "length(source) != old(length(source)) || permutation(source, old(source))",
+            "occurrences(source, 7) == occurrences(old(source), 7)",
+        ),
+    ] {
+        fs::write(&histograms_path, changed).unwrap();
+        let output = check();
+        assert!(
+            !output.status.success(),
+            "an invalid whole histogram was preserved"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("not proved")
+                || String::from_utf8_lossy(&output.stderr)
+                    .contains("required proof was not established"),
+            "{output:?}"
+        );
+    }
+    fs::write(&histograms_path, histograms).unwrap();
     for changed in [
         program.replace("push(target, get(source, index))", "push(target, 0)"),
         program.replace(

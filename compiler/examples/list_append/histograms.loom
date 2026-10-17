@@ -1,0 +1,40 @@
+fn occurrences(values List[Int], needle Int) Int {
+    var index = 0
+    var count = 0
+    while index < length(values) {
+        if get(values, index) == needle {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    count
+}
+
+fn same_counts(first List[Int], second List[Int]) Bool {
+    var index = 0
+    while index < length(first) {
+        if occurrences(first, get(first, index)) != occurrences(second, get(first, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn permutation(first List[Int], second List[Int]) Bool {
+    length(first) == length(second) && same_counts(first, second)
+}
+
+fn preserve_counts(target List[Int], source List[Int])
+ensures length(source) != old(length(source)) || permutation(source, old(source))
+{
+    push(target, 7)
+}
+
+fn count_cases() {
+    let values = [1, 2, 1]
+    preserve_counts([], values)
+    assert permutation(values, [1, 2, 1])
+    preserve_counts(values, values)
+    assert permutation(values, [1, 2, 1, 7])
+}

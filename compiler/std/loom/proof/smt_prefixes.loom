@@ -98,6 +98,7 @@ fn smt_prefix_frames(writer SmtWriter) Result[Bool, Text] {
         // cannot make a prefix goal true merely because no arrays were encoded.
         smt_append(writer.declarations, concat("(assert ",
                 concat(bag_bound_scope(std.bytes.to_text(output), frame.size), ")\n")))
+        discard smt_prefix_bags(writer, frame)?
         index = index + 1
     }
     Result.Ok(true)
