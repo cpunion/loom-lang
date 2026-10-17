@@ -1,0 +1,43 @@
+fn refined_reference_source() Text {
+    """
+    record Balance {
+        amount Int
+        limit Int
+    }
+    fn positive(value Int) Bool {
+        value >= 0
+    }
+    type Money = Balance where positive(self.amount) && self.amount <= self.limit
+    type NonNegative = Int where positive(self)
+    fn main() {
+        let money = Money(Balance { amount = 7, limit = 10 })
+        let raw Balance = money
+        assert raw.amount == 7
+    }
+    """
+}
+
+test fn refined_queries_keep_pure_helpers_and_immutable_field_owners() {
+    let source = refined_reference_source()
+    let analysis = accepted(input(source))
+    let helper = query_offset(source, "positive(value")
+    only_definition(inspection(analysis, source, "positive(self.amount)"), helper, helper + 8)
+    only_definition(inspection(analysis, source, "positive(self)"), helper, helper + 8)
+    let field = query_offset(source, "amount Int")
+    only_definition(inspection(analysis, source, "amount) &&"), field, field + 6)
+}
+
+test fn refined_obligations_keep_value_self_separate_from_type_binders() {
+    let source = refined_reference_source()
+    let obligations = source_obligations(source)
+    assert length(obligations.unknown) == 0
+    assert reference_bound_offsets(obligations.offsets, query_offset(source, "positive(self.amount)"))
+    assert reference_bound_offsets(obligations.offsets, query_offset(source, "amount) &&"))
+    assert !reference_bound_offsets(obligations.offsets, query_offset(source, "self.amount)"))
+    assert !reference_bound_offsets(obligations.offsets, query_offset(source, "self)\n"))
+    let separate = "record self { value Int }\ntype Wrapped = self where self.value >= 0\n"
+    let namespaces = source_obligations(separate)
+    assert length(namespaces.unknown) == 0
+    assert reference_bound_offsets(namespaces.offsets, query_offset(separate, "self where"))
+    assert !reference_bound_offsets(namespaces.offsets, query_offset(separate, "self.value"))
+}

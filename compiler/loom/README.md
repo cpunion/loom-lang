@@ -437,6 +437,11 @@ never a guessed implementation. Comments, punctuation and unavailable semantic
 identity return no answer. Pattern queries retain checked nominal owners,
 explicit record fields and enum variants even after decision-tree lowering;
 payload/tuple locals use their checked binding IDs, not same-spelled declarations.
+Refinement obligations distinguish implicit value `self` from nominal type names
+and generic binders. Concept/impl headers and `dyn` associated bindings retain
+their own namespaces; a dynamic binding label navigates to its checked concept
+member, not a guessed witness implementation. Generated/static ranges remain
+explicitly unaccounted when their source bindings cannot be established.
 
 The binding-only `inspect_independent` retains the complete bindings and starts a fresh checker
 session; it does not remove erroneous declarations or reuse a failed check's

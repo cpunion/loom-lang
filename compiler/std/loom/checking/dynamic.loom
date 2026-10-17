@@ -198,6 +198,9 @@ fn dynamic_type(env Environment, owner Int, node Node, arguments List[Int], obli
         while member < length(members) && symbol(env, get(members, member)).name != binding.value { member = member + 1 }
         if member == length(members) { return Result.Err(failure(env, owner, binding, "unknown dynamic associated type binding")) }
         if get(bindings, member) >= 0 { return Result.Err(failure(env, owner, binding, "duplicate dynamic associated type binding")) }
+        if get(env.inputs, 0).declaration_queries {
+            record_declaration_reference(env, owner, binding, get(members, member), 0, "")
+        }
         set(bindings, member, dynamic_binding(env, owner, get(members, member), binding, arguments, obligations, depth)?)
         index = index + 1
     }

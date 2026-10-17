@@ -129,7 +129,8 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
         }
     } else {
         if kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Scoped ||
-        kind == NodeKind.Parameter || kind == NodeKind.Pattern || kind == NodeKind.Assign || kind == NodeKind.Field {
+        kind == NodeKind.Parameter || kind == NodeKind.Pattern || kind == NodeKind.Assign || kind == NodeKind.Field ||
+        kind == NodeKind.AssociatedType {
             match name_span(tokens, node, node.value) {
                 Option.Some(span) => {
                     if !same_span(span, token.span) {

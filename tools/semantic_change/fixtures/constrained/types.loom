@@ -1,0 +1,1 @@
+type Positive = Int where self >= 0

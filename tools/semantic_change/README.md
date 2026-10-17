@@ -22,6 +22,11 @@ Match guards/bodies and destructuring use the compiler's source-reference roles:
 pattern names introduce locals, while nominal paths, variants and explicit fields
 require checked definition evidence. A same-typed callback bound by a pattern
 cannot silently capture a renamed function.
+Constrained aliases compare their pure helper calls and field owners too. They
+still require a pinned project context for the implicit std Result/Error closure;
+syntax coverage does not waive purity, invariants or required proofs. Concepts
+with associated declarations and checked `dyn` bindings use the same reference
+comparison. Anonymous impl declaration identities remain outside this trial.
 
 The package/import graph stays fixed. Cross-package header/contract or deletion
 changes can combine with edits only in completely disconnected import components.

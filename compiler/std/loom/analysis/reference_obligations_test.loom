@@ -79,7 +79,10 @@ test fn reference_obligations_cover_cleanup_and_keep_unknown_ranges() {
     assert length(cleanup.unknown) == 0
     assert length(cleanup.offsets) == 7
     let refined = source_obligations("type Positive = Int where self > 0")
-    assert length(refined.unknown) == 1 && get(refined.unknown, 0).start == 0
+    assert length(refined.unknown) == 0 && length(refined.offsets) == 0
+    let selected = "fn selected[T](value T) T { comptime if true { value } else { value } }"
+    let conditional = source_obligations(selected)
+    assert length(conditional.unknown) == 1 && get(conditional.unknown, 0).start == query_offset(selected, "comptime if")
     let implicit = source_obligations("""
         concept Default {
             fn read(self Self) Int {
