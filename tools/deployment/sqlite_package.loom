@@ -63,7 +63,7 @@ fn exact_reupgrade(steps List[Handling], plan SqlitePositiveAmountUpgrade) Bool 
 }
 
 fn validated_package(value SqliteMigrationPackage) Result[Text, Text] {
-    if !identifier(value.id) || value.policy != FailurePolicy.Stop || !valid_plan(value.operation) {
+    if !identifier(value.id) || !valid_plan(value.operation) {
         return Result.Err("invalid or unsupported SQLite migration package")
     }
     discard exact_catalog(value.from_schema, value.to_schema, value.catalog, value.operation)?
@@ -80,10 +80,11 @@ fn validated_package(value SqliteMigrationPackage) Result[Text, Text] {
         return Result.Err("SQLite migration receipt identity changed")
     }
     let output = new()
-    plan_part(output, "loom-sqlite-migration-package-v1")
+    plan_part(output, "loom-sqlite-migration-package-v2")
     plan_part(output, value.id)
     plan_part(output, value.from_receipt_id)
     plan_part(output, value.to_receipt_id)
+    plan_part(output, std.int.to_text(policy_number(value.policy)))
     plan_part(output, positive_amount_plan_digest(value.operation))
     Result.Ok(hex(output))
 }
@@ -122,7 +123,7 @@ pub fn inspect_sqlite_migration(tool Text, database Text,
 }
 
 // Explicit read-only inspection of the fixed SQLite source, including stored
-// rows. It also works after this attempt reached Started or Failed. The result
+// rows. It also works during failure recovery. The result
 // describes a snapshot, never authorizes execution or changes the ledger;
 // execution rechecks the source atomically before recording completion.
 pub fn inspect_live_sqlite_upgrade(tool Text, database Text,
@@ -135,12 +136,18 @@ pub fn inspect_live_sqlite_upgrade(tool Text, database Text,
         }
     }
     let previous = stored.attempt
-    if previous.state == DeploymentState.Started || previous.state == DeploymentState.Failed {
+    let recovering = previous.state == DeploymentState.RollbackStarted ||
+    previous.state == DeploymentState.RollbackFailed
+    if previous.state == DeploymentState.Started || previous.state == DeploymentState.Failed || recovering {
         if previous.id != value.operation.attempt_id ||
         previous.from_basis != value.from_schema.basis ||
         previous.to_basis != value.to_schema.basis ||
-        previous.plan_digest != identity || previous.policy != FailurePolicy.Stop {
+        previous.plan_digest != identity || previous.policy != value.policy {
             return Result.Err("unresolved deployment does not match this SQLite package")
+        }
+        if recovering && (value.policy != FailurePolicy.Rollback ||
+            !live_check(tool, database, upgrade_never_completed(value.operation))?) {
+            return Result.Err("SQLite upgrade inspection cannot inspect a completed-upgrade downgrade")
         }
     } else {
         match stored.evidence {
@@ -161,11 +168,20 @@ pub fn inspect_live_sqlite_upgrade(tool Text, database Text,
     }
     let retained = phase == SqliteLivePhase.RetainedReupgrade
     let status = inspect_live_upgrade_source(tool, database, value.operation, retained)?
+    let recovery = if previous.state == DeploymentState.Failed || recovering {
+        if value.policy == FailurePolicy.Rollback {
+            SqliteUpgradeRecovery.Rollback
+        } else {
+            SqliteUpgradeRecovery.Resume
+        }
+    } else {
+        SqliteUpgradeRecovery.None
+    }
     Result.Ok(SqliteLiveInspection {
             phase = phase
             attempt_state = previous.state
             status = status
-            requires_resume = previous.state == DeploymentState.Failed
+            recovery = recovery
         })
 }
 
@@ -190,11 +206,14 @@ pub fn inspect_live_sqlite_downgrade(tool Text, database Text,
     if previous.id != value.operation.attempt_id ||
     previous.from_basis != value.from_schema.basis ||
     previous.to_basis != value.to_schema.basis ||
-    previous.plan_digest != identity || previous.policy != FailurePolicy.Stop ||
+    previous.plan_digest != identity || previous.policy != value.policy ||
     !(previous.state == DeploymentState.Complete ||
         previous.state == DeploymentState.RollbackStarted ||
         previous.state == DeploymentState.RollbackFailed) {
         return Result.Err("SQLite downgrade inspection requires a matching deployed attempt")
+    }
+    if live_check(tool, database, upgrade_never_completed(value.operation))? {
+        return Result.Err("SQLite downgrade inspection requires an observed completed upgrade")
     }
     let status = inspect_live_downgrade_source(tool, database, value.operation)?
     Result.Ok(SqliteRollbackInspection {
@@ -231,19 +250,31 @@ pub fn upgrade_sqlite_migration(tool Text, database Text,
     value SqliteMigrationPackage) Result[Attempt, Text] {
     let identity = validated_package(value)?
     execute_positive_amount_upgrade(tool, database, value.from_schema, value.to_schema,
-        value.catalog, value.operation, identity)
+        value.catalog, value.operation, identity, value.policy)
 }
 
 pub fn downgrade_sqlite_migration(tool Text, database Text,
     value SqliteMigrationPackage) Result[Attempt, Text] {
     let identity = validated_package(value)?
     execute_positive_amount_downgrade(tool, database, value.from_schema, value.to_schema,
-        value.catalog, value.operation, identity)
+        value.catalog, value.operation, identity, value.policy)
 }
 
 pub fn reupgrade_sqlite_migration(tool Text, database Text,
     value SqliteMigrationPackage) Result[Attempt, Text] {
     let identity = validated_package(value)?
     execute_positive_amount_reupgrade(tool, database, value.from_schema, value.to_schema,
-        value.catalog, value.operation, identity)
+        value.catalog, value.operation, identity, value.policy)
+}
+
+// Recovery of a failed atomic upgrade is different from downgrading a completed
+// v2 deployment. It proves the old source still holds before closing the attempt.
+pub fn recover_failed_sqlite_upgrade(tool Text, database Text,
+    value SqliteMigrationPackage, phase SqliteLivePhase) Result[Attempt, Text] {
+    let identity = validated_package(value)?
+    if value.policy != FailurePolicy.Rollback {
+        return Result.Err("failed SQLite upgrade recovery requires Rollback policy")
+    }
+    execute_failed_upgrade_recovery(tool, database, value.operation, identity,
+        phase == SqliteLivePhase.RetainedReupgrade)
 }
