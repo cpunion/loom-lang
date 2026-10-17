@@ -1,0 +1,66 @@
+test fn constrained_factories_retain_private_results_through_effectful_callbacks() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.list.push
+        type Pair[T] = List[T] where length(self) == 2
+        fn gathered[T](count Int, create fn(Int) T) List[T]
+        requires count >= 0
+        ensures length(result) == count
+        {
+            let output List[T] = []
+            var index = 0
+            while index < count {
+                push(output, create(index))
+                index = index + 1
+            }
+            output
+        }
+        fn pair[T](create fn(Int) T) Pair[T] {
+            Pair(gathered(2, create))
+        }
+        fn traced(trace List[Int]) Pair[Int] {
+            pair(fn(index Int) Int {
+                    push(trace, index)
+                    index
+                })
+        }
+        """)
+}
+
+test fn constrained_factories_cannot_return_inputs_or_publish_their_result() {
+    let prefix = concat("""
+        import std.list.length
+        import std.list.push
+        import std.result.Result
+        import std.result.ConstraintError
+        type One = List[Int] where length(self) == 1
+        """, "\n")
+    list_constraint_reject(concat(prefix, """
+        fn borrowed(values List[Int]) List[Int] {
+            values
+        }
+        fn invalid(values List[Int]) Result[One, ConstraintError] {
+            One(borrowed(values))
+        }
+        """))
+    list_constraint_reject(concat(prefix, """
+        fn leaked(effect fn(List[Int])) List[Int] {
+            let output = [1]
+            effect(output)
+            output
+        }
+        fn invalid(effect fn(List[Int])) Result[One, ConstraintError] {
+            One(leaked(effect))
+        }
+        """))
+    list_constraint_reject(concat(prefix, """
+        fn leaked(holder List[List[Int]]) List[Int] {
+            let output = [1]
+            push(holder, output)
+            output
+        }
+        fn invalid(holder List[List[Int]]) Result[One, ConstraintError] {
+            One(leaked(holder))
+        }
+        """))
+}

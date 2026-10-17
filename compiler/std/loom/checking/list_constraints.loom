@@ -89,8 +89,8 @@ fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool 
     if value.kind != ExprKind.Call || value.index < 0 || value.index >= length(functions) {
         return false
     }
-    // A pure, non-publishing factory may read its arguments, but cannot retain
-    // an alias to its result outside this call. No library-name shortcut.
+    // Prove an unpublished outer header, not global purity. Effects on an
+    // unrelated input do not publish the factory's later private allocation.
     let program = std.loom.typed.Program {
         types = env.types
         functions = functions
@@ -100,40 +100,6 @@ fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool 
         exports = new[Int]()
         interfaces = env.interfaces
         witnesses = env.witnesses
-    }
-    // Argument expressions run before the factory creates its result. Validate
-    // the callee's purity, not unrelated I/O/awaits used to obtain those inputs.
-    let parameters = new[Expr]()
-    var parameter = 0
-    while parameter < length(value.children) {
-        let argument = get(value.children, parameter)
-        push(parameters, Expr {
-                kind = ExprKind.Local
-                ty = argument.ty
-                span = argument.span
-                text = ""
-                index = parameter
-                children = new[Expr]()
-                arms = new[Arm]()
-                falls = true
-            })
-        parameter = parameter + 1
-    }
-    let probe = Expr {
-        kind = value.kind
-        ty = value.ty
-        span = value.span
-        text = value.text
-        index = value.index
-        children = parameters
-        arms = new[Arm]()
-        falls = true
-    }
-    if match std.loom.eval.validate(program, probe) {
-        Result.Ok(_) => false,
-        Result.Err(_) => true
-    } {
-        return false
     }
     std.loom.proof.fresh_list_factory(program, value.index)
 }

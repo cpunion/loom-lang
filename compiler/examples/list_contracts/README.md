@@ -17,6 +17,14 @@ are distinct from earlier handles; inner elements retain sharing. The loop's
 output-length/index equality is checked inductively, including zero iterations.
 Later unknown handles and opaque calls can still reach those allocations.
 
+`generated.loom` composes the source `std.list.generate` length contract into a
+generic length-two type, without a checked Result or a second predicate check.
+Callbacks run once in index order, may update a captured trace, and can create
+managed Text. Body provenance proves that the fresh output never reaches them;
+callback effects do not become a false global-purity requirement. The result
+survives suspension. Returning an input or exposing the output to an unknown
+callback still cannot establish the required unpublished header.
+
 `refinements.loom` uses `Nonempty[T]` with shared nested Lists. Its predicate
 observes only the outer length, so inner mutations do not invalidate it. Outer
 replacement and append preserve nonemptiness through generic helpers and

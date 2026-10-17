@@ -90,6 +90,7 @@ async fn main() {
     exercise_projections().await
     exercise_scalar_contents().await
     exercise_typed_entry_snapshots()
+    exercise_generated().await
 }
 
 test async fn shared_lengths_survive_updates_loops_and_suspension() {

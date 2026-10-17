@@ -5,6 +5,8 @@ import std.list.new
 import std.list.push
 import std.list.length
 import std.list.clone
+import std.list.generate
+import std.int.to_text
 
 // Storage created inside one invocation needs neither implicit copying nor
 // shared-access locks. Its ordinary GC roots and cancellation points remain.
@@ -38,6 +40,12 @@ ensures std.list.length(result) == 3 && result[1] == 7
     std.list.push(values, 3)
     std.list.set(values, 1, 7)
     values
+}
+
+fn generated_values() List[Text]
+ensures std.list.length(result) == 3
+{
+    generate(3, to_text)
 }
 
 // Entry, old and current lengths are independent reads of shared storage.

@@ -224,6 +224,8 @@ supported theories and boundaries. The central rules are:
   after checked construction and escape analysis. Raw writable aliases cannot
   escape. Shared builds independently revalidate preservation; no implicit copy,
   monitor, ownership syntax or sampled reservation is introduced.
+  Bounded body provenance also admits unrelated input effects and callbacks
+  that cannot reach the fresh output, without trusting pending postconditions.
   General nested-graph publication and changing loop-carried identities remain
   conservative.
 

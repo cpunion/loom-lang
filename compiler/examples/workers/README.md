@@ -21,6 +21,11 @@ the length and indexed contents of a fresh result. Private accesses omit
 shared-storage locks; GC roots and cancellation checkpoints remain. This needs
 no ownership annotations and does not change the shared-counter example.
 
+`generated_values` composes `std.list.generate`'s proved length into a worker
+result. Its count is an immutable scalar and its output stays private during
+construction, so independent shared reads cannot invalidate that guarantee.
+This differs from promising equality to a concurrently mutable input length.
+
 `observed_snapshot` passes a shared length to a pure helper. Arguments and local
 bindings are evaluated once, so the helper can reuse that scalar snapshot.
 Writing `length(values) == length(values)` instead makes two independent reads
