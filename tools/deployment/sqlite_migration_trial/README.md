@@ -59,6 +59,9 @@ layout, row constraints, retained lineage and exact ledger event under a write
 lock before recording `RollbackComplete`. The failed upgrade still returns an
 error. A missing acknowledgement after a committed upgrade remains an outcome
 to inspect; it must not initiate rollback of that observed completion.
+The trial loses acknowledgements after real committed upgrades, downgrade and
+failed-upgrade recovery. Completion records and data survive the reported process
+failure; retries cannot overwrite them with failure or replay the data changes.
 
 Failed recovery leaves `RollbackFailed` and no established effective basis.
 After explicit repair, `recover_failed_sqlite_upgrade` retries the matching
