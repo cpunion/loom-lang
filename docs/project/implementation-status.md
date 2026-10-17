@@ -85,6 +85,9 @@ solver dependency.
 Independent queries on a successful analysis replay its observed inputs and
 retain at most one checked source scope. Header and body evidence stay separate;
 failed or ambiguous scopes cannot supply cached binding facts.
+Public reference queries share a token stream for a batch or exact-name scan,
+retaining unanswered and ambiguous candidates. Editor and semantic-change
+consumers share this evidence without treating it as complete source coverage.
 Their IDs and spans belong to a snapshot, not persistent semantic history.
 
 ## Language and compile-time programming

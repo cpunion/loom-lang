@@ -61,7 +61,7 @@ fn analysis_query_inputs(analysis Analysis) BuildInputs {
 // A successful analysis lazily records erased bindings per checked scope. Readers
 // replay the analysis's observed input snapshots, never fresh filesystem data.
 // Ordinary body queries and ordinary compilation do not run this extra check.
-fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset Int) Option[Inspection] {
+fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset Int, tokens List[Token]) Option[Inspection] {
     if file < 0 || file >= length(view.bindings.files) {
         return Option.None
     }
@@ -74,12 +74,6 @@ fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset
         index = index + 1
     }
     let source = get(view.bindings.files, file)
-    let tokens = match lex(source.text) {
-        Result.Ok(value) => value
-        Result.Err(_) => {
-            return Option.None
-        }
-    }
     let token = match token_at(tokens, offset) {
         Option.Some(value) => value
         Option.None => {

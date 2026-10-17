@@ -798,8 +798,18 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
     if file < 0 || file >= length(analysis.source.files) {
         return Option.None
     }
+    match lex(get(analysis.bindings.files, file).text) {
+        Result.Ok(tokens) => checked_inspection(analysis, file, offset, tokens)
+        Result.Err(_) => Option.None
+    }
+}
+
+fn checked_inspection(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
+    if file < 0 || file >= length(analysis.source.files) {
+        return Option.None
+    }
     if source_contract_at(get(analysis.source.files, file).tree, offset) {
-        return inspect_source_contract(analysis, file, offset)
+        return inspect_source_contract(analysis, file, offset, tokens)
     }
     let declarations = get(analysis.source.files, file).tree.children
     var index = 0
@@ -822,12 +832,12 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
             get(analysis.declarations, 0)
         }
     }
-    match inspect_view(view, file, offset) {
+    match inspect_view(view, file, offset, tokens) {
         Option.Some(found) => Option.Some(found)
         Option.None => {
-            match inspect_source_scope(analysis, file, offset) {
+            match inspect_source_scope(analysis, file, offset, tokens) {
                 Option.Some(found) => Option.Some(found)
-                Option.None => inspect_declaration_at(analysis, view, file, offset)
+                Option.None => inspect_declaration_at(analysis, view, file, offset, tokens)
             }
         }
     }
@@ -859,6 +869,14 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int) Option[Inspection] 
             return Option.None
         }
     }
+    inspect_view(analysis, file, offset, tokens)
+}
+
+fn inspect_view(analysis CheckedQuery, file Int, offset Int, tokens List[Token]) Option[Inspection] {
+    if file < 0 || file >= length(analysis.bindings.files) {
+        return Option.None
+    }
+    let source = get(analysis.bindings.files, file)
     let token = match token_at(tokens, offset) {
         Option.Some(token) => token,
         Option.None => {

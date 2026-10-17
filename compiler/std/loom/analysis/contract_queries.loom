@@ -18,7 +18,7 @@ fn source_contract_at(node Node, offset Int) Bool {
 // Normalized proof expressions deliberately have clause-wide spans. Lazily
 // inspect separately checked source clauses instead of guessing their bindings.
 // Inputs replay this successful analysis's snapshots, not the filesystem.
-fn inspect_source_contract(analysis Analysis, file Int, offset Int) Option[Inspection] {
+fn inspect_source_contract(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
     if length(analysis.contract_queries) == 0 {
         match check_query(analysis.bindings, analysis_query_inputs(analysis)) {
             Result.Ok(view) => {
@@ -31,7 +31,7 @@ fn inspect_source_contract(analysis Analysis, file Int, offset Int) Option[Inspe
     }
     var index = 0
     while index < length(analysis.contract_queries) {
-        match inspect_view(get(analysis.contract_queries, index), file, offset) {
+        match inspect_view(get(analysis.contract_queries, index), file, offset, tokens) {
             Option.Some(found) => {
                 return Option.Some(found)
             }
@@ -44,7 +44,7 @@ fn inspect_source_contract(analysis Analysis, file Int, offset Int) Option[Inspe
     // Check its own closure; do not invent instances for uncalled templates.
     match check_query(analysis.bindings, file, offset, analysis_query_inputs(analysis)) {
         Result.Ok(view) => {
-            let found = inspect_view(view, file, offset)
+            let found = inspect_view(view, file, offset, tokens)
             match found {
                 Option.Some(_) => {
                     push(analysis.contract_queries, view)

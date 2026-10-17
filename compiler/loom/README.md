@@ -312,6 +312,8 @@ without the CLI, LLVM backend, or filesystem loading:
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
 | `inspect_independent(bindings, file, offset)` | Checked headers, an isolated concrete closure or abstract declaration body; no executable program |
 | `inspect_independent(analysis, file, offset)` | The same isolated query using the analysis's input snapshot and one reusable checked scope |
+| `inspect_references(analysis, file, offsets)` | Ordered `ReferenceEvidence` for every requested position, including missing/ambiguous facts and duplicates |
+| `inspect_references(analysis, file, spelling)` | Source name-token candidates with the same evidence; comments/text literals are excluded and source lookup failures return `Err` |
 | `complete_names(bindings, file, offset)` | `Option[Completion]`: visible names and declaration signatures, using binding only |
 | `complete_at(bindings, file, offset)` | Names, qualified paths or receiver-type member hints, with a UTF-8 replacement span |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
@@ -451,6 +453,12 @@ bindings and inherited type labels; no concrete arguments are guessed.
 Unselected static branches, unexpanded packs and erased static values
 do not acquire invented evidence. Normal `analyze`, `check` and `build` remain whole-package
 checks. Query tables are a separate `CheckedQuery`, not a partial `typed.Program`.
+
+Reference scans expose candidate evidence, not rename authority or complete
+coverage. A missing inspection or zero/multiple definitions must not be silently
+treated as an absent use. Generated/static uses still need explicit coverage
+checks. The editor and semantic-change tool share these queries while retaining
+their separate scope, abstract-binding and unaccounted-use checks.
 
 `Type.constraint` is predicate-template metadata, not executable IR: `self`
 uses local 0 and call indices are `-1` until rebound at a construction boundary.

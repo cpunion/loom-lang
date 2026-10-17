@@ -60,7 +60,7 @@ fn header_type_name(analysis CheckedQuery, owner Int, ty Int) Text {
     std.loom.checking.type_name(analysis.bindings, analysis.types, analysis.interfaces, ty, labels)
 }
 
-fn inspect_source_scope(analysis Analysis, file Int, offset Int) Option[Inspection] {
+fn inspect_source_scope(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let item = get(analysis.bindings.symbols, index)
@@ -69,7 +69,7 @@ fn inspect_source_scope(analysis Analysis, file Int, offset Int) Option[Inspecti
             while group < length(item.node.children) {
                 let node = get(item.node.children, group)
                 if (node.kind == NodeKind.TypeParameters || node.kind == NodeKind.Parameters || node.kind == NodeKind.ReturnType) && inside(node.span, offset) {
-                    return inspect_independent(analysis, file, offset)
+                    return independent_inspection(analysis, file, offset, tokens)
                 }
                 group = group + 1
             }
@@ -81,7 +81,7 @@ fn inspect_source_scope(analysis Analysis, file Int, offset Int) Option[Inspecti
             if !ordinary_query_owner(item.node) || !ordinary_query_owner(parent) || parent.kind == NodeKind.Concept {
                 // An unused template has no runtime instance. Its checked
                 // abstract body still supplies local types and binding IDs.
-                return inspect_independent(analysis, file, offset)
+                return independent_inspection(analysis, file, offset, tokens)
             }
         }
         index = index + 1
