@@ -172,12 +172,12 @@ fn check_production_import_scope() Result[Bool, Text] {
             ..project
         }, true, no_proof_backend())?
     let scopes = package_scopes(analysis.source, packages)?
-    let renames = new[FunctionRename]()
+    let renames = new[DeclarationRename]()
     var index = 0
     while index < length(library.identities) {
         let identity = get(library.identities, index)
         if identity.name == "amount" && identity.key != "-" {
-            push(renames, FunctionRename {
+            push(renames, DeclarationRename {
                     id = identity.id
                     name = if identity.id == "test-only-overload" {
                         "notes"

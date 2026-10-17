@@ -378,7 +378,7 @@ pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], ri
             original.directory, original.revision, true) {
             return Result.Err("project context must contain every exact baseline package")
         }
-        let renames = function_renames(indexed(original.revision)?, indexed(a)?, indexed(b)?, true)?
+        let renames = declaration_renames(indexed(original.revision)?, indexed(a)?, indexed(b)?, true)?
         push(plans, PackageRenames {
                 directory = original.directory
                 renames = renames

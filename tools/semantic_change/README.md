@@ -41,7 +41,7 @@ This is a conservative dependency separation rule, not declaration-level indepen
 or behavior equivalence. Changes to package scope, imports, conflicting
 headers/contracts, connected deletion versus edits, unsupported declarations and references
 without complete checked evidence require explicit resolution.
-Explicit private function renames compose in package batches too:
+Explicit private named-declaration renames compose in package batches too:
 the shared token/binding normalizer checks each complete branch in production
 and the renamed package's private tests before the combined merge. The original
 baseline must match before normalization. Overloaded declarations are selected
@@ -59,7 +59,7 @@ explicit-name coverage, not a proof of implicit effects or behavior compatibilit
 Default-method bodies participate through their implicit generic `Self` scope.
 The same declaration-wide checks apply to explicit generics and compile-time
 parameters; missing or conflicting evidence still requires resolution.
-Public function renames also compose in a complete selected-module batch,
+Public function, record, enum, refined-type and concept renames also compose in a complete selected-module batch,
 including checked import members, calls and each package's private tests. Every
 known package in that module must participate; known consumers in other module
 instances require separate resolution. Visibility and the package/dependency
@@ -68,10 +68,12 @@ their identified declarations; calls and contextual function values follow only
 their own selected target. Existing import lines and trailing comments stay in
 place, and additional imports retain the file's line ending. Normalized member
 sets must agree in both production and effective private-test scope; unrelated
-import changes still require resolution. Single-package public renames, other public
-declaration kinds and moves across package identities remain unsupported.
+import changes still require resolution. Type renames refresh affected function
+and impl locators while retaining their explicit IDs and checked member scopes.
+Single-package public renames, member renames and moves across package identities
+remain unsupported.
 This does not update unknown external consumers or prove API compatibility.
-Function rename composition also rejects packages exporting a macro generator:
+Rename composition also rejects packages exporting a macro generator:
 generated Text/AST can bind private helpers in the definition context, outside
 the checked import closure. The shared invocation-signature query identifies
 these providers; ordinary functions returning Text are not treated as macros.

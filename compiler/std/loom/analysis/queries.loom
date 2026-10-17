@@ -682,7 +682,17 @@ fn inspect_expression(analysis CheckedQuery, report Inspection, function Functio
         add_type(report, header_type_name(analysis, function.symbol, value.ty))
         if value.kind == ExprKind.Variant {
             // The final segment is a variant, not the nominal type name.
-            symbol_location(analysis, report, get(analysis.types, value.ty).symbol)
+            let shape = get(analysis.types, value.ty)
+            let owner = get(analysis.bindings.symbols, shape.symbol)
+            let name = get(shape.variants, value.index).name
+            var index = 0
+            while index < length(owner.node.children) {
+                let member = get(owner.node.children, index)
+                if member.kind == NodeKind.Variant && member.value == name && name == target.token.value {
+                    declaration(analysis, report, owner.file, member)
+                }
+                index = index + 1
+            }
         } else {
             nominal_body_location(analysis, report, function, target, value.ty, target.node.value)
         }

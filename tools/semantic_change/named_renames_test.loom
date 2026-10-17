@@ -1,0 +1,398 @@
+fn named_rename_revision(renamed Bool, moved Bool, changed Bool) Revision {
+    let declarations = """
+        record ITEM {
+            amount Int
+        }
+
+        enum CHOICE {
+            Some(ITEM)
+            Empty
+        }
+
+        concept CONCEPT {
+            fn measure(self Self, other ITEM) Int
+        }
+        """
+    let implementation = """
+        impl CONCEPT for ITEM {
+            fn measure(self ITEM, other ITEM) Int {
+                self.amount + other.amount + DELTA
+            }
+        }
+        """
+    let callers = """
+        fn combine(value ITEM) Int {
+            value.measure(ITEM { amount = 1 })
+        }
+
+        fn entry() Int {
+            let selected CHOICE = CHOICE.Some(ITEM { amount = 3 })
+            match selected {
+                CHOICE.Some(value) => combine(value) + EXTRA
+                CHOICE.Empty => 0
+            }
+        }
+
+        test fn valid() {
+            assert entry() >= 4
+        }
+        """
+    let files = [File {
+            path = "types.loom"
+            text = if moved {
+                ""
+            } else {
+                declarations
+            }
+        }, File {
+            path = "moved.loom"
+            text = if moved {
+                declarations
+            } else {
+                ""
+            }
+        }, File {
+            path = "impl.loom"
+            text = replace(implementation, "DELTA", if changed {
+                    "1"
+                } else {
+                    "0"
+                })
+        }, File {
+            path = "entry.loom"
+            text = replace(callers, "EXTRA", if changed {
+                    "10"
+                } else {
+                    "0"
+                })
+        }]
+    var file = 0
+    while file < length(files) {
+        let source = get(files, file)
+        set(files, file, File {
+                text = replace(replace(replace(source.text,
+                            "ITEM", if renamed {
+                                "Product"
+                            } else {
+                                "Item"
+                            }),
+                        "CHOICE", if renamed {
+                            "Selection"
+                        } else {
+                            "Choice"
+                        }),
+                    "CONCEPT", if renamed {
+                        "Count"
+                    } else {
+                        "Measure"
+                    })
+                ..source
+            })
+        file = file + 1
+    }
+    let revision = package_fixture("sample", "", files).revision
+    var identity = 0
+    while identity < length(revision.identities) {
+        let item = get(revision.identities, identity)
+        set(revision.identities, identity, Identity {
+                id = if item.kind == NodeKind.Function {
+                    concat("fn:", item.name)
+                } else {
+                    if item.kind == NodeKind.Record {
+                        "record"
+                    } else {
+                        if item.kind == NodeKind.Enum {
+                            "enum"
+                        } else {
+                            if item.kind == NodeKind.Concept {
+                                "concept"
+                            } else {
+                                "impl"
+                            }
+                        }
+                    }
+                }
+                ..item
+            })
+        identity = identity + 1
+    }
+    revision
+}
+
+test fn named_renames_preserve_nominal_owners_member_scopes_and_locator_keys() {
+    let base = named_rename_revision(false, false, false)
+    let branches = [named_rename_revision(true, true, false), named_rename_revision(false, false, true)]
+    var order = 0
+    while order < 2 {
+        let merged = match merge(base, get(branches, order), get(branches, 1 - order)) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        assert get(merged.files, 0).text == ""
+        assert contains(get(merged.files, 1).text, "record Product")
+        assert contains(get(merged.files, 1).text, "enum Selection")
+        assert contains(get(merged.files, 1).text, "concept Count")
+        assert contains(get(merged.files, 2).text, "impl Count for Product")
+        assert contains(get(merged.files, 2).text, "other.amount + 1")
+        assert contains(get(merged.files, 3).text, "Selection.Some")
+        assert contains(get(merged.files, 3).text, "combine(value) + 10")
+        assert match indexed(merged) {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        order = order + 1
+    }
+}
+
+fn named_public_revisions(name Text, moved Bool, changed Bool) List[PackageRevision] {
+    let library = replace(replace("""
+        pub record ITEM {
+            amount Int
+        }
+
+        pub enum ITEMChoice {
+            Some(ITEM)
+            Empty
+        }
+
+        pub concept ITEMMeasure {
+            fn measure(self Self, other ITEM) Int
+        }
+
+        impl ITEMMeasure for ITEM {
+            fn measure(self ITEM, other ITEM) Int {
+                self.amount + other.amount
+            }
+        }
+
+        pub fn copy(value ITEM) ITEM {
+            ITEM { amount = value.amount + DELTA }
+        }
+        """, "ITEM", name), "DELTA", if changed {
+            "1"
+        } else {
+            "0"
+        })
+    let packages = [package_fixture("sample.lib", "/module/lib", [File {
+                    path = "types.loom"
+                    text = if moved {
+                        ""
+                    } else {
+                        library
+                    }
+                }, File {
+                    path = "moved.loom"
+                    text = if moved {
+                        library
+                    } else {
+                        ""
+                    }
+                }])]
+    let labels = ["app", "reader"]
+    var index = 0
+    while index < length(labels) {
+        let label = get(labels, index)
+        let source = replace(replace("""
+            import sample.lib.ITEM
+            import sample.lib.ITEMChoice
+            import sample.lib.ITEMMeasure
+            import sample.lib.copy
+
+            pub fn entry(value ITEM) Int {
+                let selected ITEMChoice = ITEMChoice.Some(copy(value))
+                match selected {
+                    ITEMChoice.Some(item) => item.measure(value) + EXTRA
+                    ITEMChoice.Empty => 0
+                }
+            }
+            """, "ITEM", name), "EXTRA", if changed && label == "app" {
+                "10"
+            } else {
+                "0"
+            })
+        let tests = replace("""
+            import sample.lib.ITEM
+
+            test fn valid() {
+                assert entry(ITEM { amount = 2 }) >= 2
+            }
+            """, "ITEM", name)
+        push(packages, package_fixture(concat("sample.", label), concat("/module/", label), [
+                    File {
+                        path = "main.loom"
+                        text = source
+                    }, File {
+                        path = "main_test.loom"
+                        text = tests
+                    }
+                ]))
+        index = index + 1
+    }
+    index = 0
+    while index < length(packages) {
+        let selected = get(packages, index)
+        var identity = 0
+        while identity < length(selected.revision.identities) {
+            let item = get(selected.revision.identities, identity)
+            set(selected.revision.identities, identity, Identity {
+                    id = concat(selected.revision.package_name, concat(":", if item.kind == NodeKind.Record {
+                                "type"
+                            } else {
+                                if item.kind == NodeKind.Enum {
+                                    "enum"
+                                } else {
+                                    if item.kind == NodeKind.Concept {
+                                        "concept"
+                                    } else {
+                                        if item.kind == NodeKind.Impl {
+                                            "impl"
+                                        } else {
+                                            item.name
+                                        }
+                                    }
+                                }
+                            }))
+                    ..item
+                })
+            identity = identity + 1
+        }
+        index = index + 1
+    }
+    packages
+}
+
+test fn named_renames_update_public_type_imports_signatures_and_private_tests() {
+    let base = named_public_revisions("Item", false, false)
+    let branches = [named_public_revisions("Product", true, false), named_public_revisions("Item", false, true)]
+    let production = public_batch_context(base, false)
+    let tests = public_batch_context(base, true)
+    var order = 0
+    while order < 2 {
+        let merged = match merge_packages(base, get(branches, order), get(branches, 1 - order), production, tests) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        let library = get(merged, 0).revision
+        assert get(library.files, 0).text == ""
+        assert contains(get(library.files, 1).text, "pub record Product")
+        assert contains(get(library.files, 1).text, "pub enum ProductChoice")
+        assert contains(get(library.files, 1).text, "pub concept ProductMeasure")
+        assert contains(get(library.files, 1).text, "value.amount + 1")
+        assert contains(get(get(merged, 1).revision.files, 0).text, "item.measure(value) + 10")
+        var package = 1
+        while package < length(merged) {
+            let revision = get(merged, package).revision
+            assert contains(get(revision.files, 0).text, "import sample.lib.Product")
+            assert contains(get(revision.files, 1).text, "entry(Product")
+            package = package + 1
+        }
+        order = order + 1
+    }
+}
+
+test fn named_renames_reject_visibility_changes_missing_consumers_and_conflicting_names() {
+    let base = named_public_revisions("Item", false, false)
+    let renamed = named_public_revisions("Product", true, false)
+    let edited = named_public_revisions("Item", false, true)
+    let production = public_batch_context(base, false)
+    let tests = public_batch_context(base, true)
+    assert match merge_packages([get(base, 0), get(base, 1)], [get(renamed, 0), get(renamed, 1)],
+        [get(edited, 0), get(edited, 1)], production, tests) {
+        Result.Err(message) => contains(message, "including consumers")
+        Result.Ok(_) => false
+    }
+    let files = get(renamed, 0).revision.files
+    let file = get(files, 1)
+    set(files, 1, File {
+            text = replace(file.text, "pub record", "record")
+            ..file
+        })
+    assert match merge_packages(base, renamed, edited, production, tests) {
+        Result.Err(message) => contains(message, "visibility")
+        Result.Ok(_) => false
+    }
+    assert match merge_packages(base, named_public_revisions("Product", false, false),
+        named_public_revisions("Other", false, false), production, tests) {
+        Result.Err(message) => contains(message, "conflicting declaration renames")
+        Result.Ok(_) => false
+    }
+}
+
+fn named_refined_revision(renamed Bool, changed Bool) Revision {
+    let revision = refined_rename_case("positive", if renamed {
+            "app.loom"
+        } else {
+            "value.loom"
+        }, changed)
+    if renamed {
+        var index = 0
+        while index < length(revision.files) {
+            let file = get(revision.files, index)
+            set(revision.files, index, File {
+                    text = replace(file.text, "Money", "Credit")
+                    ..file
+                })
+            index = index + 1
+        }
+        index = 0
+        while index < length(revision.identities) {
+            let identity = get(revision.identities, index)
+            if identity.name == "Money" {
+                set(revision.identities, index, Identity {
+                        name = "Credit"
+                        ..identity
+                    })
+            }
+            index = index + 1
+        }
+    }
+    revision
+}
+
+test fn named_renames_keep_refinement_checks_and_the_pinned_result_context() {
+    let base = named_refined_revision(false, false)
+    let branches = [named_refined_revision(true, false), named_refined_revision(false, true)]
+    assert match merge(base, get(branches, 0), get(branches, 1)) {
+        Result.Err(message) => contains(message, "explicit pinned project context")
+        Result.Ok(_) => false
+    }
+    let loaded = match load("tools/semantic_change/fixtures/constrained", "compiler/std", false) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            rename_context(base)
+        }
+    }
+    let directory = get(loaded.modules, get(loaded.packages, loaded.root).instance).source
+    let context = match contextual(loaded, directory, base) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            loaded
+        }
+    }
+    let merged = match merge_with_context(base, get(branches, 0), get(branches, 1), context, context, directory) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            base
+        }
+    }
+    assert contains(get(merged.files, 1).text, "type Credit = Balance where positive(self.amount)")
+    assert contains(get(merged.files, 1).text, "Credit(Balance")
+    assert contains(get(merged.files, 1).text, "let lower = 0")
+}

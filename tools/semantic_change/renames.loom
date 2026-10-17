@@ -1,7 +1,9 @@
 import std.loom.ast.has
 import std.loom.checking.macro_generator_candidates
+import std.list.clone
+import std.list.set
 
-record FunctionRename {
+record DeclarationRename {
     id Text
     name Text
 }
@@ -31,8 +33,9 @@ fn rename_name(entry Entry, public_allowed Bool) Result[Token, Text] {
         }
     }
     let declaration = get(tree.children, 0)
-    if entry.kind != NodeKind.Function || (!public_allowed && has(declaration, NodeKind.Public)) {
-        return Result.Err("rename composition requires a private function")
+    if !declaration_supported(entry.kind) || entry.kind == NodeKind.Impl ||
+    (!public_allowed && has(declaration, NodeKind.Public)) {
+        return Result.Err("rename composition requires a named private declaration")
     }
     let tokens = match lex(entry.body) {
         Result.Ok(value) => value
@@ -48,15 +51,15 @@ fn rename_name(entry Entry, public_allowed Bool) Result[Token, Text] {
         }
         index = index + 1
     }
-    Result.Err("renamed function has no declaration token")
+    Result.Err("renamed declaration has no declaration token")
 }
 
-fn function_renames(base Indexed, left Indexed, right Indexed) Result[List[FunctionRename], Text] {
-    function_renames(base, left, right, false)
+fn declaration_renames(base Indexed, left Indexed, right Indexed) Result[List[DeclarationRename], Text] {
+    declaration_renames(base, left, right, false)
 }
 
-fn function_renames(base Indexed, left Indexed, right Indexed, public_allowed Bool) Result[List[FunctionRename], Text] {
-    let renames = new[FunctionRename]()
+fn declaration_renames(base Indexed, left Indexed, right Indexed, public_allowed Bool) Result[List[DeclarationRename], Text] {
+    let renames = new[DeclarationRename]()
     var index = 0
     while index < length(base.entries) {
         let original = get(base.entries, index)
@@ -66,14 +69,17 @@ fn function_renames(base Indexed, left Indexed, right Indexed, public_allowed Bo
             let a = get(left.entries, l)
             let b = get(right.entries, r)
             if a.name != original.name || b.name != original.name {
+                if a.kind != original.kind || b.kind != original.kind {
+                    return Result.Err("rename cannot change declaration kind")
+                }
                 if a.name != original.name && b.name != original.name && a.name != b.name {
                     return Result.Err("conflicting declaration renames require explicit resolution")
                 }
                 discard rename_name(original, public_allowed)?
                 discard rename_name(a, public_allowed)?
                 discard rename_name(b, public_allowed)?
-                if public_allowed && (public_function(original)? != public_function(a)? ||
-                    public_function(original)? != public_function(b)?) {
+                if public_allowed && (public_declaration(original)? != public_declaration(a)? ||
+                    public_declaration(original)? != public_declaration(b)?) {
                     return Result.Err("rename cannot change declaration visibility; explicit resolution required")
                 }
                 let name = if a.name != original.name {
@@ -84,7 +90,7 @@ fn function_renames(base Indexed, left Indexed, right Indexed, public_allowed Bo
                 // A name may select several overloads. Normalize only the
                 // identified declaration and its checked reference tokens;
                 // rechecking every binding decides whether composition is safe.
-                push(renames, FunctionRename {
+                push(renames, DeclarationRename {
                         id = original.id
                         name = name
                     })
@@ -95,7 +101,7 @@ fn function_renames(base Indexed, left Indexed, right Indexed, public_allowed Bo
     Result.Ok(renames)
 }
 
-fn rename_requested(renames List[FunctionRename], id Text) Text {
+fn rename_requested(renames List[DeclarationRename], id Text) Text {
     var index = 0
     while index < length(renames) {
         let rename = get(renames, index)
@@ -129,17 +135,31 @@ fn rename_site(sites List[Int], offset Int) Bool {
     false
 }
 
-fn rename_edits(revision Indexed, renames List[FunctionRename], analysis Analysis, directory Text) Result[List[RenameEdit], Text] {
+// Spelling only selects query candidates. Checked declaration identity and the
+// exact declaration-name span below decide whether a token may be rewritten.
+fn rename_spelling(entries List[Entry], renames List[DeclarationRename], name Text) Bool {
+    var index = 0
+    while index < length(entries) {
+        let entry = get(entries, index)
+        if entry.name == name && rename_requested(renames, entry.id) != "" {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn rename_edits(revision Indexed, renames List[DeclarationRename], analysis Analysis, directory Text) Result[List[RenameEdit], Text] {
     let edits = new[RenameEdit]()
     var index = 0
     while index < length(revision.entries) {
         let entry = get(revision.entries, index)
         let sites = reference_sites(entry)?
         let requested = rename_requested(renames, entry.id)
-        let declaration = if requested != "" {
-            rename_name(entry)?.span.start
-        } else {
+        let declaration = if entry.kind == NodeKind.Impl {
             -1
+        } else {
+            rename_name(entry, true)?.span.start
         }
         let tokens = match lex(entry.body) {
             Result.Ok(value) => value
@@ -155,7 +175,8 @@ fn rename_edits(revision Indexed, renames List[FunctionRename], analysis Analysi
             } else {
                 ""
             }
-            if rename_site(sites, token.span.start) {
+            if token.span.start != declaration && (rename_site(sites, token.span.start) ||
+                (token.kind == Kind.Name && rename_spelling(revision.entries, renames, token.value))) {
                 let target = target_at(analysis, revision, directory, entry, token.span.start)?
                 let selected = rename_requested(renames, target.id)
                 if selected != "" {
@@ -196,7 +217,60 @@ fn rename_body(entry Entry, edits List[RenameEdit]) Text {
     concat(output, slice(entry.body, offset, length(entry.body)))
 }
 
-fn renamed_revision(revision Indexed, renames List[FunctionRename], edits List[RenameEdit]) Revision {
+// Token normalization can change function/impl type spellings and therefore
+// their revision-local keys, even when those owners are not themselves renamed.
+// Preserve each explicit ID by its original declaration position, not its name.
+fn renamed_identities(original Indexed, files List[File], renames List[DeclarationRename]) Result[List[Identity], Text] {
+    let identities = clone(original.revision.identities)
+    var file = 0
+    while file < length(files) {
+        let source = get(files, file)
+        let tree = match parse(source.text) {
+            Result.Ok(value) => value
+            Result.Err(problem) => {
+                return Result.Err(problem.message)
+            }
+        }
+        var ordinal = 0
+        var item = 0
+        while item < length(tree.children) {
+            let node = get(tree.children, item)
+            if node.kind != NodeKind.Import {
+                let position = entry_in_file(original.entries, source.path, ordinal)
+                if position < 0 {
+                    return Result.Err("rename changed the declaration structure")
+                }
+                let entry = get(original.entries, position)
+                let requested = rename_requested(renames, entry.id)
+                let name = if requested == "" {
+                    entry.name
+                } else {
+                    requested
+                }
+                if node.kind != entry.kind || declaration_label(node) != name {
+                    return Result.Err("rename changed the declaration structure")
+                }
+                let identity = identity_index(original.revision.identities, entry.path, entry.kind, entry.name, entry.key)
+                set(identities, identity, Identity {
+                        id = entry.id
+                        path = entry.path
+                        kind = entry.kind
+                        name = name
+                        key = declaration_key(node)?
+                    })
+                ordinal = ordinal + 1
+            }
+            item = item + 1
+        }
+        if entry_in_file(original.entries, source.path, ordinal) >= 0 {
+            return Result.Err("rename changed the declaration structure")
+        }
+        file = file + 1
+    }
+    Result.Ok(identities)
+}
+
+fn renamed_revision(revision Indexed, renames List[DeclarationRename], edits List[RenameEdit]) Result[Revision, Text] {
     let files = new[File]()
     var index = 0
     while index < length(revision.revision.files) {
@@ -220,29 +294,11 @@ fn renamed_revision(revision Indexed, renames List[FunctionRename], edits List[R
             })
         index = index + 1
     }
-    let identities = new[Identity]()
-    index = 0
-    while index < length(revision.revision.identities) {
-        let identity = get(revision.revision.identities, index)
-        let name = rename_requested(renames, identity.id)
-        push(identities, Identity {
-                id = identity.id
-                path = identity.path
-                kind = identity.kind
-                name = if name == "" {
-                    identity.name
-                } else {
-                    name
-                }
-                key = identity.key
-            })
-        index = index + 1
-    }
-    Revision {
-        package_name = revision.revision.package_name
-        files = files
-        identities = identities
-    }
+    Result.Ok(Revision {
+            package_name = revision.revision.package_name
+            files = files
+            identities = renamed_identities(revision, files, renames)?
+        })
 }
 
 // Translate checked definition spans back through the exact token edits. A
@@ -286,14 +342,22 @@ fn compare_renamed(before Analysis, original Indexed, after Analysis, updated In
         while site < length(sites) {
             let expected = target_at(before, original, directory, entry, get(sites, site))?
             let target = target_at(after, updated, directory, changed, get(current, site))?
+            let anchor = rename_original_offset(edits, target.id, target.anchor)?
+            let scope = if target.id == "" {
+                target.scope
+            } else {
+                renamed_scope(get(original.entries, entry_index(original.entries, target.id)), target.scope, anchor)?
+            }
             let restored = BindingTarget {
-                anchor = rename_original_offset(edits, target.id, target.anchor)?
+                scope = scope
+                anchor = anchor
                 start = rename_original_offset(edits, target.id, target.start)?
                 end = rename_original_offset(edits, target.id, target.end)?
                 ..target
             }
             if !same_target(expected, restored) {
-                return Result.Err("rename changed a checked reference binding")
+                return Result.Err(concat("rename changed a checked reference binding in ",
+                        concat(entry.path, concat(" at ", to_text(get(sites, site))))))
             }
             site = site + 1
         }
@@ -340,13 +404,13 @@ fn checked_rename_generators(analysis Analysis, package Int, backend ProofBacken
     Result.Ok(true)
 }
 
-fn normalize_rename(revision Revision, renames List[FunctionRename], directory Text, production Project, tests Project,
+fn normalize_rename(revision Revision, renames List[DeclarationRename], directory Text, production Project, tests Project,
     backend ProofBackend) Result[Revision, Text] {
     let original = indexed(revision)?
     let before = rename_analysis(revision, directory, production, tests, true, backend)?
     discard checked_rename_generators(before, before.bindings.root, backend)?
     let edits = rename_edits(original, renames, before, directory)?
-    let renamed = renamed_revision(original, renames, edits)
+    let renamed = renamed_revision(original, renames, edits)?
     let updated = indexed(renamed)?
     discard compare_renamed(before, original, rename_analysis(renamed, directory, production, tests, true, backend)?, updated, directory, edits)?
     discard compare_renamed(rename_analysis(revision, directory, production, tests, false, backend)?, original,
@@ -359,7 +423,7 @@ fn normalize_renames(base Revision, left Revision, right Revision, directory Tex
     if base.package_name != left.package_name || base.package_name != right.package_name {
         return Result.Err("semantic merge cannot cross package identities")
     }
-    let renames = function_renames(indexed(base)?, indexed(left)?, indexed(right)?)?
+    let renames = declaration_renames(indexed(base)?, indexed(left)?, indexed(right)?)?
     if length(renames) != 0 && directory == "" &&
     (has_imports(base)? || has_imports(left)? || has_imports(right)? ||
         needs_result_import(base, true)? || needs_result_import(left, true)? || needs_result_import(right, true)?) {

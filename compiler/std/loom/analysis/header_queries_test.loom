@@ -177,3 +177,38 @@ test fn data_and_local_annotations_use_checked_nominal_identities() {
         index = index + 1
     }
 }
+
+test fn variant_constructor_and_pattern_queries_do_not_select_the_enum_name() {
+    let text = """
+        enum Choice {
+            Choice(Int)
+            Empty
+        }
+
+        fn create(number Int) Choice {
+            Choice.Choice(number)
+        }
+
+        fn selected() Int {
+            match create(3) {
+                Choice.Choice(item) => item
+                Choice.Empty => 0
+            }
+        }
+
+        fn main() {
+            assert selected() == 3
+        }
+        """
+    let analysis = accepted(input(text))
+    let nominal = query_offset(text, "Choice {")
+    let variant = query_offset(text, "Choice(Int)")
+    let roots = ["Choice.Choice(number)", "Choice.Choice(item)"]
+    let tags = ["Choice(number)", "Choice(item)"]
+    var index = 0
+    while index < length(roots) {
+        only_definition(inspection(analysis, text, get(roots, index)), nominal, nominal + 6)
+        only_definition(inspection(analysis, text, get(tags, index)), variant, variant + 6)
+        index = index + 1
+    }
+}
