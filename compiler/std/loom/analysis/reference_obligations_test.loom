@@ -113,6 +113,13 @@ test fn abstract_reference_scopes_include_implicit_self_and_static_parameters() 
         fn identity[T](value T) T {
             value
         }
+        """, """
+        impl Read for Int {
+            fn read[T](self Int, value T) T {
+                discard self
+                value
+            }
+        }
         """]
     var index = 0
     while index < length(declarations) {

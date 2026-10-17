@@ -157,6 +157,7 @@ fn public_original_target(target BindingTarget, before List[PackageScope], after
     let updated = rename_definition(after, target.id)?
     let edits = renamed_file_edits(files, join_path(updated.directory, updated.entry.path))
     Result.Ok(BindingTarget {
+            anchor = source_original_offset(edits, updated.entry.start + target.anchor)? - original.entry.start
             start = source_original_offset(edits, updated.entry.start + target.start)? - original.entry.start
             end = source_original_offset(edits, updated.entry.start + target.end)? - original.entry.start
             ..target

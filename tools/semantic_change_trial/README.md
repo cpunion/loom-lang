@@ -131,7 +131,7 @@ not make review and publication race-free against hostile concurrent filesystem
 writers. For move-plus-edit proposals, retained references in supported function
 and record declarations are checked against the branch that supplied each unchanged body
 and the proposed merge. Definition locations must normalize to the same stable
-sidecar declaration ID and relative span, or to the same location in the pinned
+sidecar owner ID, checked member slot where applicable, and relative span, or to the same location in the pinned
 dependency closure. Concrete type annotations, record initializer labels and
 each member of a value path use compiler binding evidence; equal field names
 do not unify distinct record owners. Missing or ambiguous checked evidence,
@@ -146,18 +146,19 @@ Each directory contains ordinary root-level `.loom` files and a `.loom-ids`
 sidecar. The sidecar requires exactly one `package NAME` line and exactly one
 `next N` positive allocator line, followed by one
 `id STABLE_ID KIND DECLARATION_NAME FILE.loom KEY` line per declaration. `KIND` is
-`fn`, `record`, `enum`, `type`, or `concept`. IDs must be explicitly carried
+`fn`, `record`, `enum`, `type`, `concept`, or `impl`. Anonymous impl names use `-`.
+IDs must be explicitly carried
 between revisions; names and source offsets are not durable identities.
 
 `KEY` distinguishes same-name overloads in the same file. It hashes framed
 parameter-type ASTs, compile-time parameter markers and generic declarations,
 excluding comments, whitespace, parameter names, result types, contracts and
-bodies. Nullary nongeneric functions and non-functions use `-`. This is a
+bodies. Impl keys instead hash their concept, target and generic header, not
+method bodies. Other non-functions and nullary nongeneric functions use `-`. This is a
 conservative source locator, not semantic type equivalence or stable identity;
 alias/type-parameter spelling changes can require an explicit mapping. The
 parser normalizes grouping and optional trailing commas; declaration order never selects an
-overload. Missing or stale keys reject, without a name-only fallback. This
-prototype format replaces the earlier five-field identity lines.
+overload. Missing or stale keys reject, without a name-only fallback.
 
 You do not need to write the sidecar yourself. `init PACKAGE DIR` creates it
 for a package of root-level `.loom` files. `refresh DIR` keeps IDs for exact
@@ -181,6 +182,11 @@ reference forms without complete evidence still need explicit resolution.
 Keep `.loom-ids-stage-*` recovery directories out of source commits.
 `scan DIR` lists current kind/name/file/key locators without writing metadata;
 use its exact key to resolve a move or parameter-type change.
+For an impl move, pass `--move ID NEW_FILE - KEY`; its opaque key distinguishes
+implementations even when they share a file. Concept/default methods retain
+checked member bindings across sibling body edits. Concurrent edits to a
+container body still require explicit resolution rather than guessing nested
+declaration intent.
 
 Ambiguities may be saved without guessing an identity:
 
@@ -276,9 +282,9 @@ to the non-layout side's surrounding text, and unsupported declaration forms
 are reported instead of guessed.
 
 This is a deliberately narrow proof of the move-plus-edit workflow. It does
-not yet manage Git/jj changes or commits, reconcile import changes or
-multi-package source edits, accept `impl` or other non-identity top-level forms,
-or merge edits within a single declaration. Adding a new overload can change
+not yet manage Git/jj changes or commits, reconcile package/import-graph changes,
+infer identities for generated declarations, or merge competing edits within a
+single declaration body. Adding a new overload can change
 lookup, so cross-side addition of an existing name still requires review.
 
 The [overload snapshots](fixtures/overloads/base/app.loom) move only the `Int`

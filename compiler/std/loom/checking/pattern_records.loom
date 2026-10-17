@@ -25,7 +25,7 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
         return Result.Err(error(context, node, "cannot inspect a private record from another package"))
     }
     if get(context.env.inputs, 0).declaration_queries {
-        record_pattern_reference(context, node, ty, pattern_reference_segment(node.value), ty)
+        record_pattern_reference(context, node, ty, reference_path_segment(node.value), ty)
     }
     let fields = new[RecordPatternField]()
     let seen = new[Bool]()

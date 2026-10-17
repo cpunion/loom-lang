@@ -13,14 +13,7 @@ fn referenced_concept(env Environment, owner Int, node Node, path Text, skip Int
     if selected < 0 || !get(env.inputs, 0).declaration_queries {
         return Result.Ok(selected)
     }
-    var segment = skip
-    var index = 0
-    while index < length(path) {
-        if std.text.byte(path, index) == 46 {
-            segment = segment + 1
-        }
-        index = index + 1
-    }
+    let segment = skip + reference_path_segment(path)
     record_declaration_reference(env, owner, node, selected, segment, "")
     Result.Ok(selected)
 }
@@ -55,6 +48,33 @@ fn record_declaration_reference(env Environment, owner Int, node Node, selected 
         })
 }
 
+// Impl/associated headers have no function signature retaining their types.
+// Record checked nominal uses with symbolic source parameters before erasure.
+// Callers guard query mode and the declaration owner before this helper.
+fn record_declaration_type(env Environment, owner Int, node Node, ty Int) {
+    let item = symbol(env, owner)
+    let target = if item.node.kind == NodeKind.Impl {
+        child(item.node, 1)
+    } else {
+        item.node
+    }
+    if node.span.start < target.span.start || node.span.end > target.span.end {
+        return
+    }
+    let labels = new[Text]()
+    if parameter_offset(env, owner) != 0 {
+        push(labels, "Self")
+    }
+    let parameters = type_parameters(env, owner)
+    var index = 0
+    while index < length(parameters) {
+        push(labels, get(parameters, index).value)
+        index = index + 1
+    }
+    record_declaration_reference(env, owner, node, get(env.types, ty).symbol,
+        reference_path_segment(node.value), type_name(env.source, env.types, env.interfaces, ty, labels))
+}
+
 // Query-only evidence for source patterns survives decision-tree lowering.
 // The symbol is the checked nominal owner; the source node identifies its
 // field/variant member without adding provenance to executable expressions.
@@ -68,7 +88,7 @@ fn record_pattern_reference(context Context, node Node, ty Int, segment Int, lab
         type_name(env.source, env.types, env.interfaces, label))
 }
 
-fn pattern_reference_segment(path Text) Int {
+fn reference_path_segment(path Text) Int {
     var segment = 0
     var index = 0
     while index < length(path) {
@@ -110,14 +130,7 @@ fn record_function_reference(env Environment, owner Int, node Node, selected Int
     if name(source.value) != symbol(env, declaration).name {
         return Result.Ok(true)
     }
-    var segment = 0
-    index = 0
-    while index < length(source.value) {
-        if std.text.byte(source.value, index) == 46 {
-            segment = segment + 1
-        }
-        index = index + 1
-    }
+    let segment = reference_path_segment(source.value)
     let current = signature(env, selected, arguments, node)?
     let parameters = copy_indices(current.params)
     push(parameters, current.result)

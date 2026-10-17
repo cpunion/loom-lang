@@ -1,0 +1,65 @@
+import std.loom.source.Span
+
+record MemberScope {
+    locator Text
+    span Span
+}
+
+// An identified container owns checked API slots. These revision-local member
+// locators are not new durable IDs or permission to merge concurrent bodies.
+fn member_scopes(node Node, empty List[MemberScope]) Result[List[MemberScope], Text] {
+    if node.kind != NodeKind.Concept && node.kind != NodeKind.Impl {
+        return Result.Ok(empty)
+    }
+    let members = new[MemberScope]()
+    var index = 0
+    while index < length(node.children) {
+        let member = get(node.children, index)
+        if member.kind == NodeKind.Function || member.kind == NodeKind.AssociatedType {
+            let locator = concat(if member.kind == NodeKind.Function {
+                    "fn "
+                } else {
+                    "type "
+                }, concat(member.value, concat(" ", declaration_key(member)?)))
+            var previous = 0
+            while previous < length(members) {
+                if get(members, previous).locator == locator {
+                    return Result.Err("identified container has an ambiguous member locator")
+                }
+                previous = previous + 1
+            }
+            push(members, MemberScope {
+                    locator = locator
+                    span = member.span
+                })
+        }
+        index = index + 1
+    }
+    Result.Ok(members)
+}
+
+fn scoped_target(entry Entry, package Int, location Span) Result[BindingTarget, Text] {
+    var anchor = 0
+    var scope = ""
+    var index = 0
+    while index < length(entry.members) {
+        let member = get(entry.members, index)
+        if location.start >= member.span.start && location.end <= member.span.end {
+            if scope != "" {
+                return Result.Err("checked definition has an ambiguous member scope")
+            }
+            scope = member.locator
+            anchor = member.span.start - entry.start
+        }
+        index = index + 1
+    }
+    Result.Ok(BindingTarget {
+            id = entry.id
+            package = package
+            path = ""
+            scope = scope
+            anchor = anchor
+            start = location.start - entry.start
+            end = location.end - entry.start
+        })
+}

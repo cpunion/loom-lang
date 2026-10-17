@@ -66,6 +66,7 @@ record Entry {
     body Text
     header Text
     abstract_body Bool
+    members List[MemberScope]
 }
 
 record Indexed {
@@ -80,13 +81,10 @@ record BindingTarget {
     id Text
     package Int
     path Text
+    scope Text
+    anchor Int
     start Int
     end Int
-}
-
-fn supported(kind NodeKind) Bool {
-    kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum ||
-    kind == NodeKind.Refined || kind == NodeKind.Concept
 }
 
 fn source_leaf(path Text) Bool {
@@ -149,7 +147,25 @@ fn declaration_header(source Text, node Node) Text {
             index = index + 1
         }
     }
-    slice(source, node.span.start, node.span.end)
+    var position = node.span.start
+    var output = ""
+    var member = 0
+    while member < length(node.children) {
+        let declaration = get(node.children, member)
+        if declaration.kind == NodeKind.Function {
+            var part = 0
+            while part < length(declaration.children) {
+                let body = get(declaration.children, part)
+                if body.kind == NodeKind.Block {
+                    output = concat(output, concat(slice(source, position, body.span.start), "{}"))
+                    position = body.span.end
+                }
+                part = part + 1
+            }
+        }
+        member = member + 1
+    }
+    concat(output, slice(source, position, node.span.end))
 }
 
 fn indexed(revision Revision) Result[Indexed, Text] {
@@ -157,11 +173,12 @@ fn indexed(revision Revision) Result[Indexed, Text] {
         return Result.Err("revision needs a package identity")
     }
     let entries = new[Entry]()
+    let empty_members = new[MemberScope]()
     var index = 0
     while index < length(revision.identities) {
         let identity = get(revision.identities, index)
         if !sidecar_word(identity.id) || !source_leaf(identity.path) || !sidecar_word(identity.name) ||
-        !sidecar_word(identity.key) || !supported(identity.kind) {
+        !sidecar_word(identity.key) || !declaration_supported(identity.kind) {
             return Result.Err("invalid or unsupported declaration identity")
         }
         var previous = 0
@@ -200,10 +217,10 @@ fn indexed(revision Revision) Result[Indexed, Text] {
                 declaration = declaration + 1
                 continue
             }
-            if !supported(node.kind) {
+            if !declaration_supported(node.kind) {
                 return Result.Err(concat("unsupported top-level declaration in ", file.path))
             }
-            let binding = identity_index(revision.identities, file.path, node.kind, node.value,
+            let binding = identity_index(revision.identities, file.path, node.kind, declaration_label(node),
                 declaration_key(node)?)
             if binding < 0 {
                 return Result.Err(concat("missing or ambiguous stable identity in ", file.path))
@@ -216,13 +233,14 @@ fn indexed(revision Revision) Result[Indexed, Text] {
                     id = id
                     path = file.path
                     kind = node.kind
-                    name = node.value
+                    name = declaration_label(node)
                     key = get(revision.identities, binding).key
                     start = node.span.start
                     end = node.span.end
                     body = slice(file.text, node.span.start, node.span.end)
                     header = declaration_header(file.text, node)
                     abstract_body = abstract_reference_scope(node)
+                    members = member_scopes(node, empty_members)?
                 })
             declaration = declaration + 1
         }
@@ -245,7 +263,7 @@ fn reference_sites(entry Entry) Result[List[Int], Text] {
         }
     }
     if length(tree.children) != 1 || get(tree.children, 0).kind != entry.kind ||
-    get(tree.children, 0).value != entry.name {
+    declaration_label(get(tree.children, 0)) != entry.name {
         return Result.Err("retained declaration has no unique source tree")
     }
     let tokens = match lex(entry.body) {
@@ -292,6 +310,8 @@ fn binding_target(analysis Analysis, revision Indexed, directory Text, location 
                 id = ""
                 package = file.package
                 path = file.path
+                scope = ""
+                anchor = 0
                 start = location.span.start
                 end = location.span.end
             })
@@ -305,13 +325,7 @@ fn binding_target(analysis Analysis, revision Indexed, directory Text, location 
             join_path(directory, entry.path)
         }
         if file.path == path && location.span.start >= entry.start && location.span.end <= entry.end {
-            return Result.Ok(BindingTarget {
-                    id = entry.id
-                    package = file.package
-                    path = ""
-                    start = location.span.start - entry.start
-                    end = location.span.end - entry.start
-                })
+            return scoped_target(entry, file.package, location.span)
         }
         index = index + 1
     }
@@ -319,8 +333,9 @@ fn binding_target(analysis Analysis, revision Indexed, directory Text, location 
 }
 
 fn same_target(left BindingTarget, right BindingTarget) Bool {
-    left.id == right.id && left.package == right.package && left.path == right.path &&
-    left.start == right.start && left.end == right.end
+    left.id == right.id && left.package == right.package && left.path == right.path && left.scope == right.scope &&
+    left.start - left.anchor == right.start - right.anchor &&
+    left.end - left.anchor == right.end - right.anchor
 }
 
 fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body Bool) Result[Inspection, Text] {

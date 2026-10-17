@@ -93,7 +93,10 @@ fn kind(name Text) Result[NodeKind, Text] {
     if name == "concept" {
         return Result.Ok(NodeKind.Concept)
     }
-    Result.Err("identity kind must be fn, record, enum, type or concept")
+    if name == "impl" {
+        return Result.Ok(NodeKind.Impl)
+    }
+    Result.Err("identity kind must be fn, record, enum, type, concept or impl")
 }
 
 fn kind_name(value NodeKind) Text {
@@ -108,6 +111,9 @@ fn kind_name(value NodeKind) Text {
     }
     if value == NodeKind.Refined {
         return "type"
+    }
+    if value == NodeKind.Impl {
+        return "impl"
     }
     "concept"
 }

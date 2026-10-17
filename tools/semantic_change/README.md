@@ -26,7 +26,12 @@ Constrained aliases compare their pure helper calls and field owners too. They
 still require a pinned project context for the implicit std Result/Error closure;
 syntax coverage does not waive purity, invariants or required proofs. Concepts
 with associated declarations and checked `dyn` bindings use the same reference
-comparison. Anonymous impl declaration identities remain outside this trial.
+comparison. Anonymous impls use explicit IDs, a `-` locator label and a key for
+their concept, target and generic declarations. Moves compose with method-body
+edits. Member bindings normalize within the identified owner and checked member
+signature rather than sibling-body byte offsets; this does not synthesize durable
+member IDs or merge concurrent container-body edits. Interface/default-presence
+changes and ambiguous member slots still require resolution.
 
 The package/import graph stays fixed. Cross-package header/contract or deletion
 changes can combine with edits only in completely disconnected import components.

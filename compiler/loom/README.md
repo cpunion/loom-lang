@@ -442,6 +442,10 @@ and generic binders. Concept/impl headers and `dyn` associated bindings retain
 their own namespaces; a dynamic binding label navigates to its checked concept
 member, not a guessed witness implementation. Generated/static ranges remain
 explicitly unaccounted when their source bindings cannot be established.
+Impl targets and associated-type definitions can be queried with their declared
+symbolic parameters, without a concrete caller. Header checks validate the
+declared type arguments/requirements, not method-body proof success. Unexpanded
+pack arities are never guessed to manufacture a header instance.
 
 The binding-only `inspect_independent` retains the complete bindings and starts a fresh checker
 session; it does not remove erroneous declarations or reuse a failed check's

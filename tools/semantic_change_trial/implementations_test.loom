@@ -1,0 +1,80 @@
+fn implementation_identity_lifecycle(directory Text) Result[Text, Text] {
+    let api = """
+        concept Read {
+            fn read(self Self) Int
+        }
+        fn main() {
+            let value = 7
+            assert value.read() == 7
+        }
+        """
+    let integers = """
+        impl Read for Int {
+            fn read(self Int) Int {
+                self
+            }
+        }
+        """
+    let booleans = """
+        impl Read for Bool {
+            fn read(self Bool) Int {
+                discard self
+                0
+            }
+        }
+        """
+    discard write_text(path(directory, "api.loom"), api)
+    discard write_text(path(directory, "impl.loom"), concat(integers, concat("\n", booleans)))
+    discard initialize("sample", directory)?
+    let original = read(directory)?
+    let declarations = original.revision.identities
+    let tree = match std.loom.parser.parse(integers) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("invalid implementation fixture")
+        }
+    }
+    let key = semantic_change.declaration_key(get(tree.children, 0))?
+    var selected = -1
+    var index = 0
+    while index < length(declarations) {
+        let candidate = get(declarations, index)
+        if candidate.kind == NodeKind.Impl && candidate.key == key {
+            selected = index
+        }
+        index = index + 1
+    }
+    assert selected >= 0
+    let identity = get(declarations, selected)
+    assert identity.name == "-"
+    assert contains(scan(directory)?, concat("impl - impl.loom ", identity.key))
+    discard write_text(path(directory, "impl.loom"), booleans)
+    discard write_text(path(directory, "moved.loom"), integers)
+    assert match refresh(directory, [], false) {
+        Result.Err(message) => contains(message, "possible move")
+        Result.Ok(_) => false
+    }
+    assert text_at(path(directory, ".loom-ids")) == original.sidecar
+    discard refresh(directory, [Resolution {
+                id = identity.id
+                path = "moved.loom"
+                name = "-"
+                key = identity.key
+                deletion = false
+            }], false)?
+    let moved = read(directory)?
+    let retained = get(moved.revision.identities, identity_at(moved.revision.identities, identity.id))
+    assert retained.path == "moved.loom" && retained.key == identity.key
+    discard write_text(path(directory, "duplicate.loom"), integers)
+    assert match scan(directory) {
+        Result.Err(message) => contains(message, "duplicate or indistinguishable")
+        Result.Ok(_) => false
+    }
+    remove_module_fixture(directory)
+    Result.Ok("implementation identities retained")
+}
+
+test fn anonymous_implementations_keep_explicit_identity_through_scan_and_refresh() {
+    let directory = module_test_directory("implementation-identity")
+    assert successful(implementation_identity_lifecycle(directory)) == "implementation identities retained"
+}

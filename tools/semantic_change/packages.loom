@@ -117,13 +117,7 @@ fn package_target(analysis Analysis, scopes List[PackageScope], package Int, pat
                 let definition = get(scope.indexed.entries, entry)
                 if source.path == join_path(scope.directory, definition.path) &&
                 location.span.start >= definition.start && location.span.end <= definition.end {
-                    return Result.Ok(BindingTarget {
-                            id = definition.id
-                            package = source.package
-                            path = ""
-                            start = location.span.start - definition.start
-                            end = location.span.end - definition.start
-                        })
+                    return scoped_target(definition, source.package, location.span)
                 }
                 entry = entry + 1
             }
@@ -135,6 +129,8 @@ fn package_target(analysis Analysis, scopes List[PackageScope], package Int, pat
                             id = ""
                             package = source.package
                             path = source.path
+                            scope = ""
+                            anchor = 0
                             start = location.span.start
                             end = location.span.end
                         })
@@ -149,6 +145,8 @@ fn package_target(analysis Analysis, scopes List[PackageScope], package Int, pat
             id = ""
             package = source.package
             path = source.path
+            scope = ""
+            anchor = 0
             start = location.span.start
             end = location.span.end
         })
@@ -212,6 +210,7 @@ fn compare_packages(before Analysis, original List[PackageRevision], after Analy
     }
     // Packages not selected for edits are still consumers of the changed API.
     // Their text is pinned, but their selected overloads need not be unchanged.
+    let empty_members = new[MemberScope]()
     let owner = get(after.source.packages, after.source.root).instance
     index = 0
     while index < length(after.bindings.files) {
@@ -233,20 +232,21 @@ fn compare_packages(before Analysis, original List[PackageRevision], after Analy
             while declaration < length(tree.children) {
                 let node = get(tree.children, declaration)
                 if node.kind != NodeKind.Import {
-                    if !supported(node.kind) {
+                    if !declaration_supported(node.kind) {
                         return Result.Err("pinned consumer has an unsupported declaration; binding review required")
                     }
                     let entry = Entry {
                         id = ""
                         path = file.path
                         kind = node.kind
-                        name = node.value
+                        name = declaration_label(node)
                         key = ""
                         start = node.span.start
                         end = node.span.end
                         body = slice(file.text, node.span.start, node.span.end)
                         header = ""
                         abstract_body = abstract_reference_scope(node)
+                        members = member_scopes(node, empty_members)?
                     }
                     if package_entry_active(after, file.package, entry)? {
                         discard compare_package_entry(before, old_scopes, entry, after, new_scopes,

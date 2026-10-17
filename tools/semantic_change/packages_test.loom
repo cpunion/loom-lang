@@ -21,7 +21,7 @@ fn package_fixture(label Text, directory Text, files List[File]) PackageRevision
                         id = concat(label, concat(":", concat(node.value, key)))
                         path = file.path
                         kind = node.kind
-                        name = node.value
+                        name = declaration_label(node)
                         key = key
                     })
             }

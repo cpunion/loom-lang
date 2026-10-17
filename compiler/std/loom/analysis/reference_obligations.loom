@@ -14,7 +14,20 @@ pub record ReferenceObligations {
 // This declaration has generic/static bindings. Concepts also bind Self even
 // without explicit type parameters. No concrete witness/value is implied.
 pub fn abstract_reference_scope(node Node) Bool {
-    node.kind == NodeKind.Concept || !ordinary_query_owner(node)
+    if node.kind == NodeKind.Concept || !ordinary_query_owner(node) {
+        return true
+    }
+    if node.kind == NodeKind.Impl {
+        var index = 0
+        while index < length(node.children) {
+            let member = get(node.children, index)
+            if member.kind == NodeKind.Function && !ordinary_query_owner(member) {
+                return true
+            }
+            index = index + 1
+        }
+    }
+    false
 }
 
 fn reference_bound(parameters List[Text], name Text) Bool {
