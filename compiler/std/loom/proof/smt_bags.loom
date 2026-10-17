@@ -18,22 +18,41 @@ fn smt_bag(writer SmtWriter, array Text, size Linear) Result[Text, Text] {
 }
 
 fn bag_bound_scope(value Text, size Linear) Text {
-    let output = std.bytes.new()
-    var index = 0
-    var has_scope = false
-    while index < length(size.terms) {
-        let term = get(size.terms, index)
-        if term.id < 0 {
-            if !has_scope {
-                smt_append(output, "(forall (")
-                has_scope = true
+    bag_bound_scope(value, [size])
+}
+
+// Scope is a union of bound identities, not an arithmetic combination of
+// extents: opposite coefficients must not cancel a required binder.
+fn bag_bound_scope(value Text, sizes List[Linear]) Text {
+    let bindings = new[Int]()
+    var size = 0
+    while size < length(sizes) {
+        let terms = get(sizes, size).terms
+        var index = 0
+        while index < length(terms) {
+            let identity = get(terms, index).id
+            var found = false
+            var prior = 0
+            while prior < length(bindings) && !found {
+                found = get(bindings, prior) == identity
+                prior = prior + 1
             }
-            smt_append(output, concat("(n", concat(std.int.to_text(term.id), " Int)")))
+            if identity < 0 && !found {
+                push(bindings, identity)
+            }
+            index = index + 1
         }
-        index = index + 1
+        size = size + 1
     }
-    if !has_scope {
+    if length(bindings) == 0 {
         return value
+    }
+    let output = std.bytes.new()
+    smt_append(output, "(forall (")
+    var index = 0
+    while index < length(bindings) {
+        smt_append(output, concat("(n", concat(std.int.to_text(get(bindings, index)), " Int)")))
+        index = index + 1
     }
     smt_append(output, concat(") ", concat(value, ")")))
     std.bytes.to_text(output)

@@ -1,0 +1,39 @@
+// Equal old prefixes have equal finite histograms at every queried extent
+// inside that prefix. This transfers no fact about a changed length or tail.
+fn smt_prefix_bags(writer SmtWriter, frame SmtPrefix) Result[Bool, Text] {
+    if length(writer.counts) == 0 {
+        return Result.Ok(true)
+    }
+    var root = false
+    var index = 0
+    while index < length(writer.columns) && !root {
+        let column = get(writer.columns, index)
+        root = column.identity == frame.before && length(column.path) == 0 &&
+        column.domain == ScalarDomain.Integer
+        index = index + 1
+    }
+    if !root {
+        return Result.Ok(true)
+    }
+    let before = smt_array(writer, frame.before, [])
+    let after = smt_array(writer, frame.after, [])
+    let limit = smt_linear(writer, frame.size)?
+    index = 0
+    while index < length(writer.counts) {
+        discard smt_step(writer, 0)?
+        let size = get(writer.counts, index)
+        let extent = smt_linear(writer, size)?
+        let output = std.bytes.new()
+        smt_append(output, concat("(=> (and ", frame.reference))
+        smt_append(output, concat(" (<= 0 ", concat(extent, ") (<= ")))
+        smt_append(output, concat(extent, concat(" ", concat(limit, ")) (= "))))
+        smt_append(output, smt_bag(writer, before, size)?)
+        smt_append(output, " ")
+        smt_append(output, smt_bag(writer, after, size)?)
+        smt_append(output, "))")
+        let guarded = bag_bound_scope(std.bytes.to_text(output), [frame.size, size])
+        smt_append(writer.declarations, concat("(assert ", concat(guarded, ")\n")))
+        index = index + 1
+    }
+    Result.Ok(true)
+}

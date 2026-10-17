@@ -1,0 +1,21 @@
+import std.text.contains
+
+test fn prefix_histograms_require_the_frame_and_an_included_extent() {
+    let query = encoding([Obligation {
+                facts = [Predicate.ArrayPrefix(10, 11, variable(1))]
+                conclusion = Predicate.BagEqual(10, variable(2), 11, variable(2))
+            }])
+    assert contains(query, "(=> (and loom_prefix_0 (<= 0 (+ 0 (* 1 n2))) (<= (+ 0 (* 1 n2)) (+ 0 (* 1 n1)))) (= (loom_bag a10 (+ 0 (* 1 n2))) (loom_bag a11 (+ 0 (* 1 n2)))))")
+}
+
+test fn histogram_frame_scope_unions_binders_without_arithmetic_cancellation() {
+    assert bag_bound_scope("body", [variable(-7), scale(variable(-7), integer(-1)), variable(-8)]) ==
+    "(forall ((n-7 Int)(n-8 Int)) body)"
+    let query = encoding([Obligation {
+                facts = [Predicate.Forall(-7, constant(integer(0)), constant(integer(3)),
+                        [Predicate.ArrayPrefix(10, 11, variable(-7))])]
+                conclusion = Predicate.Forall(-8, constant(integer(0)), constant(integer(3)),
+                    [Predicate.BagEqual(10, variable(-8), 11, variable(-8))])
+            }])
+    assert contains(query, "(assert (forall ((n-7 Int)(n-8 Int)) (=> (and (loom_prefix_0 n-7) (<= 0 (+ 0 (* 1 n-8))) (<= (+ 0 (* 1 n-8)) (+ 0 (* 1 n-7))))")
+}

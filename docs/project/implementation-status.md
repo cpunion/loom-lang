@@ -175,7 +175,9 @@ supported theories and boundaries. The central rules are:
   fact grants an out-of-range access or transfers to a different storage version.
   Checked append preserves existing cells and immutable columns even through
   possible aliases, while only the exact receiver gets its precise new length
-  and tail. This frame does not restore observations lost to argument effects
+  and tail. Histogram equality transfers only for count extents proved inside
+  the preserved prefix, not for an unobserved tail. This frame does not restore
+  observations lost to argument effects
   or shared interference. Other unknown alias writes and opaque effects
   invalidate facts. Constrained writes must preserve the complete predicate after
   every actual store, not merely at normal return. Both sequence types support
