@@ -76,14 +76,22 @@ test fn tuple_capture_identity_does_not_observe_live_state_or_runtime_values() {
             }
         }
         """
-    rejects(concat(header, """
+    let observes = concat(header, """
         fn forward(comptime next fn() Int) {
             discard selected(pair(choose(next), 40)...)
         }
         fn main() {
             forward(counter())
         }
-        """))
+        """)
+    match checked(source_files(observes)) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "comptime cannot inspect a live captured environment"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
     rejects(concat(header, """
         fn main() {
             let runtime = counter()

@@ -100,6 +100,53 @@ fn main() {
 }
 
 #[test]
+fn expanded_static_callbacks_keep_direct_calls_and_shared_environments() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(
+        package.path().join("main.loom"),
+        r#"
+fn values() (List[Int], fn() Int) {
+    let state = [1]
+    (state, fn() Int {
+        state[0]
+    })
+}
+fn apply(state List[Int], comptime read fn() Int) Int {
+    state[0] = 42
+    read()
+}
+fn main() {
+    assert apply(values()...) == 42
+}
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(package.path(), "static-capture");
+    let ir = package.path().join("static-capture.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package.path().to_str().unwrap()])
+                .arg("--output")
+                .arg(&executable)
+                .arg("--emit-ir")
+                .arg(&ir)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+        let ir = fs::read_to_string(&ir).unwrap();
+        assert!(!ir.contains("call i64 %"), "static target became indirect");
+        assert!(!ir.contains("loom_task_"));
+    }
+}
+
+#[test]
 fn float_static_values_leave_only_native_runtime_parameters() {
     let package = tempfile::tempdir().unwrap();
     fs::write(

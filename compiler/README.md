@@ -879,8 +879,11 @@ arguments. Other tuple expressions use one saved snapshot, prepared at the
 original operand position independently of which fields survive specialization.
 Any field can fill a comptime parameter if it can be independently evaluated at
 compile time, including the first field or a tuple with only static fields.
-Runtime-bound tuples, captured function fields and Task-producing sources cannot
-use this path; supply those static arguments explicitly.
+Captured function fields keep the original saved environment, including aliases
+with other fields and updates to a forwarded environment. Identity selection
+cannot inspect that environment's live state. Runtime-bound tuples and
+Task-producing sources cannot use this path; supply those static arguments
+explicitly.
 Lists have runtime-sized contents and cannot expand into a fixed
 call signature. Empty tuple expressions still evaluate
 once at their original operand position, including in zero-argument calls and
