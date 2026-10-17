@@ -12,6 +12,12 @@ pub enum MemberQuery {
     Qualified
 }
 
+record MemberScope {
+    context Context
+    // Locals below this boundary belong to an enclosing runtime/staging scope.
+    boundary Int
+}
+
 fn query_inside(node Node, offset Int) Bool {
     node.span.start <= offset && offset < node.span.end
 }
@@ -19,24 +25,42 @@ fn query_inside(node Node, offset Int) Bool {
 // Follow only the lexical path to the query. Completed preceding statements use
 // the ordinary checker; an incomplete current expression is not fabricated into
 // a successful body. No query flag or callback enters ordinary expression checks.
-fn member_context(context Context, node Node, offset Int) Result[Context, Failure] {
+fn member_expression(scope MemberScope, node Node, expected Int) Result[Expr, Failure] {
+    let value = expr(scope.context, node, expected)?
+    if scope.boundary >= 0 {
+        discard isolated(scope.context, node, value, scope.boundary)?
+    }
+    Result.Ok(value)
+}
+
+fn member_context(scope MemberScope, node Node, offset Int) Result[MemberScope, Failure] {
+    let context = scope.context
     if node.kind == NodeKind.Block {
         var current = context
         var index = 0
         while index < length(node.children) {
             let source = child(node, index)
             if query_inside(source, offset) {
-                return member_context(current, source, offset)
+                return member_context(MemberScope {
+                        context = current
+                        boundary = scope.boundary
+                    }, source, offset)
             }
             if source.span.end <= offset {
                 if statement_kind(source.kind) {
                     let checked = statement(current, source, context.head)?
+                    if scope.boundary >= 0 {
+                        discard isolated(current, source, checked.expression, scope.boundary)?
+                    }
                     current = checked.context
                     if !checked.expression.falls {
                         return Result.Err(error(context, source, "completion follows an unconditional exit"))
                     }
                 } else {
-                    let checked = expr(current, source, 0)?
+                    let checked = member_expression(MemberScope {
+                            context = current
+                            boundary = scope.boundary
+                        }, source, 0)?
                     if !checked.falls {
                         return Result.Err(error(context, source, "completion follows an unconditional exit"))
                     }
@@ -44,55 +68,97 @@ fn member_context(context Context, node Node, offset Int) Result[Context, Failur
             }
             index = index + 1
         }
-        return Result.Ok(current)
+        return Result.Ok(MemberScope {
+                context = current
+                boundary = scope.boundary
+            })
     }
     if node.kind == NodeKind.If || node.kind == NodeKind.While {
         var branch = 1
         while branch < length(node.children) {
             if query_inside(child(node, branch), offset) {
-                let condition = expr(context, child(node, 0), 2)?
+                let condition = member_expression(scope, child(node, 0), 2)?
                 let selected = assuming(context, condition, branch == 1, 0)
-                return member_context(if node.kind == NodeKind.While {
-                        loop_context(selected, context.cleanup_head)
-                    } else {
-                        selected
+                return member_context(MemberScope {
+                        context = if node.kind == NodeKind.While {
+                            loop_context(selected, context.cleanup_head)
+                        } else {
+                            selected
+                        }
+                        boundary = scope.boundary
                     }, child(node, branch), offset)
             }
             branch = branch + 1
         }
     }
     if node.kind == NodeKind.Match && !query_inside(child(node, 0), offset) {
-        let value = expr(context, child(node, 0), -1)?
+        let value = member_expression(scope, child(node, 0), -1)?
         var index = 1
         while index < length(node.children) {
             let arm = child(node, index)
             if query_inside(arm, offset) && !query_inside(child(arm, 0), offset) {
                 if nested_pattern(child(arm, 0)) || match_guarded(arm) {
-                    let scope = pattern_scope(context, child(arm, 0), value.ty, match_body(arm), context.head, 0,
+                    let pattern = pattern_scope(context, child(arm, 0), value.ty, match_body(arm), context.head, 0,
                         resource_borrowed(context, value)?)?
-                    var selected = scope.context
+                    var selected = pattern.context
                     if match_guarded(arm) {
                         let guard = child(arm, 1)
                         if query_inside(guard, offset) {
-                            return member_context(selected, guard, offset)
+                            return member_context(MemberScope {
+                                    context = selected
+                                    boundary = scope.boundary
+                                }, guard, offset)
                         }
-                        selected = assuming(selected, expr(selected, guard, 2)?, true, 0)
+                        selected = assuming(selected,
+                            member_expression(MemberScope {
+                                    context = selected
+                                    boundary = scope.boundary
+                                }, guard, 2)?, true, 0)
                     }
-                    return member_context(selected, match_body(arm), offset)
+                    return member_context(MemberScope {
+                            context = selected
+                            boundary = scope.boundary
+                        }, match_body(arm), offset)
                 }
-                let scope = match_scope(context, value, arm)?
-                return member_context(scope.context, match_body(arm), offset)
+                let selected = match_scope(context, value, arm)?
+                return member_context(MemberScope {
+                        context = selected.context
+                        boundary = scope.boundary
+                    }, match_body(arm), offset)
             }
             index = index + 1
         }
     }
     if node.kind == NodeKind.Defer {
-        return member_context(loop_context(context, -2), child(node, 0), offset)
+        return member_context(MemberScope {
+                context = loop_context(context, -2)
+                boundary = scope.boundary
+            }, child(node, 0), offset)
     }
     if node.kind == NodeKind.Comptime {
         let source = child(node, 0)
         if source.kind != NodeKind.If {
-            return Result.Err(error(context, node, "completion inside a comptime execution block is not yet supported"))
+            let stage = staging(context, node)?
+            let validation = Context {
+                lexical = stage.lexical
+                env = stage.env
+                signature = stage.signature
+                arguments = stage.arguments
+                constants = stage.constants
+                locals = stage.locals
+                bindings = stage.bindings
+                head = stage.head
+                cleanups = stage.cleanups
+                cleanup_head = stage.cleanup_head
+                loop_boundary = stage.loop_boundary
+                facts = stage.facts
+                fact_head = stage.fact_head
+                emit = false
+            }
+            return member_context(MemberScope {
+                    context = validation
+                    boundary = length(context.locals)
+                }, source, offset)
         }
         return match guard_condition(context, node, child(source, 0), 0)? {
             GuardDecision.Pending => Result.Err(error(context, node, "completion needs a determined compile-time branch"))
@@ -105,7 +171,10 @@ fn member_context(context Context, node Node, offset Int) Result[Context, Failur
                 if index >= length(source.children) || !query_inside(child(source, index), offset) {
                     Result.Err(error(context, node, "completion is outside the selected compile-time branch"))
                 } else {
-                    member_context(chosen, child(source, index), offset)
+                    member_context(MemberScope {
+                            context = chosen
+                            boundary = scope.boundary
+                        }, child(source, index), offset)
                 }
             }
         }
@@ -114,15 +183,25 @@ fn member_context(context Context, node Node, offset Int) Result[Context, Failur
     while index < length(node.children) {
         let child = child(node, index)
         if query_inside(child, offset) {
-            return member_context(context, child, offset)
+            return member_context(scope, child, offset)
         }
         index = index + 1
     }
-    Result.Ok(context)
+    Result.Ok(scope)
 }
 
 fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCandidate], Failure] {
     let env = context.env
+    let labels = new[Text]()
+    if prototype(env, context.signature.symbol) {
+        push(labels, "Self")
+    }
+    let parameters = type_parameters(env, context.signature.symbol)
+    var parameter = 0
+    while parameter < length(parameters) {
+        push(labels, get(parameters, parameter).value)
+        parameter = parameter + 1
+    }
     let original = get(env.types, value.ty)
     let shape = if original.kind == TypeKind.Refined && get(env.types, base_type(env, value.ty)).kind == TypeKind.Record {
         get(env.types, base_type(env, value.ty))
@@ -140,7 +219,7 @@ fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCand
                 if starts_with(field.name, prefix) {
                     push(hints, MemberCandidate {
                             name = field.name
-                            ty = type_name(env.source, env.types, env.interfaces, field.ty)
+                            ty = type_name(env.source, env.types, env.interfaces, field.ty, labels)
                             method = -1
                         })
                 }
@@ -155,7 +234,7 @@ fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCand
             if starts_with(name, prefix) {
                 push(hints, MemberCandidate {
                         name = name
-                        ty = type_name(env.source, env.types, env.interfaces, get(shape.arguments, index))
+                        ty = type_name(env.source, env.types, env.interfaces, get(shape.arguments, index), labels)
                         method = -1
                     })
             }
@@ -165,7 +244,7 @@ fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCand
     if shape.kind == TypeKind.Task && has(symbol(env, context.signature.symbol).node, NodeKind.Async) && starts_with("await", prefix) {
         push(hints, MemberCandidate {
                 name = "await"
-                ty = type_name(env.source, env.types, env.interfaces, get(shape.arguments, 0))
+                ty = type_name(env.source, env.types, env.interfaces, get(shape.arguments, 0), labels)
                 method = -2
             })
     }
@@ -236,8 +315,12 @@ pub fn member_candidates(source std.loom.binding.Program, file Int, offset Int, 
             if !query_inside(body, offset) {
                 return Result.Ok(MemberQuery.Members(new[MemberCandidate]()))
             }
-            let context = member_context(scope.context, body, offset)?
-            let value = match expr(context, receiver, -1) {
+            let selected = member_context(MemberScope {
+                    context = scope.context
+                    boundary = -1
+                }, body, offset)?
+            let context = selected.context
+            let value = match member_expression(selected, receiver, -1) {
                 Result.Ok(value) => value
                 Result.Err(failed) => {
                     // A failed local receiver never falls back to a namespace.

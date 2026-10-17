@@ -132,6 +132,43 @@ fn main() {
   }
 }
 
+async function comptimeBlockCompletionSmoke(executable, stdRoot) {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'loom-comptime-completion-'));
+  const folder = await fs.realpath(temporary);
+  const file = path.join(folder, 'main.loom'), uri = URI.file(file).toString();
+  const client = await session({ executable, stdRoot }, folder);
+  const source = `record Receipt {
+    amount Int
+}
+fn main() {
+    let value = comptime {
+        let receipt = Receipt { amount = 42 }
+        receipt.amRest`;
+  try {
+    await client.open(file, source);
+    assert.ok((await client.wait(file, 1)).diagnostics.length > 0);
+    const document = TextDocument.create(uri, 'loom', 1, source);
+    const completion = await client.rpc.sendRequest('textDocument/completion', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('amRest') + 2),
+    });
+    assert.deepEqual(completion.items.map(item => item.label), ['amount']);
+    assert.equal(completion.items[0].kind, 5);
+    assert.equal(document.getText(completion.items[0].textEdit.range), 'amRest');
+    assert.ok(client.diagnostics.filter(report => report.uri === uri).at(-1).diagnostics.length > 0);
+    const accepted = TextDocument.applyEdits(document, [completion.items[0].textEdit]) + `
+    }
+    assert value == 42
+}
+`;
+    await client.change(file, accepted, 2);
+    assert.deepEqual((await client.wait(file, 2)).diagnostics, []);
+    await assert.rejects(fs.access(file), { code: 'ENOENT' });
+  } finally {
+    await client.close();
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+
 async function genericHeaderSmoke(executable, stdRoot) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'loom-generic-header-'));
   const folder = await fs.realpath(temporary);
@@ -878,6 +915,7 @@ fn main() {
     await require('./binding-rename').bindingRenameSmoke(executable, stdRoot);
     await buildInputSmoke(executable, stdRoot);
     await buildOptionSmoke(executable, stdRoot);
+    await comptimeBlockCompletionSmoke(executable, stdRoot);
     await genericHeaderSmoke(executable, stdRoot);
     await require('./resident').residentSmoke(executable, stdRoot);
     console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local and private cross-file rename, name/member/qualified/import completion, verified qualified and bare-name auto-import actions, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');

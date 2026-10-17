@@ -70,6 +70,8 @@ bindings with lexical type labels, without inventing runtime instances.
 Nested closures retain their parameters, captures and enclosing type labels too.
 Dependent type values, unexpanded packs and broader body recovery remain limited.
 Recovered queries provide neither build success nor proof evidence.
+Member completion inside `comptime` execution blocks uses staged prefix checking
+and the ordinary runtime-capture boundary; it does not evaluate an unfinished body.
 Contract navigation lazily checks source clauses in a separate query snapshot,
 retaining parameter, field, helper and captured-binding locations lost during
 proof normalization. Concrete generic observations share this source view;
