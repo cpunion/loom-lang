@@ -157,6 +157,21 @@ fn named_public_revisions(name Text, moved Bool, changed Bool) List[PackageRevis
             amount Int
         }
 
+        pub enum ITEMChoice {
+            Some(ITEM)
+            Empty
+        }
+
+        pub concept ITEMMeasure {
+            fn measure(self Self, other ITEM) Int
+        }
+
+        impl ITEMMeasure for ITEM {
+            fn measure(self ITEM, other ITEM) Int {
+                self.amount + other.amount
+            }
+        }
+
         pub fn copy(value ITEM) ITEM {
             ITEM { amount = value.amount + DELTA }
         }
@@ -186,10 +201,16 @@ fn named_public_revisions(name Text, moved Bool, changed Bool) List[PackageRevis
         let label = get(labels, index)
         let source = replace(replace("""
             import sample.lib.ITEM
+            import sample.lib.ITEMChoice
+            import sample.lib.ITEMMeasure
             import sample.lib.copy
 
             pub fn entry(value ITEM) Int {
-                copy(value).amount + EXTRA
+                let selected ITEMChoice = ITEMChoice.Some(copy(value))
+                match selected {
+                    ITEMChoice.Some(item) => item.measure(value) + EXTRA
+                    ITEMChoice.Empty => 0
+                }
             }
             """, "ITEM", name), "EXTRA", if changed && label == "app" {
                 "10"
@@ -224,7 +245,19 @@ fn named_public_revisions(name Text, moved Bool, changed Bool) List[PackageRevis
                     id = concat(selected.revision.package_name, concat(":", if item.kind == NodeKind.Record {
                                 "type"
                             } else {
-                                item.name
+                                if item.kind == NodeKind.Enum {
+                                    "enum"
+                                } else {
+                                    if item.kind == NodeKind.Concept {
+                                        "concept"
+                                    } else {
+                                        if item.kind == NodeKind.Impl {
+                                            "impl"
+                                        } else {
+                                            item.name
+                                        }
+                                    }
+                                }
                             }))
                     ..item
                 })
@@ -253,8 +286,10 @@ test fn named_renames_update_public_type_imports_signatures_and_private_tests() 
         let library = get(merged, 0).revision
         assert get(library.files, 0).text == ""
         assert contains(get(library.files, 1).text, "pub record Product")
+        assert contains(get(library.files, 1).text, "pub enum ProductChoice")
+        assert contains(get(library.files, 1).text, "pub concept ProductMeasure")
         assert contains(get(library.files, 1).text, "value.amount + 1")
-        assert contains(get(get(merged, 1).revision.files, 0).text, "copy(value).amount + 10")
+        assert contains(get(get(merged, 1).revision.files, 0).text, "item.measure(value) + 10")
         var package = 1
         while package < length(merged) {
             let revision = get(merged, package).revision
