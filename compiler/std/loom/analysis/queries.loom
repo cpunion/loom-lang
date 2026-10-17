@@ -8,6 +8,7 @@ import std.loom.ast.has
 import std.option.Option
 import std.loom.checking.CheckedQuery
 import std.loom.checking.SignatureHeader
+import std.loom.checking.TypeHeader
 import std.loom.checking.check_query
 import std.loom.binding.Program
 import std.loom.checking.type_name
@@ -827,6 +828,7 @@ fn checked_inspection(analysis Analysis, file Int, offset Int, tokens List[Token
         interfaces = analysis.program.interfaces
         functions = analysis.program.functions
         headers = new[SignatureHeader]()
+        type_headers = new[TypeHeader]()
         declarations = if length(analysis.declarations) == 0 {
             new[std.loom.checking.DeclarationReference]()
         } else {
@@ -905,6 +907,16 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int, tokens List[Token])
         let declaration = get(analysis.bindings.symbols, header.symbol)
         if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
             inspect_signature_header(analysis, report, header.symbol, header.params, header.output, target, true)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(analysis.type_headers) {
+        let header = get(analysis.type_headers, index)
+        let declaration = get(analysis.bindings.symbols, header.symbol)
+        if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
+            inspect_header_parameter(analysis, report, header.symbol, target)
+            inspect_header_type(analysis, report, target, header.symbol, header.node, header.ty, 0)
         }
         index = index + 1
     }

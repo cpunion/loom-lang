@@ -237,9 +237,8 @@ fn inspect_function_header(analysis CheckedQuery, report Inspection, function Fu
     inspect_signature_header(analysis, report, function.symbol, function.params, function.result, target, false)
 }
 
-fn inspect_signature_header(analysis CheckedQuery, report Inspection, symbol_id Int,
-    params List[Int], output Int, target Query, original Bool) {
-    if original && target.node.kind == NodeKind.Name {
+fn inspect_header_parameter(analysis CheckedQuery, report Inspection, symbol_id Int, target Query) {
+    if target.node.kind == NodeKind.Name {
         let parameters = header_parameters(analysis, symbol_id)
         var index = 0
         while index < length(parameters) {
@@ -251,6 +250,13 @@ fn inspect_signature_header(analysis CheckedQuery, report Inspection, symbol_id 
             }
             index = index + 1
         }
+    }
+}
+
+fn inspect_signature_header(analysis CheckedQuery, report Inspection, symbol_id Int,
+    params List[Int], output Int, target Query, original Bool) {
+    if original {
+        inspect_header_parameter(analysis, report, symbol_id, target)
     }
     if target.node.kind != NodeKind.Type && target.node.kind != NodeKind.Parameter {
         return

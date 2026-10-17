@@ -35,6 +35,40 @@ test fn implementation_header_queries_do_not_accept_invalid_type_arguments() {
     }
 }
 
+test fn declaration_type_headers_keep_lexical_parameters_in_compound_types() {
+    let source = """
+        record Item {
+            count Int
+        }
+        concept Read {
+            type Value
+            fn read(self Self) Int
+        }
+        record Box[T] {
+            value T
+        }
+        impl[Item] Read for Box[Item] {
+            type Value = (Item, List[Item])
+            fn read(self Self) Int {
+                discard self
+                7
+            }
+        }
+        """
+    let analysis = accepted(input(source))
+    let parameter = query_offset(source, "Item] Read")
+    let sites = ["Item] Read", "Item] {\n    type", "Item, List", "Item])\n"]
+    var index = 0
+    while index < length(sites) {
+        let fragment = get(sites, index)
+        let found = cached_inspection(analysis, source, fragment)
+        only_type(found, "Item")
+        only_definition(found, parameter, parameter + 4)
+        only_definition(inspection(analysis, source, fragment), parameter, parameter + 4)
+        index = index + 1
+    }
+}
+
 test fn declaration_type_headers_reuse_one_scope_without_publishing_body_evidence() {
     let source = """
         concept Read {

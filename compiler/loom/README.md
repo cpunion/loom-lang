@@ -448,6 +448,9 @@ declared type arguments/requirements, not method-body proof success. Unexpanded
 pack arities are never guessed to manufacture a header instance.
 These declarations share the snapshot-local single-scope query cache; selecting
 a method body replaces the header view instead of inheriting its evidence.
+Their checked source types use the same structural projection as function
+signatures, including lexical parameters inside compound types. Ordinary type
+resolution does not collect this query-only metadata.
 
 The binding-only `inspect_independent` retains the complete bindings and starts a fresh checker
 session; it does not remove erroneous declarations or reuse a failed check's
