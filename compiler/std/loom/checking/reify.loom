@@ -27,9 +27,31 @@ record ReifyObject {
 record Reification {
     context Context
     node Node
+    static_environments Bool
     objects List[ReifyObject]
     by_id List[Int]
     budget List[Int]
+}
+
+// Opaque tokens name a static parameter slot, never a heap address or a cached
+// local index. Resolve that slot in this invocation's checking basis so cached
+// identity computations cannot reuse another invocation's environment local.
+fn reify_environment(state Reification, value Value) Result[Int, Failure] {
+    let context = state.context
+    if !state.static_environments {
+        return Result.Err(error(context, state.node, "comptime cannot materialize a live captured environment"))
+    }
+    let constant = value.number
+    if constant >= 0 && constant < length(context.constants) {
+        let known = get(context.constants, constant)
+        if known.known && known.storage >= 0 && static_environment_type(context.env, known) == value.ty {
+            let local = static_environment_local(context, constant)
+            if local >= 0 && local < length(context.locals) && get(context.locals, local).ty == value.ty {
+                return Result.Ok(local)
+            }
+        }
+    }
+    Result.Err(error(context, state.node, "comptime captured environment is unavailable in this static call"))
 }
 
 fn reify_spend(state Reification, index Int, amount Int) Result[Bool, Failure] {
@@ -62,7 +84,8 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
     }
     let shared = kind == TypeKind.List || kind == TypeKind.Bytes || kind == TypeKind.Frame
     if kind == TypeKind.Frame && value.text == "opaque environment" {
-        return Result.Err(error(state.context, state.node, "comptime cannot materialize a live captured environment"))
+        discard reify_environment(state, value)?
+        return Result.Ok(true)
     }
     if shared {
         if value.number <= 0 || value.number > 100000 {
@@ -128,6 +151,9 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
     discard reify_spend(state, 0, 2)?
     let node = state.node
     let kind = get(state.context.env.types, value.ty).kind
+    if kind == TypeKind.Frame && value.text == "opaque environment" {
+        return Result.Ok(atom(ExprKind.Local, value.ty, node, reify_environment(state, value)?))
+    }
     if kind == TypeKind.List || kind == TypeKind.Bytes || kind == TypeKind.Frame {
         let object = get(state.objects, get(state.by_id, value.number))
         return Result.Ok(atom(ExprKind.Local, value.ty, node, object.local))
@@ -273,12 +299,17 @@ fn reify_function(context Context, node Node, ty Int, source Int, arguments List
 }
 
 fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
+    materialize(context, node, value, false)
+}
+
+fn materialize(context Context, node Node, value Value, static_environments Bool) Result[Expr, Failure] {
     let budget = new[Int]()
     push(budget, 100000)
     push(budget, 16777216)
     let state = Reification {
         context = context
         node = node
+        static_environments = static_environments
         objects = new[ReifyObject]()
         by_id = new[Int]()
         budget = budget

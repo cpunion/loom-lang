@@ -70,7 +70,7 @@ fn static_identity_prefix(stage Context, node Node) List[Expr] {
                         resource_payload = binding.resource_payload
                     })
                 let opaque = expression(ExprKind.FrameNew, ty, node,
-                    "opaque environment", -1, new[Expr](), true)
+                    "opaque environment", binding.constant, new[Expr](), true)
                 push(prefix, expression(ExprKind.Let, 0, node, "", local, expressions(opaque), true))
             }
         }

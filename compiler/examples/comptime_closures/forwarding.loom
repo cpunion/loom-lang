@@ -2,6 +2,22 @@ fn identity[T](value T) T {
     value
 }
 
+fn choose[T](first Bool, left T, right T) T {
+    if first {
+        left
+    } else {
+        right
+    }
+}
+
+fn transported_pair(comptime left fn() Int, comptime right fn() Int) {
+    assert left() == 1
+    assert right() == 101
+    assert step(choose(false, left, right)) == 102
+    assert step(choose(true, left, right)) == 2
+    assert right() == 103
+}
+
 fn transported(comptime next fn() Int) {
     assert next() == 1
     assert step(identity(next)) == 2
@@ -13,7 +29,9 @@ fn transported(comptime next fn() Int) {
 
 fn transported_captures() {
     transported(counter(0))
+    transported_pair(counter(0), counter(100))
     comptime {
         transported(counter(0))
+        transported_pair(counter(0), counter(100))
     }
 }
