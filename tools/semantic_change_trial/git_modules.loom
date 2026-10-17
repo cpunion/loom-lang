@@ -40,14 +40,14 @@ fn git_entry_before(left GitEntry, right GitEntry) Bool {
 // One tree listing serves both package and module inputs. Blobs are read by
 // object ID, so moving a ref cannot mix sources from different commits.
 fn git_tree(executable Text, repository Text, directory Text, revision Text) Result[GitTree, Text] {
-    if directory == "" || starts_with(directory, "/") || contains(directory, "..") ||
-    contains(directory, "\\") || ends_with(directory, "/") {
-        return Result.Err("Git snapshot path must be a relative directory")
-    }
     git_commit_tree(executable, repository, directory, git_commit(executable, repository, revision)?)
 }
 
 fn git_commit_tree(executable Text, repository Text, directory Text, commit Text) Result[GitTree, Text] {
+    if directory == "" || starts_with(directory, "/") || contains(directory, "..") ||
+    contains(directory, "\\") || ends_with(directory, "/") {
+        return Result.Err("Git snapshot path must be a relative directory")
+    }
     let raw = git_bytes(executable, repository, ["ls-tree", "-r", "-z", commit, "--", directory])?
     let text = match decode_utf8(raw) {
         Result.Ok(value) => value
@@ -151,6 +151,12 @@ fn read_git_module(executable Text, repository Text, directory Text, revision Te
     context_directory Text) Result[ModuleSnapshot, Text] {
     let tree = git_tree(executable, repository, directory, revision)?
     read_git_module_tree(executable, repository, tree, context_directory)
+}
+
+fn read_git_module_commit(executable Text, repository Text, directory Text, commit Text,
+    context_directory Text) Result[ModuleSnapshot, Text] {
+    read_git_module_tree(executable, repository,
+        git_commit_tree(executable, repository, directory, commit)?, context_directory)
 }
 
 fn read_git_module_tree(executable Text, repository Text, tree GitTree, context_directory Text) Result[ModuleSnapshot, Text] {
@@ -265,20 +271,22 @@ fn git_module_context(base ModuleSnapshot, standard Text) Result[Context, Text] 
 
 fn preview_git_module(directory Text, standard Text, executable Text, repository Text,
     module Text, base Text, left Text, right Text) Result[Text, Text] {
-    let original = read_git_module(executable, repository, module, base, directory)?
+    let basis = git_basis(executable, repository, base, left, right)?
+    let original = read_git_module_commit(executable, repository, module, basis.base, directory)?
     let context = git_module_context(original, standard)?
     Result.Ok(show_module(review_module(original,
-                read_git_module(executable, repository, module, left, directory)?,
-                read_git_module(executable, repository, module, right, directory)?, context)?))
+                read_git_module_commit(executable, repository, module, basis.left, directory)?,
+                read_git_module_commit(executable, repository, module, basis.right, directory)?, context)?))
 }
 
 fn apply_git_module(expected Text, destination Text, directory Text, standard Text,
     executable Text, repository Text, module Text, base Text, left Text, right Text) Result[Text, Text] {
     discard checked_directory_path(destination, false)?
     discard vacant(destination)?
-    let original = read_git_module(executable, repository, module, base, directory)?
-    let a = read_git_module(executable, repository, module, left, directory)?
-    let b = read_git_module(executable, repository, module, right, directory)?
+    let basis = git_basis(executable, repository, base, left, right)?
+    let original = read_git_module_commit(executable, repository, module, basis.base, directory)?
+    let a = read_git_module_commit(executable, repository, module, basis.left, directory)?
+    let b = read_git_module_commit(executable, repository, module, basis.right, directory)?
     let context = git_module_context(original, standard)?
     let value = review_module(original, a, b, context)?
     let stage = create_module_stage(expected, destination, value)?
@@ -294,10 +302,11 @@ fn publish_git_module(stage Text, destination Text, value ModuleReview, base Mod
     left ModuleSnapshot, right ModuleSnapshot, context Context, standard Text,
     executable Text, repository Text, module Text, base_ref Text, left_ref Text, right_ref Text) Result[Text, Text] {
     discard write_module(stage, value)?
-    let fresh = read_git_module(executable, repository, module, base_ref, base.directory)?
+    let basis = git_basis(executable, repository, base_ref, left_ref, right_ref)?
+    let fresh = read_git_module_commit(executable, repository, module, basis.base, base.directory)?
     if module_stamp(base) != module_stamp(fresh) ||
-    module_stamp(left) != module_stamp(read_git_module(executable, repository, module, left_ref, base.directory)?) ||
-    module_stamp(right) != module_stamp(read_git_module(executable, repository, module, right_ref, base.directory)?) ||
+    module_stamp(left) != module_stamp(read_git_module_commit(executable, repository, module, basis.left, base.directory)?) ||
+    module_stamp(right) != module_stamp(read_git_module_commit(executable, repository, module, basis.right, base.directory)?) ||
     context.stamp != git_module_context(fresh, standard)?.stamp {
         return Result.Err("Git module inputs or pinned project context changed before publication")
     }

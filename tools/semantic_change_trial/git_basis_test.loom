@@ -1,0 +1,82 @@
+fn basis_fixture_commit(repository Text, label Text, parents List[Text]) Result[Text, Text] {
+    let tree = trim(git("git", repository, ["write-tree"])?)
+    let operation = ["-c", "user.name=Loom test", "-c", "user.email=loom@example.invalid",
+        "-c", "commit.gpgsign=false", "commit-tree", tree, "-m", label]
+    var index = 0
+    while index < length(parents) {
+        push(operation, "-p")
+        push(operation, get(parents, index))
+        index = index + 1
+    }
+    Result.Ok(trim(git("git", repository, operation)?))
+}
+
+fn git_basis_lifecycle(repository Text) Result[Text, Text] {
+    discard git("git", repository, ["init", "--template="])?
+    let ancestor = basis_fixture_commit(repository, "older common ancestor", new[Text]())?
+    let base = basis_fixture_commit(repository, "actual common baseline", [ancestor])?
+    let left = basis_fixture_commit(repository, "left", [base])?
+    let right = basis_fixture_commit(repository, "right", [base])?
+    let pinned = git_basis("git", repository, base, left, right)?
+    assert pinned.base == base && pinned.left == left && pinned.right == right
+    let swapped = git_basis("git", repository, base, right, left)?
+    assert swapped.base == base
+    assert git_basis("git", repository, left, left, left)?.base == left
+    // Equal source bytes do not make an older ancestor the correct baseline.
+    assert match git_basis("git", repository, ancestor, left, right) {
+        Result.Err(message) => contains(message, "unique merge base")
+        Result.Ok(_) => false
+    }
+    assert match preview_git("git", repository, ".", left, left, right) {
+        Result.Err(message) => contains(message, "unique merge base")
+        Result.Ok(_) => false
+    }
+    assert match preview_git_context(repository, "compiler/std", "git", repository, ".", ancestor, left, right) {
+        Result.Err(message) => contains(message, "unique merge base")
+        Result.Ok(_) => false
+    }
+    assert match preview_git_module(repository, "compiler/std", "git", repository, ".", ancestor, left, right) {
+        Result.Err(message) => contains(message, "unique merge base")
+        Result.Ok(_) => false
+    }
+    let request = GitAutoRequest {
+        scratch = repository
+        standard = "compiler/std"
+        cache = repository
+        executable = "git"
+        repository = repository
+        directory = "."
+        base = ancestor
+        left = left
+        right = right
+    }
+    assert match automatic_git_module(request, false, "") {
+        Result.Err(message) => contains(message, "unique merge base")
+        Result.Ok(_) => false
+    }
+    let unrelated = basis_fixture_commit(repository, "unrelated root", new[Text]())?
+    assert match git_basis("git", repository, base, left, unrelated) {
+        Result.Err(message) => contains(message, "no established common baseline")
+        Result.Ok(_) => false
+    }
+    let a = basis_fixture_commit(repository, "left merge", [left, right])?
+    let b = basis_fixture_commit(repository, "right merge", [right, left])?
+    assert match git_basis("git", repository, base, a, b) {
+        Result.Err(message) => contains(message, "multiple common baselines")
+        Result.Ok(_) => false
+    }
+    discard std.file.write_text(path(repository, ".git/shallow"), concat(left, "\n"))
+    assert match git_basis("git", repository, base, left, right) {
+        Result.Err(message) => contains(message, "complete local Git ancestry")
+        Result.Ok(_) => false
+    }
+    Result.Ok("Git merge bases checked without guessing or fetching")
+}
+
+test fn git_merges_require_the_unique_actual_baseline_and_complete_local_history() {
+    let repository = module_test_directory("git-basis")
+    defer {
+        remove_module_fixture(repository)
+    }
+    assert successful(git_basis_lifecycle(repository)) == "Git merge bases checked without guessing or fetching"
+}

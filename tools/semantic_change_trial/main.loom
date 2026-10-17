@@ -375,7 +375,14 @@ fn git_commit(git_executable Text, repository Text, revision Text) Result[Text, 
 }
 
 fn read_git(git_executable Text, repository Text, directory Text, revision Text) Result[Loaded, Text] {
-    let snapshot = git_tree(git_executable, repository, directory, revision)?
+    read_git_tree(git_executable, repository, git_tree(git_executable, repository, directory, revision)?)
+}
+
+fn read_git_commit(executable Text, repository Text, directory Text, commit Text) Result[Loaded, Text] {
+    read_git_tree(executable, repository, git_commit_tree(executable, repository, directory, commit)?)
+}
+
+fn read_git_tree(git_executable Text, repository Text, snapshot GitTree) Result[Loaded, Text] {
     let selected = new[GitEntry]()
     var index = 0
     while index < length(snapshot.entries) {
@@ -708,11 +715,19 @@ fn preview_context(directory Text, standard Text, base Text, left Text, right Te
     Result.Ok(show(review_context(original, edited_left, edited_right, context)?))
 }
 
+fn preview_git(executable Text, repository Text, package Text, base Text, left Text, right Text) Result[Text, Text] {
+    let basis = git_basis(executable, repository, base, left, right)?
+    Result.Ok(show(review(read_git_commit(executable, repository, package, basis.base)?,
+                read_git_commit(executable, repository, package, basis.left)?,
+                read_git_commit(executable, repository, package, basis.right)?)?))
+}
+
 fn preview_git_context(directory Text, standard Text, executable Text, repository Text,
     package Text, base Text, left Text, right Text) Result[Text, Text] {
-    let original = read_git(executable, repository, package, base)?
-    let edited_left = read_git(executable, repository, package, left)?
-    let edited_right = read_git(executable, repository, package, right)?
+    let basis = git_basis(executable, repository, base, left, right)?
+    let original = read_git_commit(executable, repository, package, basis.base)?
+    let edited_left = read_git_commit(executable, repository, package, basis.left)?
+    let edited_right = read_git_commit(executable, repository, package, basis.right)?
     let context = read_context(directory, standard)?
     Result.Ok(show(review_context(original, edited_left, edited_right, context)?))
 }
@@ -867,24 +882,27 @@ fn apply_context(expected Text, destination Text, directory Text, standard Text,
 
 fn apply_git(expected Text, destination Text, executable Text, repository Text, directory Text,
     base Text, left Text, right Text) Result[Text, Text] {
-    let original = read_git(executable, repository, directory, base)?
-    let edited_left = read_git(executable, repository, directory, left)?
-    let edited_right = read_git(executable, repository, directory, right)?
+    let basis = git_basis(executable, repository, base, left, right)?
+    let original = read_git_commit(executable, repository, directory, basis.base)?
+    let edited_left = read_git_commit(executable, repository, directory, basis.left)?
+    let edited_right = read_git_commit(executable, repository, directory, basis.right)?
     let value = review(original, edited_left, edited_right)?
     if value.token != expected {
         return Result.Err("review token does not match these Git commits or merged bytes")
     }
+    let fresh = git_basis(executable, repository, base, left, right)?
     publish(expected, destination, value, original, edited_left, edited_right,
-        read_git(executable, repository, directory, base)?,
-        read_git(executable, repository, directory, left)?,
-        read_git(executable, repository, directory, right)?)
+        read_git_commit(executable, repository, directory, fresh.base)?,
+        read_git_commit(executable, repository, directory, fresh.left)?,
+        read_git_commit(executable, repository, directory, fresh.right)?)
 }
 
 fn apply_git_context(expected Text, destination Text, directory Text, standard Text,
     executable Text, repository Text, package Text, base Text, left Text, right Text) Result[Text, Text] {
-    let original = read_git(executable, repository, package, base)?
-    let edited_left = read_git(executable, repository, package, left)?
-    let edited_right = read_git(executable, repository, package, right)?
+    let basis = git_basis(executable, repository, base, left, right)?
+    let original = read_git_commit(executable, repository, package, basis.base)?
+    let edited_left = read_git_commit(executable, repository, package, basis.left)?
+    let edited_right = read_git_commit(executable, repository, package, basis.right)?
     let context = read_context(directory, standard)?
     let value = review_context(original, edited_left, edited_right, context)?
     if value.token != expected {
@@ -893,10 +911,11 @@ fn apply_git_context(expected Text, destination Text, directory Text, standard T
     if read_context(directory, standard)?.stamp != context.stamp {
         return Result.Err("project context changed while preparing apply")
     }
+    let fresh = git_basis(executable, repository, base, left, right)?
     publish(expected, destination, value, original, edited_left, edited_right,
-        read_git(executable, repository, package, base)?,
-        read_git(executable, repository, package, left)?,
-        read_git(executable, repository, package, right)?)
+        read_git_commit(executable, repository, package, fresh.base)?,
+        read_git_commit(executable, repository, package, fresh.left)?,
+        read_git_commit(executable, repository, package, fresh.right)?)
 }
 
 fn main() {
@@ -983,9 +1002,7 @@ fn main() {
                         let executable = get(args, 2)
                         let repository = get(args, 3)
                         let directory = get(args, 4)
-                        preview(read_git(executable, repository, directory, get(args, 5)),
-                            read_git(executable, repository, directory, get(args, 6)),
-                            read_git(executable, repository, directory, get(args, 7)))
+                        preview_git(executable, repository, directory, get(args, 5), get(args, 6), get(args, 7))
                     } else {
                         if directories_apply {
                             apply_directories(get(args, 2), get(args, 3), get(args, 4), get(args, 5), get(args, 6))
