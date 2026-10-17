@@ -1,0 +1,91 @@
+fn source_obligations(source Text) ReferenceObligations {
+    match reference_obligations(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            source_obligations(source)
+        }
+    }
+}
+
+test fn reference_obligations_include_bounds_but_not_lexical_type_labels() {
+    let source = """
+        concept Marker {
+        }
+        record Box[T Marker] {
+            item T
+        }
+        fn retain[U Marker](value Box[U]) Box[U] {
+            defer {
+                discard helper(value.item)
+            }
+            value
+        }
+        """
+    let obligations = source_obligations(source)
+    assert length(obligations.unknown) == 0
+    assert length(obligations.offsets) == 8
+    let bounds = [query_offset(source, "Marker]"), query_offset(source, "Marker](value")]
+    var index = 0
+    while index < length(bounds) {
+        var found = false
+        var site = 0
+        while site < length(obligations.offsets) {
+            found = found || get(obligations.offsets, site) == get(bounds, index)
+            site = site + 1
+        }
+        assert found
+        index = index + 1
+    }
+}
+
+test fn reference_obligations_cover_cleanup_and_keep_unknown_ranges() {
+    let source = """
+        fn work(value Resource) Int {
+            scoped guard = acquire(value)
+            defer {
+                release(guard)
+            }
+            finish(value)
+        }
+        """
+    let cleanup = source_obligations(source)
+    assert length(cleanup.unknown) == 0
+    assert length(cleanup.offsets) == 7
+    let refined = source_obligations("type Positive = Int where self > 0")
+    assert length(refined.unknown) == 1 && get(refined.unknown, 0).start == 0
+    let implicit = source_obligations("""
+        concept Default {
+            fn read(self Self) Int {
+                helper()
+            }
+        }
+        """)
+    assert length(implicit.unknown) == 1
+    assert length(implicit.offsets) == 0
+    assert match reference_obligations("fn broken(") {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn reference_obligations_do_not_turn_missing_source_tokens_into_coverage() {
+    let tokens = match lex("123") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let obligations = reference_obligations(Node {
+            kind = NodeKind.Name
+            value = "missing"
+            span = Span {
+                start = 0
+                end = 3
+            }
+            children = new[Node]()
+        }, tokens)
+    assert length(obligations.offsets) == 0
+    assert length(obligations.unknown) == 1
+}

@@ -5,6 +5,7 @@ import std.loom.analysis.inspect_references
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.ast.has
+import std.loom.binding.builtin_type_name
 import std.loom.checking.static_parameter_info
 import std.loom.checking.macro_generator_candidates
 import std.loom.lexer.Kind
@@ -304,9 +305,7 @@ fn editor_covered(analysis Analysis, target Location, spelling Text, scope Span,
 }
 
 fn editor_valid_new_name(name Text) Bool {
-    if name == "Int" || name == "Float" || name == "Bool" || name == "Text" ||
-    name == "Bytes" || name == "List" || name == "Task" || name == "Unit" ||
-    name == "result" {
+    if builtin_type_name(name) || name == "result" {
         return false
     }
     let tokens = match lex(name) {

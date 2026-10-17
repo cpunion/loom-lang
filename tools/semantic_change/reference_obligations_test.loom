@@ -1,0 +1,130 @@
+fn deferred_caller(name Text) Text {
+    replace("""
+        fn entry() Int {
+            defer {
+                discard FUNCTION()
+            }
+            FUNCTION()
+        }
+        """, "FUNCTION", name)
+}
+
+fn deferred_case(name Text, path Text, value Text, caller Text) Revision {
+    renamed_case(name, path, replace(replace("""
+                fn FUNCTION() Int {
+                    VALUE
+                }
+                """, "FUNCTION", name), "VALUE", value), caller)
+}
+
+test fn deferred_references_compose_rename_move_and_body_edits() {
+    let base = deferred_case("amount", "value.loom", "1", deferred_caller("amount"))
+    let moved = deferred_case("balance", "app.loom", "1", deferred_caller("balance"))
+    let edited = deferred_case("amount", "value.loom", "2", deferred_caller("amount"))
+    let branches = [moved, edited]
+    var order = 0
+    while order < 2 {
+        match merge(base, get(branches, order), get(branches, 1 - order)) {
+            Result.Ok(merged) => {
+                let source = get(merged.files, 1).text
+                assert contains(source, "defer {")
+                assert contains(source, "discard balance()")
+                assert contains(source, "balance()\n}")
+                assert !contains(source, "amount")
+                assert get(merged.identities, 0).id == "amount-id"
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        order = order + 1
+    }
+}
+
+test fn a_defer_local_cannot_capture_a_renamed_reference() {
+    let base = deferred_case("amount", "value.loom", "1", deferred_caller("amount"))
+    let moved = deferred_case("balance", "app.loom", "1", deferred_caller("balance"))
+    let edited = deferred_case("amount", "value.loom", "2", """
+        fn entry() Int {
+            defer {
+                let balance = fn() Int {
+                    3
+                }
+                discard balance
+                discard amount()
+            }
+            amount()
+        }
+        """)
+    match merge(base, moved, edited) {
+        Result.Err(message) => {
+            assert contains(message, "binding")
+            assert !contains(message, "source reference form")
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+}
+
+fn bounded_case(name Text, path Text, local Text) Revision {
+    let revision = generic_rename_case(name, path, local, generic_rename_caller(name))
+    var file = 0
+    while file < length(revision.files) {
+        let original = get(revision.files, file)
+        set(revision.files, file, File {
+                path = original.path
+                text = replace(replace(original.text, "[T]", "[T Marker]"), "[Item]", "[Item Marker]")
+            })
+        file = file + 1
+    }
+    var index = 0
+    while index < length(revision.identities) {
+        let identity = get(revision.identities, index)
+        set(revision.identities, index, Identity {
+                key = key_in(get(revision.files, file_index(revision.files, identity.path)).text, identity.name)
+                ..identity
+            })
+        index = index + 1
+    }
+    push(revision.files, File {
+            path = "marker.loom"
+            text = """
+                concept Marker {
+                }
+                """
+        })
+    push(revision.identities, Identity {
+            id = "marker-id"
+            path = "marker.loom"
+            kind = NodeKind.Concept
+            name = "Marker"
+            key = "-"
+        })
+    revision
+}
+
+test fn bounded_generic_references_use_the_compilers_shared_obligations() {
+    let base = bounded_case("amount", "value.loom", "saved")
+    let moved = bounded_case("balance", "app.loom", "saved")
+    let edited = bounded_case("amount", "value.loom", "updated")
+    let branches = [moved, edited]
+    var order = 0
+    while order < 2 {
+        match merge(base, get(branches, order), get(branches, 1 - order)) {
+            Result.Ok(merged) => {
+                let source = get(merged.files, 1).text
+                assert contains(source, "fn balance[T Marker]")
+                assert contains(source, "let updated T = value")
+                assert contains(source, "balance(input)")
+                assert !contains(source, "amount")
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        order = order + 1
+    }
+}

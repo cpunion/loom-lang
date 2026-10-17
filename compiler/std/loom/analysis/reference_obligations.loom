@@ -1,0 +1,159 @@
+import std.loom.binding.builtin_type_name
+import std.loom.parser.parse
+import std.loom.source.Diagnostic
+
+// Explicit named bindings to compare when relocating this source tree.
+// Declaration labels and lexical type binders do not need external resolution.
+// An empty unknown list only establishes syntax coverage, not checked bindings,
+// proof success, implicit effect coverage, or authority to rewrite the source.
+pub record ReferenceObligations {
+    offsets List[Int]
+    unknown List[Span]
+}
+
+fn reference_bound(parameters List[Text], name Text) Bool {
+    var index = 0
+    while index < length(parameters) {
+        if get(parameters, index) == name {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn reference_parameters(node Node, inherited List[Text]) List[Text] {
+    let parameters = new[Text]()
+    var index = 0
+    while index < length(inherited) {
+        push(parameters, get(inherited, index))
+        index = index + 1
+    }
+    if node.kind == NodeKind.Concept {
+        push(parameters, "Self")
+    }
+    index = 0
+    while index < length(node.children) {
+        let group = get(node.children, index)
+        if group.kind == NodeKind.TypeParameters {
+            var parameter = 0
+            while parameter < length(group.children) {
+                push(parameters, get(group.children, parameter).value)
+                parameter = parameter + 1
+            }
+        }
+        index = index + 1
+    }
+    parameters
+}
+
+fn reference_children(node Node, tokens List[Token], parameters List[Text], output ReferenceObligations) {
+    var index = 0
+    while index < length(node.children) {
+        reference_nodes(get(node.children, index), node.kind, tokens, parameters, output)
+        index = index + 1
+    }
+}
+
+fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited List[Text], output ReferenceObligations) {
+    let kind = node.kind
+    if has(node, NodeKind.ExpansionId) || kind == NodeKind.ExpansionId ||
+    (kind == NodeKind.Comptime && length(node.children) != 0) ||
+    (kind == NodeKind.Function && parent == NodeKind.Concept && has(node, NodeKind.Block)) {
+        push(output.unknown, node.span)
+        return
+    }
+    let parameters = if kind == NodeKind.Function || kind == NodeKind.Record ||
+    kind == NodeKind.Enum || kind == NodeKind.Concept {
+        reference_parameters(node, inherited)
+    } else {
+        inherited
+    }
+    if kind == NodeKind.TypeParameters {
+        var index = 0
+        while index < length(node.children) {
+            let parameter = get(node.children, index)
+            if parameter.kind != NodeKind.Name && parameter.kind != NodeKind.TypePack {
+                push(output.unknown, parameter.span)
+            } else {
+                // A parameter's bounds are uses even though its label is not.
+                reference_children(parameter, tokens, parameters, output)
+            }
+            index = index + 1
+        }
+        return
+    }
+    let named_type = kind == NodeKind.Type && !builtin_type_name(node.value) &&
+    node.value != "type" && !reference_bound(parameters, node.value)
+    let field_use = kind == NodeKind.Field && parent == NodeKind.Construct
+    if named_type || field_use || kind == NodeKind.Name || kind == NodeKind.Call ||
+    kind == NodeKind.Construct || kind == NodeKind.Assign || kind == NodeKind.Select || kind == NodeKind.MethodCall {
+        let from = if (kind == NodeKind.Select || kind == NodeKind.MethodCall) && length(node.children) > 0 {
+            get(node.children, 0).span.end
+        } else {
+            node.span.start
+        }
+        let until = if (named_type || field_use || kind == NodeKind.Name || kind == NodeKind.Call ||
+            kind == NodeKind.Construct || kind == NodeKind.Assign) && length(node.children) > 0 {
+            get(node.children, 0).span.start
+        } else {
+            node.span.end
+        }
+        var selected = -1
+        var index = 0
+        while index < length(tokens) {
+            let token = get(tokens, index)
+            if token.span.start >= from && token.span.end <= until && token.kind == Kind.Name &&
+            ((kind != NodeKind.Select && kind != NodeKind.MethodCall) || token.value == node.value) {
+                if kind == NodeKind.Name {
+                    push(output.offsets, token.span.start)
+                }
+                selected = token.span.start
+            }
+            index = index + 1
+        }
+        if selected < 0 {
+            push(output.unknown, node.span)
+        } else if kind != NodeKind.Name {
+            push(output.offsets, selected)
+        }
+    } else if kind != NodeKind.File && kind != NodeKind.Type && kind != NodeKind.Record &&
+    kind != NodeKind.Enum && kind != NodeKind.Concept && kind != NodeKind.Variant &&
+    !(kind == NodeKind.Field && (parent == NodeKind.Record || parent == NodeKind.Variant)) &&
+    kind != NodeKind.Function && kind != NodeKind.Public && kind != NodeKind.Test &&
+    kind != NodeKind.Intrinsic && kind != NodeKind.Parameters && kind != NodeKind.Parameter &&
+    kind != NodeKind.TypeArguments && kind != NodeKind.Arguments && kind != NodeKind.Bounds &&
+    kind != NodeKind.ReturnType && kind != NodeKind.Block && kind != NodeKind.Return &&
+    kind != NodeKind.Assert && kind != NodeKind.Discard && kind != NodeKind.Integer &&
+    kind != NodeKind.Text && kind != NodeKind.Bool && kind != NodeKind.Float &&
+    kind != NodeKind.Unary && kind != NodeKind.Binary && kind != NodeKind.If &&
+    kind != NodeKind.Let && kind != NodeKind.Var && kind != NodeKind.While &&
+    kind != NodeKind.Requires && kind != NodeKind.Ensures && kind != NodeKind.Await &&
+    kind != NodeKind.Tuple && kind != NodeKind.List && kind != NodeKind.Apply &&
+    kind != NodeKind.Index && kind != NodeKind.IndexAssign && kind != NodeKind.Invoke &&
+    kind != NodeKind.FunctionType && kind != NodeKind.TupleType && kind != NodeKind.Defer &&
+    kind != NodeKind.Scoped && kind != NodeKind.Async && kind != NodeKind.Try &&
+    kind != NodeKind.Old && kind != NodeKind.Spread && kind != NodeKind.Break &&
+    kind != NodeKind.Continue && kind != NodeKind.Comptime {
+        push(output.unknown, node.span)
+        return
+    }
+    reference_children(node, tokens, parameters, output)
+}
+
+// The AST and tokens must describe the same source snapshot. Positions follow
+// AST traversal order; unsupported or missing-token ranges remain explicit.
+pub fn reference_obligations(tree Node, tokens List[Token]) ReferenceObligations {
+    let output = ReferenceObligations {
+        offsets = new[Int]()
+        unknown = new[Span]()
+    }
+    reference_nodes(tree, NodeKind.File, tokens, new[Text](), output)
+    output
+}
+
+pub fn reference_obligations(source Text) Result[ReferenceObligations, Diagnostic] {
+    let tree = parse(source)?
+    let tokens = lex(source)?
+    Result.Ok(reference_obligations(tree, tokens))
+}
