@@ -4,6 +4,7 @@ import std.bytes.set
 import std.time.sleep_ms
 import std.task.Outcome
 import std.task.deadline.after_ns
+import std.list.get
 
 async fn echo(socket Socket) Result[Datagram, UdpError] {
     let packet = receive(socket, 64).await?
@@ -129,6 +130,74 @@ async fn broadcast_fixture() Result[Bool, UdpError] {
 
 test async fn broadcast_permission_is_explicit_shared_and_revoked_on_close() {
     assert match broadcast_fixture().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
+
+fn buffer_option(value Result[Int, UdpError]) Int {
+    match value {
+        Result.Ok(size) => size
+        Result.Err(_) => {
+            assert false
+            0
+        }
+    }
+}
+
+async fn buffer_fixture() Result[Bool, UdpError] {
+    let server = bind("127.0.0.1:0").await?
+    defer {
+        discard close(server)
+    }
+    let client = connect(local_address(server)?).await?
+    defer {
+        discard close(client)
+    }
+    let alias = server
+    let incoming = receive(server)
+    sleep_ms(1).await
+    assert buffer_option(set_receive_buffer_size(server, 32768)) == 0
+    assert buffer_option(set_send_buffer_size(server, 32768)) == 0
+    assert buffer_option(set_receive_buffer_size(client, 32768)) == 0
+    assert buffer_option(set_send_buffer_size(client, 32768)) == 0
+    assert buffer_option(receive_buffer_size(alias)) == buffer_option(receive_buffer_size(server))
+    assert buffer_option(send_buffer_size(alias)) > 0
+    assert buffer_option(receive_buffer_size(client)) > 0 && buffer_option(send_buffer_size(client)) > 0
+    let invalid_sizes = [-1, 0, 2147483648]
+    var index = 0
+    while index < 3 {
+        let invalid = get(invalid_sizes, index)
+        assert match set_receive_buffer_size(server, invalid) {
+            Result.Err(error) => error == UdpError.Option
+            Result.Ok(_) => false
+        }
+        assert match set_send_buffer_size(client, invalid) {
+            Result.Err(error) => error == UdpError.Option
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+    assert match send(client, to_bytes("buffered")).await {
+        Result.Ok(count) => count == 8
+        Result.Err(_) => false
+    }
+    let packet = incoming.await?
+    assert to_text(packet.data) == "buffered"
+    discard close(server)?
+    assert match receive_buffer_size(alias) {
+        Result.Err(error) => error == UdpError.Option
+        Result.Ok(_) => false
+    }
+    assert match set_send_buffer_size(alias, 32768) {
+        Result.Err(error) => error == UdpError.Option
+        Result.Ok(_) => false
+    }
+    Result.Ok(true)
+}
+
+test async fn buffer_policies_share_aliases_and_preserve_pending_receives() {
+    assert match buffer_fixture().await {
         Result.Ok(value) => value
         Result.Err(_) => false
     }

@@ -260,6 +260,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::SocketLocalPort
         | Primitive::SocketSetNodelay
         | Primitive::SocketSetKeepalive
+        | Primitive::SocketBuffer
         | Primitive::SocketShutdownWrite
         | Primitive::SocketAbort
         | Primitive::TlsClient

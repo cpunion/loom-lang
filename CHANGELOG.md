@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Query and configure OS receive/send buffer sizes for TCP listeners/streams
+  and UDP sockets/connections. Keep aliases and pending I/O intact; reject
+  invalid or unrepresentable sizes without silent narrowing. Effective sizes
+  remain platform policy, not exact application capacities.
+
 - Read LF-framed JSON documents as a source Stream, without waiting for EOF or
   adding runtime behavior. Preserve chunked UTF-8, strict record errors, scoped
   factory ownership and terminal cancellation; feed decoder byte ranges without

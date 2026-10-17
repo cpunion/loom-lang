@@ -21,5 +21,10 @@ and a retry count. The client disables it while its response may be pending;
 this does not cancel the reader. Invalid configuration and stale aliases return
 `TcpError.Option`. Keepalive does not replace an application deadline.
 
+The example configures listener buffers before accepting, then changes stream
+receive/send buffers while both readers are waiting. Queries use effective OS
+sizes, not equality to a requested size. Invalid sizes and closed aliases reject;
+neither configuration nor half-close cancels the readers.
+
 The test also checks exact local/peer endpoint correspondence and stale wrapper
 errors after close. Native integration runs the example at O0/O2 with moving GC.
