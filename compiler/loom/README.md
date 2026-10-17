@@ -442,8 +442,9 @@ and generic binders. Concept/impl headers and `dyn` associated bindings retain
 their own namespaces; a dynamic binding label navigates to its checked concept
 member, not a guessed witness implementation. Generated/static ranges remain
 explicitly unaccounted when their source bindings cannot be established.
-Impl targets and associated-type definitions can be queried with their declared
-symbolic parameters, without a concrete caller. Header checks validate the
+Function, data, impl and associated-type headers use their declared symbolic
+parameters, not the instances reached from application callers. Nominal
+declarations also expose their own checked source type. Header checks validate the
 declared type arguments/requirements, not method-body proof success. Unexpanded
 pack arities are never guessed to manufacture a header instance.
 These declarations share the snapshot-local single-scope query cache; selecting

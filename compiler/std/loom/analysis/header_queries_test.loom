@@ -58,6 +58,45 @@ test fn specialized_header_parameters_do_not_guess_same_spelled_nominal_definiti
     }
 }
 
+test fn source_generic_headers_do_not_mix_in_concrete_application_instances() {
+    let source = """
+        record Box[T] {
+            value T
+        }
+        record Envelope[T] {
+            value Box[T]
+        }
+        enum Choice[T] {
+            Some(Box[T])
+            Empty
+        }
+        fn identity[T](value Box[T]) Box[T] {
+            value
+        }
+        fn concrete(value Envelope[Text]) {
+            discard value
+        }
+        fn main() {
+            let box = Box { value = 7 }
+            discard Envelope { value = box }
+            discard Choice.Some(Box { value = true })
+            assert identity(box).value == 7
+        }
+        """
+    let analysis = accepted(input(source))
+    let declared = query_offset(source, "Box[T] {")
+    let uses = ["Box[T]\n}", "Box[T])\n    Empty", "Box[T]) Box", "Box[T] {\n    value T", "Box[T] {\n    value\n}"]
+    var index = 0
+    while index < length(uses) {
+        let fragment = get(uses, index)
+        let found = inspection(analysis, source, fragment)
+        only_type(found, "app.Box[T]")
+        only_definition(found, declared, declared + 3)
+        only_type(cached_inspection(analysis, source, fragment), "app.Box[T]")
+        index = index + 1
+    }
+}
+
 test fn recovered_data_headers_validate_layouts_before_publishing_query_facts() {
     let invalid = """
         record Loop {

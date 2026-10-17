@@ -124,6 +124,21 @@ fn query_declaration_type_header(env Environment, declarations Int, file Int, of
     var index = 0
     while index < declarations {
         let item = symbol(env, index)
+        if item.file == file && nominal_data(item.node.kind) && !has(item.node, NodeKind.ExpansionId) &&
+        offset >= item.node.span.start && offset < item.node.span.end {
+            if pack_parameter(item.node) >= 0 {
+                return Result.Err(failure(env, index, item.node, "source header cannot infer an unexpanded pack arity"))
+            }
+            let arguments = abstract_arguments(env, length(type_parameters(env, index)))
+            let ty = data_type(env, index, arguments, 0)?
+            discard well_formed(env, index, ty, requirements(env, index, arguments)?, item.node, 0)?
+            push(headers, TypeHeader {
+                    symbol = index
+                    node = item.node
+                    ty = ty
+                })
+            return Result.Ok(true)
+        }
         if item.file == file && item.node.kind == NodeKind.AssociatedType && !has(item.node, NodeKind.ExpansionId) &&
         offset >= item.node.span.start && offset < item.node.span.end {
             if pack_parameter(item.node) >= 0 || (item.owner >= 0 && pack_parameter(symbol(env, item.owner).node) >= 0) {

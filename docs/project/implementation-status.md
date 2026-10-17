@@ -71,6 +71,8 @@ binding evidence, not behavioral compatibility or migration proof.
 Resident workers reuse valid analyses while revalidating source and observed
 inputs. Query-only declaration headers support ordinary/generic and impl
 signatures despite body errors, including original static parameter slots.
+Function/data headers retain their declared parameters rather than caller
+specializations, including compound fields, variant payloads and return types.
 Independent body queries isolate unrelated ordinary/template errors while
 validating the selected template, CTFE and witness dependency closure.
 Uninstantiated generic/comptime bodies retain checked local types and source
