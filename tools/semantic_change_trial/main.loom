@@ -720,7 +720,16 @@ fn preview_git_context(directory Text, standard Text, executable Text, repositor
 // Output names are single-package leaves. The package directory itself must
 // be new, and every lexical ancestor must be an existing real directory.
 // Current std.fs metadata is a snapshot, not an openat-style race guarantee.
-fn checked_directory_path(value Text, include_last Bool) Result[Bool, Text] {
+fn checked_directory_path(raw Text, include_last Bool) Result[Bool, Text] {
+    // Native canonical paths on Windows include backslashes and may carry a
+    // verbatim prefix. Normalize only the spelling used to inspect ancestors;
+    // callers retain their original filesystem paths and source identities.
+    let windows = std.loom.project.is_windows_path(raw)
+    let value = if windows {
+        git_path(raw)
+    } else {
+        raw
+    }
     if value == "" || contains(value, "\\") || contains(value, "\0") ||
     contains(value, "\n") || contains(value, "\r") {
         return Result.Err("directory path is invalid")
@@ -728,7 +737,15 @@ fn checked_directory_path(value Text, include_last Bool) Result[Bool, Text] {
     let parts = split(value, "/")
     let absolute = starts_with(value, "/")
     let drive = length(value) >= 3 && byte(value, 1) == 58 && byte(value, 2) == 47
-    var prefix = if absolute {
+    let unc = windows && starts_with(value, "//")
+    if unc && (length(parts) < 4 || get(parts, 2) == "" || get(parts, 2) == "." ||
+        get(parts, 2) == ".." || get(parts, 2) == "?" || contains(get(parts, 2), ":") ||
+        get(parts, 3) == "" || get(parts, 3) == "." || get(parts, 3) == ".." || contains(get(parts, 3), ":")) {
+        return Result.Err("directory path has an invalid UNC root")
+    }
+    var prefix = if unc {
+        concat("//", concat(get(parts, 2), concat("/", concat(get(parts, 3), "/"))))
+    } else if absolute {
         "/"
     } else {
         if drive {
@@ -746,7 +763,9 @@ fn checked_directory_path(value Text, include_last Bool) Result[Bool, Text] {
             }
         }
     }
-    var index = if absolute || drive {
+    var index = if unc {
+        4
+    } else if absolute || drive {
         1
     } else {
         0
