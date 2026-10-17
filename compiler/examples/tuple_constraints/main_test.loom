@@ -1,0 +1,3 @@
+test async fn constrained_tuples_preserve_values_and_unobserved_sharing() {
+    main().await
+}

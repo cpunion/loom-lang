@@ -1,0 +1,79 @@
+import std.result.Result
+import std.result.ConstraintError
+import std.list.get
+import std.list.push
+import std.list.length
+import std.text.concat
+import std.time.sleep_ms
+
+type Ordered = (Int, Int) where self.0 <= self.1
+
+type Priced = (Text, Float) where self.0 != "" && self.1 >= 0.0
+
+type Counted = (Int, List[Int]) where self.0 > 0
+
+fn checked(value (Int, Int)) Result[Ordered, ConstraintError] {
+    Ordered(value)
+}
+
+fn ordered(lower Int, upper Int) Ordered
+requires lower <= upper
+{
+    Ordered((lower, upper))
+}
+
+fn upper(value Ordered) Int
+ensures result >= value.0
+{
+    value.1
+}
+
+fn identity[T](value T) T {
+    value
+}
+
+async fn delayed(value Priced) Priced {
+    sleep_ms(1).await
+    value
+}
+
+async fn exercise() Result[Bool, ConstraintError] {
+    let pair = ordered(2, 3)
+    let lower, high = pair
+    assert lower == 2 && high == upper(pair)
+    let prepared = comptime {
+        Ordered((1, 2))
+    }
+    assert prepared.0 == 1 && prepared.1 == 2
+    assert match checked((3, 2)) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    assert match checked((2, 3)) {
+        Result.Ok(value) => upper(value) == 3
+        Result.Err(_) => false
+    }
+    let price = Priced((concat("it", "em"), 1.5))?
+    let prices = [identity(price)]
+    let captured = fn() Priced {
+        get(prices, 0)
+    }
+    let pending = delayed(captured())
+    let values = [1]
+    let counted = Counted((1, values))
+    let count, shared = counted
+    push(shared, 2)
+    values[0] = -1
+    assert count == 1 && length(counted.1) == 2 && counted.1[0] == -1
+    let observed = pending.await
+    let ordinary (Text, Float) = observed
+    assert ordinary.0 == "item" && ordinary.1 == 1.5
+    Result.Ok(true)
+}
+
+async fn main() {
+    assert match exercise().await {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}

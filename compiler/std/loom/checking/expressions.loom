@@ -32,13 +32,19 @@ fn projected_member(context Context, node Node, value Expr, field Text, expected
     let source = if applied { child(node, 0) } else { node }
     let original = get(context.env.types, value.ty)
     let base = if original.kind == TypeKind.Refined { base_type(context.env, value.ty) } else { value.ty }
-    let ty = if original.kind == TypeKind.Refined && get(context.env.types, base).kind == TypeKind.Record {
+    let base_kind = get(context.env.types, base).kind
+    let ty = if original.kind == TypeKind.Refined && (base_kind == TypeKind.Record || base_kind == TypeKind.Tuple) {
         get(context.env.types, base)
     } else { original }
     if ty.kind == TypeKind.Tuple {
         match std.int.parse(field) {
             Result.Ok(_) => {
-                let selected = tuple_member(context, source, value, field)?
+                let receiver = if base != value.ty {
+                    expression(ExprKind.Coerce, base, source, "", -1, expressions(value), value.falls)
+                } else {
+                    value
+                }
+                let selected = tuple_member(context, source, receiver, field)?
                 return if applied { index_read(context, node, selected, child(node, 1).children) } else { Result.Ok(selected) }
             }
             Result.Err(_) => {}

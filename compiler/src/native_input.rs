@@ -492,7 +492,7 @@ fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
                 && !inline_record
             {
                 return Err(
-                    "native refined layout needs Int, Bool, Float, Text, Bytes, a record or a List"
+                    "native refined layout needs Int, Bool, Float, Text, Bytes, a record/tuple or a List"
                         .into(),
                 );
             }
