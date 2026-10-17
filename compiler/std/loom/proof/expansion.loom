@@ -239,6 +239,13 @@ fn expanded_block(context Expansion, value Expr, guard Expr, bindings List[Expan
         return Result.Err("helper needs a scalar body")
     }
     if scan_block(value) {
+        var prefix = 0
+        while prefix < length(value.children) && get(value.children, prefix).kind == ExprKind.Let {
+            prefix = prefix + 1
+        }
+        if returns && prefix < length(value.children) && get(value.children, prefix).kind != ExprKind.While {
+            return expanded_scan_prefix(context, value, guard, bindings, locals, self, calls, depth + 1)
+        }
         return expanded_scan(context, value, guard, bindings, locals, self, calls, depth + 1)
     }
     // Keep the common straight-line path free of path lists; control-flow helpers

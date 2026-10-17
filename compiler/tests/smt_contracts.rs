@@ -313,6 +313,108 @@ ensures result == faulty(values)
 }
 
 #[test]
+fn scan_prefixes_preserve_early_returns_and_eager_argument_checks() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("scans.loom");
+    let program = include_str!("../examples/smt_contracts/scan_prefixes.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace(
+            "get(first, index) != get(second, index)",
+            "get(first, index) == get(second, index)",
+        ),
+        program.replace(
+            "if length(first) != length(second) {\n        return false",
+            "if length(first) != length(second) {\n        return true",
+        ),
+        program.replace(
+            "        push(target, get(source, index))",
+            "        push(target, get(source, index))\n        if length(target) > 0 {\n            target[0] = 0\n        }",
+        ),
+    ] {
+        assert_ne!(changed, program);
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(!output.status.success(), "unsound guarded scan: {changed}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved") || error.contains("contract"),
+            "unexpected failure: {error}"
+        );
+    }
+    fs::write(
+        &source,
+        format!(
+            "{program}\n{}",
+            r#"
+fn skipped(value Int, enabled Bool, values List[Int]) Bool {
+    if !enabled {
+        return true
+    }
+    var index = 0
+    while index < length(values) {
+        if get(values, index) == 0 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+fn unsafe(values List[Int])
+ensures skipped(get(values, 0), false, values)
+{
+}
+"#
+        ),
+    )
+    .unwrap();
+    let output = check();
+    assert!(
+        !output.status.success(),
+        "prefix return hid eager argument evaluation"
+    );
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("proof") || error.contains("proved") || error.contains("contract"),
+        "unexpected failure: {error}"
+    );
+    fs::write(
+        &source,
+        format!("{program}\nfn main() {{\n    scan_prefix_cases()\n}}\n"),
+    )
+    .unwrap();
+    success(&check());
+    let executable = common::executable(package.path(), "scan-prefixes");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package.path().to_str().unwrap()])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
+}
+
+#[test]
 fn boolean_scans_recheck_duality_witnesses_and_guarded_suffix_safety() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("searches.loom");

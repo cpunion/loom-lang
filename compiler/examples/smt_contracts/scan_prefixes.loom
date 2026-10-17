@@ -1,0 +1,82 @@
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+
+fn guarded_matching(first List[Int], second List[Int]) Bool {
+    if length(first) != length(second) {
+        return false
+    }
+    if length(first) == 0 {
+        return true
+    }
+    var index = 0
+    while index < length(first) {
+        if get(first, index) != get(second, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn guarded_copy(values List[Int]) List[Int]
+ensures guarded_matching(result, old(values))
+{
+    let output = new[Int]()
+    var index = 0
+    while index < length(values) {
+        push(output, get(values, index))
+        index = index + 1
+    }
+    output
+}
+
+fn guarded_length(first List[Int], second List[Int])
+requires guarded_matching(first, second)
+ensures length(first) == length(second)
+{
+}
+
+fn scan_prefix_cases() {
+    let values = [2, 1, 2]
+    assert guarded_matching(guarded_copy(values), values)
+    assert guarded_matching(guarded_copy([]), [])
+    assert !guarded_matching([1], [1, 2])
+    assert !guarded_matching([1], [2])
+    guarded_length(values, values)
+    append_keeps_prefix(values, [4, 5])
+    assert guarded_matching(values, [2, 1, 2, 4, 5])
+    append_keeps_prefix(values, values)
+    assert guarded_matching(values, [2, 1, 2, 4, 5, 2, 1, 2, 4, 5])
+}
+
+fn guarded_prefix(first List[Int], second List[Int]) Bool {
+    if length(first) < length(second) {
+        return false
+    }
+    var index = 0
+    while index < length(second) {
+        if get(first, index) != get(second, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn append_keeps_prefix(target List[Int], source List[Int])
+ensures length(target) - old(length(target)) == old(length(source))
+ensures guarded_prefix(target, old(target))
+{
+    let count = length(source)
+    var index = 0
+    while index < count {
+        push(target, get(source, index))
+        index = index + 1
+    }
+}
+
+test fn guarded_scans_preserve_prefix_paths_and_copy_contracts() {
+    scan_prefix_cases()
+}

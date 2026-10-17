@@ -3305,6 +3305,11 @@ The [search example](examples/smt_contracts/searches.loom) composes these duals,
 write witnesses and loop clearing over immutable fields beside shared children.
 The [branch example](examples/smt_contracts/scan_branches.loom) covers local
 rebinding, ordered exits and constrained reads/replacements.
+Function-level branches, local updates and early returns before the scan use
+the ordinary helper path rules. Only continuing paths enter the bounded scan;
+eager arguments and guarded access checks remain required. The
+[prefix example](examples/smt_contracts/scan_prefixes.loom) composes checked
+length/empty guards with a copy contract without splitting the predicate.
 Local element
 observations expand within the iteration; the tail cannot depend on the updated
 cursor. A complete equality scan over `List[Int]` with a
@@ -3414,8 +3419,10 @@ headers and possible alias interference reject.
 
 Already captured List entry versions also propose retained-prefix equality for
 modeled immutable scalar columns, including fields of inline records/tuples.
-The current extent must stay within the entry extent; entry and every backedge
-must prove each proposal. Mutable children remain opaque, and Float equality
+Shrinking and growing extent candidates compare their common prefix; entry and
+every backedge must prove each proposal. The
+[guarded scan example](examples/smt_contracts/scan_prefixes.loom) preserves the
+original target prefix even during self-append. Mutable children remain opaque, and Float equality
 retains IEEE NaN behavior rather than becoming storage identity. The
 [content example](examples/loop_contracts/contents.loom) proves consume-and-build
 reversal without auxiliary contracts or counters, including inline headers,

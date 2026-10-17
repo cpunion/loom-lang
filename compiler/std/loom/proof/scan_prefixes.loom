@@ -1,0 +1,47 @@
+// Keep the scan's existing quantified semantics, but enter it through ordinary
+// pure-helper paths. Prefix returns finish the helper; only continuing paths
+// evaluate the scan, including its guarded access and arithmetic obligations.
+fn expanded_scan_prefix(context Expansion, value Expr, guard Expr,
+    bindings List[ExpansionBinding], locals List[Local], self Bool,
+    calls Int, depth Int) Result[Expr, Text] {
+    let prefix = new[Expr]()
+    var index = 0
+    while index < length(value.children) && get(value.children, index).kind != ExprKind.While {
+        push(prefix, get(value.children, index))
+        index = index + 1
+    }
+    let suffix = new[Expr]()
+    while index < length(value.children) {
+        push(suffix, get(value.children, index))
+        index = index + 1
+    }
+    let start = HelperPath {
+        guard = guard
+        bindings = clone(bindings)
+        value = proof_expr(value, ExprKind.Block, 0, "", -1, new[Expr]())
+        returned = false
+    }
+    let paths = helper_branch(context,
+        proof_expr(value, ExprKind.Block, 0, "", -1, prefix), start,
+        locals, self, calls, depth + 1, true)?
+    let results = new[HelperPath]()
+    index = 0
+    while index < length(paths) {
+        let path = get(paths, index)
+        if path.returned {
+            discard helper_path(results, path)?
+        } else {
+            let scanned = expanded_scan(context,
+                proof_expr(value, ExprKind.Block, value.ty, "", -1, suffix),
+                path.guard, clone(path.bindings), locals, self, calls, depth + 1)?
+            discard helper_path(results, HelperPath {
+                    guard = path.guard
+                    bindings = path.bindings
+                    value = scanned
+                    returned = true
+                })?
+        }
+        index = index + 1
+    }
+    expanded_paths(context, value, guard, bindings, results, true)
+}

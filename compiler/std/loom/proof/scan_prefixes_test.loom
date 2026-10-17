@@ -1,0 +1,22 @@
+test fn scan_prefix_return_does_not_evaluate_the_unreachable_loop() {
+    let prefix = expression(ExprKind.Return, 2, "", -1,
+        [expression(ExprKind.Bool, 2, "false", -1, [])])
+    let unsupported = expression(ExprKind.While, 0, "", -1, [])
+    let body = expression(ExprKind.Block, 2, "", -1,
+        [prefix, unsupported, expression(ExprKind.Bool, 2, "true", -1, [])])
+    match expanded_block(scan_fixture(), body, proof_bool(body, true), [], [], false, 0, 0, true) {
+        Result.Ok(value) => {
+            assert is_bool(value, false)
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    let continuing = expression(ExprKind.Block, 2, "", -1,
+        [expression(ExprKind.Assert, 0, "", -1, [proof_bool(body, true)]),
+            unsupported, proof_bool(body, true)])
+    assert match expanded_block(scan_fixture(), continuing, proof_bool(body, true), [], [], false, 0, 0, true) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
