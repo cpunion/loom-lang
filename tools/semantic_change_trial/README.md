@@ -55,13 +55,13 @@ Failed staging is retained for recovery and never replaces the requested output.
 As with single-package apply, publication assumes a trusted local workspace;
 native rename is neither no-clobber against racing writers nor crash-durable.
 
-Explicit function renames also compose with independent
+Explicit named-declaration renames also compose with independent
 body edits and moves within these packages. Each rename uses stable sidecar
 identity and checked reference-token edits in that complete branch's module
 context, including the package's own tests. For private functions, a selected overload may change name
 without renaming its siblings; creating a valid overload set still requires
 every retained call and function reference to keep its checked target.
-Public function renames update checked imports and uses across the complete
+Public function, record, enum, refined-type and concept renames update checked imports and uses across the complete
 selected module. When only part of an overload group changes name, additional
 imports retain access to each identified target, including contextual function
 values. Existing import lines/comments and CRLF endings are preserved. Imports
@@ -76,7 +76,7 @@ Generic bodies require checked abstract bindings, not guessed type arguments
 or only the observed concrete instances. Those bindings must agree. Every
 reference must still have a unique checked definition;
 unselected static branches and unsupported generic forms require resolution.
-Exported macro providers require explicit resolution for function rename
+Exported macro providers require explicit resolution for rename
 composition, even without a current invocation in the selected package.
 Source-token checks cannot preserve their hidden definition-context references.
 
@@ -172,13 +172,15 @@ published by rename from a private stage; refresh leaves the prior sidecar
 there as a recovery copy. Source files are never rewritten. `init` accepts
 dotted lowercase package names outside `std`. These commands maintain
 identity metadata for parseable source; they do not prove a successful build.
-`--move` can also record a private function rename. Merge composes
+`--move` can also record a private named-declaration rename. Merge composes
 that explicit identity change with an independent move/body edit by normalizing
 declaration and checked reference tokens, then comparing bindings in production
 and test views. Comments and unrelated strings are retained. A local shadow
 that captures a renamed call rejects even if it still type-checks. Conflicting
 renames, overload/name collisions, public API renames in this single-package mode and
 reference forms without complete evidence still need explicit resolution.
+When a type spelling changes, carry the IDs of affected functions and impls
+with the new keys reported by `scan`; normalization does not guess that mapping.
 Keep `.loom-ids-stage-*` recovery directories out of source commits.
 `scan DIR` lists current kind/name/file/key locators without writing metadata;
 use its exact key to resolve a move or parameter-type change.

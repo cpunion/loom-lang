@@ -21,14 +21,25 @@ fn rename_definition(scopes List[PackageScope], id Text) Result[RenameDefinition
     Result.Err("renamed declaration has no stable package identity")
 }
 
-fn public_function(entry Entry) Result[Bool, Text] {
+fn public_declaration(entry Entry) Result[Bool, Text] {
     let tree = match parse(entry.body) {
         Result.Ok(value) => value
         Result.Err(problem) => {
             return Result.Err(problem.message)
         }
     }
-    Result.Ok(entry.kind == NodeKind.Function && has(get(tree.children, 0), NodeKind.Public))
+    Result.Ok(has(get(tree.children, 0), NodeKind.Public))
+}
+
+fn public_rename_spelling(scopes List[PackageScope], renames List[DeclarationRename], name Text) Bool {
+    var index = 0
+    while index < length(scopes) {
+        if rename_spelling(get(scopes, index).indexed.entries, renames, name) {
+            return true
+        }
+        index = index + 1
+    }
+    false
 }
 
 fn public_rename_plan(base List[PackageRevision], plans List[PackageRenames], project Project) Result[Bool, Text] {
@@ -39,7 +50,7 @@ fn public_rename_plan(base List[PackageRevision], plans List[PackageRenames], pr
         let renames = get(plans, index).renames
         var item = 0
         while item < length(renames) {
-            found = found || public_function(rename_definition(scopes, get(renames, item).id)?.entry)?
+            found = found || public_declaration(rename_definition(scopes, get(renames, item).id)?.entry)?
             item = item + 1
         }
         index = index + 1
@@ -70,14 +81,14 @@ fn public_symbol_identity(analysis Analysis, scopes List[PackageScope], symbol I
 }
 
 fn public_package_edits(analysis Analysis, scopes List[PackageScope], scope PackageScope,
-    renames List[FunctionRename], edits List[SourceRenameEdit], backend ProofBackend) Result[Bool, Text] {
+    renames List[DeclarationRename], edits List[SourceRenameEdit], backend ProofBackend) Result[Bool, Text] {
     discard checked_rename_generators(analysis, scope.package, backend)?
     var index = 0
     while index < length(scope.indexed.entries) {
         let entry = get(scope.indexed.entries, index)
         let sites = reference_sites(entry)?
         let requested = rename_requested(renames, entry.id)
-        let declaration = if requested == "" {
+        let declaration = if entry.kind == NodeKind.Impl {
             -1
         } else {
             rename_name(entry, true)?.span.start
@@ -97,7 +108,8 @@ fn public_package_edits(analysis Analysis, scopes List[PackageScope], scope Pack
             } else {
                 ""
             }
-            if rename_site(sites, token.span.start) {
+            if token.span.start != declaration && (rename_site(sites, token.span.start) ||
+                (token.kind == Kind.Name && public_rename_spelling(scopes, renames, token.value))) {
                 let target = package_target(analysis, scopes, scope.package, path,
                     entry.start + token.span.start, entry.abstract_body)?
                 let selected = rename_requested(renames, target.id)
@@ -156,8 +168,10 @@ fn public_original_target(target BindingTarget, before List[PackageScope], after
     let original = rename_definition(before, target.id)?
     let updated = rename_definition(after, target.id)?
     let edits = renamed_file_edits(files, join_path(updated.directory, updated.entry.path))
+    let anchor = source_original_offset(edits, updated.entry.start + target.anchor)? - original.entry.start
     Result.Ok(BindingTarget {
-            anchor = source_original_offset(edits, updated.entry.start + target.anchor)? - original.entry.start
+            scope = renamed_scope(original.entry, target.scope, anchor)?
+            anchor = anchor
             start = source_original_offset(edits, updated.entry.start + target.start)? - original.entry.start
             end = source_original_offset(edits, updated.entry.start + target.end)? - original.entry.start
             ..target
@@ -248,7 +262,7 @@ fn normalize_public_package_renames(revisions List[PackageRevision], plans List[
     let ordinary = package_project(production, revisions)?
     let testing = package_project(tests, revisions)?
     let scopes = package_scopes(testing, revisions)?
-    let renames = new[FunctionRename]()
+    let renames = new[DeclarationRename]()
     var index = 0
     while index < length(plans) {
         let selected = get(plans, index).renames
@@ -291,26 +305,11 @@ fn normalize_public_package_renames(revisions List[PackageRevision], plans List[
                 })
             item = item + 1
         }
-        let identities = new[Identity]()
-        item = 0
-        while item < length(selected.revision.identities) {
-            let identity = get(selected.revision.identities, item)
-            let requested = rename_requested(renames, identity.id)
-            push(identities, Identity {
-                    name = if requested == "" {
-                        identity.name
-                    } else {
-                        requested
-                    }
-                    ..identity
-                })
-            item = item + 1
-        }
         push(output, PackageRevision {
                 directory = selected.directory
                 revision = Revision {
                     files = rewritten
-                    identities = identities
+                    identities = renamed_identities(indexed(selected.revision)?, rewritten, renames)?
                     ..selected.revision
                 }
             })

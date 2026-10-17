@@ -82,20 +82,34 @@ fn record_function_reference(env Environment, owner Int, node Node, selected Int
     } else {
         node
     }
-    if source.kind != NodeKind.Name && source.kind != NodeKind.Call {
+    if source.kind != NodeKind.Name && source.kind != NodeKind.Call && source.kind != NodeKind.MethodCall {
         return Result.Ok(true)
     }
-    var declaration = get(env.signatures, selected).symbol
+    var target = selected
+    var types = arguments
+    if prototype(env, get(env.signatures, selected).symbol) && length(arguments) != 0 &&
+    concrete(env, get(arguments, 0)) && get(env.types, get(arguments, 0)).kind != TypeKind.Dyn {
+        // A concrete method call names its selected implementation. Retain
+        // that binding before logical-only call indices lose their queue.
+        // Dynamic/evidence-only receivers keep the concept query path.
+        let resolved = method_target(env, selected, arguments, unknown_constants(get(env.signatures, selected)))?
+        target = resolved.signature
+        types = resolved.arguments
+        discard require_query_reference(env, target, types)?
+    } else if source.kind == NodeKind.MethodCall {
+        return Result.Ok(true)
+    }
+    var declaration = get(env.signatures, target).symbol
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
         // Private proof headers and their rewritten bodies are not source
         // specializations. Neither their calls nor their IDs are query evidence.
-        if erased_pack(pack) && (pack.signature == selected ||
+        if erased_pack(pack) && (pack.signature == target ||
             get(env.signatures, pack.signature).symbol == owner) {
             return Result.Ok(true)
         }
-        if pack.signature == selected {
+        if pack.signature == target {
             declaration = pack.declaration
         }
         index = index + 1
@@ -104,7 +118,7 @@ fn record_function_reference(env Environment, owner Int, node Node, selected Int
         return Result.Ok(true)
     }
     let segment = reference_path_segment(source.value)
-    let current = signature(env, selected, arguments, node)?
+    let current = signature(env, target, types, node)?
     let parameters = copy_indices(current.params)
     push(parameters, current.result)
     let label = type_name(env.source, env.types, env.interfaces,

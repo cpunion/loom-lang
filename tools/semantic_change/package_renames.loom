@@ -1,6 +1,6 @@
 record PackageRenames {
     directory Text
-    renames List[FunctionRename]
+    renames List[DeclarationRename]
 }
 
 // Normalize each private rename in its complete branch, not against a mixture

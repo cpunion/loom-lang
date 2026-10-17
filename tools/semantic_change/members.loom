@@ -5,6 +5,23 @@ record MemberScope {
     span Span
 }
 
+// A rename edits tokens, never member order. Map the checked member anchor
+// through those exact edits before restoring its revision-local locator.
+fn renamed_scope(original Entry, scope Text, anchor Int) Result[Text, Text] {
+    if scope == "" {
+        return Result.Ok(scope)
+    }
+    var index = 0
+    while index < length(original.members) {
+        let member = get(original.members, index)
+        if member.span.start - original.start == anchor {
+            return Result.Ok(member.locator)
+        }
+        index = index + 1
+    }
+    Result.Err("renamed binding has no original checked member scope")
+}
+
 // An identified container owns checked API slots. These revision-local member
 // locators are not new durable IDs or permission to merge concurrent bodies.
 fn member_scopes(node Node, empty List[MemberScope]) Result[List[MemberScope], Text] {

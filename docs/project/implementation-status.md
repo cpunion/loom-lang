@@ -331,7 +331,8 @@ The [semantic merge trial](../../tools/semantic_change_trial/README.md) supports
 reviewed move-plus-edit, function rename-plus-edit and independent
 additions within one package or a fixed-package module, using explicit identities
 and pinned source/test bases.
-Complete module batches can rename public functions across checked imports,
+Complete module batches can rename public functions, records, enums, refined
+types and concepts across checked imports,
 calls and independent private tests, including partial overload-group renames
 and contextual function values. Checked imports split without reformatting the
 original lines or comments; production and private-test scopes stay separate.
@@ -356,8 +357,10 @@ unexpanded pack queries retain their conservative boundary.
 Generic reference comparison requires checked abstract bodies and agreement
 with observed concrete instances; missing or ambiguous bindings and unselected
 static branches still reject.
-Other public declaration renames, automatic identities, arbitrary edits and
-package/import-graph changes remain open.
+Type renames retain the IDs of affected function/impl locators and checked member
+scopes. Inline `test fn` declarations are excluded from production comparison,
+like colocated test files. Member renames, automatic identities, arbitrary edits
+and package/import-graph changes remain open.
 
 The [SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md)
 executes an offline orders upgrade, data-preserving downgrade and re-upgrade.
