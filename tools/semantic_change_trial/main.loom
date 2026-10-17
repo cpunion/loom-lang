@@ -81,7 +81,7 @@ record Context {
 }
 
 fn path(directory Text, name Text) Text {
-    concat(concat(directory, "/"), name)
+    join_path(directory, name)
 }
 
 fn kind(name Text) Result[NodeKind, Text] {
@@ -467,12 +467,23 @@ fn basis_path(value Text, physical Text, logical Text) Text {
     if physical == "" {
         return value
     }
-    if value == physical {
+    let windows = is_windows_path(physical)
+    let location = if windows {
+        git_path(value)
+    } else {
+        value
+    }
+    let root = if windows {
+        git_path(physical)
+    } else {
+        physical
+    }
+    if location == root {
         return logical
     }
-    let prefix = join_path(physical, "")
-    if starts_with(value, prefix) {
-        return join_path(logical, std.text.slice(value, std.text.length(prefix), std.text.length(value)))
+    let prefix = join_path(root, "")
+    if starts_with(location, prefix) {
+        return module_path(logical, std.text.slice(location, std.text.length(prefix), std.text.length(location)))
     }
     value
 }
