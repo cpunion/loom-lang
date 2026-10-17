@@ -366,6 +366,12 @@ The [SQLite migration trial](../../tools/deployment/sqlite_migration_trial/READM
 executes an offline orders upgrade, data-preserving downgrade and re-upgrade.
 Append-only events distinguish assumptions from observations; plans bind retry
 inputs, transactional preflights and rehashed artifact receipts.
+The fixed SQLite package supports predetermined Stop or Rollback policy.
+Failed-upgrade recovery verifies the old source transactionally before restoring
+an observed basis; failed recovery stays unresolved and needs explicit repair.
+It is distinct from downgrading a completed upgrade. Retained-data lineage
+requires an actual completed upgrade and rollback, not an unused plan or failed
+fresh upgrade.
 Operators still supply storage mappings. Hotfix proof is unknown and cannot
 authorize execution. General migration packages, compatibility/mapping proof,
 online coexistence and generalized recovery remain goals.

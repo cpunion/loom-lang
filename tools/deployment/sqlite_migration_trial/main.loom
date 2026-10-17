@@ -15,7 +15,10 @@ import deployment.register
 import deployment.replace_unstarted_attempt
 import deployment.SqliteLivePhase
 import deployment.SqliteLiveStatus
+import deployment.SqliteUpgradeRecovery
 import deployment.DeploymentState
+import deployment.FailurePolicy
+import deployment.recover_failed_sqlite_upgrade
 import deployment.sqlite_migration_identity
 import deployment.assume_historical
 import deployment.resume_failed_attempt
@@ -46,6 +49,7 @@ import std.process.ExitStatus
 import std.result.Result
 import std.text.byte
 import std.text.concat
+import std.text.contains
 import std.text.join
 import std.text.length
 import std.text.split
@@ -121,7 +125,7 @@ fn started(database Text, bundle SqliteMigrationPackage, hotfix_receipt Text,
     assert length(inspection.missing.forward) == 0 && length(inspection.missing.recovery) == 0
     if prepared {
         let mismatched = migration("mismatched_proposal", bundle.operation.attempt_id,
-            bundle.operation.replacement, bundle.from_receipt_path, bundle.to_receipt_path)?
+            bundle.operation.replacement, bundle.policy, bundle.from_receipt_path, bundle.to_receipt_path)?
         let before_start = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
         assert match start_sqlite_migration("/usr/bin/sqlite3", database, mismatched) {
             Result.Err(_) => true
@@ -158,7 +162,7 @@ fn changed_receipt_path(bundle SqliteMigrationPackage, path Text) SqliteMigratio
 fn succeeds(database Text, old_receipt Text, new_receipt Text,
     hotfix_receipt Text) Result[Bool, Text] {
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10),(3,0);")?
-    let bundle = migration("orders_first", "upgrade_2", 1, old_receipt, new_receipt)?
+    let bundle = migration("orders_first", "upgrade_2", 1, FailurePolicy.Stop, old_receipt, new_receipt)?
     discard started(database, bundle, hotfix_receipt, true)?
     assert match inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, bundle) {
         Result.Err(_) => true,
@@ -168,7 +172,7 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
     let live = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
         SqliteLivePhase.FreshUpgrade)?
     assert live.attempt_state == DeploymentState.Started &&
-    live.status == SqliteLiveStatus.ChecksPassed && !live.requires_resume
+    live.status == SqliteLiveStatus.ChecksPassed && live.recovery == SqliteUpgradeRecovery.None
     assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == events_before_live
     discard fixture_sql(database, "PRAGMA ignore_check_constraints=ON; UPDATE orders SET amount=-1 WHERE id=1;")?
     let invalid_rows = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
@@ -222,7 +226,7 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
     assert downgrade_source.attempt_state == DeploymentState.Complete &&
     downgrade_source.status == SqliteLiveStatus.ChecksPassed && !downgrade_source.requires_retry
     assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == before_downgrade_inspection
-    let unrelated = migration("orders_unrelated", "upgrade_2", 1, old_receipt, new_receipt)?
+    let unrelated = migration("orders_unrelated", "upgrade_2", 1, FailurePolicy.Stop, old_receipt, new_receipt)?
     assert match inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, unrelated) {
         Result.Err(_) => true,
         Result.Ok(_) => false
@@ -268,7 +272,7 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
     discard fixture_sql(database, "UPDATE orders SET amount=7 WHERE id=3; INSERT INTO orders VALUES (4,0); UPDATE notes SET body='edited after rollback' WHERE id=1;")?
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|7\n4|0\n"
     assert fixture_sql(database, "SELECT body FROM notes;")? == "edited after rollback\n"
-    let again = migration("orders_again", "upgrade_3", 2, old_receipt, new_receipt)?
+    let again = migration("orders_again", "upgrade_3", 2, FailurePolicy.Stop, old_receipt, new_receipt)?
     let retained = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, again,
         SqliteLivePhase.RetainedReupgrade)?
     assert retained.attempt_state == DeploymentState.RollbackComplete &&
@@ -307,13 +311,13 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
         SqliteLivePhase.RetainedReupgrade)?
     assert failed_reupgrade.attempt_state == DeploymentState.Failed &&
     failed_reupgrade.status == SqliteLiveStatus.DataOrLineageMismatch &&
-    failed_reupgrade.requires_resume
+    failed_reupgrade.recovery == SqliteUpgradeRecovery.Resume
     discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=0 WHERE entity_id=3;")?
     let repaired_reupgrade = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, again,
         SqliteLivePhase.RetainedReupgrade)?
     assert repaired_reupgrade.attempt_state == DeploymentState.Failed &&
     repaired_reupgrade.status == SqliteLiveStatus.ChecksPassed &&
-    repaired_reupgrade.requires_resume
+    repaired_reupgrade.recovery == SqliteUpgradeRecovery.Resume
     assert match reupgrade_sqlite_migration("/usr/bin/sqlite3", database, again) {
         Result.Err(_) => true,
         Result.Ok(_) => false
@@ -342,7 +346,7 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
 
 fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Text,
     hotfix_receipt Text) Result[Bool, Text] {
-    let bundle = migration("orders_failure", "upgrade_2", 1, old_receipt, new_receipt)?
+    let bundle = migration("orders_failure", "upgrade_2", 1, FailurePolicy.Stop, old_receipt, new_receipt)?
     discard fixture_sql(database, "CREATE TABLE loom_deploy_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, plan_digest TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL); CREATE TRIGGER block_assumed BEFORE INSERT ON loom_deploy_events WHEN NEW.state=7 BEGIN SELECT RAISE(ABORT,'blocked'); END;")?
     assert match assume_historical("/usr/bin/sqlite3", database, "historical_v1", bundle.from_schema.basis) {
         Result.Err(_) => true,
@@ -384,18 +388,18 @@ fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Te
     let failed = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
         SqliteLivePhase.FreshUpgrade)?
     assert failed.attempt_state == DeploymentState.Failed &&
-    failed.status == SqliteLiveStatus.LayoutMismatch && failed.requires_resume
+    failed.status == SqliteLiveStatus.LayoutMismatch && failed.recovery == SqliteUpgradeRecovery.Resume
     discard fixture_sql(database, "DROP VIEW notes;")?
     let recovered = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
         SqliteLivePhase.FreshUpgrade)?
     assert recovered.attempt_state == DeploymentState.Failed &&
-    recovered.status == SqliteLiveStatus.ChecksPassed && recovered.requires_resume
+    recovered.status == SqliteLiveStatus.ChecksPassed && recovered.recovery == SqliteUpgradeRecovery.Resume
     discard resume_failed_attempt("/usr/bin/sqlite3", database, bundle.operation.attempt_id)?
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.None => true,
         _ => false
     }
-    let changed = migration("orders_failure", "upgrade_2", 2, old_receipt, new_receipt)?
+    let changed = migration("orders_failure", "upgrade_2", 2, FailurePolicy.Stop, old_receipt, new_receipt)?
     assert sqlite_migration_identity(changed)? != sqlite_migration_identity(bundle)?
     assert match upgrade_sqlite_migration("/usr/bin/sqlite3", database, changed) {
         Result.Err(_) => true,
@@ -424,6 +428,114 @@ fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Te
     let failed_rollback = inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, bundle)?
     assert failed_rollback.attempt_state == DeploymentState.RollbackFailed &&
     failed_rollback.status == SqliteLiveStatus.LayoutMismatch && failed_rollback.requires_retry
+    Result.Ok(true)
+}
+
+fn failure_policy_roundtrip(database Text, old_receipt Text, new_receipt Text,
+    hotfix_receipt Text) Result[Bool, Text] {
+    let tool = "/usr/bin/sqlite3"
+    discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10);")?
+    let bundle = migration("rollback_fresh", "rollback_1", 1, FailurePolicy.Rollback, old_receipt, new_receipt)?
+    let stopped = SqliteMigrationPackage {
+        policy = FailurePolicy.Stop
+        ..bundle
+    }
+    assert sqlite_migration_identity(stopped)? != sqlite_migration_identity(bundle)?
+    discard started(database, bundle, hotfix_receipt, false)?
+    let before = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
+    assert match upgrade_sqlite_migration(tool, database, stopped) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match recover_failed_sqlite_upgrade(tool, database, bundle, SqliteLivePhase.FreshUpgrade) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == before
+    assert match upgrade_sqlite_migration(".github/scripts/sqlite-fail-upgrade.mjs", database, bundle) {
+        Result.Err(message) => contains(message, "rollback completed")
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='rollback_1' ORDER BY sequence;")? == "0\n1\n2\n4\n6\n"
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|0\n2|10\n"
+    assert match current(tool, database)? {
+        BasisEvidence.Observed(basis) => basis == bundle.from_schema.basis
+        _ => false
+    }
+    let recovered_count = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
+    assert recover_failed_sqlite_upgrade(tool, database, bundle, SqliteLivePhase.FreshUpgrade)?.state == DeploymentState.RollbackComplete
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == recovered_count
+
+    // A failed fresh upgrade did not create retained v2 data. Matching empty
+    // tables alone must not manufacture that lineage from RollbackComplete.
+    discard fixture_sql(database, """
+        CREATE TABLE "loom_archive_zero_amounts"(entity_id INTEGER PRIMARY KEY, original_amount INTEGER NOT NULL, restorable INTEGER NOT NULL DEFAULT 1 CHECK(restorable IN (0,1))) STRICT;
+        CREATE TABLE "notes"("id" INTEGER PRIMARY KEY, "body" TEXT NOT NULL) STRICT;
+        """)?
+    let following = migration("rollback_following", "rollback_2", 1, FailurePolicy.Rollback, old_receipt, new_receipt)?
+    assert inspect_live_sqlite_upgrade(tool, database, following, SqliteLivePhase.RetainedReupgrade)?.status == SqliteLiveStatus.DataOrLineageMismatch
+    discard fixture_sql(database, "DROP TABLE notes; DROP TABLE loom_archive_zero_amounts;")?
+    discard start_sqlite_migration(tool, database, following)?
+    assert upgrade_sqlite_migration(tool, database, following)?.state == DeploymentState.Complete
+    assert downgrade_sqlite_migration(tool, database, following)?.state == DeploymentState.RollbackComplete
+    let after_downgrade = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
+    assert match recover_failed_sqlite_upgrade(tool, database, following, SqliteLivePhase.RetainedReupgrade) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == after_downgrade
+    discard fixture_sql(database, "INSERT INTO notes VALUES(7,'retained'); INSERT INTO orders VALUES(3,0);")?
+
+    let retained = migration("rollback_retained", "rollback_3", 2, FailurePolicy.Rollback, old_receipt, new_receipt)?
+    let identity = sqlite_migration_identity(retained)?
+    let proposal = prepare_plan("unused_retained", retained.from_schema.basis,
+        retained.to_schema.basis, retained.policy, identity)?
+    discard register(tool, database, proposal)?
+    let selected = prepare_plan(retained.operation.attempt_id, retained.from_schema.basis,
+        retained.to_schema.basis, retained.policy, identity)?
+    discard replace_unstarted_attempt(tool, database, proposal.id, selected)?
+    discard start_sqlite_migration(tool, database, retained)?
+    assert inspect_live_sqlite_upgrade(tool, database, retained, SqliteLivePhase.RetainedReupgrade)?.status == SqliteLiveStatus.ChecksPassed
+    discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=7 WHERE entity_id=1;")?
+    assert match reupgrade_sqlite_migration(tool, database, retained) {
+        Result.Err(message) => contains(message, "rollback needs inspection")
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='rollback_3' ORDER BY sequence DESC LIMIT 1;")? == "5\n"
+    assert match current(tool, database)? {
+        BasisEvidence.None => true
+        _ => false
+    }
+    let unresolved_count = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
+    let unresolved = inspect_live_sqlite_upgrade(tool, database, retained, SqliteLivePhase.RetainedReupgrade)?
+    assert unresolved.attempt_state == DeploymentState.RollbackFailed &&
+    unresolved.status == SqliteLiveStatus.DataOrLineageMismatch && unresolved.recovery == SqliteUpgradeRecovery.Rollback
+    assert match inspect_live_sqlite_downgrade(tool, database, retained) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match downgrade_sqlite_migration(tool, database, retained) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == unresolved_count
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|0\n2|10\n3|0\n"
+    assert fixture_sql(database, "SELECT body FROM notes WHERE id=7;")? == "retained\n"
+    assert match resume_failed_attempt(tool, database, retained.operation.attempt_id) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=0 WHERE entity_id=1;")?
+    let repair = inspect_live_sqlite_upgrade(tool, database, retained, SqliteLivePhase.RetainedReupgrade)?
+    assert repair.status == SqliteLiveStatus.ChecksPassed && repair.recovery == SqliteUpgradeRecovery.Rollback
+    assert recover_failed_sqlite_upgrade(tool, database, retained, SqliteLivePhase.RetainedReupgrade)?.state == DeploymentState.RollbackComplete
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events WHERE attempt_id='rollback_3' AND state=3;")? == "0\n"
+    assert fixture_sql(database, "SELECT body FROM notes WHERE id=7;")? == "retained\n"
+    let final = migration("rollback_final", "rollback_4", 2, FailurePolicy.Rollback, old_receipt, new_receipt)?
+    discard start_sqlite_migration(tool, database, final)?
+    assert reupgrade_sqlite_migration(tool, database, final)?.state == DeploymentState.Complete
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|2\n"
+    assert fixture_sql(database, "SELECT body FROM notes WHERE id=7;")? == "retained\n"
     Result.Ok(true)
 }
 
@@ -537,14 +649,18 @@ fn rejects_corrupt_receipt_and_artifact(database Text, receipt_path Text) Bool {
 
 fn main() {
     let args = arguments()
-    assert length(args) == 6
-    assert match succeeds(get(args, 1), get(args, 3), get(args, 4), get(args, 5)) {
+    assert length(args) == 7
+    assert match succeeds(get(args, 1), get(args, 4), get(args, 5), get(args, 6)) {
         Result.Ok(value) => value,
         Result.Err(_) => false
     }
-    assert match rolls_back_failed_transaction(get(args, 2), get(args, 3), get(args, 4), get(args, 5)) {
+    assert match rolls_back_failed_transaction(get(args, 2), get(args, 4), get(args, 5), get(args, 6)) {
         Result.Ok(value) => value,
         Result.Err(_) => false
     }
-    assert rejects_corrupt_receipt_and_artifact(get(args, 2), get(args, 4))
+    assert match failure_policy_roundtrip(get(args, 3), get(args, 4), get(args, 5), get(args, 6)) {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+    assert rejects_corrupt_receipt_and_artifact(get(args, 2), get(args, 5))
 }

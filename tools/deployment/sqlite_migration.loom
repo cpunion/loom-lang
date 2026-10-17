@@ -50,7 +50,7 @@ fn plan_part(output Bytes, value Text) {
 // retries cannot silently select another replacement or storage layout.
 fn positive_amount_plan_digest(plan SqlitePositiveAmountUpgrade) Text {
     let output = new()
-    plan_part(output, "loom-sqlite-positive-amount-action-v1")
+    plan_part(output, "loom-sqlite-positive-amount-action-v2")
     plan_part(output, plan.attempt_id)
     plan_part(output, plan.from_basis)
     plan_part(output, plan.to_basis)
@@ -113,8 +113,10 @@ fn exact_table(name Text, ddl Text) Text {
 }
 
 fn retained_lineage(plan SqlitePositiveAmountUpgrade) Text {
-    var query = "EXISTS (SELECT 1 FROM loom_deploy_events WHERE sequence=(SELECT max(sequence) FROM loom_deploy_events WHERE attempt_id!="
-    query = concat(query, concat(literal(plan.attempt_id), ")"))
+    // Unstarted proposals and recovery of an uncommitted upgrade do not create
+    // retained v2 data. Require rollback of the last actually completed basis.
+    var query = "EXISTS (SELECT 1 FROM loom_deploy_events WHERE attempt_id=(SELECT attempt_id FROM loom_deploy_events WHERE state IN (3,7) AND attempt_id!="
+    query = concat(query, concat(literal(plan.attempt_id), " ORDER BY sequence DESC LIMIT 1)"))
     query = concat(query, concat(" AND state=", to_text(state_number(DeploymentState.RollbackComplete))))
     query = concat(query, concat(" AND from_basis=", literal(plan.from_basis)))
     query = concat(query, concat(" AND to_basis=", literal(plan.to_basis)))
@@ -188,6 +190,26 @@ fn trigger_sql(plan SqlitePositiveAmountUpgrade, index Int) Text {
 fn checked(condition Text) Text {
     concat("INSERT INTO loom_migration_checks(ok) SELECT CASE WHEN (",
         concat(condition, ") THEN 1 ELSE 0 END;\n"))
+}
+
+// Compare-and-swap the complete recorded event inside the data transaction.
+fn migration_event_guard(previous Stored) Text {
+    let attempt = previous.attempt
+    var condition = concat("(SELECT max(sequence) FROM loom_deploy_events)=", to_text(previous.sequence))
+    condition = concat(condition, concat(" AND EXISTS (SELECT 1 FROM loom_deploy_events WHERE sequence=", to_text(previous.sequence)))
+    condition = concat(condition, concat(" AND attempt_id=", literal(attempt.id)))
+    condition = concat(condition, concat(" AND from_basis=", literal(attempt.from_basis)))
+    condition = concat(condition, concat(" AND to_basis=", literal(attempt.to_basis)))
+    condition = concat(condition, concat(" AND plan_digest=", literal(attempt.plan_digest)))
+    condition = concat(condition, concat(" AND policy=", to_text(policy_number(attempt.policy))))
+    concat(condition, concat(" AND state=", concat(to_text(state_number(attempt.state)), ")")))
+}
+
+fn migration_completion(previous Stored, completed Attempt) Text {
+    let event = concat("INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) SELECT ",
+        concat(event_values(completed), concat(" WHERE (SELECT max(sequence) FROM loom_deploy_events)=",
+                concat(to_text(previous.sequence), ";\n"))))
+    concat(event, checked("changes()=1"))
 }
 
 fn ordinary_table(value Text) Text {
@@ -341,11 +363,17 @@ pub enum SqliteLiveStatus {
     DataOrLineageMismatch
 }
 
+pub enum SqliteUpgradeRecovery {
+    None
+    Resume
+    Rollback
+}
+
 pub record SqliteLiveInspection {
     phase SqliteLivePhase
     attempt_state DeploymentState
     status SqliteLiveStatus
-    requires_resume Bool
+    recovery SqliteUpgradeRecovery
 }
 
 fn and_sql(left Text, right Text) Text {
@@ -457,9 +485,8 @@ fn inspect_live_upgrade_source(tool Text, database Text, plan SqlitePositiveAmou
 // back both data edits and the completion event. There is no caller SQL in the
 // script, and the only interpolated strings pass the strict identifier/digest
 // checks above. The Started event is intentionally recorded before this call.
-fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade,
-    plan_identity Text, retained Bool) Result[Attempt, Text] {
+fn upgrade_mode(tool Text, database Text, plan SqlitePositiveAmountUpgrade,
+    plan_identity Text, policy FailurePolicy, retained Bool) Result[Attempt, Text] {
     let previous = match latest(tool, database)? {
         Option.Some(value) => value,
         Option.None => {
@@ -468,11 +495,8 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
     }
     if previous.attempt.id != plan.attempt_id || previous.attempt.from_basis != plan.from_basis ||
     previous.attempt.to_basis != plan.to_basis || previous.attempt.plan_digest != plan_identity ||
-    previous.attempt.state != DeploymentState.Started {
+    previous.attempt.state != DeploymentState.Started || previous.attempt.policy != policy {
         return Result.Err("SQLite upgrade does not match the started attempt")
-    }
-    if previous.attempt.policy != FailurePolicy.Stop {
-        return Result.Err("SQLite upgrade currently supports only Stop failure policy")
     }
     let completed = advance(previous.attempt, Transition.Finish)?
     let orders = quoted(plan.orders)
@@ -481,18 +505,7 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
     let archive = quoted(plan.archive)
 
     var script = "PRAGMA foreign_keys=ON;\nPRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_migration_checks(ok INTEGER NOT NULL CHECK(ok=1));\n"
-    var latest_is_started = concat("(SELECT max(sequence) FROM loom_deploy_events)=", to_text(previous.sequence))
-    latest_is_started = concat(latest_is_started,
-        concat(" AND EXISTS (SELECT 1 FROM loom_deploy_events WHERE sequence=", to_text(previous.sequence)))
-    latest_is_started = concat(latest_is_started, concat(" AND attempt_id=", literal(plan.attempt_id)))
-    latest_is_started = concat(latest_is_started, concat(" AND from_basis=", literal(plan.from_basis)))
-    latest_is_started = concat(latest_is_started, concat(" AND to_basis=", literal(plan.to_basis)))
-    latest_is_started = concat(latest_is_started, concat(" AND plan_digest=", literal(plan_identity)))
-    latest_is_started = concat(latest_is_started,
-        concat(" AND policy=", to_text(policy_number(previous.attempt.policy))))
-    latest_is_started = concat(latest_is_started,
-        concat(" AND state=", concat(to_text(state_number(DeploymentState.Started)), ")")))
-    script = concat(script, checked(latest_is_started))
+    script = concat(script, checked(migration_event_guard(previous)))
     script = concat(script, checked(exact_table(plan.orders, source_ddl(plan))))
     script = concat(script, checked(concat(
                 "(SELECT count(*) FROM main.sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*')=",
@@ -571,21 +584,7 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
         trigger_index = trigger_index + 1
     }
     script = concat(script, checked("(SELECT count(*) FROM main.sqlite_master WHERE type='trigger')=6"))
-    var event = "INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) SELECT "
-    event = concat(event, literal(plan.attempt_id))
-    event = concat(event, ",")
-    event = concat(event, literal(plan.from_basis))
-    event = concat(event, ",")
-    event = concat(event, literal(plan.to_basis))
-    event = concat(event, ",")
-    event = concat(event, literal(plan_identity))
-    event = concat(event, ",")
-    event = concat(event, to_text(policy_number(completed.policy)))
-    event = concat(event, concat(",", to_text(state_number(completed.state))))
-    event = concat(event, " WHERE (SELECT max(sequence) FROM loom_deploy_events)=")
-    event = concat(event, to_text(previous.sequence))
-    script = concat(script, concat(event, ";\n"))
-    script = concat(script, checked("changes()=1"))
+    script = concat(script, migration_completion(previous, completed))
     script = concat(script, "COMMIT;\n")
     match execute(tool, database, script) {
         Result.Ok(_) => Result.Ok(completed),
@@ -593,7 +592,19 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
             // If the child crashed after COMMIT, the outcome is unknown until
             // the ledger is inspected. Never overwrite an observed completion.
             match note_failure(tool, database, plan.attempt_id) {
-                Result.Ok(_) => Result.Err("SQLite upgrade failed and was recorded as failed"),
+                Result.Ok(_) => {
+                    if policy == FailurePolicy.Rollback {
+                        match execute_failed_upgrade_recovery(tool, database, plan, plan_identity, retained) {
+                            Result.Ok(_) => {
+                                return Result.Err("SQLite upgrade failed; rollback completed")
+                            }
+                            Result.Err(_) => {
+                                return Result.Err("SQLite upgrade failed; rollback needs inspection")
+                            }
+                        }
+                    }
+                    Result.Err("SQLite upgrade failed and was recorded as failed")
+                },
                 Result.Err(_) => Result.Err("SQLite upgrade outcome needs inspection")
             }
         }
@@ -602,12 +613,14 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
 
 // Fresh upgrade starts with no retained tables. Re-upgrade requires the exact
 // retained notes/archive shape left by this slice's downgrade.
-fn execute_positive_amount_upgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, plan_identity Text) Result[Attempt, Text] {
-    upgrade_mode(tool, database, from, to, catalog, plan, plan_identity, false)
+fn execute_positive_amount_upgrade(tool Text, database Text,
+    plan SqlitePositiveAmountUpgrade, plan_identity Text,
+    policy FailurePolicy) Result[Attempt, Text] {
+    upgrade_mode(tool, database, plan, plan_identity, policy, false)
 }
 
-fn execute_positive_amount_reupgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, plan_identity Text) Result[Attempt, Text] {
-    upgrade_mode(tool, database, from, to, catalog, plan, plan_identity, true)
+fn execute_positive_amount_reupgrade(tool Text, database Text,
+    plan SqlitePositiveAmountUpgrade, plan_identity Text,
+    policy FailurePolicy) Result[Attempt, Text] {
+    upgrade_mode(tool, database, plan, plan_identity, policy, true)
 }

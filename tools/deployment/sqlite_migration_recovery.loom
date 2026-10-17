@@ -85,11 +85,77 @@ fn inspect_live_downgrade_source(tool Text, database Text,
     Result.Ok(SqliteLiveStatus.ChecksPassed)
 }
 
+fn upgrade_never_completed(plan SqlitePositiveAmountUpgrade) Text {
+    concat("NOT EXISTS (SELECT 1 FROM loom_deploy_events WHERE attempt_id=",
+        concat(literal(plan.attempt_id), concat(" AND state=",
+                concat(to_text(state_number(DeploymentState.Complete)), ")"))))
+}
+
+// The failed upgrade transaction already restored its data by atomic rollback.
+// Observe that source again under the write lock; never run the v2 downgrade
+// against an uncommitted upgrade, and never equate a Fail event with recovery.
+fn execute_failed_upgrade_recovery(tool Text, database Text, plan SqlitePositiveAmountUpgrade,
+    plan_identity Text, retained Bool) Result[Attempt, Text] {
+    let previous = match latest(tool, database)? {
+        Option.Some(value) => value
+        Option.None => {
+            return Result.Err("deployment attempt is not registered")
+        }
+    }
+    let attempt = previous.attempt
+    if attempt.id != plan.attempt_id || attempt.from_basis != plan.from_basis ||
+    attempt.to_basis != plan.to_basis || attempt.plan_digest != plan_identity ||
+    attempt.policy != FailurePolicy.Rollback {
+        return Result.Err("SQLite recovery does not match the failed upgrade")
+    }
+    let never_completed = upgrade_never_completed(plan)
+    if !live_check(tool, database, never_completed)? {
+        return Result.Err("a completed SQLite upgrade needs downgrade, not failed-upgrade recovery")
+    }
+    if attempt.state == DeploymentState.RollbackComplete {
+        return Result.Ok(attempt)
+    }
+    if attempt.state == DeploymentState.Failed || attempt.state == DeploymentState.RollbackFailed {
+        discard record_event(tool, database, plan.attempt_id, Transition.BeginRollback)?
+    } else {
+        if attempt.state != DeploymentState.RollbackStarted {
+            return Result.Err("SQLite recovery requires a failed upgrade or pending rollback")
+        }
+    }
+    let started = match latest(tool, database)? {
+        Option.Some(value) => value
+        Option.None => {
+            return Result.Err("SQLite recovery attempt disappeared")
+        }
+    }
+    if !same_attempt_plan(attempt, started.attempt) || started.attempt.state != DeploymentState.RollbackStarted {
+        return Result.Err("SQLite recovery attempt changed")
+    }
+    let completed = advance(started.attempt, Transition.FinishRollback)?
+    var script = "PRAGMA foreign_keys=ON;\nPRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_migration_checks(ok INTEGER NOT NULL CHECK(ok=1));\n"
+    script = concat(script, checked(migration_event_guard(started)))
+    script = concat(script, checked(never_completed))
+    script = concat(script, checked(live_source_layout(plan, retained)))
+    script = concat(script, checked(live_source_data(plan, retained)))
+    script = concat(script, migration_completion(started, completed))
+    script = concat(script, "COMMIT;\n")
+    match execute(tool, database, script) {
+        Result.Ok(_) => Result.Ok(completed)
+        Result.Err(_) => {
+            match record_event(tool, database, plan.attempt_id, Transition.FailRollback) {
+                Result.Ok(_) => Result.Err("SQLite failed-upgrade rollback was recorded as failed")
+                Result.Err(_) => Result.Err("SQLite failed-upgrade rollback outcome needs inspection")
+            }
+        }
+    }
+}
+
 // Only reverses this package's fixed positive-amount upgrade. The notes and
 // archive tables are retained so downgrade never drops newly created data.
 // An amount changed by v2 is not overwritten by an older archived zero.
-fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, plan_identity Text) Result[Attempt, Text] {
+fn execute_positive_amount_downgrade(tool Text, database Text,
+    plan SqlitePositiveAmountUpgrade, plan_identity Text,
+    policy FailurePolicy) Result[Attempt, Text] {
     let previous = match latest(tool, database)? {
         Option.Some(value) => value,
         Option.None => {
@@ -98,8 +164,11 @@ fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, to S
     }
     if previous.attempt.id != plan.attempt_id || previous.attempt.from_basis != plan.from_basis ||
     previous.attempt.to_basis != plan.to_basis || previous.attempt.plan_digest != plan_identity ||
-    previous.attempt.policy != FailurePolicy.Stop {
+    previous.attempt.policy != policy {
         return Result.Err("SQLite downgrade does not match the deployed attempt")
+    }
+    if live_check(tool, database, upgrade_never_completed(plan))? {
+        return Result.Err("SQLite downgrade requires an observed completed upgrade")
     }
     if previous.attempt.state == DeploymentState.Complete || previous.attempt.state == DeploymentState.RollbackFailed {
         discard record_event(tool, database, plan.attempt_id, Transition.BeginRollback)?
@@ -124,18 +193,8 @@ fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, to S
     let archive = quoted(plan.archive)
 
     var script = "PRAGMA foreign_keys=ON;\nPRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_migration_checks(ok INTEGER NOT NULL CHECK(ok=1));\n"
-    var current_event = concat("(SELECT max(sequence) FROM loom_deploy_events)=", to_text(started.sequence))
-    current_event = concat(current_event,
-        concat(" AND EXISTS (SELECT 1 FROM loom_deploy_events WHERE sequence=", to_text(started.sequence)))
-    current_event = concat(current_event, concat(" AND attempt_id=", literal(plan.attempt_id)))
-    current_event = concat(current_event, concat(" AND from_basis=", literal(plan.from_basis)))
-    current_event = concat(current_event, concat(" AND to_basis=", literal(plan.to_basis)))
-    current_event = concat(current_event, concat(" AND plan_digest=", literal(plan_identity)))
-    current_event = concat(current_event,
-        concat(" AND policy=", to_text(policy_number(started.attempt.policy))))
-    current_event = concat(current_event,
-        concat(" AND state=", concat(to_text(state_number(DeploymentState.RollbackStarted)), ")")))
-    script = concat(script, checked(current_event))
+    script = concat(script, checked(migration_event_guard(started)))
+    script = concat(script, checked(concat("NOT ", upgrade_never_completed(plan))))
     script = concat(script, checked(exact_table(plan.orders, source_ddl(plan))))
     script = concat(script, checked(exact_table(plan.archive, archive_ddl(plan))))
     script = concat(script, checked(exact_table(plan.notes, notes_ddl(plan))))
@@ -184,21 +243,7 @@ fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, to S
         concat(orders, concat(" WHERE typeof(", concat(amount,
                     concat(")!='integer' OR ", concat(amount, "<0)"))))))
     script = concat(script, checked(nonnegative))
-    var event = "INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) SELECT "
-    event = concat(event, literal(plan.attempt_id))
-    event = concat(event, ",")
-    event = concat(event, literal(plan.from_basis))
-    event = concat(event, ",")
-    event = concat(event, literal(plan.to_basis))
-    event = concat(event, ",")
-    event = concat(event, literal(plan_identity))
-    event = concat(event, ",")
-    event = concat(event, to_text(policy_number(completed.policy)))
-    event = concat(event, concat(",", to_text(state_number(completed.state))))
-    event = concat(event, " WHERE (SELECT max(sequence) FROM loom_deploy_events)=")
-    event = concat(event, to_text(started.sequence))
-    script = concat(script, concat(event, ";\n"))
-    script = concat(script, checked("changes()=1"))
+    script = concat(script, migration_completion(started, completed))
     script = concat(script, "COMMIT;\n")
     match execute(tool, database, script) {
         Result.Ok(_) => Result.Ok(completed),
