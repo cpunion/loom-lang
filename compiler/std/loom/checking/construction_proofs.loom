@@ -1,6 +1,7 @@
 import std.loom.proof.established_predicates
 import std.loom.eval.number
 import std.loom.eval.floating
+import std.loom.eval.flag
 
 // A bare, unconstrained scalar input admits these concrete values. One false
 // predicate refutes universal construction; successful probes never prove it.
@@ -12,6 +13,8 @@ fn refuted_scalar_construction(context Context, value Expr, target Int) Bool {
     }
     let inputs = if value.ty == 1 {
         [number(0), number(1)]
+    } else if value.ty == 2 {
+        [flag(false), flag(true)]
     } else if value.ty == 5 {
         [floating(0.0), floating(1.0), floating(0.0 / 0.0)]
     } else if value.ty == 3 {

@@ -323,6 +323,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/patterns",
         "examples/floats",
         "examples/bitwise",
+        "examples/bool_constraints",
         "examples/concepts",
         "examples/dynamic",
         "examples/associated",

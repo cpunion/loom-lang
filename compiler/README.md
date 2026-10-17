@@ -2829,10 +2829,12 @@ to assertions, branch/exit guards and exact immutable copies. Check-only call
 identities remain separate from executable reachability, and concrete type and
 compile-time arguments remain part of the selected instance.
 
-Int, IEEE Float and immutable Text use their own value theories. Text equality
+Int, Bool, IEEE Float and immutable Text use their own value theories. Text equality
 and immutable copies do not expose native addresses or make mutable bindings
 stable; unknown alternatives remain unknown. See the
 [Text construction example](examples/text_contracts/construction.loom).
+The [Boolean constraint example](examples/bool_constraints) combines direct and
+checked construction, helper predicates, weakening and concept guarantees.
 
 ```loom
 type Positive = Int where self > 0
@@ -2879,7 +2881,7 @@ and facts inferred by joining two live branches. Literal Float predicates can be
 `Result`; calls and input expressions are never duplicated to seek a proof.
 See the [relational construction example](examples/relational_constraints).
 
-Predicates over `Int`, `Float` or `Text` may call ordinary pure helpers, including helpers with
+Predicates over `Int`, `Bool`, `Float` or `Text` may call ordinary pure helpers, including helpers with
 loops, recursion, and freshly allocated data:
 
 ```loom

@@ -1,0 +1,90 @@
+import std.result.Result
+import std.result.ConstraintError
+import std.list.get
+
+type Confirmed = Bool where self
+
+type Rejected = Bool where negated(self)
+
+fn negated(value Bool) Bool {
+    !value
+}
+
+type AnyBool = Bool where self == self
+
+concept TruthSource {
+    fn confirm(self Self) Confirmed
+}
+
+impl TruthSource for Confirmed {
+    fn confirm(self Confirmed) Confirmed {
+        self
+    }
+}
+
+fn dynamic(value dyn TruthSource) Bool
+ensures result
+{
+    value.confirm()
+}
+
+fn checked(value Bool) Result[Confirmed, ConstraintError] {
+    Confirmed(value)
+}
+
+fn observed(value Confirmed) Bool
+ensures result
+{
+    value
+}
+
+fn guarded(value Bool) Confirmed
+requires value
+{
+    Confirmed(value)
+}
+
+fn weakened(value Confirmed) AnyBool {
+    AnyBool(value)
+}
+
+fn identity[T](value T) T {
+    value
+}
+
+fn exercise() {
+    let yes = Confirmed(true)
+    assert observed(yes) && observed(guarded(true))
+    assert dynamic(yes)
+    let prepared = comptime {
+        Confirmed(true)
+    }
+    assert observed(prepared)
+    let no = comptime {
+        Rejected(false)
+    }
+    assert !no
+    let either = weakened(yes)
+    let ordinary Bool = either
+    assert ordinary && !AnyBool(false)
+    assert match checked(false) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    assert match checked(true) {
+        Result.Ok(value) => observed(value)
+        Result.Err(_) => false
+    }
+    let pair = (identity(yes), no)
+    assert observed(pair.0) && !pair.1
+    let flags = [yes, prepared]
+    assert observed(get(flags, 1))
+    let captured = fn() Bool {
+        observed(yes)
+    }
+    assert captured()
+}
+
+fn main() {
+    exercise()
+}
