@@ -1,0 +1,3 @@
+test fn constrained_bool_values_keep_their_invariants() {
+    exercise()
+}

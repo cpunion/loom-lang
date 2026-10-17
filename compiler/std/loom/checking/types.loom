@@ -15,26 +15,48 @@ import std.result.Result
 import std.int.to_text
 
 fn simple_type(kind TypeKind, symbol Int, arguments List[Int]) Type {
-    Type { kind = kind symbol = symbol arguments = arguments pack_widths = new[Int]() fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() }
+    Type {
+        kind = kind
+        symbol = symbol
+        arguments = arguments
+        pack_widths = new[Int]()
+        fields = new[Field]()
+        variants = new[Variant]()
+        constraint = new[Expr]()
+    }
 }
+
 fn base_type(env Environment, ty Int) Int {
     let shape = get(env.types, ty)
-    if shape.kind == TypeKind.Refined { get(shape.fields, 0).ty } else { ty }
+    if shape.kind == TypeKind.Refined {
+        get(shape.fields, 0).ty
+    } else {
+        ty
+    }
 }
+
 // Values wholly composed of immutable leaves can be observed by a persistent
 // predicate. A record may also carry shared siblings that it never observes.
 fn inline_constraint_base(env Environment, ty Int, depth Int) Bool {
-    if depth >= 64 { return false }
+    if depth >= 64 {
+        return false
+    }
     let shape = get(env.types, ty)
-    if shape.kind == TypeKind.Int || shape.kind == TypeKind.Bool || shape.kind == TypeKind.Float || shape.kind == TypeKind.Text { return true }
+    if shape.kind == TypeKind.Int || shape.kind == TypeKind.Bool || shape.kind == TypeKind.Float || shape.kind == TypeKind.Text {
+        return true
+    }
     if shape.kind == TypeKind.Refined {
         return get(env.type_states, ty).phase == 2 && inline_constraint_base(env, get(shape.fields, 0).ty, depth + 1)
     }
     if (shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple && shape.kind != TypeKind.Enum) ||
-        get(env.type_states, ty).phase != 2 { return false }
+    get(env.type_states, ty).phase != 2 {
+        return false
+    }
     var index = 0
     while index < length(shape.fields) {
-        if !inline_constraint_base(env, get(shape.fields, index).ty, depth + 1) { return false }
+        if !inline_constraint_base(env, get(shape.fields, index).ty, depth + 1) {
+            return false
+        }
         index = index + 1
     }
     index = 0
@@ -42,16 +64,20 @@ fn inline_constraint_base(env Environment, ty Int, depth Int) Bool {
         let fields = get(shape.variants, index).fields
         var field = 0
         while field < length(fields) {
-            if !inline_constraint_base(env, get(fields, field), depth + 1) { return false }
+            if !inline_constraint_base(env, get(fields, field), depth + 1) {
+                return false
+            }
             field = field + 1
         }
         index = index + 1
     }
     true
 }
+
 fn nominal_data(kind NodeKind) Bool {
     kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined
 }
+
 fn initialize_types(env Environment) {
     discard intern(env, TypeKind.Unit, -1, new[Int]())
     discard intern(env, TypeKind.Int, -1, new[Int]())
@@ -60,13 +86,19 @@ fn initialize_types(env Environment) {
     discard intern(env, TypeKind.Bytes, -1, new[Int]())
     discard intern(env, TypeKind.Float, -1, new[Int]())
 }
+
 fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
     let ty = std.loom.typed.structural_type(env.types, kind, symbol, arguments)
     if length(env.type_states) < length(env.types) {
-        push(env.type_states, TypeState { phase = 2 task_width = -1 list_writes = 0 })
+        push(env.type_states, TypeState {
+                phase = 2
+                task_width = -1
+                list_writes = 0
+            })
     }
     ty
 }
+
 fn tuple_type(env Environment, owner Int, node Node, elements List[Int]) Result[Int, Failure] {
     // Zero-length packs produce an inferred empty tuple. The parser still
     // rejects source (), and no-result expressions remain a different type.
@@ -82,6 +114,7 @@ fn tuple_type(env Environment, owner Int, node Node, elements List[Int]) Result[
     }
     Result.Ok(intern(env, TypeKind.Tuple, -1, elements))
 }
+
 fn abstract_arguments(env Environment, count Int) List[Int] {
     let arguments = new[Int]()
     var index = 0
@@ -91,6 +124,7 @@ fn abstract_arguments(env Environment, count Int) List[Int] {
     }
     arguments
 }
+
 fn find_data(env Environment, owner Int, node Node, path Text) Result[Int, Failure] {
     let current = symbol(env, owner)
     let options = candidates(env.source, current.file, current.test_only, path)
@@ -99,25 +133,40 @@ fn find_data(env Environment, owner Int, node Node, path Text) Result[Int, Failu
     while index < length(options) {
         let candidate = get(options, index)
         if nominal_data(symbol(env, candidate).node.kind) {
-            if found >= 0 { return Result.Err(failure(env, owner, node, "ambiguous type; qualify its name")) }
+            if found >= 0 {
+                return Result.Err(failure(env, owner, node, "ambiguous type; qualify its name"))
+            }
             found = candidate
         }
         index = index + 1
     }
     Result.Ok(found)
 }
+
 fn resolve(env Environment, owner Int, node Node, arguments List[Int], depth Int) Result[Int, Failure] {
     resolve_bound(env, owner, node, arguments, requirements(env, owner, arguments)?, depth)
 }
+
 fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
     let lexical = lexical_owner(env, owner)
-    if lexical != owner { return resolve_bound(env, lexical, node, arguments, obligations, depth) }
-    if depth > 64 { return Result.Err(failure(env, owner, node, "type specialization depth exceeded")) }
+    if lexical != owner {
+        return resolve_bound(env, lexical, node, arguments, obligations, depth)
+    }
+    if depth > 64 {
+        return Result.Err(failure(env, owner, node, "type specialization depth exceeded"))
+    }
     if node.kind == NodeKind.Apply {
-        let applied = Node { kind = NodeKind.Type value = child(node, 0).value children = child(node, 1).children span = node.span }
+        let applied = Node {
+            kind = NodeKind.Type
+            value = child(node, 0).value
+            children = child(node, 1).children
+            span = node.span
+        }
         return resolve_bound(env, owner, applied, arguments, obligations, depth)
     }
-    if node.kind == NodeKind.DynType { return dynamic_type(env, owner, node, arguments, obligations, depth + 1) }
+    if node.kind == NodeKind.DynType {
+        return dynamic_type(env, owner, node, arguments, obligations, depth + 1)
+    }
     if node.kind == NodeKind.FunctionType {
         let shape = new[Int]()
         let parameters = group(node, NodeKind.Parameters)
@@ -127,7 +176,11 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
             index = index + 1
         }
         let output = group(node, NodeKind.ReturnType)
-        push(shape, if length(output) == 0 { 0 } else { resolve_bound(env, owner, get(output, 0), arguments, obligations, depth + 1)? })
+        push(shape, if length(output) == 0 {
+                0
+            } else {
+                resolve_bound(env, owner, get(output, 0), arguments, obligations, depth + 1)?
+            })
         return Result.Ok(intern(env, TypeKind.Function, -1, shape))
     }
     if node.kind == NodeKind.TupleType || node.kind == NodeKind.Tuple {
@@ -147,7 +200,9 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
     if std.text.starts_with(node.value, "$type#") && first_dot(node.value) == length(node.value) {
         let index = match std.int.parse(slice(node.value, 6, length(node.value))) {
             Result.Ok(value) => value
-            Result.Err(_) => { return Result.Err(failure(env, owner, node, "invalid generated type reference")) }
+            Result.Err(_) => {
+                return Result.Err(failure(env, owner, node, "invalid generated type reference"))
+            }
         }
         if index < 0 || index >= length(env.types) || length(node.children) != 0 {
             return Result.Err(failure(env, owner, node, "invalid generated type reference"))
@@ -155,31 +210,61 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
         return Result.Ok(index)
     }
     var builtin = -1
-    if node.value == "Self" { builtin = self_type(env, owner, arguments, depth)? }
-    if node.value == "Int" { builtin = 1 }
-    if node.value == "Bool" { builtin = 2 }
-    if node.value == "Text" { builtin = 3 }
-    if node.value == "Bytes" { builtin = 4 }
-    if node.value == "Float" { builtin = 5 }
-    if node.value == "type" { builtin = meta_type(env) }
-    if node.value == "Unit" { return Result.Err(failure(env, owner, node, "omit Unit; it is not a source type")) }
+    if node.value == "Self" {
+        builtin = self_type(env, owner, arguments, depth)?
+    }
+    if node.value == "Int" {
+        builtin = 1
+    }
+    if node.value == "Bool" {
+        builtin = 2
+    }
+    if node.value == "Text" {
+        builtin = 3
+    }
+    if node.value == "Bytes" {
+        builtin = 4
+    }
+    if node.value == "Float" {
+        builtin = 5
+    }
+    if node.value == "type" {
+        builtin = meta_type(env)
+    }
+    if node.value == "Unit" {
+        return Result.Err(failure(env, owner, node, "omit Unit; it is not a source type"))
+    }
     let parameters = expanded_parameters(env, owner, length(arguments))
     var index = 0
     while index < length(parameters) {
-        if node.value == get(parameters, index).value { builtin = get(arguments, index + parameter_offset(env, owner)) }
+        if node.value == get(parameters, index).value {
+            builtin = get(arguments, index + parameter_offset(env, owner))
+        }
         index = index + 1
     }
     if builtin >= 0 {
-        if length(node.children) != 0 { return Result.Err(failure(env, owner, node, "this type takes no arguments")) }
+        if length(node.children) != 0 {
+            return Result.Err(failure(env, owner, node, "this type takes no arguments"))
+        }
         return Result.Ok(builtin)
     }
     let projected = projection(env, owner, node, arguments, obligations, depth)?
-    if projected >= 0 { return Result.Ok(projected) }
-    let declaration = if node.value == "List" || node.value == "Task" { -1 } else { find_data(env, owner, node, node.value)? }
+    if projected >= 0 {
+        return Result.Ok(projected)
+    }
+    let declaration = if node.value == "List" || node.value == "Task" {
+        -1
+    } else {
+        find_data(env, owner, node, node.value)?
+    }
     let selected = if declaration >= 0 {
         data_type_groups(env, owner, node, declaration, node.children)?
     } else {
-        DataSelection { count = length(node.children) widths = new[Int]() supplied = node.children }
+        DataSelection {
+            count = length(node.children)
+            widths = new[Int]()
+            supplied = node.children
+        }
     }
     let args = new[Int]()
     index = 0
@@ -188,16 +273,23 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
         index = index + 1
     }
     if node.value == "Task" {
-        if length(args) != 1 { return Result.Err(failure(env, owner, node, "Task needs one result type argument")) }
+        if length(args) != 1 {
+            return Result.Err(failure(env, owner, node, "Task needs one result type argument"))
+        }
         return Result.Ok(intern(env, TypeKind.Task, -1, args))
     }
     if node.value == "List" {
-        if length(args) != 1 { return Result.Err(failure(env, owner, node, "List requires one element type")) }
+        if length(args) != 1 {
+            return Result.Err(failure(env, owner, node, "List requires one element type"))
+        }
         return Result.Ok(intern(env, TypeKind.List, -1, args))
     }
-    if declaration < 0 { return Result.Err(failure(env, owner, node, "unknown or inaccessible type")) }
+    if declaration < 0 {
+        return Result.Err(failure(env, owner, node, "unknown or inaccessible type"))
+    }
     data_type_grouped(env, declaration, args, selected.widths, depth + 1)
 }
+
 fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) Result[Int, Failure] {
     let node = symbol(env, declaration).node
     let widths = if data_pack(node) && one_type_pack(node) {
@@ -207,6 +299,7 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
     }
     data_type_grouped(env, declaration, arguments, widths, depth)
 }
+
 fn data_type_grouped(env Environment, declaration Int, arguments List[Int], widths List[Int], depth Int) Result[Int, Failure] {
     let item = symbol(env, declaration)
     let pack = pack_parameter(item.node)
@@ -221,7 +314,7 @@ fn data_type_grouped(env Environment, declaration Int, arguments List[Int], widt
         part = part + 1
     }
     if (pack < 0 && length(arguments) != length(group(item.node, NodeKind.TypeParameters))) ||
-        (pack >= 0 && (length(widths) != type_pack_count(item.node) || length(arguments) != count)) {
+    (pack >= 0 && (length(widths) != type_pack_count(item.node) || length(arguments) != count)) {
         return Result.Err(failure(env, declaration, item.node, "wrong number of type arguments"))
     }
     var index = 0
@@ -235,7 +328,9 @@ fn data_type_grouped(env Environment, declaration Int, arguments List[Int], widt
     while index < length(env.types) {
         let existing = get(env.types, index)
         if existing.symbol == declaration && (existing.kind == TypeKind.Record || existing.kind == TypeKind.Enum || existing.kind == TypeKind.Refined) && same(existing.arguments, arguments) && same(existing.pack_widths, widths) {
-            if env.expand_data && get(env.type_states, index).phase == 0 { discard expand_type(env, index, depth)? }
+            if env.expand_data && get(env.type_states, index).phase == 0 {
+                discard expand_type(env, index, depth)?
+            }
             return Result.Ok(index)
         }
         index = index + 1
@@ -244,8 +339,14 @@ fn data_type_grouped(env Environment, declaration Int, arguments List[Int], widt
     if depth > 64 {
         return Result.Err(failure(env, declaration, item.node, "type specialization depth exceeded; expansion must be finite"))
     }
-    let kind = if item.node.kind == NodeKind.Record { TypeKind.Record } else {
-        if item.node.kind == NodeKind.Enum { TypeKind.Enum } else { TypeKind.Refined }
+    let kind = if item.node.kind == NodeKind.Record {
+        TypeKind.Record
+    } else {
+        if item.node.kind == NodeKind.Enum {
+            TypeKind.Enum
+        } else {
+            TypeKind.Refined
+        }
     }
     let id = length(env.types)
     let placeholder = Type {
@@ -258,13 +359,26 @@ fn data_type_grouped(env Environment, declaration Int, arguments List[Int], widt
         constraint = new[Expr]()
     }
     push(env.types, placeholder)
-    push(env.type_states, TypeState { phase = 0 task_width = -1 list_writes = 0 })
-    if env.expand_data { discard expand_type(env, id, depth)? }
+    push(env.type_states, TypeState {
+            phase = 0
+            task_width = -1
+            list_writes = 0
+        })
+    if env.expand_data {
+        discard expand_type(env, id, depth)?
+    }
     Result.Ok(id)
 }
+
 fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
-    if depth > 64 { return Result.Err(failure(env, get(env.types, id).symbol, symbol(env, get(env.types, id).symbol).node, "type specialization depth exceeded")) }
-    set(env.type_states, id, TypeState { phase = 1 task_width = -1 list_writes = 0 })
+    if depth > 64 {
+        return Result.Err(failure(env, get(env.types, id).symbol, symbol(env, get(env.types, id).symbol).node, "type specialization depth exceeded"))
+    }
+    set(env.type_states, id, TypeState {
+            phase = 1
+            task_width = -1
+            list_writes = 0
+        })
     let shape = get(env.types, id)
     let declaration = shape.symbol
     let kind = shape.kind
@@ -286,12 +400,19 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
         let member = if pack >= 0 && (original.kind == NodeKind.Field || original.kind == NodeKind.Variant) {
             expand_family_type(env, declaration, original, pack_names(declared_packs(item.node)), shape.pack_widths,
                 unknown_extents(length(shape.pack_widths)), true, 0, false)?
-        } else { original }
+        } else {
+            original
+        }
         let bound = if data_pack(item.node) && !one_type_pack(item.node) {
             bind_data_parameters(member, parameters, arguments)
-        } else { member }
+        } else {
+            member
+        }
         if member.kind == NodeKind.Field {
-            push(fields, Field { name = member.value ty = resolve_bound(env, declaration, child(bound, 0), arguments, obligations, depth + 1)? })
+            push(fields, Field {
+                    name = member.value
+                    ty = resolve_bound(env, declaration, child(bound, 0), arguments, obligations, depth + 1)?
+                })
         }
         if member.kind == NodeKind.Variant {
             let payload = new[Int]()
@@ -300,22 +421,40 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
                 push(payload, resolve_bound(env, declaration, child(bound, field), arguments, obligations, depth + 1)?)
                 field = field + 1
             }
-            push(variants, Variant { name = member.value fields = payload })
+            push(variants, Variant {
+                    name = member.value
+                    fields = payload
+                })
         }
         index = index + 1
     }
     if kind == TypeKind.Refined {
         let base = resolve_bound(env, declaration, child(item.node, type_part(item.node)), arguments, obligations, depth + 1)?
         let base_kind = get(env.types, base).kind
-        if base != 1 && base != 3 && base != 4 && base != 5 && base_kind != TypeKind.Record && base_kind != TypeKind.List {
+        if base != 1 && base != 2 && base != 3 && base != 4 && base != 5 && base_kind != TypeKind.Record && base_kind != TypeKind.List {
             return Result.Err(failure(env, declaration, item.node,
-                "constraints require Int, Float, Text, Bytes, a record or a List base"))
+                    "constraints require Int, Bool, Float, Text, Bytes, a record or a List base"))
         }
-        push(fields, Field { name = "self" ty = base })
+        push(fields, Field {
+                name = "self"
+                ty = base
+            })
         // Predicates are validated after every function signature is available.
     }
-    set(env.types, id, Type { kind = kind symbol = declaration arguments = arguments pack_widths = shape.pack_widths fields = fields variants = variants constraint = constraints })
-    set(env.type_states, id, TypeState { phase = 2 task_width = -1 list_writes = 0 })
+    set(env.types, id, Type {
+            kind = kind
+            symbol = declaration
+            arguments = arguments
+            pack_widths = shape.pack_widths
+            fields = fields
+            variants = variants
+            constraint = constraints
+        })
+    set(env.type_states, id, TypeState {
+            phase = 2
+            task_width = -1
+            list_writes = 0
+        })
     if kind == TypeKind.Refined && length(arguments) != 0 {
         let template = data_type(env, declaration, abstract_arguments(env, length(arguments)), depth + 1)?
         // Header discovery precedes predicate checking. Later specializations
@@ -327,9 +466,12 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     }
     Result.Ok(true)
 }
+
 fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node) Result[Int, Failure] {
     let source = get(env.types, ty)
-    if source.kind == TypeKind.Parameter { return Result.Ok(get(arguments, source.symbol)) }
+    if source.kind == TypeKind.Parameter {
+        return Result.Ok(get(arguments, source.symbol))
+    }
     if source.kind == TypeKind.Family {
         let fresh = fresh_family_parameters(env, source.symbol)
         let body = apply_type_family(env, owner, ty, fresh, node)?
@@ -337,7 +479,9 @@ fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node
     }
     if length(source.arguments) == 0 {
         // Header discovery may have interned nominal data without its fields.
-        if env.expand_data && get(env.type_states, ty).phase == 0 { discard expand_type(env, ty, 0)? }
+        if env.expand_data && get(env.type_states, ty).phase == 0 {
+            discard expand_type(env, ty, 0)?
+        }
         return Result.Ok(ty)
     }
     let args = new[Int]()
@@ -352,32 +496,52 @@ fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node
 // Ordinary substitution and scoped family application share nominal expansion.
 fn rebuild_type(env Environment, owner Int, ty Int, args List[Int], node Node) Result[Int, Failure] {
     let source = get(env.types, ty)
-    if source.kind == TypeKind.List { return Result.Ok(intern(env, TypeKind.List, -1, args)) }
-    if source.kind == TypeKind.Task { return Result.Ok(intern(env, TypeKind.Task, -1, args)) }
-    if source.kind == TypeKind.Function { return Result.Ok(intern(env, TypeKind.Function, -1, args)) }
-    if source.kind == TypeKind.Dyn { return dynamic_instance(env, owner, get(env.interfaces, source.symbol).symbol, args, node) }
-    if source.kind == TypeKind.Associated { return associated_type(env, owner, source.symbol, get(args, 0), argument_tail(args, 1), node, 0) }
-    if source.kind == TypeKind.Tuple { return tuple_type(env, owner, node, args) }
+    if source.kind == TypeKind.List {
+        return Result.Ok(intern(env, TypeKind.List, -1, args))
+    }
+    if source.kind == TypeKind.Task {
+        return Result.Ok(intern(env, TypeKind.Task, -1, args))
+    }
+    if source.kind == TypeKind.Function {
+        return Result.Ok(intern(env, TypeKind.Function, -1, args))
+    }
+    if source.kind == TypeKind.Dyn {
+        return dynamic_instance(env, owner, get(env.interfaces, source.symbol).symbol, args, node)
+    }
+    if source.kind == TypeKind.Associated {
+        return associated_type(env, owner, source.symbol, get(args, 0), argument_tail(args, 1), node, 0)
+    }
+    if source.kind == TypeKind.Tuple {
+        return tuple_type(env, owner, node, args)
+    }
     if source.kind == TypeKind.Record || source.kind == TypeKind.Enum || source.kind == TypeKind.Refined {
         return data_type_grouped(env, source.symbol, args, source.pack_widths, 0)
     }
     Result.Ok(ty)
 }
+
 fn same_constructor(env Environment, first Type, second Type) Bool {
-    if first.kind != second.kind || length(first.arguments) != length(second.arguments) || !same(first.pack_widths, second.pack_widths) { return false }
+    if first.kind != second.kind || length(first.arguments) != length(second.arguments) || !same(first.pack_widths, second.pack_widths) {
+        return false
+    }
     if first.kind == TypeKind.Dyn {
         return get(env.interfaces, first.symbol).symbol == get(env.interfaces, second.symbol).symbol
     }
     first.symbol == second.symbol
 }
+
 fn infer(env Environment, pattern Int, actual Int, arguments List[Int]) Bool {
     let source = get(env.types, pattern)
     // An associated result does not identify its receiver type. Compare only
     // after independent parameter positions have supplied the type arguments.
-    if source.kind == TypeKind.Associated { return true }
+    if source.kind == TypeKind.Associated {
+        return true
+    }
     if source.kind == TypeKind.Parameter {
         let previous = get(arguments, source.symbol)
-        if previous >= 0 { return previous == actual }
+        if previous >= 0 {
+            return previous == actual
+        }
         set(arguments, source.symbol, actual)
         return true
     }
@@ -404,17 +568,28 @@ fn infer(env Environment, pattern Int, actual Int, arguments List[Int]) Bool {
     }
     matched
 }
+
 fn concrete(env Environment, ty Int) Bool {
     std.loom.typed.concrete_type(env.types, ty)
 }
+
 fn type_depth(env Environment, ty Int) Int {
     std.loom.typed.type_depth(env.types, ty)
 }
+
 fn layout(env Environment, id Int, states List[Int], owner Int) Result[Bool, Failure] {
     let ty = get(env.types, id)
-    if ty.kind != TypeKind.Record && ty.kind != TypeKind.Enum && ty.kind != TypeKind.Tuple { return Result.Ok(true) }
-    let declaration = if ty.symbol >= 0 { ty.symbol } else { owner }
-    if get(states, id) == 2 { return Result.Ok(true) }
+    if ty.kind != TypeKind.Record && ty.kind != TypeKind.Enum && ty.kind != TypeKind.Tuple {
+        return Result.Ok(true)
+    }
+    let declaration = if ty.symbol >= 0 {
+        ty.symbol
+    } else {
+        owner
+    }
+    if get(states, id) == 2 {
+        return Result.Ok(true)
+    }
     if get(states, id) == 1 {
         return Result.Err(failure(env, declaration, symbol(env, declaration).node, "recursive by-value data layout needs a List boundary"))
     }
@@ -437,11 +612,13 @@ fn layout(env Environment, id Int, states List[Int], owner Int) Result[Bool, Fai
     set(states, id, 2)
     Result.Ok(true)
 }
+
 fn layouts(env Environment) Result[Bool, Failure] {
     discard validate_data_packs(env)?
     let states = new[Int]()
     var index = 0
-    while index < length(env.types) { push(states, 0)
+    while index < length(env.types) {
+        push(states, 0)
         index = index + 1
     }
     index = 0

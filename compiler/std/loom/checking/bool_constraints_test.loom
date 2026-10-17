@@ -1,0 +1,61 @@
+test fn bool_constraints_share_constant_flow_and_weakening_proofs() {
+    discard accepted_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        type Confirmed = Bool where self
+        type AnyBool = Bool where self == self
+        type Rejected = Bool where negated(self)
+
+        fn negated(value Bool) Bool {
+            !value
+        }
+
+        concept TruthSource {
+            fn confirm(self Self) Confirmed
+        }
+        impl TruthSource for Confirmed {
+            fn confirm(self Confirmed) Confirmed {
+                self
+            }
+        }
+        fn dynamic(value dyn TruthSource) Bool ensures result {
+            value.confirm()
+        }
+
+        fn checked(value Bool) Result[Confirmed, ConstraintError] {
+            Confirmed(value)
+        }
+
+        fn fixed() Confirmed {
+            Confirmed(true)
+        }
+
+        fn observed(value Confirmed) Bool ensures result {
+            value
+        }
+
+        fn guarded(value Bool) Confirmed requires value {
+            Confirmed(value)
+        }
+
+        fn denied(value Bool) Rejected requires !value {
+            Rejected(value)
+        }
+
+        fn weakened(value Confirmed) AnyBool {
+            AnyBool(value)
+        }
+
+        fn prepared() Confirmed {
+            comptime { Confirmed(true) }
+        }
+        """)
+}
+
+test fn bool_constraints_reject_invalid_constants_without_integer_coercions() {
+    assert match with_result("type Confirmed = Bool where self\nfn invalid() { discard Confirmed(false) }") {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "does not satisfy")
+        Result.Ok(_) => false
+    }
+    rejects_result("type Invalid = Bool where self > 0")
+}
