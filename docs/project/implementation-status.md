@@ -82,6 +82,9 @@ implementation without requiring a compiler process, filesystem or LLVM.
 Hosts can explicitly supply the source `std.loom.proof.z3` adapter for unresolved
 supported proofs; default analysis stays I/O-free and ordinary programs gain no
 solver dependency.
+Independent queries on a successful analysis replay its observed inputs and
+retain at most one checked source scope. Header and body evidence stay separate;
+failed or ambiguous scopes cannot supply cached binding facts.
 Their IDs and spans belong to a snapshot, not persistent semantic history.
 
 ## Language and compile-time programming

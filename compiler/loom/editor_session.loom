@@ -1,4 +1,5 @@
 import std.loom.analysis.is_current_with_inputs
+import std.loom.analysis.IndependentQuery
 import std.loom.project.BuildInput
 import std.loom.binding.Failure
 import std.io.read_chunk
@@ -97,6 +98,7 @@ fn editor_checked(bindings std.loom.binding.Program, inputs BuildInputs, cache E
         declarations = new[List[std.loom.checking.DeclarationReference]]()
         declaration_scopes = new[Location]()
         contract_queries = new[std.loom.checking.CheckedQuery]()
+        independent_queries = new[Option[std.loom.analysis.IndependentQuery]]()
     }
     if length(cache.analysis) == 0 {
         push(cache.analysis, analysis)

@@ -1,0 +1,128 @@
+fn cached_inspection(analysis Analysis, text Text, fragment Text) Inspection {
+    match inspect_independent(analysis, 0, query_offset(text, fragment)) {
+        Option.Some(found) => found
+        Option.None => {
+            assert false
+            inspection(analysis, text, fragment)
+        }
+    }
+}
+
+test fn independent_queries_reuse_one_scope_and_retry_failed_checks() {
+    let text = """
+        pub fn square(left Int) Int
+        ensures result >= 0
+        {
+            left * left
+        }
+        pub fn other(right Int) Int
+        ensures result >= 0
+        {
+            right * right
+        }
+        fn main() {
+        }
+        """
+    let calls = new[Int]()
+    push(calls, 0)
+    let failing = new[Bool]()
+    push(failing, false)
+    let solve = fn(context Text, query Text) Result[Bool, Text] {
+        set(calls, 0, get(calls, 0) + 1)
+        assert std.text.contains(query, "(check-sat-using ")
+        if get(failing, 0) {
+            return Result.Err("query backend unavailable")
+        }
+        // Exercise the trusted host capability/cache, not a mathematical proof.
+        Result.Ok(true)
+    }
+    let inputs = with_proof_backend(build_inputs(no_input_reader), ProofBackend {
+            enabled = true
+            context = "scope cache fixture"
+            solve = solve
+        })
+    let analysis = match analyze_with_inputs(input(text), false, inputs) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let symbols = length(analysis.bindings.symbols)
+    set(calls, 0, 0)
+    only_type(cached_inspection(analysis, text, "left * left"), "Int")
+    let checked = get(calls, 0)
+    assert checked > 0
+    only_type(cached_inspection(analysis, text, "left\n"), "Int")
+    assert get(calls, 0) == checked
+    assert length(analysis.independent_queries) == 1
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => !saved.header
+        Option.None => false
+    }
+
+    // Header queries replace, rather than inherit, the checked body view.
+    only_type(cached_inspection(analysis, text, "left Int"), "Int")
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => saved.header && length(saved.view.functions) == 0
+        Option.None => false
+    }
+    let header_calls = get(calls, 0)
+    only_type(cached_inspection(analysis, text, "left * left"), "Int")
+    assert get(calls, 0) > header_calls
+
+    set(failing, 0, true)
+    assert match inspect_independent(analysis, 0, query_offset(text, "right * right")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    let failed_calls = get(calls, 0)
+    assert failed_calls > header_calls
+    assert match get(analysis.independent_queries, 0) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    set(failing, 0, false)
+    only_type(cached_inspection(analysis, text, "right * right"), "Int")
+    assert get(calls, 0) > failed_calls
+    assert length(analysis.independent_queries) == 1
+    assert length(analysis.bindings.symbols) == symbols
+}
+
+test fn independent_queries_are_snapshot_local_and_keep_abstract_bindings() {
+    let text = """
+        fn identity[T](value T) T {
+            let copied = value
+            copied
+        }
+        fn main() {
+            let value = 3
+            assert value == 3
+        }
+        """
+    let analysis = accepted(input(text))
+    let symbols = length(analysis.bindings.symbols)
+    only_type(cached_inspection(analysis, text, "value\n"), "T")
+    only_type(cached_inspection(analysis, text, "copied\n"), "T")
+    only_type(cached_inspection(analysis, text, "value == 3"), "Int")
+    let changed = """
+        fn main() {
+            let value = true
+            assert value == true
+        }
+        """
+    let fresh = accepted(input(changed))
+    assert length(fresh.independent_queries) == 0
+    only_type(cached_inspection(fresh, changed, "value == true"), "Bool")
+    only_type(cached_inspection(analysis, text, "value == 3"), "Int")
+    // Invalid/outside scopes cannot retain the last successful body view.
+    assert match inspect_independent(analysis, -1, 0) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert match get(analysis.independent_queries, 0) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert length(analysis.bindings.symbols) == symbols
+}

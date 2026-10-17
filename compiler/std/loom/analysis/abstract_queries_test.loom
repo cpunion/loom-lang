@@ -221,6 +221,10 @@ test fn abstract_closure_queries_do_not_publish_failed_or_unselected_bodies() {
         Option.None => true
         Option.Some(_) => false
     }
+    assert match inspect_independent(analysis, 0, query_offset(text, "hidden\n")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
     let invalid = """
         fn invalid[T](value T) Int {
             value + 1

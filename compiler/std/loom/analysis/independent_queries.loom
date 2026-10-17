@@ -1,0 +1,123 @@
+// Query views own their bindings and IDs. Never reuse one as executable IR or
+// across Analysis snapshots; header evidence is not body evidence.
+pub record IndependentQuery {
+    scope Location
+    header Bool
+    view CheckedQuery
+}
+
+record IndependentScope {
+    location Location
+    header Bool
+}
+
+fn independent_owners(node Node, offset Int, owners List[Node]) {
+    if !inside(node.span, offset) {
+        return
+    }
+    if node.kind == NodeKind.Function && node.value != "" {
+        push(owners, node)
+    }
+    var index = 0
+    while index < length(node.children) {
+        independent_owners(get(node.children, index), offset, owners)
+        index = index + 1
+    }
+}
+
+fn independent_scope(analysis Analysis, file Int, offset Int) Option[IndependentScope] {
+    if file < 0 || file >= length(analysis.bindings.files) {
+        return Option.None
+    }
+    let owners = new[Node]()
+    independent_owners(get(analysis.bindings.files, file).tree, offset, owners)
+    // Overlapping/generated declarations need the checker's own selection.
+    // Cache eligibility must never invent an owner from an ambiguous span.
+    if length(owners) != 1 {
+        return Option.None
+    }
+    let owner = get(owners, 0)
+    if has(owner, NodeKind.ExpansionId) {
+        return Option.None
+    }
+    var index = 0
+    while index < length(owner.children) {
+        let group = get(owner.children, index)
+        if (group.kind == NodeKind.TypeParameters || group.kind == NodeKind.Parameters ||
+            group.kind == NodeKind.ReturnType) && inside(group.span, offset) {
+            return Option.Some(IndependentScope {
+                    location = Location {
+                        file = file
+                        span = group.span
+                    }
+                    header = true
+                })
+        }
+        index = index + 1
+    }
+    if !has(owner, NodeKind.Block) {
+        return Option.None
+    }
+    Option.Some(IndependentScope {
+            location = Location {
+                file = file
+                span = owner.span
+            }
+            header = false
+        })
+}
+
+fn independent_view(analysis Analysis, file Int, offset Int) Option[CheckedQuery] {
+    let scope = independent_scope(analysis, file, offset)
+    match scope {
+        Option.Some(current) => {
+            if length(analysis.independent_queries) != 0 {
+                match get(analysis.independent_queries, 0) {
+                    Option.Some(saved) => {
+                        if saved.header == current.header && saved.scope.file == current.location.file &&
+                        same_span(saved.scope.span, current.location.span) {
+                            return Option.Some(saved.view)
+                        }
+                    }
+                    Option.None => {
+                    }
+                }
+            }
+        }
+        Option.None => {
+        }
+    }
+    // Release the old scope even if the next query fails or cannot be cached.
+    if length(analysis.independent_queries) == 0 {
+        push(analysis.independent_queries, Option.None)
+    } else {
+        set(analysis.independent_queries, 0, Option.None)
+    }
+    match check_query(analysis.bindings, file, offset, analysis_query_inputs(analysis)) {
+        Result.Ok(view) => {
+            match scope {
+                Option.Some(current) => {
+                    set(analysis.independent_queries, 0, Option.Some(IndependentQuery {
+                                scope = current.location
+                                header = current.header
+                                view = view
+                            }))
+                }
+                Option.None => {
+                }
+            }
+            Option.Some(view)
+        }
+        Result.Err(_) => Option.None
+    }
+}
+
+// Replay this analysis's observed inputs, options, target and host capability.
+// Repeated references in a source scope share one successful independent check.
+// Unrecognized scopes use the ordinary fresh query, never a guessed binding.
+pub fn inspect_independent(analysis Analysis, file Int, offset Int) Option[Inspection] {
+    match independent_view(analysis, file, offset) {
+        Option.Some(view) => inspect_view(view, file, offset)
+        Option.None => Option.None
+    }
+}

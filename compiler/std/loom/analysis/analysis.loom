@@ -54,7 +54,10 @@ pub record Analysis {
     declarations List[List[std.loom.checking.DeclarationReference]]
     declaration_scopes List[Location]
     contract_queries List[CheckedQuery]
+    // At most one independent scope; replacing it releases the previous view.
+    independent_queries List[Option[IndependentQuery]]
 }
+
 pub record Expression {
     function Int
     expression Expr
@@ -64,6 +67,7 @@ pub record Expression {
 pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
     analyze_with_inputs(project, tests, build_inputs(no_input_reader))
 }
+
 pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Result[Analysis, Failure] {
     let source = snapshot(project)
     let detached = with_proof_backend(
@@ -102,6 +106,7 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
             declarations = new[List[std.loom.checking.DeclarationReference]]()
             declaration_scopes = new[Location]()
             contract_queries = new[CheckedQuery]()
+            independent_queries = new[Option[IndependentQuery]]()
         })
 }
 
@@ -111,6 +116,7 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
 pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
     is_current_with_inputs(analysis, project, tests, new[BuildInput]())
 }
+
 pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput]) Bool {
     is_current_with_inputs(analysis, project, tests, inputs, new[BuildOption]())
 }
@@ -123,24 +129,32 @@ pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, in
     if !same_build_options(analysis.options, options) || !same_build_options(analysis.targets, targets) {
         return false
     }
-    if length(analysis.inputs) != length(inputs) { return false }
+    if length(analysis.inputs) != length(inputs) {
+        return false
+    }
     var input = 0
     while input < length(inputs) {
         let left = get(analysis.inputs, input)
         let right = get(inputs, input)
-        if !same_request(left.request, right.request) || !std.loom.project.same_input(left.file, right.file) { return false }
+        if !same_request(left.request, right.request) || !std.loom.project.same_input(left.file, right.file) {
+            return false
+        }
         input = input + 1
     }
     let saved = analysis.source
     if saved.root != project.root || analysis.bindings.tests != tests ||
-        length(saved.modules) != length(project.modules) ||
-        length(saved.packages) != length(project.packages) ||
-        length(saved.files) != length(project.files) { return false }
+    length(saved.modules) != length(project.modules) ||
+    length(saved.packages) != length(project.packages) ||
+    length(saved.files) != length(project.files) {
+        return false
+    }
     var index = 0
     while index < length(saved.modules) {
         let left = get(saved.modules, index)
         let right = get(project.modules, index)
-        if left.name != right.name || left.source != right.source { return false }
+        if left.name != right.name || left.source != right.source {
+            return false
+        }
         index = index + 1
     }
     index = 0
@@ -148,12 +162,16 @@ pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, in
         let left = get(saved.packages, index)
         let right = get(project.packages, index)
         if left.instance != right.instance || left.relative != right.relative ||
-            length(left.imports) != length(right.imports) { return false }
+        length(left.imports) != length(right.imports) {
+            return false
+        }
         var edge = 0
         while edge < length(left.imports) {
             let left_edge = get(left.imports, edge)
             let right_edge = get(right.imports, edge)
-            if left_edge.spelling != right_edge.spelling || left_edge.target != right_edge.target { return false }
+            if left_edge.spelling != right_edge.spelling || left_edge.target != right_edge.target {
+                return false
+            }
             edge = edge + 1
         }
         index = index + 1
@@ -163,8 +181,10 @@ pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, in
         let left = get(saved.files, index)
         let right = get(project.files, index)
         if left.package != right.package || left.path != right.path || left.text != right.text ||
-            left.test_only != right.test_only || left.trusted_std != right.trusted_std ||
-            !same(left.tree, right.tree) { return false }
+        left.test_only != right.test_only || left.trusted_std != right.trusted_std ||
+        !same(left.tree, right.tree) {
+            return false
+        }
         index = index + 1
     }
     true
@@ -176,7 +196,9 @@ pub fn type_name(analysis Analysis, ty Int) Text {
 }
 
 fn covering(value Expr, offset Int, found List[Expr]) {
-    if offset < value.span.start || offset >= value.span.end { return }
+    if offset < value.span.start || offset >= value.span.end {
+        return
+    }
     var index = 0
     while index < length(value.children) {
         covering(get(value.children, index), offset, found)
@@ -192,7 +214,9 @@ fn covering(value Expr, offset Int, found List[Expr]) {
         }
         index = index + 1
     }
-    if length(found) == 0 { push(found, value) } else {
+    if length(found) == 0 {
+        push(found, value)
+    } else {
         let previous = get(found, 0)
         if value.span.end - value.span.start <= previous.span.end - previous.span.start {
             set(found, 0, value)
@@ -225,7 +249,10 @@ pub fn expressions_at(analysis Analysis, file Int, offset Int) List[Expression] 
                 clause = clause + 1
             }
             if length(found) > 0 {
-                push(matches, Expression { function = index expression = get(found, 0) })
+                push(matches, Expression {
+                        function = index
+                        expression = get(found, 0)
+                    })
             }
         }
         index = index + 1
