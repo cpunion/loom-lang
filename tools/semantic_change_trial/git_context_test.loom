@@ -79,7 +79,7 @@ fn git_context_lifecycle(staging Text) Result[Text, Text] {
     discard vacant(rejected)?
     discard std.file.write_text(dependency, original_dependency)
     assert match preview_git_context(directory, "compiler/std", "git", repository, ".", right, left, right) {
-        Result.Err(message) => contains(message, "exact baseline package")
+        Result.Err(message) => contains(message, "unique merge base")
         Result.Ok(_) => false
     }
 

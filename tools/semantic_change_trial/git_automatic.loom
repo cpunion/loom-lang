@@ -185,9 +185,10 @@ fn automatic_git_module(request GitAutoRequest, apply Bool, expected Text) Resul
     } else {
         trim(git(request.executable, request.repository, ["rev-parse", "--show-toplevel"])?)
     }
-    let base = git_commit(request.executable, repository, request.base)?
-    let left = git_commit(request.executable, repository, request.left)?
-    let right = git_commit(request.executable, repository, request.right)?
+    let basis = git_basis(request.executable, repository, request.base, request.left, request.right)?
+    let base = basis.base
+    let left = basis.left
+    let right = basis.right
     let original_tree = git_commit_tree(request.executable, repository, ".", base)?
     let left_tree = git_commit_tree(request.executable, repository, ".", left)?
     let right_tree = git_commit_tree(request.executable, repository, ".", right)?
@@ -257,11 +258,10 @@ fn automatic_git_module(request GitAutoRequest, apply Bool, expected Text) Resul
     if expected != token {
         return Result.Err("review token does not match the Git inputs or project closure")
     }
-    // Verify the live dependency cache again before writing any Git objects.
+    // Verify refs, ancestry and the live cache before writing any Git objects.
+    let fresh = git_basis(request.executable, repository, request.base, request.left, request.right)?
     if module_context(read_module(physical)?, request.standard, request.cache, source, logical_root)?.stamp != context.stamp ||
-    git_commit(request.executable, repository, request.base)? != base ||
-    git_commit(request.executable, repository, request.left)? != left ||
-    git_commit(request.executable, repository, request.right)? != right {
+    fresh.base != base || fresh.left != left || fresh.right != right {
         return Result.Err("Git refs or dependency context changed before application")
     }
     let tree = write_git_result(request.executable, repository, stage, original_tree, prefix, writes)?

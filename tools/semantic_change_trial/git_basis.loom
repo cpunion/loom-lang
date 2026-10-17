@@ -1,0 +1,31 @@
+record GitBasis {
+    base Text
+    left Text
+    right Text
+}
+
+// Pin all three refs before consulting history or reading snapshots. An older
+// common ancestor is not the actual baseline, even if its source still checks.
+fn git_basis(executable Text, repository Text, base Text, left Text, right Text) Result[GitBasis, Text] {
+    let pinned = GitBasis {
+        base = git_commit(executable, repository, base)?
+        left = git_commit(executable, repository, left)?
+        right = git_commit(executable, repository, right)?
+    }
+    if trim(git(executable, repository, ["rev-parse", "--is-shallow-repository"])?) != "false" {
+        return Result.Err("semantic merge requires complete local Git ancestry; obtain missing history explicitly")
+    }
+    let common = match git(executable, repository, ["merge-base", "--all", pinned.left, pinned.right]) {
+        Result.Ok(value) => split(trim(value), "\n")
+        Result.Err(_) => {
+            return Result.Err("Git branches have no established common baseline; explicit resolution required")
+        }
+    }
+    if length(common) != 1 || get(common, 0) == "" {
+        return Result.Err("Git branches have multiple common baselines; explicit resolution required")
+    }
+    if get(common, 0) != pinned.base {
+        return Result.Err("Git baseline is not the unique merge base of the selected branches")
+    }
+    Result.Ok(pinned)
+}
