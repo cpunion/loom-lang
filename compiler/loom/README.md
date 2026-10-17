@@ -19,10 +19,11 @@ target/loom test compiler/std/text
 ```
 
 Stages 0 through 3 are [bootstrap generations](../../ROADMAP.md#n1--move-the-compiler-into-loom),
-not language versions or additional supported compilers. Stage 0 is an existing
-Loom compiler, recovered from frozen history on macOS/Linux when needed. The
-[Windows bootstrap](../README.md#windows-bootstrap) can instead compile a trusted
-same-checkout checked export into its initial native compiler. New language
+not language versions or additional supported compilers. A fresh checkout builds
+stage 0 from the source-bound portable checked seed with the current native
+bridge on macOS, Linux and Windows; no historical frontend or checkpoint chain
+is built. An installed compatible Loom compiler can serve as the seed instead.
+New language
 features do not require a parallel Rust implementation. Keep the compiler and
 its production `std` dependencies within the existing seed's supported subset,
 even when user programs can use newer features. Raise that requirement only for

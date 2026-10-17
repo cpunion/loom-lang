@@ -1,6 +1,11 @@
 // Whole selected-closure reuse after loading: no persistent source IDs, AST
 // decoder or second semantic model. Loading still validates manifests, locked
 // snapshots, file membership and syntax before any cached proof is accepted.
+import std.file.fold_chunks
+import std.hash.sha256.Hasher
+import std.hash.sha256.new_hasher
+import std.hash.sha256.update
+
 fn frontend_field(output Bytes, value Text) {
     cache_append(output, to_text(length(value)))
     cache_append(output, "\n")
@@ -97,8 +102,17 @@ fn frontend_identity() Option[Text] {
             return Option.None
         }
     }
-    match read_bytes(executable) {
-        Result.Ok(bytes) => Option.Some(hex(bytes)),
+    frontend_file_identity(executable)
+}
+
+fn frontend_hash_chunk(state Hasher, bytes Bytes) Hasher {
+    update(state, bytes)
+    state
+}
+
+fn frontend_file_identity(path Text) Option[Text] {
+    match fold_chunks(path, new_hasher(), frontend_hash_chunk) {
+        Result.Ok(state) => Option.Some(hex(state)),
         Result.Err(_) => Option.None
     }
 }

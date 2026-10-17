@@ -27,6 +27,7 @@ mod frame_roots_tests;
 mod fs_ops;
 mod mutex;
 pub mod native;
+mod pages;
 mod parallel;
 mod process_io;
 mod shared_access;
@@ -45,6 +46,7 @@ type Trace = unsafe extern "C" fn(*mut u8);
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Root {
+    // Null deactivates a compiler region without touching expired stack data.
     address: *mut u8,
     trace: Trace,
 }
@@ -211,6 +213,7 @@ struct Page {
 #[derive(Default)]
 struct Arena {
     pages: Vec<Page>,
+    mappings: Vec<pages::Mapping>,
     indices: AddressMap<usize>,
     used: usize,
     count: usize,
@@ -220,14 +223,17 @@ impl Arena {
     fn allocate(&mut self, layout: Layout) -> NonNull<u8> {
         let size = occupied(layout);
         if self.pages.is_empty() || self.used + size > PAGE_SIZE {
-            let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
-            // SAFETY: Page alignment supplies a constant-time page identity.
-            let page =
-                NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| fatal("out of memory"));
+            let page = self.pages.len() % pages::PAGES_PER_MAPPING;
+            if page == 0 {
+                self.mappings.push(pages::Mapping::new());
+            }
+            // SAFETY: Fixed pages subdivide one live, aligned mapping. All
+            // pages in an arena expire together after collection.
+            let pointer = unsafe { self.mappings.last().unwrap().pointer.add(page * PAGE_SIZE) };
             self.indices
-                .insert(page.as_ptr() as usize, self.pages.len());
+                .insert(pointer.as_ptr() as usize, self.pages.len());
             self.pages.push(Page {
-                pointer: page,
+                pointer,
                 bases: Box::new([0; PAGE_WORDS]),
             });
             self.used = 0;
@@ -237,7 +243,7 @@ impl Arena {
         let bit = offset / 16;
         page.bases[bit / usize::BITS as usize] |= 1 << (bit % usize::BITS as usize);
         // SAFETY: Header and payload own this aligned range until arena clear.
-        let pointer = unsafe { NonNull::new_unchecked(page.pointer.as_ptr().add(offset)) };
+        let pointer = unsafe { page.pointer.add(offset) };
         self.used += size;
         self.count += 1;
         pointer
@@ -266,20 +272,12 @@ impl Arena {
     }
 
     fn clear(&mut self) {
-        let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
-        for page in self.pages.drain(..) {
-            // SAFETY: All page slots are dead before the owning arena is cleared.
-            unsafe { dealloc(page.pointer.as_ptr(), layout) };
-        }
+        // Drop releases dead pages directly to the OS, not a malloc free cache.
+        self.pages.clear();
+        self.mappings.clear();
         self.indices.clear();
         self.used = 0;
         self.count = 0;
-    }
-}
-
-impl Drop for Arena {
-    fn drop(&mut self) {
-        self.clear();
     }
 }
 
@@ -526,14 +524,17 @@ fn collect_roots(roots: &[*mut RootFrame]) {
     });
     for mut frame in roots.iter().copied() {
         while !frame.is_null() {
-            // SAFETY: Active stack frames and slots stay fixed. Tracers rewrite
-            // managed pointers; they cannot allocate,
+            // SAFETY: Active entries address live, fixed stack slots; inactive
+            // regions have null addresses. Tracers rewrite managed pointers;
+            // they cannot allocate,
             // collect or modify the root chain. No Heap borrow spans a callback.
             unsafe {
                 let active = &*frame;
                 for index in 0..active.count {
                     let root = *active.roots.add(index);
-                    (root.trace)(root.address);
+                    if !root.address.is_null() {
+                        (root.trace)(root.address);
+                    }
                 }
                 frame = active.previous;
             }
@@ -1633,6 +1634,27 @@ unsafe fn path_canonical(path: *const u8, slots: *mut *mut u8) -> i64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fixed_pages_share_mappings_and_retire_with_the_arena() {
+        let mut arena = Arena::default();
+        let layout = Layout::from_size_align(LARGE_OBJECT_THRESHOLD - 16, 16).unwrap();
+        let per_page = PAGE_SIZE / occupied(layout);
+        let first = arena.allocate(layout);
+        // SAFETY: This payload remains live until the arena is cleared.
+        unsafe { first.as_ptr().write(42) };
+        for _ in 0..pages::PAGES_PER_MAPPING * per_page {
+            arena.allocate(layout);
+        }
+        assert_eq!(arena.pages.len(), pages::PAGES_PER_MAPPING + 1);
+        assert_eq!(arena.mappings.len(), 2);
+        assert_eq!(arena.indices.len(), arena.pages.len());
+        // SAFETY: Growing metadata/mappings has not retired the first payload.
+        assert_eq!(unsafe { first.as_ptr().read() }, 42);
+        arena.clear();
+        assert!(arena.pages.is_empty() && arena.mappings.is_empty() && arena.indices.is_empty());
+        assert_eq!((arena.used, arena.count), (0, 0));
+    }
+
     fn live() -> usize {
         HEAP.with(|heap| heap.borrow().objects.len())
     }
@@ -1699,6 +1721,43 @@ mod tests {
         // tests keep the addressed stack slot live until dropping the guard.
         unsafe { loom_rt_roots_enter(ptr::from_mut(&mut storage.0), ptr::from_ref(&storage.1), 1) };
         TestRoot(storage)
+    }
+
+    #[test]
+    fn inactive_root_descriptors_skip_expired_storage_and_can_reactivate() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static INACTIVE_VISITS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn inactive_trace(_: *mut u8) {
+            INACTIVE_VISITS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let mut first = text("active");
+        let mut inactive = root(ptr::null_mut());
+        inactive.0.1.trace = inactive_trace;
+        let _active = root(ptr::from_mut(&mut first));
+        let previous = first;
+        loom_rt_collect();
+        assert_ne!(first, previous);
+        // SAFETY: The active descriptor rewrites first during every collection.
+        assert_eq!(unsafe { text_bytes(first) }, b"active");
+        assert_eq!(INACTIVE_VISITS.load(Ordering::Relaxed), 0);
+
+        let mut second = text("reactivated");
+        inactive.0.1.address = ptr::from_mut(&mut second).cast();
+        inactive.0.1.trace = trace_pointer;
+        let previous = second;
+        loom_rt_collect();
+        assert_ne!(second, previous);
+        // SAFETY: Both descriptor slots remain live and have valid tracers.
+        assert_eq!(unsafe { text_bytes(first) }, b"active");
+        assert_eq!(unsafe { text_bytes(second) }, b"reactivated");
+
+        inactive.0.1.address = ptr::null_mut();
+        inactive.0.1.trace = inactive_trace;
+        loom_rt_collect();
+        assert_eq!(INACTIVE_VISITS.load(Ordering::Relaxed), 0);
+        // SAFETY: Only first remains rooted; second is deliberately not read.
+        assert_eq!(unsafe { text_bytes(first) }, b"active");
     }
 
     fn text(value: &str) -> *mut u8 {

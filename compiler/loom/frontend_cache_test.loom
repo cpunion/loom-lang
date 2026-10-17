@@ -1,5 +1,24 @@
 import std.loom.checking.no_input_reader
 
+test fn frontend_file_identity_matches_whole_file_hash_and_rejects_io_errors() {
+    let path = "compiler/README.md"
+    let expected = match read_bytes(path) {
+        Result.Ok(bytes) => hex(bytes)
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match frontend_file_identity(path) {
+        Option.Some(value) => value == expected
+        Option.None => false
+    }
+    assert match frontend_file_identity("\0invalid") {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
+
 fn cache_target_snapshot(os Text) Result[List[BuildOption], Text] {
     Result.Ok([BuildOption {
                 name = "os"

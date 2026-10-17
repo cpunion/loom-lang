@@ -406,11 +406,14 @@ target/loom build compiler/examples/data --frontend-cache target/frontend-cache 
 Every invocation reloads and parses the selected package closure and validates
 its manifests, imports and locked dependency snapshots. A key covers the invoked
 compiler executable's actual bytes, source paths/contents/membership, module
-instances, import edges, standard-library trust and command mode. Production
-build/run/emit-checked share an artifact; checking and isolated tests have separate
-entries. Manifest edits that leave this validated semantic input unchanged need
-not invalidate reuse. Source moves, changed dependencies, and new selected files
-do invalidate it. Omitted dependency/test files do not become build inputs.
+instances, import edges, standard-library trust and command mode.
+The executable digest is computed incrementally from bounded file chunks, not
+from a whole executable buffered in the managed heap.
+Production build/run/emit-checked share an artifact; checking and isolated tests
+have separate entries. Manifest edits that leave this validated semantic input
+unchanged need not invalidate reuse. Source moves, changed dependencies, and new
+selected files do invalidate it. Omitted dependency/test files do not become
+build inputs.
 
 A whole-closure hit skips binding, type/effect/contract checking, compile-time
 evaluation and lowering. After an edit, a separate last-successful definition
@@ -671,6 +674,11 @@ timings; local variables remain conservatively rooted for the function.
   error policy, partial-write loops, and explicit file closure are ordinary Loom
   source. `file.write_text` creates or truncates a file; it is not an atomic or
   transactional write. `io.write_text` writes stdout without closing it.
+  `file.fold_chunks(path, initial, combine)` folds fresh nonempty binary chunks
+  synchronously, using at most 8192 bytes per chunk. Its four-argument form
+  `(path, limit, initial, combine)` selects a positive bound. Short reads continue
+  until EOF; the file closes on normal return, I/O errors and callback faults.
+  A callback that retains chunks can still retain the entire file.
 - Source UTF-8 scalar helpers, shared byte buffers, integer rendering, Unicode
   property wrappers, stderr output, process arguments/exit, and direct child
   process invocation without a shell, with optional stdin input. Filesystem
@@ -4745,6 +4753,9 @@ declaration binding alone still provides only name candidates.
 The runtime uses single-threaded stop-the-world copying GC with bump-allocated
 pages for small objects and a large-object space. Small reachable allocations
 move, roots and typed fields are rewritten, then obsolete pages are freed.
+Fixed pages share anonymous OS mappings owned by the arena. Retiring an arena
+releases its mappings directly, rather than retaining them in the native
+allocator's free cache. No process-wide allocator or pressure-relief policy changes.
 Large allocations are traced in place to avoid
 copying whole backing buffers before growth; this is not a stable-address promise.
 Aliases and cycles retain their meaning; static Text literals do not move.
@@ -4752,8 +4763,10 @@ No source-visible address, ownership syntax, finalizer or pinning obligation is
 introduced. Collection temporarily holds both old and copied storage.
 LLVM first
 inlines source calls with opaque root-region markers, then lowers one linked
-stack-root frame per remaining native function. Region exits clear inactive
-slots; no marker reaches object code and no root table is copied on entry.
+stack-root frame per remaining native function. Descriptors activate initialized
+slots at region entry and deactivate before their storage expires. Inactive
+inlined regions need no eager slot clearing; LLVM stack lifetimes remain intact.
+No marker reaches object code.
 Optimized builds inline direct primitive forwarders with small scalar guards
 before committing frames, so a checked `std.bytes.push` or `std.list.push` does
 not register a separate frame on every loop iteration. Larger wrappers and

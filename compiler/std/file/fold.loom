@@ -1,0 +1,38 @@
+// Each callback receives a fresh, nonempty chunk. The caller decides whether
+// to retain it; a consuming fold need not buffer the complete file.
+pub fn fold_chunks[T](path Text, initial T, combine fn(T, Bytes) T) Result[T, FileError] {
+    fold_chunks(path, 8192, initial, combine)
+}
+
+pub fn fold_chunks[T](path Text, limit Int, initial T, combine fn(T, Bytes) T) Result[T, FileError]
+requires limit > 0
+{
+    let handle = open(path)
+    if handle < 0 {
+        return Result.Err(FileError.Open)
+    }
+    var live = handle
+    defer {
+        if live >= 0 {
+            discard close(live)
+        }
+    }
+    var state = initial
+    while true {
+        let chunk = new()
+        let count = read(handle, chunk, limit)
+        if count < 0 {
+            return Result.Err(FileError.Read)
+        }
+        if count == 0 {
+            break
+        }
+        state = combine(state, chunk)
+    }
+    let closed = close(handle)
+    live = -1
+    if closed < 0 {
+        return Result.Err(FileError.Close)
+    }
+    Result.Ok(state)
+}
