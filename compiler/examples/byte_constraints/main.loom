@@ -85,7 +85,27 @@ async fn fault_before_store(value Head) {
     value[0] = 256
 }
 
+fn append_frame_input(value Bytes) Int
+ensures result == 7
+{
+    push(value, 2)
+    7
+}
+
+fn framed_buffer(other Bytes) Bytes
+ensures length(result) == 1
+{
+    let output = new()
+    push(output, 1)
+    discard append_frame_input(other)
+    output
+}
+
 async fn exercise() Bool {
+    let other = new()
+    push(other, 9)
+    let output = framed_buffer(other)
+    assert length(output) == 1 && output[0] == 1 && length(other) == 2 && other[1] == 2
     assert constant_header()
     assert match build(Byte(0)) {
         Result.Err(_) => true

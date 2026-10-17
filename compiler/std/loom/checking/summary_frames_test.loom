@@ -28,6 +28,83 @@ fn summary_frame_source() Text {
         """, "\n")
 }
 
+test fn contracted_byte_effects_frame_only_unexposed_storage() {
+    let source = """
+        import std.bytes.new
+        import std.bytes.length
+        import std.bytes.push
+        fn touched(values Bytes) Int
+        ensures result == 7
+        {
+            push(values, 2)
+            7
+        }
+        fn invoked[T](values T, effect fn(T)) Int
+        ensures result == 7
+        {
+            effect(values)
+            7
+        }
+        """
+    byte_constraint_accept(concat(source, """
+        fn framed(other Bytes) Int
+        ensures result == 1
+        {
+            let values = new()
+            push(values, 1)
+            discard touched(other)
+            length(values)
+        }
+        """))
+    let cases = ["""
+        fn invalid() Int
+        ensures result == 1
+        {
+            let values = new()
+            push(values, 1)
+            discard touched(values)
+            length(values)
+        }
+        """, """
+        fn invalid() Int
+        ensures result == 1
+        {
+            let values = new()
+            push(values, 1)
+            discard invoked[Bytes](values, fn(value Bytes) {
+                    push(value, 2)
+                })
+            length(values)
+        }
+        """, """
+        fn invalid() Int
+        ensures result == 1
+        {
+            let values = new()
+            push(values, 1)
+            discard invoked[List[Bytes]]([values], fn(items List[Bytes]) {
+                    push(items[0], 2)
+                })
+            length(values)
+        }
+        """]
+    var index = 0
+    while index < length(cases) {
+        let files = byte_constraint_files(concat(source, get(cases, index)))
+        assert match checked(files) {
+            Result.Err(failed) => {
+                let rejected = std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+                if !rejected {
+                    show_failure(fixture_project(files), failed)
+                }
+                rejected
+            }
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}
+
 test fn contracted_effects_and_returned_graphs_frame_unexposed_private_storage() {
     list_length_contract(concat(summary_frame_source(), """
         fn framed(values List[Int]) List[Int]

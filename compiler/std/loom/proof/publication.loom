@@ -44,10 +44,10 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
 
 fn publication_value(proof Verification, ty Int, value Value, state State,
     graph Publication, budget List[Int], depth Int, opaque_only Bool) Bool {
-    if immutable_storage_type(proof.program, ty, 0) || ty == 4 {
+    if immutable_storage_type(proof.program, ty, 0) {
         return true
     }
-    if depth >= 32 || get(budget, 0) <= 0 || ty < 6 || ty >= length(proof.program.types) {
+    if depth >= 32 || get(budget, 0) <= 0 || ty < 0 || ty >= length(proof.program.types) {
         return false
     }
     set(budget, 0, get(budget, 0) - 1)
@@ -64,11 +64,14 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
         return publication_value(proof, get(shape.fields, 0).ty, value,
             state, graph, budget, depth + 1, opaque_only)
     }
-    if shape.kind == TypeKind.List && length(shape.arguments) == 1 {
+    if (shape.kind == TypeKind.List && length(shape.arguments) == 1) || shape.kind == TypeKind.Bytes {
         // Tracked headers keep their graph roots. Unknown elements are exposed
         // when read, not merely because their container is returned.
         if opaque_only {
-            return true
+            return match value {
+                Value.List(_) => true
+                _ => false
+            }
         }
         return match value {
             Value.List(identity) => {
@@ -82,8 +85,11 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
                         return false
                     }
                 }
+                if shape.kind == TypeKind.Bytes {
+                    return true
+                }
                 let element = get(shape.arguments, 0)
-                if immutable_storage_type(proof.program, element, 0) || element == 4 {
+                if immutable_storage_type(proof.program, element, 0) {
                     return true
                 }
                 // Cells are bounded observations, not a complete heap graph.
