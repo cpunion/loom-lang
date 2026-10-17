@@ -45,6 +45,7 @@ type Trace = unsafe extern "C" fn(*mut u8);
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Root {
+    // Null deactivates a compiler region without touching expired stack data.
     address: *mut u8,
     trace: Trace,
 }
@@ -526,14 +527,17 @@ fn collect_roots(roots: &[*mut RootFrame]) {
     });
     for mut frame in roots.iter().copied() {
         while !frame.is_null() {
-            // SAFETY: Active stack frames and slots stay fixed. Tracers rewrite
-            // managed pointers; they cannot allocate,
+            // SAFETY: Active entries address live, fixed stack slots; inactive
+            // regions have null addresses. Tracers rewrite managed pointers;
+            // they cannot allocate,
             // collect or modify the root chain. No Heap borrow spans a callback.
             unsafe {
                 let active = &*frame;
                 for index in 0..active.count {
                     let root = *active.roots.add(index);
-                    (root.trace)(root.address);
+                    if !root.address.is_null() {
+                        (root.trace)(root.address);
+                    }
                 }
                 frame = active.previous;
             }
@@ -1699,6 +1703,43 @@ mod tests {
         // tests keep the addressed stack slot live until dropping the guard.
         unsafe { loom_rt_roots_enter(ptr::from_mut(&mut storage.0), ptr::from_ref(&storage.1), 1) };
         TestRoot(storage)
+    }
+
+    #[test]
+    fn inactive_root_descriptors_skip_expired_storage_and_can_reactivate() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static INACTIVE_VISITS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn inactive_trace(_: *mut u8) {
+            INACTIVE_VISITS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let mut first = text("active");
+        let mut inactive = root(ptr::null_mut());
+        inactive.0.1.trace = inactive_trace;
+        let _active = root(ptr::from_mut(&mut first));
+        let previous = first;
+        loom_rt_collect();
+        assert_ne!(first, previous);
+        // SAFETY: The active descriptor rewrites first during every collection.
+        assert_eq!(unsafe { text_bytes(first) }, b"active");
+        assert_eq!(INACTIVE_VISITS.load(Ordering::Relaxed), 0);
+
+        let mut second = text("reactivated");
+        inactive.0.1.address = ptr::from_mut(&mut second).cast();
+        inactive.0.1.trace = trace_pointer;
+        let previous = second;
+        loom_rt_collect();
+        assert_ne!(second, previous);
+        // SAFETY: Both descriptor slots remain live and have valid tracers.
+        assert_eq!(unsafe { text_bytes(first) }, b"active");
+        assert_eq!(unsafe { text_bytes(second) }, b"reactivated");
+
+        inactive.0.1.address = ptr::null_mut();
+        inactive.0.1.trace = inactive_trace;
+        loom_rt_collect();
+        assert_eq!(INACTIVE_VISITS.load(Ordering::Relaxed), 0);
+        // SAFETY: Only first remains rooted; second is deliberately not read.
+        assert_eq!(unsafe { text_bytes(first) }, b"active");
     }
 
     fn text(value: &str) -> *mut u8 {

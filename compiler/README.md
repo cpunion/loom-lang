@@ -4752,8 +4752,10 @@ No source-visible address, ownership syntax, finalizer or pinning obligation is
 introduced. Collection temporarily holds both old and copied storage.
 LLVM first
 inlines source calls with opaque root-region markers, then lowers one linked
-stack-root frame per remaining native function. Region exits clear inactive
-slots; no marker reaches object code and no root table is copied on entry.
+stack-root frame per remaining native function. Descriptors activate initialized
+slots at region entry and deactivate before their storage expires. Inactive
+inlined regions need no eager slot clearing; LLVM stack lifetimes remain intact.
+No marker reaches object code.
 Optimized builds inline direct primitive forwarders with small scalar guards
 before committing frames, so a checked `std.bytes.push` or `std.list.push` does
 not register a separate frame on every loop iteration. Larger wrappers and
