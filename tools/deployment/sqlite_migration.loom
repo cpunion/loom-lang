@@ -485,8 +485,7 @@ fn inspect_live_upgrade_source(tool Text, database Text, plan SqlitePositiveAmou
 // back both data edits and the completion event. There is no caller SQL in the
 // script, and the only interpolated strings pass the strict identifier/digest
 // checks above. The Started event is intentionally recorded before this call.
-fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade,
+fn upgrade_mode(tool Text, database Text, plan SqlitePositiveAmountUpgrade,
     plan_identity Text, policy FailurePolicy, retained Bool) Result[Attempt, Text] {
     let previous = match latest(tool, database)? {
         Option.Some(value) => value,
@@ -614,14 +613,14 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
 
 // Fresh upgrade starts with no retained tables. Re-upgrade requires the exact
 // retained notes/archive shape left by this slice's downgrade.
-fn execute_positive_amount_upgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, plan_identity Text,
+fn execute_positive_amount_upgrade(tool Text, database Text,
+    plan SqlitePositiveAmountUpgrade, plan_identity Text,
     policy FailurePolicy) Result[Attempt, Text] {
-    upgrade_mode(tool, database, from, to, catalog, plan, plan_identity, policy, false)
+    upgrade_mode(tool, database, plan, plan_identity, policy, false)
 }
 
-fn execute_positive_amount_reupgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, plan_identity Text,
+fn execute_positive_amount_reupgrade(tool Text, database Text,
+    plan SqlitePositiveAmountUpgrade, plan_identity Text,
     policy FailurePolicy) Result[Attempt, Text] {
-    upgrade_mode(tool, database, from, to, catalog, plan, plan_identity, policy, true)
+    upgrade_mode(tool, database, plan, plan_identity, policy, true)
 }

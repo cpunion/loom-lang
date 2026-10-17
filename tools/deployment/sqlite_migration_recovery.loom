@@ -153,8 +153,8 @@ fn execute_failed_upgrade_recovery(tool Text, database Text, plan SqlitePositive
 // Only reverses this package's fixed positive-amount upgrade. The notes and
 // archive tables are retained so downgrade never drops newly created data.
 // An amount changed by v2 is not overwritten by an older archived zero.
-fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, plan_identity Text,
+fn execute_positive_amount_downgrade(tool Text, database Text,
+    plan SqlitePositiveAmountUpgrade, plan_identity Text,
     policy FailurePolicy) Result[Attempt, Text] {
     let previous = match latest(tool, database)? {
         Option.Some(value) => value,

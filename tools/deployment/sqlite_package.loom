@@ -249,22 +249,19 @@ pub fn start_sqlite_migration(tool Text, database Text,
 pub fn upgrade_sqlite_migration(tool Text, database Text,
     value SqliteMigrationPackage) Result[Attempt, Text] {
     let identity = validated_package(value)?
-    execute_positive_amount_upgrade(tool, database, value.from_schema, value.to_schema,
-        value.catalog, value.operation, identity, value.policy)
+    execute_positive_amount_upgrade(tool, database, value.operation, identity, value.policy)
 }
 
 pub fn downgrade_sqlite_migration(tool Text, database Text,
     value SqliteMigrationPackage) Result[Attempt, Text] {
     let identity = validated_package(value)?
-    execute_positive_amount_downgrade(tool, database, value.from_schema, value.to_schema,
-        value.catalog, value.operation, identity, value.policy)
+    execute_positive_amount_downgrade(tool, database, value.operation, identity, value.policy)
 }
 
 pub fn reupgrade_sqlite_migration(tool Text, database Text,
     value SqliteMigrationPackage) Result[Attempt, Text] {
     let identity = validated_package(value)?
-    execute_positive_amount_reupgrade(tool, database, value.from_schema, value.to_schema,
-        value.catalog, value.operation, identity, value.policy)
+    execute_positive_amount_reupgrade(tool, database, value.operation, identity, value.policy)
 }
 
 // Recovery of a failed atomic upgrade is different from downgrading a completed
