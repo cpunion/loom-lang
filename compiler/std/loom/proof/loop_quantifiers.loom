@@ -4,6 +4,7 @@ fn loop_solver_fact(value Predicate) Bool {
     match value {
         Predicate.Forall(_, _, _, _) => true
         Predicate.BagEqual(_, _, _, _) => true
+        Predicate.ArrayPrefix(_, _, _) => true
         Predicate.FloatCompare(_, _, _) => true
         Predicate.And(values) => loop_solver_fact(get(values, 0)) || loop_solver_fact(get(values, 1))
         Predicate.Or(values) => loop_solver_fact(get(values, 0)) || loop_solver_fact(get(values, 1))

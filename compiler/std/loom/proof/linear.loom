@@ -132,6 +132,11 @@ fn same_predicates(a List[Predicate], b List[Predicate]) Bool {
 
 fn same(a Predicate, b Predicate) Bool {
     match a {
+        Predicate.ArrayPrefix(before, after, size) => match b {
+            Predicate.ArrayPrefix(first, second, extent) => before == first && after == second &&
+            compare(size.constant, extent.constant) == 0 && same_terms(size.terms, extent.terms)
+            _ => false
+        }
         Predicate.FloatCompare(relation, left, right) => match b {
             Predicate.FloatCompare(other, first, second) => {
                 let budget = new[Int]()

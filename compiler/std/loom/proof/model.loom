@@ -72,6 +72,9 @@ enum Predicate {
     ArrayWrite(Int, Int, List[Int], Linear, ArrayScalar)
     Forall(Int, Linear, Linear, List[Predicate])
     BagEqual(Int, Linear, Int, Linear)
+    // Representation-preserving frame over every modeled scalar column in
+    // the old valid prefix. This is not source Float numerical equality.
+    ArrayPrefix(Int, Int, Linear)
 }
 
 enum Value {

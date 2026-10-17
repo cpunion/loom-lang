@@ -111,7 +111,9 @@ including contracts over its returned List rather than only its input handle.
 Fresh-output copy loops now preserve disjoint input observations, and pointwise
 prefix equality supplies histogram equality for copy/sort contract composition.
 Mutable Bytes now share these versioned extent/cell rules, including helper
-composition, entry observations and bounded copy loops. General content
+composition, entry observations and bounded copy loops. Checked append retains
+old valid prefixes across possible aliases without assuming an unchanged source
+length or restoring observations lost to interference. General content
 induction and constrained shared-alias preservation remain open.
 
 Use these complete acceptance stories, rather than a count of syntax features:

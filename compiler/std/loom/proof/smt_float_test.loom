@@ -84,6 +84,8 @@ test fn unsupported_float_operations_and_budget_exhaustion_supply_no_solver_axio
         _ => false
     }
     let writer = SmtWriter {
+        columns = []
+        prefixes = []
         declarations = std.bytes.new()
         names = new[Text]()
         budget = [0]

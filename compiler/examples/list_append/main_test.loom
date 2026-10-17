@@ -1,0 +1,11 @@
+test fn append_preserves_entry_segments_with_unknown_or_exact_aliases() {
+    main()
+    let rows = [Row {
+            flag = true
+            label = "entry"
+            ratio = -0.0
+        }]
+    preserve_row([], rows, 0)
+    preserve_row(rows, rows, 0)
+    assert length(rows) == 2 && get(rows, 1).label == "entry"
+}
