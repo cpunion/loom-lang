@@ -49,7 +49,8 @@ started/failed upgrades and failed-upgrade recovery without changing the ledger.
 The layout and data/lineage queries are separate
 read-only snapshots; their result may become stale, does not establish that
 application code obeys the declared mapping, and never authorizes execution.
-The executor checks again inside its write transaction.
+The executor uses the same condition generators and checks again inside its write
+transaction; a successful earlier inspection never substitutes for those checks.
 
 `FailurePolicy.Stop` retains the failed attempt for explicit resume.
 `FailurePolicy.Rollback` instead starts recovery after a failed upgrade process.

@@ -366,12 +366,18 @@ fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Te
         SqliteLivePhase.FreshUpgrade)?
     assert changed_ddl.status == SqliteLiveStatus.LayoutMismatch
     discard fixture_sql(database, "DROP TABLE orders; DROP TABLE loom_deploy_events;")?
-    discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10); CREATE VIEW notes AS SELECT 1 AS id, 'collision' AS body;")?
+    discard fixture_sql(database, """
+        CREATE TABLE "orders"("id" INTEGER PRIMARY KEY, "amount" INTEGER NOT NULL CHECK("amount">=0)) STRICT;
+        INSERT INTO orders VALUES (1,0),(2,10);
+        """)?
     discard started(database, bundle, hotfix_receipt, false)?
-    let blocked = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
+    let ready = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
         SqliteLivePhase.FreshUpgrade)?
-    assert blocked.attempt_state == DeploymentState.Started &&
-    blocked.status == SqliteLiveStatus.LayoutMismatch
+    assert ready.attempt_state == DeploymentState.Started &&
+    ready.status == SqliteLiveStatus.ChecksPassed
+    // A successful read-only preflight is not execution authority. The actual
+    // transaction must reject a conflicting object introduced afterwards.
+    discard fixture_sql(database, "CREATE VIEW notes AS SELECT 1 AS id, 'collision' AS body;")?
     assert match upgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle) {
         Result.Err(_) => true,
         Result.Ok(_) => false
