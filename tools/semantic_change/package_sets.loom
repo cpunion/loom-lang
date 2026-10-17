@@ -126,21 +126,6 @@ fn package_set(base List[PackageRevision], left List[PackageRevision], right Lis
     discard package_scopes(production, base)?
     discard package_scopes(tests, base)?
     let selected = package_union(base, left, right)
-    let branches = [left, right]
-    var branch = 0
-    while branch < length(branches) {
-        let values = get(branches, branch)
-        var index = 0
-        while index < length(values) {
-            let value = get(values, index)
-            if !package_present(base, value.directory) &&
-            (has_imports(value.revision)? || needs_result_import(value.revision, true)?) {
-                return Result.Err("new package dependencies require an expanded pinned project context; explicit resolution required")
-            }
-            index = index + 1
-        }
-        branch = branch + 1
-    }
     Result.Ok(PackageSet {
             base = package_set_branch(base, selected)?
             left = package_set_branch(left, selected)?

@@ -259,8 +259,8 @@ fn normalize_public_package_renames(revisions List[PackageRevision], plans List[
     production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
     discard complete_rename_scope(production, revisions)?
     discard complete_rename_scope(tests, revisions)?
-    let ordinary = package_project(production, revisions)?
-    let testing = package_project(tests, revisions)?
+    let ordinary = package_project(production, revisions, false)?
+    let testing = package_project(tests, revisions, true)?
     let scopes = package_scopes(testing, revisions)?
     let renames = new[DeclarationRename]()
     var index = 0
@@ -319,7 +319,7 @@ fn normalize_public_package_renames(revisions List[PackageRevision], plans List[
     var pass = 0
     while pass < 2 {
         let previous = get(contexts, pass)
-        let changed = package_project(previous, output)?
+        let changed = package_project(previous, output, pass == 1)?
         let selected = package_scopes(previous, revisions)?
         index = 0
         while index < length(selected) {

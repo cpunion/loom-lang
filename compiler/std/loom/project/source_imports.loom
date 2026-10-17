@@ -1,0 +1,36 @@
+// One dependency collector serves filesystem loading and pure project edits.
+// Test-only edges extend a completed production package; they are not ordinary
+// import-cycle edges or another package's private declaration scope.
+fn collect_source_imports(tree Node, owner Text, test_only Bool,
+    ordinary List[Text], tests List[Text]) Result[Bool, Text] {
+    let selected = if test_only {
+        tests
+    } else {
+        ordinary
+    }
+    var index = 0
+    while index < length(tree.children) {
+        let node = get(tree.children, index)
+        if owner != "std.task" && contains_await(node) {
+            include(if test_only || (node.kind == NodeKind.Function && has(node, NodeKind.Test)) {
+                    tests
+                } else {
+                    ordinary
+                }, "std.task")
+        }
+        if node.kind == NodeKind.Refined && owner != "std.result" {
+            include(selected, "std.result")
+        }
+        if node.kind == NodeKind.Import {
+            let target = package(node.value)
+            if target == "" {
+                return Result.Err("imports name a module/package and declaration")
+            }
+            if target != owner {
+                include(selected, target)
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

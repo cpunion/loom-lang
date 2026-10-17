@@ -9,8 +9,8 @@ record PackageRenames {
 // every supported local binding in production and the package's own tests.
 fn normalize_package_renames(revisions List[PackageRevision], plans List[PackageRenames],
     production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
-    let ordinary = package_project(production, revisions)?
-    let testing = package_project(tests, revisions)?
+    let ordinary = package_project(production, revisions, false)?
+    let testing = package_project(tests, revisions, true)?
     let output = new[PackageRevision]()
     var index = 0
     while index < length(plans) {

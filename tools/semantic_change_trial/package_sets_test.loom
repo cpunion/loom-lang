@@ -1,4 +1,4 @@
-fn module_package_set_lifecycle(staging Text) Result[Text, Text] {
+fn module_package_set_lifecycle(staging Text, connected Bool) Result[Text, Text] {
     let names = ["base", "left", "right"]
     var index = 0
     while index < length(names) {
@@ -22,6 +22,30 @@ fn module_package_set_lifecycle(staging Text) Result[Text, Text] {
             assert private_value() == 3
         }
         """)
+    if connected {
+        discard std.file.write_text(path(added, "value.loom"), """
+            import sample.lib.amount
+
+            fn private_value() Int {
+                3
+            }
+
+            pub fn calculated() Int {
+                amount() + 10
+            }
+            """)
+        discard std.file.write_text(path(left, "app/main.loom"), """
+            import sample.math.calculated
+
+            fn bonus() Int {
+                0
+            }
+
+            pub fn entry() Int {
+                calculated() + bonus()
+            }
+            """)
+    }
     discard initialize("sample.math", added)?
     discard std.file.write_text(path(right, "lib/value.loom"), """
         fn secret() Int {
@@ -51,5 +75,13 @@ test fn module_package_sets_keep_private_tests_and_show_deleted_packages_in_revi
     defer {
         remove_module_fixture(staging)
     }
-    assert successful(module_package_set_lifecycle(staging)) == "module package addition and deletion checked and published"
+    assert successful(module_package_set_lifecycle(staging, false)) == "module package addition and deletion checked and published"
+}
+
+test fn module_new_packages_can_connect_existing_producers_and_consumers() {
+    let staging = module_test_directory("package-imports")
+    defer {
+        remove_module_fixture(staging)
+    }
+    assert successful(module_package_set_lifecycle(staging, true)) == "module package addition and deletion checked and published"
 }

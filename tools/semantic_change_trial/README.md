@@ -30,15 +30,19 @@ Each snapshot has a regular `loom.toml` file and a `.loom-ids`
 sidecar in every directory package, including test-only packages. For example,
 initialize `sample` at the module root and `sample.parser` in its `parser`
 directory with the existing `init` command; carry those sidecars between branches.
-Branches may add self-contained packages and delete unused whole packages.
-New packages require fresh identities and no new explicit/implicit dependencies;
+Branches may add packages and delete unused whole packages.
+New packages require fresh identities and can import or be imported by packages
+in the pinned source basis, using the ordinary loader's dependency rules;
 their production and private tests pass the ordinary checks. Identical additions
 or deletions combine, while different concurrent additions, deletion versus edit
 and transfers of declaration identity across packages require resolution.
-Review names removed packages explicitly. Retained-package imports and pinned
-external dependencies remain fixed. Cross-package header/contract or
+Review names removed packages explicitly. Module instances and dependency
+configuration remain pinned; unseen packages or unbound module namespaces need
+expanded context, not guessed fork selection or transitive access. Ordinary
+cycles and changed retained bindings reject. Cross-package header/contract or
 deletion changes compose with edits only across disconnected production/test
-import components; shared consumers or dependencies still require resolution.
+import components across the baseline, branches and result; shared consumers or
+dependencies, including newly introduced edges, still require resolution.
 The offline loader requires a lock for reached Git dependencies; modules with
 only local dependencies need no empty `loom.lock`. An existing lock must be a
 regular file. Manifest bytes and lock presence/bytes must match in all three
@@ -105,8 +109,8 @@ Blob reads use one binary-safe batch per snapshot, not one Git process per file.
 Apply rechecks refs and context before publication. Tree exclusions and asset
 merge policy are the same as directory input, including rejection of symlinks,
 submodules, nested modules and unsupported config changes; file modes are not
-preserved by this directory-output mode. New dependency edges and arbitrary
-package/import-graph changes remain unimplemented.
+preserved by this directory-output mode. Dependencies outside the pinned source
+basis and arbitrary module/configuration changes remain unimplemented.
 
 Every Git merge mode requires `BASE` to be the unique Git merge base of the
 resolved `LEFT` and `RIGHT` commits, not merely an older common ancestor with

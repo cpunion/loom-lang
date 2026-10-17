@@ -100,7 +100,7 @@ fn public_batch_case(name Text, moved Bool, changed Bool, caller_changed Bool) L
 }
 
 fn public_batch_context(base List[PackageRevision], testing Bool) Project {
-    let context = match package_project(batch_context(base, testing), base) {
+    let context = match package_project(batch_context(base, testing), base, testing) {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
