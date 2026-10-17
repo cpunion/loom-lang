@@ -5,6 +5,8 @@ import semantic_change.merge
 import semantic_change.merge_with_context
 import std.loom.ast.NodeKind
 import std.loom.project.Project
+import std.loom.project.SourceFile
+import std.loom.project.ModuleInstance
 import std.loom.project.load
 import std.loom.project.join_path
 import std.loom.proof.z3.backend
@@ -33,6 +35,10 @@ import std.process.arguments
 import std.process.capture_input
 import std.process.exit_code
 import std.process.ExitStatus
+import std.process.Options
+import std.process.EnvChange
+import std.option.Option
+import std.loom.project.git_path
 import std.result.Result
 import std.text.concat
 import std.text.contains
@@ -299,16 +305,32 @@ fn git_bytes(git_executable Text, repository Text, operation List[Text]) Result[
 }
 
 fn git_bytes(git_executable Text, repository Text, operation List[Text], input Bytes) Result[Bytes, Text] {
+    git_bytes(git_executable, repository, operation, input, "")
+}
+
+fn git_bytes(git_executable Text, repository Text, operation List[Text], input Bytes, index_file Text) Result[Bytes, Text] {
     let command = new[Text]()
     push(command, git_executable)
+    push(command, "--no-replace-objects")
+    push(command, "--no-optional-locks")
     push(command, "-C")
-    push(command, repository)
+    push(command, git_path(repository))
     var index = 0
     while index < length(operation) {
         push(command, get(operation, index))
         index = index + 1
     }
-    let captured = match capture_input(command, input) {
+    let changes = [EnvChange.Set("GIT_NO_LAZY_FETCH", "1"), EnvChange.Set("GIT_TERMINAL_PROMPT", "0")]
+    push(changes, if index_file == "" {
+            EnvChange.Remove("GIT_INDEX_FILE")
+        } else {
+            EnvChange.Set("GIT_INDEX_FILE", git_path(index_file))
+        })
+    let captured = match capture_input(command, input, Options {
+            directory = Option.None
+            clear_environment = false
+            environment = changes
+        }) {
         Result.Ok(value) => value
         Result.Err(_) => {
             return Result.Err("could not execute Git")
@@ -428,13 +450,62 @@ fn frame_loaded(output Bytes, loaded Loaded) {
 }
 
 fn framed_project(output Bytes, project Project) Result[Bool, Text] {
+    framed_project(output, project, "", "")
+}
+
+fn basis_path(value Text, physical Text, logical Text) Text {
+    if physical == "" {
+        return value
+    }
+    if value == physical {
+        return logical
+    }
+    let prefix = join_path(physical, "")
+    if starts_with(value, prefix) {
+        return join_path(logical, std.text.slice(value, std.text.length(prefix), std.text.length(value)))
+    }
+    value
+}
+
+fn basis_project(project Project, physical Text, logical Text) Project {
+    if physical == "" {
+        return project
+    }
+    let modules = new[ModuleInstance]()
+    var index = 0
+    while index < length(project.modules) {
+        let module = get(project.modules, index)
+        push(modules, ModuleInstance {
+                source = basis_path(module.source, physical, logical),
+                ..module
+            })
+        index = index + 1
+    }
+    let files = new[SourceFile]()
+    index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        push(files, SourceFile {
+                path = basis_path(file.path, physical, logical),
+                ..file
+            })
+        index = index + 1
+    }
+    Project {
+        modules = modules,
+        files = files,
+        ..project
+    }
+}
+
+fn framed_project(output Bytes, project Project, physical Text, logical Text) Result[Bool, Text] {
     frame(output, to_text(project.root))
     frame(output, to_text(length(project.modules)))
     var index = 0
     while index < length(project.modules) {
         let module = get(project.modules, index)
         frame(output, module.name)
-        frame(output, module.source)
+        frame(output, basis_path(module.source, physical, logical))
         if module.name != "std" {
             let manifest = join_path(module.source, "loom.toml")
             match entry_kind(manifest) {
@@ -475,7 +546,7 @@ fn framed_project(output Bytes, project Project) Result[Bool, Text] {
     while index < length(project.files) {
         let file = get(project.files, index)
         frame(output, to_text(file.package))
-        frame(output, file.path)
+        frame(output, basis_path(file.path, physical, logical))
         frame(output, file.text)
         frame(output, if file.test_only {
                 "test"
@@ -830,6 +901,8 @@ fn main() {
     let context_preview = length(args) == 7 && get(args, 1) == "--context"
     let context_git_preview = length(args) == 11 && get(args, 1) == "--context" && get(args, 4) == "--git"
     let module_preview = length(args) == 6 && get(args, 1) == "--module"
+    let automatic_preview = length(args) == 11 && get(args, 1) == "--git-module"
+    let automatic_apply = length(args) == 13 && get(args, 1) == "--apply" && get(args, 3) == "--git-module"
     let module_git_preview = length(args) == 11 && get(args, 1) == "--module" && get(args, 4) == "--git"
     let directories_apply = length(args) == 7 && get(args, 1) == "--apply"
     let context_apply = length(args) == 10 && get(args, 1) == "--apply" && get(args, 4) == "--context"
@@ -841,7 +914,8 @@ fn main() {
     get(args, 4) == "--module" && get(args, 7) == "--git"
     if !initializing && !scanning && !refreshing && !directories_preview && !git_preview && !context_preview &&
     !directories_apply && !context_apply && !git_apply && !module_preview && !module_apply &&
-    !context_git_preview && !context_git_apply && !module_git_preview && !module_git_apply {
+    !context_git_preview && !context_git_apply && !module_git_preview && !module_git_apply &&
+    !automatic_preview && !automatic_apply {
         discard write_error("usage: semantic_change_trial init PACKAGE_NAME DIR\n")
         discard write_error("   or: semantic_change_trial scan DIR\n")
         discard write_error("   or: semantic_change_trial refresh DIR [--draft] [--move ID NEW_FILE NEW_NAME KEY | --delete ID]...\n")
@@ -851,6 +925,8 @@ fn main() {
         discard write_error("   or: semantic_change_trial --context PACKAGE_DIR STD_ROOT --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         discard write_error("   or: semantic_change_trial --module STD_ROOT BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --module BASE_MODULE_DIR STD_ROOT --git GIT_EXE REPO MODULE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
+        discard write_error("   or: semantic_change_trial --git-module SCRATCH STD_ROOT CACHE_BASE GIT_EXE REPO MODULE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
+        discard write_error("   or: semantic_change_trial --apply TOKEN --git-module SCRATCH STD_ROOT CACHE_BASE GIT_EXE REPO MODULE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         discard write_error("   or: semantic_change_trial --apply TOKEN OUTPUT_DIR BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --apply TOKEN OUTPUT_DIR --context PACKAGE_DIR STD_ROOT BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --apply TOKEN OUTPUT_DIR --context PACKAGE_DIR STD_ROOT --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
@@ -860,7 +936,11 @@ fn main() {
         exit_code(2)
         return
     }
-    let outcome = if module_git_preview {
+    let outcome = if automatic_preview {
+        automatic_git_module(git_auto_request(args, 2), false, "")
+    } else if automatic_apply {
+        automatic_git_module(git_auto_request(args, 4), true, get(args, 2))
+    } else if module_git_preview {
         preview_git_module(get(args, 2), get(args, 3), get(args, 5), get(args, 6),
             get(args, 7), get(args, 8), get(args, 9), get(args, 10))
     } else if module_git_apply {

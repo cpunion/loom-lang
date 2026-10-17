@@ -3,12 +3,14 @@ import std.list.set
 record GitEntry {
     relative Text
     object Text
+    mode Text
     regular Bool
 }
 
 record GitTree {
     commit Text
     entries List[GitEntry]
+    raw Bytes
 }
 
 record GitPackageFiles {
@@ -24,8 +26,18 @@ fn git_tree(executable Text, repository Text, directory Text, revision Text) Res
     contains(directory, "\\") || ends_with(directory, "/") {
         return Result.Err("Git snapshot path must be a relative directory")
     }
-    let commit = git_commit(executable, repository, revision)?
-    let records = split(git(executable, repository, ["ls-tree", "-r", "-z", commit, "--", directory])?, "\0")
+    git_commit_tree(executable, repository, directory, git_commit(executable, repository, revision)?)
+}
+
+fn git_commit_tree(executable Text, repository Text, directory Text, commit Text) Result[GitTree, Text] {
+    let raw = git_bytes(executable, repository, ["ls-tree", "-r", "-z", commit, "--", directory])?
+    let text = match decode_utf8(raw) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("Git tree is not UTF-8")
+        }
+    }
+    let records = split(text, "\0")
     let prefix = if directory == "." {
         ""
     } else {
@@ -49,6 +61,7 @@ fn git_tree(executable Text, repository Text, directory Text, revision Text) Res
                 push(entries, GitEntry {
                         relative = std.text.slice(full, std.text.length(prefix), std.text.length(full))
                         object = get(fields, 2)
+                        mode = get(fields, 0)
                         regular = (get(fields, 0) == "100644" || get(fields, 0) == "100755") && get(fields, 1) == "blob"
                     })
             }
@@ -58,6 +71,7 @@ fn git_tree(executable Text, repository Text, directory Text, revision Text) Res
     Result.Ok(GitTree {
             commit = commit
             entries = entries
+            raw = raw
         })
 }
 
@@ -118,6 +132,10 @@ fn git_package_files(groups List[GitPackageFiles], relative Text) Int {
 fn read_git_module(executable Text, repository Text, directory Text, revision Text,
     context_directory Text) Result[ModuleSnapshot, Text] {
     let tree = git_tree(executable, repository, directory, revision)?
+    read_git_module_tree(executable, repository, tree, context_directory)
+}
+
+fn read_git_module_tree(executable Text, repository Text, tree GitTree, context_directory Text) Result[ModuleSnapshot, Text] {
     let selected = new[GitEntry]()
     var index = 0
     while index < length(tree.entries) {

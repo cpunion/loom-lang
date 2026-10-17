@@ -1,0 +1,192 @@
+import std.bytes.to_text
+
+fn git_mode_at(tree GitTree, path Text) Text {
+    var index = 0
+    while index < length(tree.entries) {
+        let entry = get(tree.entries, index)
+        if entry.relative == path {
+            return entry.mode
+        }
+        index = index + 1
+    }
+    ""
+}
+
+fn git_merged_mode(path Text, base GitTree, left GitTree, right GitTree) Result[Text, Text] {
+    let original = git_mode_at(base, path)
+    let a = git_mode_at(left, path)
+    let b = git_mode_at(right, path)
+    let mode = if a == b {
+        a
+    } else if a == original {
+        b
+    } else if b == original {
+        a
+    } else {
+        return Result.Err(concat("concurrent Git file mode changes: ", path))
+    }
+    if mode != "100644" && mode != "100755" {
+        return Result.Err(concat("merged file has no regular Git mode: ", path))
+    }
+    Result.Ok(mode)
+}
+
+fn add_git_write(writes List[GitWrite], path Text, bytes Bytes, base GitTree, left GitTree, right GitTree) Result[Bool, Text] {
+    push(writes, GitWrite {
+            relative = path,
+            mode = git_merged_mode(path, base, left, right)?,
+            bytes = bytes
+        })
+    Result.Ok(true)
+}
+
+fn git_module_writes(review ModuleReview, prefix Text, base GitTree, left GitTree, right GitTree) Result[List[GitWrite], Text] {
+    var index = 0
+    while index < length(base.entries) {
+        let entry = get(base.entries, index)
+        if git_scope(entry.relative, prefix)? {
+            let a = git_mode_at(left, entry.relative)
+            let b = git_mode_at(right, entry.relative)
+            if (a == "" && b != "" && b != entry.mode) || (b == "" && a != "" && a != entry.mode) {
+                return Result.Err("Git deletion versus file-mode change requires explicit resolution")
+            }
+        }
+        index = index + 1
+    }
+    let writes = new[GitWrite]()
+    index = 0
+    while index < length(review.assets) {
+        let entry = get(review.assets, index)
+        discard add_git_write(writes, concat(prefix, entry.relative), entry.bytes, base, left, right)?
+        index = index + 1
+    }
+    index = 0
+    while index < length(review.packages) {
+        let package = get(review.packages, index)
+        let relative = get(review.relative, index)
+        let directory = concat(prefix, if relative == "" {
+                ""
+            } else {
+                concat(relative, "/")
+            })
+        var file = 0
+        while file < length(package.merged.files) {
+            let source = get(package.merged.files, file)
+            discard add_git_write(writes, concat(directory, source.path), to_bytes(source.text), base, left, right)?
+            file = file + 1
+        }
+        discard add_git_write(writes, concat(directory, ".loom-ids"), to_bytes(sidecar(package.merged, package.next)), base, left, right)?
+        index = index + 1
+    }
+    Result.Ok(writes)
+}
+
+fn show_git_writes(review ModuleReview, writes List[GitWrite]) Text {
+    var output = show_module(review)
+    var index = 0
+    while index < length(writes) {
+        let write = get(writes, index)
+        output = concat(output, concat("git-entry ", concat(write.mode, concat(" ", concat(write.relative,
+                            concat(" sha256 ", concat(hex(write.bytes), "\n")))))))
+        index = index + 1
+    }
+    output
+}
+
+fn git_quote_path(path Text) Text {
+    let output = std.bytes.new()
+    std.bytes.push(output, 34)
+    var index = 0
+    while index < std.text.length(path) {
+        let part = byte(path, index)
+        if part == 34 || part == 92 {
+            std.bytes.push(output, 92)
+            std.bytes.push(output, part)
+        } else if part < 32 || part == 127 {
+            std.bytes.push(output, 92)
+            std.bytes.push(output, 48 + part / 64)
+            std.bytes.push(output, 48 + (part / 8) % 8)
+            std.bytes.push(output, 48 + part % 8)
+        } else {
+            std.bytes.push(output, part)
+        }
+        index = index + 1
+    }
+    std.bytes.push(output, 34)
+    std.bytes.to_text(output)
+}
+
+fn git_append(output Bytes, value Text) {
+    var index = 0
+    while index < std.text.length(value) {
+        std.bytes.push(output, byte(value, index))
+        index = index + 1
+    }
+}
+
+fn write_git_result(executable Text, repository Text, stage Text, base GitTree,
+    prefix Text, writes List[GitWrite]) Result[Text, Text] {
+    let merged = join_path(stage, "merged")
+    match create_dir(merged) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            return Result.Err("cannot create proposed Git file stage")
+        }
+    }
+    let paths = std.bytes.new()
+    var index = 0
+    while index < length(writes) {
+        let write = get(writes, index)
+        discard module_directories(merged, write.relative, false)?
+        let target = module_path(merged, write.relative)
+        discard vacant(target)?
+        match write_bytes(target, write.bytes) {
+            Result.Ok(_) => {
+            }
+            Result.Err(_) => {
+                return Result.Err("cannot write proposed Git blob")
+            }
+        }
+        git_append(paths, concat(git_quote_path(git_path(target)), "\n"))
+        index = index + 1
+    }
+    let index_file = join_path(stage, "index")
+    discard git_bytes(executable, repository, ["read-tree", base.commit], std.bytes.new(), index_file)?
+    let removed = std.bytes.new()
+    index = 0
+    while index < length(base.entries) {
+        let entry = get(base.entries, index)
+        if git_scope(entry.relative, prefix)? {
+            git_append(removed, entry.relative)
+            std.bytes.push(removed, 0)
+        }
+        index = index + 1
+    }
+    discard git_bytes(executable, repository, ["update-index", "--force-remove", "-z", "--stdin"], removed, index_file)?
+    let raw = git_bytes(executable, repository, ["hash-object", "-w", "--no-filters", "--stdin-paths"], paths)?
+    let text = match decode_utf8(raw) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("invalid Git blob identities")
+        }
+    }
+    let objects = split(text, "\n")
+    if length(objects) != length(writes) + 1 || get(objects, length(writes)) != "" {
+        return Result.Err("Git blob count differs from the reviewed files")
+    }
+    let updates = std.bytes.new()
+    index = 0
+    while index < length(writes) {
+        let write = get(writes, index)
+        git_append(updates, concat(write.mode, concat(" ", concat(get(objects, index), concat("\t", write.relative)))))
+        std.bytes.push(updates, 0)
+        index = index + 1
+    }
+    discard git_bytes(executable, repository, ["update-index", "-z", "--index-info"], updates, index_file)?
+    let tree = git_bytes(executable, repository, ["write-tree"], std.bytes.new(), index_file)?
+    match decode_utf8(tree) {
+        Result.Ok(value) => Result.Ok(trim(value))
+        Result.Err(_) => Result.Err("invalid Git result tree identity")
+    }
+}

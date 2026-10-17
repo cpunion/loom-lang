@@ -1,0 +1,69 @@
+fn automatic_git_lifecycle(staging Text) Result[Text, Text] {
+    discard module_fixture_branches(staging)?
+    let repository = path(staging, "repository")
+    discard create_dir(repository)
+    discard git("git", repository, ["init", "--template="])?
+    discard git_fixture_module(repository, read_module(path(staging, "base"))?)?
+    let base = git_fixture_commit(repository, "")?
+    discard git_fixture_module(repository, read_module(path(staging, "left"))?)?
+    let left = git_fixture_commit(repository, base)?
+    discard git_fixture_module(repository, read_module(path(staging, "right"))?)?
+    let right = git_fixture_commit(repository, base)?
+    discard git("git", repository, ["update-ref", "HEAD", right])?
+    let first = path(staging, "scratch-one")
+    let second = path(staging, "scratch-two")
+    discard create_dir(first)
+    discard create_dir(second)
+    // Current working-copy configuration is deliberately not the Git baseline.
+    discard std.file.write_text(path(repository, "loom.toml"), "invalid working copy\n")
+    let before = git("git", repository, ["status", "--porcelain=v1"])?
+    let request = GitAutoRequest {
+        scratch = first
+        standard = "compiler/std"
+        cache = staging
+        executable = "git"
+        repository = repository
+        directory = "."
+        base = base
+        left = left
+        right = right
+    }
+    let preview = automatic_git_module(request, false, "")?
+    let other = GitAutoRequest {
+        scratch = second,
+        ..request
+    }
+    assert automatic_git_module(other, false, "")? == preview
+    let token = get(split(get(split(preview, "\n"), 1), " "), 2)
+    assert contains(preview, "git-entry 100644 lib/moved.loom sha256 ")
+    assert contains(preview, "fn private_value()")
+    let applied = automatic_git_module(other, true, token)?
+    assert starts_with(applied, "wrote checked Git tree ")
+    assert automatic_git_module(request, true, token)? == applied
+    let tree = get(split(get(split(applied, "\n"), 0), " "), 4)
+    assert contains(git("git", repository, ["show", concat(tree, ":lib/moved.loom")])?, "2")
+    assert git("git", repository, ["show", concat(tree, ":docs/usage.txt")])? == "updated alongside the library\n"
+    assert match automatic_git_module(request, true, "stale") {
+        Result.Err(message) => contains(message, "review token")
+        Result.Ok(_) => false
+    }
+    assert git("git", repository, ["status", "--porcelain=v1"])? == before
+    assert git_commit("git", repository, "HEAD")? == right
+    assert match entries(first) {
+        Result.Ok(value) => length(value) == 0,
+        Result.Err(_) => false
+    }
+    assert match entries(second) {
+        Result.Ok(value) => length(value) == 0,
+        Result.Err(_) => false
+    }
+    Result.Ok("automatic Git context and object-only application passed")
+}
+
+test fn git_context_comes_from_the_baseline_and_survives_different_scratch_paths() {
+    let staging = module_test_directory("automatic-git")
+    defer {
+        remove_module_fixture(staging)
+    }
+    assert successful(automatic_git_lifecycle(staging)) == "automatic Git context and object-only application passed"
+}

@@ -222,6 +222,7 @@ fn version_loader(initial Loader, selected List[VersionSelection]) Loader {
         resolution = Resolution {
             root = initial.resolution.root
             cache_base = initial.resolution.cache_base
+            source_root = initial.resolution.source_root
             tool = initial.resolution.tool
             credential_tool = initial.resolution.credential_tool
             locks = locks

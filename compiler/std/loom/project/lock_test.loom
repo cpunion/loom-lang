@@ -111,6 +111,7 @@ test fn lock_owners_are_location_independent_and_git_paths_are_contained() {
     let first = Resolution {
         root = "/one/app"
         cache_base = "/one/app"
+        source_root = ""
         tool = "git"
         credential_tool = ""
         locks = new[LockedSource]()
@@ -120,6 +121,7 @@ test fn lock_owners_are_location_independent_and_git_paths_are_contained() {
     let second = Resolution {
         root = "/two/app"
         cache_base = "/two/app"
+        source_root = ""
         tool = "git"
         credential_tool = ""
         locks = new[LockedSource]()

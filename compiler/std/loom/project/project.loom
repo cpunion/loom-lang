@@ -501,6 +501,11 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
 
 fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text, overlays List[OverlayFile],
     failures List[LoadFailure], cache_base Text) Result[(Loader, Int, Text), Text] {
+    prepare_loader(path, std_root, git_tool, credential_tool, overlays, failures, cache_base, "")
+}
+
+fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text, overlays List[OverlayFile],
+    failures List[LoadFailure], cache_base Text, source_root Text) Result[(Loader, Int, Text), Text] {
     let directory = canonical(path)?
     let is_directory = match kind(directory) {
         Result.Ok(value) => value == FileKind.Directory
@@ -511,9 +516,18 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
     }
     let standard = canonical(std_root)?
     let module = selected_module(directory, standard)?
+    let boundary = if source_root == "" {
+        ""
+    } else {
+        canonical(source_root)?
+    }
+    if boundary != "" && !inside(module.base, boundary) {
+        return Result.Err("selected module is outside the source boundary")
+    }
     let files = new[SourceFile]()
     let resolution = Resolution {
         root = module.base
+        source_root = boundary
         cache_base = if cache_base == "" {
             module.base
         } else {

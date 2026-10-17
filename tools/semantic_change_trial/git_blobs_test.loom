@@ -2,6 +2,7 @@ test fn git_batch_reads_binary_lengths_and_rejects_mismatched_or_truncated_frame
     let entry = GitEntry {
         relative = "data.bin"
         object = "object"
+        mode = "100644"
         regular = true
     }
     let bytes = to_bytes("object blob 3\n")

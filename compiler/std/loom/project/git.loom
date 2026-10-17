@@ -15,7 +15,7 @@ record GitSession {
 // Git for Windows rejects verbatim prefixes in its path validator, even though
 // Windows accepts them. Adapt only Git-facing paths; Loom's canonical paths and
 // child working directory keep their native spelling. Unix backslashes survive.
-fn git_path(path Text) Text {
+pub fn git_path(path Text) Text {
     if !is_windows_path(path) {
         return path
     }
@@ -318,6 +318,9 @@ fn source_owner(resolution Resolution, base Text) Result[Text, Text] {
 }
 
 fn source_boundary(resolution Resolution, base Text, dependency Text) Result[Bool, Text] {
+    if resolution.source_root != "" && inside(base, resolution.source_root) && !inside(dependency, resolution.source_root) {
+        return Result.Err("path dependency escapes the selected source boundary")
+    }
     var index = 0
     while index < length(resolution.snapshots) {
         let source = get(resolution.snapshots, index)

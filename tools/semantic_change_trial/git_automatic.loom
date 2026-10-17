@@ -1,0 +1,269 @@
+import std.loom.project.git_snapshot_input
+import std.loom.project.extract_git_snapshot
+import std.fs.remove_file
+import std.fs.remove_empty_dir
+
+record GitAutoRequest {
+    scratch Text
+    standard Text
+    cache Text
+    executable Text
+    repository Text
+    directory Text
+    base Text
+    left Text
+    right Text
+}
+
+record GitWrite {
+    relative Text
+    mode Text
+    bytes Bytes
+}
+
+fn git_auto_request(args List[Text], start Int) GitAutoRequest {
+    GitAutoRequest {
+        scratch = get(args, start)
+        standard = get(args, start + 1)
+        cache = get(args, start + 2)
+        executable = get(args, start + 3)
+        repository = get(args, start + 4)
+        directory = get(args, start + 5)
+        base = get(args, start + 6)
+        left = get(args, start + 7)
+        right = get(args, start + 8)
+    }
+}
+
+fn git_private_stage(scratch Text) Result[Text, Text] {
+    let root = match canonicalize(scratch) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("Git context needs an existing trusted scratch directory")
+        }
+    }
+    discard checked_source_directory(root)?
+    var sequence = 0
+    while true {
+        let stage = join_path(root, concat("loom-git-context-", to_text(sequence)))
+        match create_dir(stage) {
+            Result.Ok(_) => {
+                return Result.Ok(stage)
+            }
+            Result.Err(FsError.AlreadyExists) => {
+                sequence = sequence + 1
+            }
+            Result.Err(_) => {
+                return Result.Err("cannot create private Git context stage")
+            }
+        }
+    }
+    Result.Err("cannot allocate Git context stage")
+}
+
+// Only used for a freshly created, invocation-owned stage, never a repository
+// or caller-supplied root. Final symlinks are removed rather than followed.
+fn remove_git_stage(stage Text) Result[Bool, Text] {
+    let names = match entries(stage) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("cannot enumerate Git context stage")
+        }
+    }
+    var index = 0
+    while index < length(names) {
+        let location = join_path(stage, get(names, index))
+        match entry_kind(location) {
+            Result.Ok(FileKind.Directory) => {
+                discard remove_git_stage(location)?
+            }
+            Result.Ok(FileKind.File) => {
+                discard remove_file(location)
+            }
+            Result.Ok(FileKind.Symlink) => {
+                discard remove_file(location)
+            }
+            _ => {
+                return Result.Err("unexpected Git context stage entry")
+            }
+        }
+        index = index + 1
+    }
+    match remove_empty_dir(stage) {
+        Result.Ok(_) => Result.Ok(true)
+        Result.Err(_) => Result.Err("cannot remove Git context stage")
+    }
+}
+
+fn git_scope_prefix(directory Text) Result[Text, Text] {
+    if directory == "." {
+        return Result.Ok("")
+    }
+    let parts = split(directory, "/")
+    var index = 0
+    while index < length(parts) {
+        let part = get(parts, index)
+        if part == "" || part == "." || part == ".." || contains(part, "\\") {
+            return Result.Err("Git module directory must be repository-relative")
+        }
+        index = index + 1
+    }
+    Result.Ok(concat(directory, "/"))
+}
+
+fn git_scope(path Text, prefix Text) Result[Bool, Text] {
+    if !starts_with(path, prefix) {
+        return Result.Ok(false)
+    }
+    selected_git_module_path(std.text.slice(path, std.text.length(prefix), std.text.length(path)))
+}
+
+fn git_outside_stamp(tree GitTree, prefix Text) Result[Text, Text] {
+    let bytes = std.bytes.new()
+    var index = 0
+    while index < length(tree.entries) {
+        let entry = get(tree.entries, index)
+        if !git_scope(entry.relative, prefix)? {
+            frame(bytes, entry.relative)
+            frame(bytes, entry.mode)
+            frame(bytes, entry.object)
+        }
+        index = index + 1
+    }
+    Result.Ok(hex(bytes))
+}
+
+fn git_selected_tree(tree GitTree, prefix Text) GitTree {
+    let selected = new[GitEntry]()
+    var index = 0
+    while index < length(tree.entries) {
+        let entry = get(tree.entries, index)
+        if starts_with(entry.relative, prefix) {
+            push(selected, GitEntry {
+                    relative = std.text.slice(entry.relative, std.text.length(prefix), std.text.length(entry.relative))
+                    ..entry
+                })
+        }
+        index = index + 1
+    }
+    GitTree {
+        entries = selected,
+        ..tree
+    }
+}
+
+fn git_bound_snapshot(snapshot ModuleSnapshot, logical Text, commit Text) ModuleSnapshot {
+    let packages = new[ModulePackage]()
+    var index = 0
+    while index < length(snapshot.packages) {
+        let package = get(snapshot.packages, index)
+        push(packages, ModulePackage {
+                relative = package.relative
+                loaded = Loaded {
+                    commit = commit,
+                    ..package.loaded
+                }
+            })
+        index = index + 1
+    }
+    ModuleSnapshot {
+        directory = logical,
+        packages = packages,
+        ..snapshot
+    }
+}
+
+fn automatic_git_module(request GitAutoRequest, apply Bool, expected Text) Result[Text, Text] {
+    let prefix = git_scope_prefix(request.directory)?
+    let repository = if trim(git(request.executable, request.repository, ["rev-parse", "--is-bare-repository"])?) == "true" {
+        match canonicalize(request.repository) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("cannot resolve Git repository")
+            }
+        }
+    } else {
+        trim(git(request.executable, request.repository, ["rev-parse", "--show-toplevel"])?)
+    }
+    let base = git_commit(request.executable, repository, request.base)?
+    let left = git_commit(request.executable, repository, request.left)?
+    let right = git_commit(request.executable, repository, request.right)?
+    let original_tree = git_commit_tree(request.executable, repository, ".", base)?
+    let left_tree = git_commit_tree(request.executable, repository, ".", left)?
+    let right_tree = git_commit_tree(request.executable, repository, ".", right)?
+    let input = git_snapshot_input(original_tree.raw, std.text.length(base))?
+    discard git_snapshot_input(left_tree.raw, std.text.length(left))?
+    discard git_snapshot_input(right_tree.raw, std.text.length(right))?
+    if git_outside_stamp(original_tree, prefix)? != git_outside_stamp(left_tree, prefix)? ||
+    git_outside_stamp(original_tree, prefix)? != git_outside_stamp(right_tree, prefix)? {
+        return Result.Err("Git changes outside the selected module scope require explicit resolution")
+    }
+    let stage = git_private_stage(request.scratch)?
+    defer {
+        match remove_git_stage(stage) {
+            Result.Ok(_) => {
+            }
+            Result.Err(_) => {
+                discard write_error(concat("Git context stage needs cleanup: ", concat(stage, "\n")))
+            }
+        }
+    }
+    let source = join_path(stage, "source")
+    match create_dir(source) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            return Result.Err("cannot create Git baseline source directory")
+        }
+    }
+    discard extract_git_snapshot(source, original_tree.raw,
+        git_bytes(request.executable, repository, ["cat-file", "--batch"], input)?, std.text.length(base))?
+    let physical = if prefix == "" {
+        source
+    } else {
+        module_path(source, request.directory)
+    }
+    let logical_root = join_path(repository, concat(".loom-git-basis-", base))
+    let logical = if prefix == "" {
+        logical_root
+    } else {
+        module_path(logical_root, request.directory)
+    }
+    let baseline = read_module(physical)?
+    let context = module_context(baseline, request.standard, request.cache, source, logical_root)?
+    let original = git_bound_snapshot(baseline, logical, base)
+    let review = review_module(original,
+        read_git_module_tree(request.executable, repository, git_selected_tree(left_tree, prefix), logical)?,
+        read_git_module_tree(request.executable, repository, git_selected_tree(right_tree, prefix), logical)?, context)?
+    let writes = git_module_writes(review, prefix, original_tree, left_tree, right_tree)?
+    let bytes = std.bytes.new()
+    frame(bytes, "loom-semantic-git-tree-review-v1")
+    frame(bytes, review.token)
+    var index = 0
+    while index < length(writes) {
+        let write = get(writes, index)
+        frame(bytes, write.relative)
+        frame(bytes, write.mode)
+        frame(bytes, hex(write.bytes))
+        index = index + 1
+    }
+    let token = hex(bytes)
+    if !apply {
+        return Result.Ok(show_git_writes(ModuleReview {
+                    token = token,
+                    ..review
+                }, writes))
+    }
+    if expected != token {
+        return Result.Err("review token does not match the Git inputs or project closure")
+    }
+    // Verify the live dependency cache again before writing any Git objects.
+    if module_context(read_module(physical)?, request.standard, request.cache, source, logical_root)?.stamp != context.stamp ||
+    git_commit(request.executable, repository, request.base)? != base ||
+    git_commit(request.executable, repository, request.left)? != left ||
+    git_commit(request.executable, repository, request.right)? != right {
+        return Result.Err("Git refs or dependency context changed before application")
+    }
+    let tree = write_git_result(request.executable, repository, stage, original_tree, prefix, writes)?
+    Result.Ok(concat("wrote checked Git tree ", concat(tree, "\nrefs, index and working tree unchanged\n")))
+}
