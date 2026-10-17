@@ -597,8 +597,9 @@ fn same_layout(base Indexed, branch Indexed) Bool {
     true
 }
 
-// The non-layout side may edit declaration bodies, but cannot silently change
-// comments, whitespace or any other text between declarations.
+// Compare all bytes outside declaration bodies, including comments and imports.
+// A merge keeps one-sided or identical scaffolds, never guesses between two
+// different concurrent file-level edits.
 fn same_scaffold(base Indexed, branch Indexed) Bool {
     var file_index_value = 0
     while file_index_value < length(base.revision.files) {
@@ -1186,17 +1187,20 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
     if left_layout && right_layout {
         return Result.Err("concurrent file or declaration layout changes need explicit resolution")
     }
-    let carrier = if right_layout {
+    let right_scaffold = !same_scaffold(original, edited_right)
+    let left_scaffold = !same_scaffold(original, edited_left)
+    let right_carrier = right_layout || (!left_layout && right_scaffold && !left_scaffold)
+    let carrier = if right_carrier {
         edited_right
     } else {
         edited_left
     }
-    let other = if right_layout {
+    let other = if right_carrier {
         edited_left
     } else {
         edited_right
     }
-    if !same_scaffold(original, other) {
+    if !same_scaffold(original, other) && !same_scaffold(carrier, other) {
         return Result.Err("non-layout side changed text outside declaration bodies")
     }
     let files = new[File]()

@@ -69,36 +69,6 @@ fn public_symbol_identity(analysis Analysis, scopes List[PackageScope], symbol I
     ""
 }
 
-fn public_import_name(analysis Analysis, scopes List[PackageScope], renames List[FunctionRename],
-    file Int, spelling Text) Result[Text, Text] {
-    let selected = candidates(analysis.bindings, file, true, spelling)
-    var renamed = false
-    var target = ""
-    var split = false
-    var index = 0
-    while index < length(selected) {
-        let symbol = get(selected, index)
-        let requested = rename_requested(renames, public_symbol_identity(analysis, scopes, symbol))
-        let name = if requested == "" {
-            get(analysis.bindings.symbols, symbol).node.value
-        } else {
-            requested
-        }
-        renamed = renamed || requested != ""
-        split = split || (target != "" && name != target)
-        target = name
-        index = index + 1
-    }
-    if renamed && split {
-        return Result.Err("splitting a public overload import needs explicit resolution")
-    }
-    Result.Ok(if renamed {
-            target
-        } else {
-            ""
-        })
-}
-
 fn public_package_edits(analysis Analysis, scopes List[PackageScope], scope PackageScope,
     renames List[FunctionRename], edits List[SourceRenameEdit], backend ProofBackend) Result[Bool, Text] {
     discard checked_rename_generators(analysis, scope.package, backend)?
@@ -153,46 +123,7 @@ fn public_package_edits(analysis Analysis, scopes List[PackageScope], scope Pack
         }
         index = index + 1
     }
-    var file = 0
-    while file < length(analysis.bindings.files) {
-        let source = get(analysis.bindings.files, file)
-        if source.package == scope.package {
-            var item = 0
-            while item < length(source.tree.children) {
-                let node = get(source.tree.children, item)
-                if node.kind == NodeKind.Import {
-                    let requested = public_import_name(analysis, scopes, renames, file, node.value)?
-                    if requested != "" && requested != std.loom.project.name(node.value) {
-                        let tokens = match lex(slice(source.text, node.span.start, node.span.end)) {
-                            Result.Ok(value) => value
-                            Result.Err(problem) => {
-                                return Result.Err(problem.message)
-                            }
-                        }
-                        var token_index = length(tokens) - 1
-                        while token_index >= 0 && get(tokens, token_index).kind != Kind.Name {
-                            token_index = token_index - 1
-                        }
-                        if token_index < 0 {
-                            return Result.Err("public import has no member token")
-                        }
-                        let token = get(tokens, token_index)
-                        push(edits, SourceRenameEdit {
-                                path = source.path
-                                span = Span {
-                                    start = node.span.start + token.span.start
-                                    end = node.span.start + token.span.end
-                                }
-                                text = requested
-                            })
-                    }
-                }
-                item = item + 1
-            }
-        }
-        file = file + 1
-    }
-    Result.Ok(true)
+    public_package_import_edits(analysis, scopes, scope, renames, edits)
 }
 
 record SourceRenameFile {
