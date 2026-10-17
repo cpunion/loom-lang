@@ -361,23 +361,24 @@ The same trusted-local caveat applies to `init` and `refresh`: native rename
 atomically publishes the staged sidecar but may replace a concurrently created
 target. A failed update leaves its private stage for inspection or recovery.
 
-The single-package merge path accepts one side changing file/declaration layout while the
-other edits declaration bodies. It preserves the layout side's surrounding
-source text and the chosen declaration body verbatim, then parses and checks
-the merged package. One side may also add uniquely named declarations with
-fresh stable IDs while the other edits existing bodies. For a one-sided
-addition, it scans the other side's retained declarations for the new name as
+The merge selects each file skeleton by three-way equality, keeping exact
+surrounding text and choosing declaration bodies by stable ID. Independent files
+can take different branches, including moves, additions and removals; identical
+changes shared by both branches are not cross-side conflicts. A separate placement
+join and re-indexing of the rendered source prevent missing or duplicate IDs.
+Retained metadata order stays stable and fresh identity rows have deterministic
+ID order. Structural merges still require checked retained bindings.
+For a one-sided addition, the library scans the other side's declarations for the new name as
 an identifier token, including in types, contracts, and `comptime` code.
 Comments and string contents do not count. This conservative collision check
 can reject harmless local names or field names; it is not a proof of unchanged
-binding. Additions on both sides,
-additions mixed with deletions, cross-side deletion plus body edits,
+binding. Cross-side deletion plus body edits,
 cross-side signature or contract changes plus body edits, retained identifier
-collisions, concurrent layout changes, conflicting edits, changes
-to the non-layout side's surrounding text, and unsupported declaration forms
+collisions, competing declaration destinations, differing changes to one file's
+skeleton, conflicting body edits and unsupported declaration forms
 are reported instead of guessed.
 
-This is a deliberately narrow proof of the move-plus-edit workflow. It does
+This is a bounded checked-source workflow, not behavior-equivalence proof. It does
 not yet manage Git/jj changes or commits, reconcile arbitrary package/import-graph changes,
 infer identities for generated declarations, or merge competing edits within a
 single declaration body. Adding a new overload can change

@@ -211,7 +211,7 @@ test fn production_imports_do_not_acquire_test_only_overload_names() {
     }
 }
 
-test fn overload_rename_does_not_hide_a_conflicting_file_import_scaffold() {
+test fn overload_rename_composes_with_independent_file_import_scaffolds() {
     let base = split_public_case(false, false, false, false, false)
     let renamed = split_public_case(true, true, false, false, false)
     let edited = split_public_case(false, false, true, true, false)
@@ -235,9 +235,10 @@ test fn overload_rename_does_not_hide_a_conflicting_file_import_scaffold() {
         Result.Err(_) => false
     }
     assert match merge_packages(base, renamed, edited, production, tests) {
-        // Normalization changed a private test file's import scaffold too;
-        // independently changing the main file does not select one carrier.
-        Result.Err(message) => contains(message, "outside declaration bodies")
-        Result.Ok(_) => false
+        Result.Err(message) => {
+            discard write_error(message)
+            false
+        }
+        Result.Ok(value) => contains(get(get(value, 1).revision.files, 0).text, "import sample.lib.unrelated")
     }
 }

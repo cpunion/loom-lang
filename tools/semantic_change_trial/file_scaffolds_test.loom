@@ -1,0 +1,71 @@
+fn git_file_scaffold_lifecycle(staging Text) Result[Text, Text] {
+    let repository = path(staging, "repository")
+    let scratch = path(staging, "scratch")
+    discard create_dir(repository)
+    discard create_dir(scratch)
+    discard std.file.write_text(path(repository, "loom.toml"), "[module]\nname = \"sample\"\n")
+    discard std.file.write_text(path(repository, ".gitignore"), ".loom-ids-stage-*/\ntarget/\n")
+    discard std.file.write_text(path(repository, "alpha.loom"), "fn alpha() Int {\n    1\n}\n")
+    discard std.file.write_text(path(repository, "beta.loom"), "fn beta() Int {\n    2\n}\n")
+    discard std.file.write_text(path(repository, "entry.loom"), """
+        fn entry() Int {
+            alpha() + beta()
+        }
+        """)
+    discard std.file.write_text(path(repository, "entry_test.loom"), """
+        test fn positive() {
+            assert entry() > 0
+        }
+        """)
+    discard initialize("sample", repository)?
+    let original = read(repository)?
+    discard git("git", repository, ["init", "--template="])?
+    let base = git_fixture_commit(repository, "")?
+    discard rename(path(repository, "alpha.loom"), path(repository, "alpha_moved.loom"))
+    discard std.file.write_text(path(repository, "beta.loom"), "fn beta() Int {\n    20\n}\n")
+    discard moved_identity(repository, "alpha", "alpha_moved.loom")?
+    let left = git_fixture_commit(repository, base)?
+    discard remove_file(path(repository, "alpha_moved.loom"))
+    discard git_fixture_package(repository, original)?
+    discard rename(path(repository, "beta.loom"), path(repository, "beta_moved.loom"))
+    discard std.file.write_text(path(repository, "alpha.loom"), "fn alpha() Int {\n    10\n}\n")
+    discard moved_identity(repository, "beta", "beta_moved.loom")?
+    let right = git_fixture_commit(repository, base)?
+    discard git("git", repository, ["update-ref", "HEAD", right])?
+    let request = GitAutoRequest {
+        scratch = scratch
+        standard = "compiler/std"
+        cache = staging
+        executable = "git"
+        repository = repository
+        directory = "."
+        base = base
+        left = left
+        right = right
+    }
+    let preview = automatic_git_module(request, false, "")?
+    let token = get(split(get(split(preview, "\n"), 1), " "), 2)
+    let applied = automatic_git_module(request, true, token)?
+    let reversed = GitAutoRequest {
+        left = right,
+        right = left,
+        ..request
+    }
+    let reversed_preview = automatic_git_module(reversed, false, "")?
+    let reversed_token = get(split(get(split(reversed_preview, "\n"), 1), " "), 2)
+    assert automatic_git_module(reversed, true, reversed_token)? == applied
+    let tree = get(split(get(split(applied, "\n"), 0), " "), 4)
+    assert git("git", repository, ["ls-tree", tree, "--", "alpha.loom", "beta.loom"])? == ""
+    assert contains(git("git", repository, ["show", concat(tree, ":alpha_moved.loom")])?, "10")
+    assert contains(git("git", repository, ["show", concat(tree, ":beta_moved.loom")])?, "20")
+    assert git_commit("git", repository, "HEAD")? == right
+    Result.Ok("opposite file moves preserve identity metadata and crossed body edits")
+}
+
+test fn git_file_moves_can_take_both_branches_without_metadata_order_changes() {
+    let staging = module_test_directory("file-scaffolds")
+    defer {
+        remove_module_fixture(staging)
+    }
+    assert successful(git_file_scaffold_lifecycle(staging)) == "opposite file moves preserve identity metadata and crossed body edits"
+}

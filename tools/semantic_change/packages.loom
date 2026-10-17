@@ -342,13 +342,14 @@ record PackageChanges {
     deleted Bool
 }
 
-fn package_changes(base List[PackageRevision], branch List[PackageRevision]) Result[List[PackageChanges], Text] {
+fn package_changes(base List[PackageRevision], branch List[PackageRevision], other List[PackageRevision]) Result[List[PackageChanges], Text] {
     let changes = new[PackageChanges]()
     var package = 0
     while package < length(base) {
         let original = get(base, package)
         let before = indexed(original.revision)?
         let after = indexed(package_revision(branch, original.directory)?.revision)?
+        let peer = indexed(package_revision(other, original.directory)?.revision)?
         var headers = false
         var edited = false
         var deleted = false
@@ -356,16 +357,28 @@ fn package_changes(base List[PackageRevision], branch List[PackageRevision]) Res
         while index < length(before.entries) {
             let entry = get(before.entries, index)
             let selected = entry_index(after.entries, entry.id)
+            let shared = entry_index(peer.entries, entry.id)
             if selected < 0 {
-                deleted = true
+                deleted = deleted || shared >= 0
             } else {
                 let changed = get(after.entries, selected)
-                headers = headers || changed.header != entry.header
-                edited = edited || changed.body != entry.body
+                headers = headers || (changed.header != entry.header &&
+                    (shared < 0 || changed.header != get(peer.entries, shared).header))
+                edited = edited || (changed.body != entry.body &&
+                    (shared < 0 || changed.body != get(peer.entries, shared).body))
             }
             index = index + 1
         }
-        edited = edited || length(after.entries) > length(before.entries)
+        index = 0
+        while index < length(after.entries) {
+            let entry = get(after.entries, index)
+            let shared = entry_index(peer.entries, entry.id)
+            if entry_index(before.entries, entry.id) < 0 &&
+            (shared < 0 || entry.body != get(peer.entries, shared).body) {
+                edited = true
+            }
+            index = index + 1
+        }
         push(changes, PackageChanges {
                 name = original.revision.package_name
                 headers = headers
@@ -451,8 +464,8 @@ fn merge_fixed_packages(base List[PackageRevision], left List[PackageRevision], 
 
 fn merge_package_names(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
     production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
-    let left_changes = package_changes(base, left)?
-    let right_changes = package_changes(base, right)?
+    let left_changes = package_changes(base, left, right)?
+    let right_changes = package_changes(base, right, left)?
     discard separate_package_changes(left_changes, right_changes, production, tests, new[Project]())?
     let merged = new[PackageRevision]()
     var index = 0
