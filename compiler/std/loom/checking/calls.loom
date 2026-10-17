@@ -818,10 +818,11 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
             } else {
                 get(values, index)
             }
-            let identity = get(context.env.types, target).kind == TypeKind.Function && match saved_input(inputs, index) {
-                Option.Some(_) => true
-                Option.None => false
-            }
+            let identity = get(context.env.types, target).kind == TypeKind.Function &&
+                (static_identity_input(context, input) || match saved_input(inputs, index) {
+                    Option.Some(_) => true
+                    Option.None => false
+                })
             let value = static_argument(context, input, checked, target, identity)?
             push(constants, value)
             if value.storage >= 0 {

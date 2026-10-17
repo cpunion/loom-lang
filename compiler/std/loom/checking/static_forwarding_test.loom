@@ -1,0 +1,91 @@
+fn static_forwarding_header() Text {
+    """
+    fn counter(start Int) fn() Int {
+        var value = start
+        fn() Int {
+            value = value + 1
+            value
+        }
+    }
+    fn identity[T](value T) T {
+        value
+    }
+    fn invoke(comptime next fn() Int) Int {
+        next()
+    }
+    fn choose[T](first Bool, left T, right T) T {
+        if first {
+            left
+        } else {
+            right
+        }
+    }
+    """
+}
+
+test fn static_forwarding_keeps_live_captures_through_pure_calls_and_wrappers() {
+    let program = accepted(concat(static_forwarding_header(), """
+        fn forwarded(comptime next fn() Int) {
+            assert next() == 1
+            assert invoke(identity(next)) == 2
+            assert invoke(fn() Int {
+                next() + 40
+            }) == 43
+            assert next() == 4
+        }
+        fn paired(comptime left fn() Int, comptime right fn() Int) {
+            assert left() == 1
+            assert right() == 101
+            assert invoke(choose(false, left, right)) == 102
+            assert invoke(choose(true, left, right)) == 2
+            assert right() == 103
+        }
+        fn main() {
+            forwarded(counter(0))
+            paired(counter(0), counter(100))
+            comptime {
+                forwarded(counter(0))
+                paired(counter(0), counter(100))
+            }
+        }
+        """))
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        // Both helpers execute only in staging, absent before native DCE.
+        assert function.symbol != 1 && function.symbol != 3
+        index = index + 1
+    }
+}
+
+test fn static_forwarding_cannot_inspect_live_state_or_promote_runtime_bindings() {
+    let source = concat(static_forwarding_header(), """
+        fn choose(next fn() Int) fn() Int {
+            if next() > 0 {
+                next
+            } else {
+                counter(0)
+            }
+        }
+        fn forwarded(comptime next fn() Int) {
+            discard invoke(choose(next))
+        }
+        fn main() {
+            forwarded(counter(0))
+        }
+        """)
+    match checked(source_files(source)) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "comptime cannot inspect a live captured environment"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+    rejects(concat(static_forwarding_header(), """
+        fn main() {
+            let runtime = counter(0)
+            discard invoke(identity(runtime))
+        }
+        """))
+}

@@ -115,8 +115,26 @@ fn apply(state List[Int], comptime read fn() Int) Int {
     state[0] = 42
     read()
 }
+fn identity[T](value T) T {
+    value
+}
+fn forwarded(comptime read fn() Int) Int {
+    apply([1], identity(fn() Int {
+        read() + 1
+    }))
+}
 fn main() {
     assert apply(values()...) == 42
+    assert forwarded(fn() Int {
+        41
+    }) == 42
+    assert forwarded(comptime {
+        let state = [40]
+        fn() Int {
+            state[0] = state[0] + 1
+            state[0]
+        }
+    }) == 42
 }
 "#,
     )

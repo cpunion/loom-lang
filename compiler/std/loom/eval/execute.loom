@@ -156,7 +156,7 @@ fn record_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Fai
     if expr.kind == ExprKind.FrameNew && expr.text == "opaque environment" {
         return Result.Ok(step(Value {
                     ty = expr.ty
-                    number = 0
+                    number = expr.index
                     floating = 0.0
                     text = "opaque environment"
                     items = new[Value]()

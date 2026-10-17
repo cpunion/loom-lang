@@ -24,6 +24,8 @@ The argument's construction is pure compile-time execution; an explicit
 materialized once whenever the source call executes. A separate construction
 starts fresh; forwarding the parameter passes the same live environment.
 Returning a closure that captures the parameter retains that shared state.
+Pure identity functions and callback wrappers can also forward that state, as in
+`step(identity(action))`; static selection cannot inspect its live contents.
 Different captured contents do not create extra native specializations of the
 same target and typed environment layout.
 

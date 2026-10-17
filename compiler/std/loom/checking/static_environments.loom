@@ -55,7 +55,10 @@ fn static_environment_argument(context Context, node Node, value StaticValue) Re
     // Materialize the full graph once at this source argument, retaining cycles
     // and aliases. Its final expression is the environment passed to the callee.
     let snapshot = get(context.env.computations, value.storage).value
-    let rebuilt = materialize(context, node, snapshot)?
+    let rebuilt = materialize(context, node, snapshot, true)?
+    if rebuilt.kind == ExprKind.FunctionRef {
+        return Result.Ok(get(rebuilt.children, 0))
+    }
     let body = std.list.clone(rebuilt.children)
     let reference = get(body, length(body) - 1)
     let environment = get(reference.children, 0)

@@ -23,6 +23,7 @@ fn keep(comptime action fn() Int) fn() Int {
 }
 
 fn main() {
+    transported_captures()
     let first, second = twice(counter(0))
     assert first == 1 && second == 2
     let again = twice(counter(0))
