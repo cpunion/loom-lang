@@ -444,8 +444,7 @@ fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body B
     let inspected = match inspect_at(analysis, file, offset) {
         Option.Some(value) => value
         Option.None => {
-            match inspect_independent(analysis.bindings, file, offset,
-                proof_inputs(analysis.proof_backend)) {
+            match inspect_independent(analysis, file, offset) {
                 Option.Some(value) => value
                 Option.None => {
                     return Result.Err(concat("retained reference has no checked binding evidence in ",
@@ -461,8 +460,7 @@ fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body B
         // Observed specializations alone cannot account for a generic body.
         // Require declaration-wide evidence too, and retain the concrete check
         // above so different observed instances cannot silently select targets.
-        let abstract = match inspect_independent(analysis.bindings, file, offset,
-            proof_inputs(analysis.proof_backend)) {
+        let abstract = match inspect_independent(analysis, file, offset) {
             Option.Some(value) => value
             Option.None => {
                 return Result.Err("generic reference has no abstract binding evidence")

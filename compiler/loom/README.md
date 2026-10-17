@@ -311,6 +311,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
 | `inspect_independent(bindings, file, offset)` | Checked headers, an isolated concrete closure or abstract declaration body; no executable program |
+| `inspect_independent(analysis, file, offset)` | The same isolated query using the analysis's input snapshot and one reusable checked scope |
 | `complete_names(bindings, file, offset)` | `Option[Completion]`: visible names and declaration signatures, using binding only |
 | `complete_at(bindings, file, offset)` | Names, qualified paths or receiver-type member hints, with a UTF-8 replacement span |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
@@ -430,9 +431,13 @@ resolved targets; dynamic calls point only to an identifiable concept signature,
 never a guessed implementation. Comments, punctuation and unavailable semantic
 identity return no answer. Match bindings currently have hover types only.
 
-`inspect_independent` retains the complete bindings and starts a fresh checker
+The binding-only `inspect_independent` retains the complete bindings and starts a fresh checker
 session; it does not remove erroneous declarations or reuse a failed check's
-tables. Signature queries use original checked declaration headers, including
+tables. The `Analysis` overload replays observed file/option/target inputs and
+keeps only the most recent successful source scope. Switching scopes releases
+that view; failures are retried, and a header view never substitutes for a body.
+Generated or ambiguous owners use a fresh query without caching.
+Signature queries use original checked declaration headers, including
 generic functions and impl/method parameters with lexical names. An erroneous
 body supplies no executable or proof evidence; a concrete instance cannot replace
 the declaration's abstract type identities. Type-parameter declarations and
