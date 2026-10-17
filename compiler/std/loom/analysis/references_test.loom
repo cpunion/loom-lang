@@ -1,0 +1,103 @@
+fn reference_answer(evidence ReferenceEvidence) Inspection {
+    match evidence.inspection {
+        Option.Some(found) => found
+        Option.None => {
+            assert false
+            reference_answer(evidence)
+        }
+    }
+}
+
+test fn reference_scans_preserve_shadowed_bindings_and_unaccounted_candidates() {
+    let text = """
+        fn main() {
+            let item Int = 1
+            assert item == 1
+            if true {
+                let item = true
+                assert item
+            }
+            discard "item"
+            // item is not a source name token here.
+        }
+        """
+    let analysis = accepted(input(text))
+    let references = match inspect_references(analysis, 0, "item") {
+        Result.Ok(found) => found
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(references) == 4
+    let outer = query_offset(text, "item Int")
+    let inner = query_offset(text, "item = true")
+    only_definition(reference_answer(get(references, 1)), outer, outer + 4)
+    only_definition(reference_answer(get(references, 3)), inner, inner + 4)
+    only_type(reference_answer(get(references, 1)), "Int")
+    only_type(reference_answer(get(references, 3)), "Bool")
+    let declaration = match inspect_references(analysis, 0, "main") {
+        Result.Ok(found) => found
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(declaration) == 1
+    assert match get(declaration, 0).inspection {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    let primitive = match inspect_references(analysis, 0, "Int") {
+        Result.Ok(found) => found
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(primitive) == 1
+    let typed = reference_answer(get(primitive, 0))
+    only_type(typed, "Int")
+    assert length(typed.definitions) == 0
+    assert match inspect_references(analysis, -1, "item") {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn reference_batches_preserve_requested_positions_and_detach_answers() {
+    let text = """
+        fn main() {
+            let value = 3
+            assert value == 3
+        }
+        """
+    let analysis = accepted(input(text))
+    let site = query_offset(text, "value ==")
+    let offsets = [site, -1, site, length(text)]
+    let references = inspect_references(analysis, 0, offsets)
+    assert length(references) == 4
+    assert get(references, 0).offset == site && get(references, 1).offset == -1
+    assert get(references, 2).offset == site && get(references, 3).offset == length(text)
+    let expected = query_offset(text, "value =")
+    only_definition(reference_answer(get(references, 0)), expected, expected + 5)
+    only_definition(reference_answer(get(references, 2)), expected, expected + 5)
+    assert match get(references, 1).inspection {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert match get(references, 3).inspection {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    push(reference_answer(get(references, 0)).definitions, Location {
+            file = 0
+            span = Span {
+                start = 0
+                end = 0
+            }
+        })
+    only_definition(reference_answer(get(references, 2)), expected, expected + 5)
+    let repeated = inspect_references(analysis, 0, [site])
+    only_definition(reference_answer(get(repeated, 0)), expected, expected + 5)
+}

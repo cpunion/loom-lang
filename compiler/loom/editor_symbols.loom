@@ -1,6 +1,7 @@
 import std.loom.analysis.Analysis
 import std.loom.analysis.Location
 import std.loom.analysis.inspect_at
+import std.loom.analysis.inspect_references
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.ast.has
@@ -133,25 +134,25 @@ fn editor_references(analysis Analysis, target Location, spelling Text) List[Loc
     editor_push_location(references, target)
     var file = 0
     while file < length(analysis.bindings.files) {
-        let source = get(analysis.bindings.files, file)
-        match lex(source.text) {
-            Result.Ok(tokens) => {
+        match inspect_references(analysis, file, spelling) {
+            Result.Ok(evidence) => {
                 var index = 0
-                while index < length(tokens) {
-                    let token = get(tokens, index)
-                    if token.kind == Kind.Name && token.value == spelling {
-                        match inspect_at(analysis, file, token.span.start) {
-                            Option.Some(found) => {
-                                if length(found.definitions) == 1 &&
-                                editor_same_location(get(found.definitions, 0), target) {
-                                    editor_push_location(references, Location {
-                                            file = file
-                                            span = token.span
-                                        })
-                                }
+                while index < length(evidence) {
+                    let candidate = get(evidence, index)
+                    match candidate.inspection {
+                        Option.Some(found) => {
+                            if length(found.definitions) == 1 &&
+                            editor_same_location(get(found.definitions, 0), target) {
+                                editor_push_location(references, Location {
+                                        file = file
+                                        span = Span {
+                                            start = candidate.offset
+                                            end = candidate.offset + std.text.length(spelling)
+                                        }
+                                    })
                             }
-                            Option.None => {
-                            }
+                        }
+                        Option.None => {
                         }
                     }
                     index = index + 1

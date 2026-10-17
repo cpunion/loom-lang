@@ -121,3 +121,10 @@ pub fn inspect_independent(analysis Analysis, file Int, offset Int) Option[Inspe
         Option.None => Option.None
     }
 }
+
+fn independent_inspection(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
+    match independent_view(analysis, file, offset) {
+        Option.Some(view) => inspect_view(view, file, offset, tokens)
+        Option.None => Option.None
+    }
+}

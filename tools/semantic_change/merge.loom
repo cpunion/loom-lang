@@ -2,6 +2,7 @@ import std.loom.analysis.Analysis
 import std.loom.analysis.Inspection
 import std.loom.analysis.inspect_at
 import std.loom.analysis.inspect_independent
+import std.loom.analysis.inspect_references
 import std.loom.analysis.Location
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
@@ -441,7 +442,12 @@ fn same_target(left BindingTarget, right BindingTarget) Bool {
 }
 
 fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body Bool) Result[Inspection, Text] {
-    let inspected = match inspect_at(analysis, file, offset) {
+    reference_inspection(analysis, file, offset, abstract_body, inspect_at(analysis, file, offset))
+}
+
+fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body Bool,
+    observed Option[Inspection]) Result[Inspection, Text] {
+    let inspected = match observed {
         Option.Some(value) => value
         Option.None => {
             match inspect_independent(analysis, file, offset) {
@@ -502,12 +508,34 @@ fn compare_retained(source Analysis, source_revision Indexed, merged Analysis, m
             let before = get(source_revision.entries, source_index)
             if before.body == after.body {
                 let sites = reference_sites(after)?
+                let source_file = analysis_file(source, directory, before.path)
+                let merged_file = analysis_file(merged, directory, after.path)
+                if source_file < 0 || merged_file < 0 {
+                    return Result.Err("retained reference has no analyzed source file")
+                }
+                let source_offsets = new[Int]()
+                let merged_offsets = new[Int]()
                 var site = 0
                 while site < length(sites) {
-                    let offset = get(sites, site)
-                    let original = target_at(source, source_revision, directory, before, offset)?
-                    let current = target_at(merged, merged_revision, directory, after, offset)?
-                    if !same_target(original, current) {
+                    push(source_offsets, before.start + get(sites, site))
+                    push(merged_offsets, after.start + get(sites, site))
+                    site = site + 1
+                }
+                let source_evidence = inspect_references(source, source_file, source_offsets)
+                let merged_evidence = inspect_references(merged, merged_file, merged_offsets)
+                site = 0
+                while site < length(sites) {
+                    let original = get(source_evidence, site)
+                    let current = get(merged_evidence, site)
+                    let original_inspection = reference_inspection(source, source_file, original.offset,
+                        before.abstract_body, original.inspection)?
+                    let current_inspection = reference_inspection(merged, merged_file, current.offset,
+                        after.abstract_body, current.inspection)?
+                    let original_target = binding_target(source, source_revision, directory,
+                        get(original_inspection.definitions, 0))?
+                    let current_target = binding_target(merged, merged_revision, directory,
+                        get(current_inspection.definitions, 0))?
+                    if !same_target(original_target, current_target) {
                         return Result.Err("retained reference changed its checked definition binding")
                     }
                     site = site + 1
