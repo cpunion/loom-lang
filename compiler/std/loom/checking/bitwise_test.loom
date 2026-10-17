@@ -23,6 +23,9 @@ test fn bitwise_requires_int_operands_without_assuming_symbolic_proofs() {
 test fn bitwise_ranges_supply_checked_construction_without_solver_capabilities() {
     discard accepted_result("""
         type Byte = Int where self >= 0 && self <= 255
+        fn masked(value Int) Byte {
+            Byte(value & 255)
+        }
         fn flagged(value Int) Byte
         requires value >= 0 && value <= 127
         {

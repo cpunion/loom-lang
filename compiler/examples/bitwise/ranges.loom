@@ -1,5 +1,9 @@
 type Byte = Int where self >= 0 && self <= 255
 
+fn masked_byte(value Int) Byte {
+    Byte(value & 255)
+}
+
 fn flagged(value Int) Int
 requires value >= 0 && value <= 127
 ensures result >= 128 && result <= 255
@@ -48,6 +52,7 @@ ensures result >= -1 && result <= 0
 }
 
 fn range_cases() {
+    assert masked_byte(-1) == 255 && masked_byte(256) == 0
     assert encoded(42) == 170
     assert inverted(255) == -256 && inverted(0) == -1
     assert toggled(5) == 15
