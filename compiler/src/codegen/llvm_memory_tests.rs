@@ -127,6 +127,56 @@ fn emit_run(
 }
 
 #[test]
+fn completed_operands_expire_before_later_calls_and_keep_the_result_handoff() {
+    let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
+    let mut source = program(
+        vec![Type::Text],
+        vec![
+            statement(S::Let {
+                local: 0,
+                value: concat(
+                    concat(text("left"), text("!")),
+                    concat(text("right"), text("!")),
+                ),
+            }),
+            statement(S::Discard(value(Type::Unit, E::Call(1, vec![])))),
+            equal(local(Type::Text, 0), text("left!right!")),
+        ],
+    );
+    source.functions.push(checked::Function {
+        name: "collect.later".into(),
+        params: vec![],
+        result: Type::Unit,
+        locals: vec![],
+        requires: vec![],
+        span: Span::default(),
+        body: checked::Block {
+            statements: vec![statement(S::Discard(concat(
+                text("collect"),
+                text("later"),
+            )))],
+            tail: None,
+            falls_through: true,
+        },
+    });
+    for optimization in [Optimization::O0, Optimization::O2] {
+        let (ir, output) = emit_run(&source, optimization);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if optimization == Optimization::O0 {
+            let body = ir.split("define internal void @loom.fn.0").nth(1).unwrap();
+            let body = body.split("\n}").next().unwrap();
+            let handoff = body.rfind("call ptr @loom_rt_text_concat").unwrap();
+            let collect = body.find("call void @loom.fn.1").unwrap();
+            assert!(body[handoff..collect].contains("store ptr null, ptr %gc.address"));
+        }
+    }
+}
+
+#[test]
 fn dead_inner_bindings_retire_without_releasing_their_result_handoff() {
     let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
     let source = program(

@@ -1209,6 +1209,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 checked::StmtKind::Defer { id, .. } => self.register_cleanup(*id)?,
                 checked::StmtKind::Cleanup { id, .. } => self.run_cleanup(*id)?,
                 checked::StmtKind::Break | checked::StmtKind::Continue => {
+                    if let Some(retired) =
+                        self.roots.exits.get(&(statement as *const checked::Stmt))
+                    {
+                        for slot in retired {
+                            gc_lower::end(self.context, self.module, self.builder, *slot)?;
+                        }
+                    }
                     let &(test, done) = self
                         .loop_targets
                         .last()
@@ -1309,6 +1316,23 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             && let Some(slot) = self.roots.expressions.get(&(expr as *const checked::Expr))
         {
             self.builder.build_store(*slot, value)?;
+            let trace = gc::tracer(
+                self.context,
+                self.module,
+                self.program,
+                expr.ty,
+                self.tracers,
+            )?
+            .as_global_value()
+            .as_pointer_value();
+            gc_lower::begin(self.context, self.module, self.builder, *slot, trace)?;
+        }
+        if self.live()
+            && let Some(retired) = self.roots.retired.get(&(expr as *const checked::Expr))
+        {
+            for slot in retired {
+                gc_lower::end(self.context, self.module, self.builder, *slot)?;
+            }
         }
         Ok(value)
     }

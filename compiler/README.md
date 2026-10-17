@@ -557,13 +557,6 @@ remained around 210 ms in a separate alternating comparison. This is evidence
 for the compiler workload, not a guarantee for every generated program. Recheck
 the budget on future LLVM upgrades; these tuning options are not a stable API.
 
-Lexical temporary-root reuse on the same checked compiler input (`3903ae2d`)
-reduces static temporary slots from 9,908 to 3,279. The largest per-function root
-table falls from 302 to 82 entries. Controlled Windows-target O2 codegen reduces
-the former largest-root function's stack allocation from 15,160 to 3,736 bytes.
-These are IR/object measurements, not whole-process peak stack or on-runner
-timings; local variables remain conservatively rooted for the function.
-
 ## Implemented subset
 
 - Signed, checked 64-bit `Int`, `Bool`, scalar parameters, calls and recursion.
@@ -4792,14 +4785,19 @@ Transitively nonallocating functions need no frame. Temporary snapshots protect
 managed results only across a later possible allocation; immediate local/return
 handoffs and nonallocating reads need no temporary root. Pending arguments and
 aggregate fields keep independent snapshots, while completed expressions and
-mutually exclusive branches reuse same-type slots. A match binding whose only
+mutually exclusive branches reuse same-type slots. Consumed operand snapshots
+deactivate after result handoff; reusing a slot activates it only after storing
+the new value. Loop exits retire internal operands without releasing pending
+outer arguments. Static Text references and inline compositions containing no
+collectable references need no snapshot. A match binding whose only
 use is immediate result handoff needs no local root; the enclosing expression
 still protects that result across later allocations. Backward checked control-flow
 liveness clears dead local shadows at block entry and after complete statements,
 including branches, loop backedges and break/continue paths. Pending operands
 retain separate snapshots. Cleanup captures remain function-wide, and callbacks
-never clear borrowed owner slots; finer cleanup and expression-internal retirement
-remain future work. Retirement is omitted when no later collection can benefit.
+never clear borrowed owner slots; finer cleanup and expression-local variable
+liveness remain future work. Local retirement is omitted when no later collection
+can benefit.
 Small objects carry private allocation/forwarding metadata beside their payload;
 page maps and base bitmaps replace per-object hash entries. Large objects remain
 separately tracked. Neither mechanism changes source layout or native callback ABI.

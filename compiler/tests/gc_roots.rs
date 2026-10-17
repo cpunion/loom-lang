@@ -84,8 +84,33 @@ fn exercise_local_liveness() {
     }
     discard concat("allocate", "-before-cleanup")
 }
+fn consume(first Text, second Int) Int {
+    assert first == "inner!"
+    second
+}
+fn exercise_expression_exits() {
+    let joined = join(concat("outer", "!"), {
+        var index = 0
+        while index < 4 {
+            index = index + 1
+            discard consume(concat("inner", "!"), {
+                if index == 1 {
+                    continue
+                }
+                if index == 3 {
+                    break
+                }
+                discard concat("collect", "-inside-argument")
+                0
+            })
+        }
+        concat("tail", "")
+    })
+    assert joined == "outer!tail"
+}
 fn main() {
     exercise_local_liveness()
+    exercise_expression_exits()
     var saved = concat("or", "iginal")
     discard concat("replace", "-old-temporaries")
     let combined = join(saved, {

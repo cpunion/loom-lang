@@ -6,6 +6,8 @@ pub(super) struct RootFrame<'ctx> {
     pub slots: Vec<PointerValue<'ctx>>,
     pub locals: HashMap<usize, PointerValue<'ctx>>,
     pub expressions: HashMap<*const checked::Expr, PointerValue<'ctx>>,
+    pub retired: HashMap<*const checked::Expr, Vec<PointerValue<'ctx>>>,
+    pub exits: HashMap<*const checked::Stmt, Vec<PointerValue<'ctx>>>,
 }
 
 impl RootFrame<'_> {
@@ -14,6 +16,8 @@ impl RootFrame<'_> {
             slots: Vec::new(),
             locals: HashMap::new(),
             expressions: HashMap::new(),
+            retired: HashMap::new(),
+            exits: HashMap::new(),
         }
     }
 }
@@ -346,10 +350,29 @@ pub(super) struct TemporarySlots {
     pools: HashMap<Type, Vec<usize>>,
     used: HashMap<Type, usize>,
     expressions: HashMap<*const checked::Expr, usize>,
+    retired: HashMap<*const checked::Expr, Vec<usize>>,
+    exits: HashMap<*const checked::Stmt, Vec<usize>>,
+    loop_bases: Vec<HashMap<Type, usize>>,
     allocation: HashMap<*const checked::Expr, bool>,
 }
 
 impl TemporarySlots {
+    fn needs_snapshot(program: &checked::Program, value: &checked::Expr) -> bool {
+        // Text literals are module constants. Inline construction/coercion
+        // preserves that property; dynamic handles still need ordinary roots.
+        match &value.kind {
+            checked::ExprKind::Text(_) => false,
+            checked::ExprKind::Record(fields) => fields
+                .iter()
+                .any(|(_, field)| Self::needs_snapshot(program, field)),
+            checked::ExprKind::Variant { fields, .. } => fields
+                .iter()
+                .any(|field| Self::needs_snapshot(program, field)),
+            checked::ExprKind::Coerce(value) => Self::needs_snapshot(program, value),
+            _ => managed(program, value.ty),
+        }
+    }
+
     pub(super) fn allocation_query(shared: bool) -> Self {
         Self {
             shared,
@@ -481,7 +504,7 @@ impl TemporarySlots {
         value: &checked::Expr,
         protect: bool,
     ) {
-        if protect && managed(program, value.ty) {
+        if protect && Self::needs_snapshot(program, value) {
             let used = self.used.entry(value.ty).or_default();
             let pool = self.pools.entry(value.ty).or_default();
             if *used == pool.len() {
@@ -588,7 +611,23 @@ impl TemporarySlots {
             }
             _ => {}
         }
+        // Children have handed their values to this expression. Its own
+        // snapshot and pending operands belong to base and remain active.
+        let retired = self.retired_since(&base);
+        if !retired.is_empty() {
+            self.retired.insert(value, retired);
+        }
         self.used = base;
+    }
+
+    fn retired_since(&self, base: &HashMap<Type, usize>) -> Vec<usize> {
+        let mut retired = Vec::new();
+        for (ty, used) in &self.used {
+            let first = base.get(ty).copied().unwrap_or(0);
+            retired.extend_from_slice(&self.pools[ty][first..*used]);
+        }
+        retired.sort_unstable();
+        retired
     }
 
     fn branches<'a>(
@@ -631,11 +670,19 @@ impl TemporarySlots {
                 }
                 checked::StmtKind::While { condition, body } => {
                     self.expression(program, allocating, condition, false);
+                    self.loop_bases.push(self.used.clone());
                     self.block(program, allocating, body);
+                    self.loop_bases.pop();
+                }
+                checked::StmtKind::Break | checked::StmtKind::Continue => {
+                    if let Some(base) = self.loop_bases.last() {
+                        let retired = self.retired_since(base);
+                        if !retired.is_empty() {
+                            self.exits.insert(statement, retired);
+                        }
+                    }
                 }
                 checked::StmtKind::Return(None)
-                | checked::StmtKind::Break
-                | checked::StmtKind::Continue
                 | checked::StmtKind::Defer { .. }
                 | checked::StmtKind::Cleanup { .. } => {}
             }
@@ -730,6 +777,16 @@ pub(super) fn root_function<'ctx>(
         .into_iter()
         .map(|(value, slot)| (value, storage[slot]))
         .collect();
+    let retired = temporary
+        .retired
+        .into_iter()
+        .map(|(value, slots)| (value, slots.into_iter().map(|slot| storage[slot]).collect()))
+        .collect();
+    let exits = temporary
+        .exits
+        .into_iter()
+        .map(|(value, slots)| (value, slots.into_iter().map(|slot| storage[slot]).collect()))
+        .collect();
     for (slot, ty) in &slots {
         let trace = tracer(context, module, program, *ty, tracers)?
             .as_global_value()
@@ -740,6 +797,8 @@ pub(super) fn root_function<'ctx>(
         slots: slots.into_iter().map(|(slot, _)| slot).collect(),
         locals: rooted_locals,
         expressions,
+        retired,
+        exits,
     })
 }
 
@@ -1478,6 +1537,10 @@ mod tests {
                 panic!();
             };
             assert_eq!(slot(&slots, &args[0]), if index == 1 { 2 } else { 1 });
+            assert_eq!(
+                slots.retired[&(value as *const checked::Expr)],
+                [slot(&slots, &args[0])]
+            );
             assert!(
                 !slots
                     .expressions
@@ -1496,6 +1559,49 @@ mod tests {
         let mut slots = TemporarySlots::default();
         slots.expression(&program(), &BTreeSet::new(), &value, false);
         assert!(slots.types.is_empty());
+    }
+
+    #[test]
+    fn expression_retirement_preserves_results_and_reactivated_sibling_slots() {
+        let value = expr(
+            checked::ExprKind::Call(0, vec![allocating_call(Type::Text), concat()]),
+            Type::Text,
+        );
+        let mut slots = TemporarySlots::default();
+        slots.expression(&program(), &BTreeSet::from([0]), &value, true);
+        let checked::ExprKind::Call(_, args) = &value.kind else {
+            panic!()
+        };
+        let checked::ExprKind::Call(_, first) = &args[0].kind else {
+            panic!()
+        };
+        let result = slot(&slots, &value);
+        let a = slot(&slots, &args[0]);
+        let b = slot(&slots, &args[1]);
+        assert_eq!(slots.retired[&(&args[0] as *const checked::Expr)], [b]);
+        assert_eq!(slot(&slots, &first[0]), b);
+        assert_eq!(slots.retired[&(&value as *const checked::Expr)], [a, b]);
+        assert!(
+            !slots
+                .retired
+                .values()
+                .any(|retired| retired.contains(&result))
+        );
+    }
+
+    #[test]
+    fn immortal_references_compose_without_temporary_roots() {
+        let value = expr(
+            checked::ExprKind::Variant {
+                variant: 0,
+                fields: vec![expr(checked::ExprKind::Text("constant".into()), Type::Text)],
+            },
+            Type::Data(0),
+        );
+        let mut slots = TemporarySlots::default();
+        slots.expression(&program(), &BTreeSet::from([0]), &value, true);
+        assert!(slots.types.is_empty());
+        assert!(slots.retired.is_empty());
     }
 
     #[test]
