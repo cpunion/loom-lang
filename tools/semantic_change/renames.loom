@@ -20,6 +20,10 @@ record RenamedRevisions {
 }
 
 fn rename_name(entry Entry) Result[Token, Text] {
+    rename_name(entry, false)
+}
+
+fn rename_name(entry Entry, public_allowed Bool) Result[Token, Text] {
     let tree = match parse(entry.body) {
         Result.Ok(value) => value
         Result.Err(problem) => {
@@ -27,7 +31,7 @@ fn rename_name(entry Entry) Result[Token, Text] {
         }
     }
     let declaration = get(tree.children, 0)
-    if entry.kind != NodeKind.Function || has(declaration, NodeKind.Public) {
+    if entry.kind != NodeKind.Function || (!public_allowed && has(declaration, NodeKind.Public)) {
         return Result.Err("rename composition requires a private function")
     }
     let tokens = match lex(entry.body) {
@@ -48,6 +52,10 @@ fn rename_name(entry Entry) Result[Token, Text] {
 }
 
 fn function_renames(base Indexed, left Indexed, right Indexed) Result[List[FunctionRename], Text] {
+    function_renames(base, left, right, false)
+}
+
+fn function_renames(base Indexed, left Indexed, right Indexed, public_allowed Bool) Result[List[FunctionRename], Text] {
     let renames = new[FunctionRename]()
     var index = 0
     while index < length(base.entries) {
@@ -61,9 +69,13 @@ fn function_renames(base Indexed, left Indexed, right Indexed) Result[List[Funct
                 if a.name != original.name && b.name != original.name && a.name != b.name {
                     return Result.Err("conflicting declaration renames require explicit resolution")
                 }
-                discard rename_name(original)?
-                discard rename_name(a)?
-                discard rename_name(b)?
+                discard rename_name(original, public_allowed)?
+                discard rename_name(a, public_allowed)?
+                discard rename_name(b, public_allowed)?
+                if public_allowed && (public_function(original)? != public_function(a)? ||
+                    public_function(original)? != public_function(b)?) {
+                    return Result.Err("rename cannot change declaration visibility; explicit resolution required")
+                }
                 let name = if a.name != original.name {
                     a.name
                 } else {

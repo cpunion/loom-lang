@@ -1,0 +1,61 @@
+import std.loom.source.Span
+import std.list.sorted
+import std.text.join
+
+record SourceRenameEdit {
+    path Text
+    span Span
+    text Text
+}
+
+fn source_edits(edits List[SourceRenameEdit], path Text) List[SourceRenameEdit] {
+    let selected = new[SourceRenameEdit]()
+    var index = 0
+    while index < length(edits) {
+        let edit = get(edits, index)
+        if edit.path == path {
+            push(selected, edit)
+        }
+        index = index + 1
+    }
+    sorted(selected, fn(a SourceRenameEdit, b SourceRenameEdit) Bool {
+            a.span.start < b.span.start || (a.span.start == b.span.start && a.span.end < b.span.end)
+        })
+}
+
+fn source_renamed(text Text, edits List[SourceRenameEdit]) Result[Text, Text] {
+    let output = new[Text]()
+    var offset = 0
+    var index = 0
+    while index < length(edits) {
+        let edit = get(edits, index)
+        if edit.span.start < offset || edit.span.end < edit.span.start || edit.span.end > length(text) {
+            return Result.Err("rename has overlapping or stale source edits")
+        }
+        push(output, slice(text, offset, edit.span.start))
+        push(output, edit.text)
+        offset = edit.span.end
+        index = index + 1
+    }
+    push(output, slice(text, offset, length(text)))
+    Result.Ok(join(output, ""))
+}
+
+fn source_original_offset(edits List[SourceRenameEdit], offset Int) Result[Int, Text] {
+    var delta = 0
+    var index = 0
+    while index < length(edits) {
+        let edit = get(edits, index)
+        let start = edit.span.start + delta
+        let end = start + length(edit.text)
+        if offset <= start {
+            return Result.Ok(offset - delta)
+        }
+        if offset < end {
+            return Result.Err("renamed binding has a partial token definition")
+        }
+        delta = delta + length(edit.text) - (edit.span.end - edit.span.start)
+        index = index + 1
+    }
+    Result.Ok(offset - delta)
+}

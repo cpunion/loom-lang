@@ -378,11 +378,7 @@ pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], ri
             original.directory, original.revision, true) {
             return Result.Err("project context must contain every exact baseline package")
         }
-        if !same_imports(original.revision, a)? || !same_imports(original.revision, b)? ||
-        !same_implicit_imports(original.revision, a)? || !same_implicit_imports(original.revision, b)? {
-            return Result.Err("package merge import bindings changed; explicit resolution required")
-        }
-        let renames = function_renames(indexed(original.revision)?, indexed(a)?, indexed(b)?)?
+        let renames = function_renames(indexed(original.revision)?, indexed(a)?, indexed(b)?, true)?
         push(plans, PackageRenames {
                 directory = original.directory
                 renames = renames
@@ -391,13 +387,39 @@ pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], ri
         index = index + 1
     }
     if renaming {
+        if public_rename_plan(base, plans, production)? {
+            let original = normalize_public_package_renames(base, plans, production, tests, backend)?
+            let a = normalize_public_package_renames(left, plans, production, tests, backend)?
+            let b = normalize_public_package_renames(right, plans, production, tests, backend)?
+            discard package_imports_unchanged(original, a, b)?
+            return merge_package_names(original, a, b,
+                package_project(production, original)?, package_project(tests, original)?, backend)
+        }
+        discard package_imports_unchanged(base, left, right)?
         let original = normalize_package_renames(base, plans, production, tests, backend)?
         let a = normalize_package_renames(left, plans, production, tests, backend)?
         let b = normalize_package_renames(right, plans, production, tests, backend)?
         return merge_package_names(original, a, b,
             package_project(production, original)?, package_project(tests, original)?, backend)
     }
+    discard package_imports_unchanged(base, left, right)?
     merge_package_names(base, left, right, production, tests, backend)
+}
+
+fn package_imports_unchanged(base List[PackageRevision], left List[PackageRevision],
+    right List[PackageRevision]) Result[Bool, Text] {
+    var index = 0
+    while index < length(base) {
+        let original = get(base, index)
+        let a = package_revision(left, original.directory)?.revision
+        let b = package_revision(right, original.directory)?.revision
+        if !same_imports(original.revision, a)? || !same_imports(original.revision, b)? ||
+        !same_implicit_imports(original.revision, a)? || !same_implicit_imports(original.revision, b)? {
+            return Result.Err("package merge import bindings changed; explicit resolution required")
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
 }
 
 fn merge_package_names(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],

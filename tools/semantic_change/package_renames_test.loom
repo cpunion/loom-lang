@@ -100,7 +100,7 @@ test fn package_batch_composes_private_rename_move_and_edit_in_both_branch_order
     }
 }
 
-test fn package_batch_rename_rejects_local_capture_and_public_targets() {
+test fn package_batch_rename_rejects_local_capture_and_visibility_changes() {
     let base = private_batch_case("amount", "value.loom", """
         fn amount() Int {
             1
@@ -147,7 +147,7 @@ test fn package_batch_rename_rejects_local_capture_and_public_targets() {
         """)
     assert match merge_packages(public_base, renamed, public_base,
         batch_context(public_base, false), batch_context(public_base, true)) {
-        Result.Err(message) => contains(message, "requires a private function")
+        Result.Err(message) => contains(message, "visibility")
         Result.Ok(_) => false
     }
 }

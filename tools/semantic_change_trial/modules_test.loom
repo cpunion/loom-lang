@@ -3,6 +3,7 @@ import std.bytes.get
 import std.bytes.length
 import std.list.get
 import std.text.contains
+import std.text.replace
 
 fn module_fixture(directory Text) Result[Text, Text] {
     discard create_dir(directory)
@@ -56,6 +57,10 @@ fn module_fixture(directory Text) Result[Text, Text] {
 }
 
 fn moved_identity(directory Text, name Text, file Text) Result[Text, Text] {
+    moved_identity(directory, name, name, file)
+}
+
+fn moved_identity(directory Text, name Text, new_name Text, file Text) Result[Text, Text] {
     let snapshot = read(directory)?
     var index = 0
     while index < length(snapshot.revision.identities) {
@@ -64,7 +69,7 @@ fn moved_identity(directory Text, name Text, file Text) Result[Text, Text] {
             return refresh(directory, [Resolution {
                         id = identity.id
                         path = file
-                        name = name
+                        name = new_name
                         key = identity.key
                         deletion = false
                     }], false)
@@ -286,6 +291,37 @@ fn module_test_directory(label Text) Text {
 test fn module_move_edit_preview_and_publication_keep_private_tests_and_binary_assets() {
     let staging = module_test_directory("module-lifecycle")
     assert successful(module_lifecycle(staging)) == "module lifecycle completed"
+}
+
+fn module_public_rename_lifecycle(staging Text) Result[Text, Text] {
+    discard module_fixture_branches(staging)?
+    let base = path(staging, "base")
+    let left = path(staging, "left")
+    let right = path(staging, "right")
+    let moved = path(left, "lib/moved.loom")
+    discard std.file.write_text(moved, replace(text_at(moved), "amount", "balance"))
+    let caller = path(left, "app/main.loom")
+    discard std.file.write_text(caller, replace(text_at(caller), "amount", "balance"))
+    discard moved_identity(path(left, "lib"), "amount", "balance", "moved.loom")?
+    let original = read_module(base)?
+    let context = module_context(original, "compiler/std")?
+    let reviewed = review_module(original, read_module(left)?, read_module(right)?, context)?
+    let preview = preview_module("compiler/std", base, left, right)?
+    assert contains(preview, "pub fn balance()")
+    let output = path(staging, "output")
+    discard apply_module(reviewed.token, output, "compiler/std", base, left, right)?
+    assert contains(text_at(path(output, "app/main.loom")), "import sample.lib.balance")
+    assert contains(text_at(path(output, "app/entry.loom")), "balance() + bonus() + 10")
+    assert contains(text_at(path(output, "lib/moved.loom")), "2")
+    let published = read_module(output)?
+    discard review_module(published, published, published, module_context(published, "compiler/std")?)?
+    remove_module_fixture(staging)
+    Result.Ok("public module rename completed")
+}
+
+test fn module_public_rename_review_applies_with_moves_edits_and_private_tests() {
+    let staging = module_test_directory("module-public-rename")
+    assert successful(module_public_rename_lifecycle(staging)) == "public module rename completed"
 }
 
 fn module_rejections(staging Text) Result[Text, Text] {
