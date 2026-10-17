@@ -60,32 +60,58 @@ fn header_type_name(analysis CheckedQuery, owner Int, ty Int) Text {
     std.loom.checking.type_name(analysis.bindings, analysis.types, analysis.interfaces, ty, labels)
 }
 
-fn inspect_source_scope(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
+fn declaration_type_header(node Node, offset Int) Bool {
+    if macro_generated(node) {
+        return false
+    }
+    if node.kind == NodeKind.AssociatedType || node.kind == NodeKind.Record ||
+    node.kind == NodeKind.Enum || node.kind == NodeKind.Refined {
+        return inside(node.span, offset)
+    }
+    if node.kind == NodeKind.Impl {
+        var part = 0
+        while part < 3 {
+            if inside(get(node.children, part).span, offset) {
+                return true
+            }
+            part = part + 1
+        }
+    }
+    false
+}
+
+fn function_type_header(node Node, offset Int) Bool {
+    var index = 0
+    while index < length(node.children) {
+        let group = get(node.children, index)
+        if (group.kind == NodeKind.TypeParameters || group.kind == NodeKind.Parameters ||
+            group.kind == NodeKind.ReturnType) && inside(group.span, offset) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn source_header_at(analysis Analysis, file Int, offset Int) Bool {
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let item = get(analysis.bindings.symbols, index)
-        if item.file == file && item.node.kind == NodeKind.AssociatedType &&
-        inside(item.node.span, offset) && !macro_generated(item.node) {
-            return independent_inspection(analysis, file, offset, tokens)
+        if item.file == file && !macro_generated(item.node) &&
+        (declaration_type_header(item.node, offset) ||
+            (item.node.kind == NodeKind.Function && function_type_header(item.node, offset))) {
+            return true
         }
-        if item.file == file && item.node.kind == NodeKind.Impl && !macro_generated(item.node) {
-            var part = 0
-            while part < 3 {
-                if inside(get(item.node.children, part).span, offset) {
-                    return independent_inspection(analysis, file, offset, tokens)
-                }
-                part = part + 1
-            }
-        }
+        index = index + 1
+    }
+    false
+}
+
+fn inspect_abstract_body(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
+    var index = 0
+    while index < length(analysis.bindings.symbols) {
+        let item = get(analysis.bindings.symbols, index)
         if item.file == file && item.node.kind == NodeKind.Function && inside(item.node.span, offset) && !macro_generated(item.node) {
-            var group = 0
-            while group < length(item.node.children) {
-                let node = get(item.node.children, group)
-                if (node.kind == NodeKind.TypeParameters || node.kind == NodeKind.Parameters || node.kind == NodeKind.ReturnType) && inside(node.span, offset) {
-                    return independent_inspection(analysis, file, offset, tokens)
-                }
-                group = group + 1
-            }
             let parent = if item.owner >= 0 {
                 get(analysis.bindings.symbols, item.owner).node
             } else {
@@ -228,9 +254,8 @@ fn inspect_function_header(analysis CheckedQuery, report Inspection, function Fu
     inspect_signature_header(analysis, report, function.symbol, function.params, function.result, target, false)
 }
 
-fn inspect_signature_header(analysis CheckedQuery, report Inspection, symbol_id Int,
-    params List[Int], output Int, target Query, original Bool) {
-    if original && target.node.kind == NodeKind.Name {
+fn inspect_header_parameter(analysis CheckedQuery, report Inspection, symbol_id Int, target Query) {
+    if target.node.kind == NodeKind.Name {
         let parameters = header_parameters(analysis, symbol_id)
         var index = 0
         while index < length(parameters) {
@@ -242,6 +267,13 @@ fn inspect_signature_header(analysis CheckedQuery, report Inspection, symbol_id 
             }
             index = index + 1
         }
+    }
+}
+
+fn inspect_signature_header(analysis CheckedQuery, report Inspection, symbol_id Int,
+    params List[Int], output Int, target Query, original Bool) {
+    if original {
+        inspect_header_parameter(analysis, report, symbol_id, target)
     }
     if target.node.kind != NodeKind.Type && target.node.kind != NodeKind.Parameter {
         return
@@ -328,7 +360,9 @@ fn inspect_data_header(analysis CheckedQuery, report Inspection, shape Type, tar
                 variant = variant + 1
             }
         }
-        if shape.kind == TypeKind.Refined && member.kind == NodeKind.Type && length(shape.fields) == 1 {
+        if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
+        (member.kind == NodeKind.Type || member.kind == NodeKind.TupleType ||
+            member.kind == NodeKind.DynType || member.kind == NodeKind.FunctionType) {
             inspect_header_type(analysis, report, target, shape.symbol, member, get(shape.fields, 0).ty, 0)
         }
         index = index + 1

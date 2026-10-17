@@ -20,12 +20,21 @@ pub record SignatureHeader {
     output Int
 }
 
+// The checked source type, retained only by an independent header query.
+// Structural projection also preserves lexical parameters inside compounds.
+pub record TypeHeader {
+    symbol Int
+    node Node
+    ty Int
+}
+
 pub record CheckedQuery {
     bindings std.loom.binding.Program
     types List[Type]
     interfaces List[Interface]
     functions List[Function]
     headers List[SignatureHeader]
+    type_headers List[TypeHeader]
     declarations List[DeclarationReference]
 }
 
@@ -61,6 +70,7 @@ pub fn check_query(source std.loom.binding.Program, inputs BuildInputs) Result[C
             interfaces = env.interfaces
             functions = program.functions
             headers = new[SignatureHeader]()
+            type_headers = new[TypeHeader]()
             declarations = get(env.inputs, 0).declaration_references
         })
 }
@@ -109,10 +119,26 @@ fn query_header_owner(env Environment, declarations Int, file Int, offset Int) I
     -1
 }
 
-fn query_declaration_type_header(env Environment, declarations Int, file Int, offset Int) Result[Bool, Failure] {
+fn query_declaration_type_header(env Environment, declarations Int, file Int, offset Int,
+    headers List[TypeHeader]) Result[Bool, Failure] {
     var index = 0
     while index < declarations {
         let item = symbol(env, index)
+        if item.file == file && nominal_data(item.node.kind) && !has(item.node, NodeKind.ExpansionId) &&
+        offset >= item.node.span.start && offset < item.node.span.end {
+            if pack_parameter(item.node) >= 0 {
+                return Result.Err(failure(env, index, item.node, "source header cannot infer an unexpanded pack arity"))
+            }
+            let arguments = abstract_arguments(env, length(type_parameters(env, index)))
+            let ty = data_type(env, index, arguments, 0)?
+            discard well_formed(env, index, ty, requirements(env, index, arguments)?, item.node, 0)?
+            push(headers, TypeHeader {
+                    symbol = index
+                    node = item.node
+                    ty = ty
+                })
+            return Result.Ok(true)
+        }
         if item.file == file && item.node.kind == NodeKind.AssociatedType && !has(item.node, NodeKind.ExpansionId) &&
         offset >= item.node.span.start && offset < item.node.span.end {
             if pack_parameter(item.node) >= 0 || (item.owner >= 0 && pack_parameter(symbol(env, item.owner).node) >= 0) {
@@ -125,6 +151,11 @@ fn query_declaration_type_header(env Environment, declarations Int, file Int, of
                 let target = child(item.node, part)
                 let ty = resolve_bound(env, index, target, arguments, obligations, 0)?
                 discard well_formed(env, index, ty, obligations, target, 0)?
+                push(headers, TypeHeader {
+                        symbol = index
+                        node = target
+                        ty = ty
+                    })
             }
             return Result.Ok(true)
         }
@@ -142,6 +173,11 @@ fn query_declaration_type_header(env Environment, declarations Int, file Int, of
                     let target = child(item.node, 1)
                     let ty = resolve_bound(env, index, target, arguments, obligations, 0)?
                     discard well_formed(env, index, ty, obligations, target, 0)?
+                    push(headers, TypeHeader {
+                            symbol = index
+                            node = target
+                            ty = ty
+                        })
                     return Result.Ok(true)
                 }
                 part = part + 1
@@ -195,8 +231,9 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
             })
     }
     var functions = new[Function]()
+    let type_headers = new[TypeHeader]()
     let declaration_type_header = if length(headers) == 0 {
-        query_declaration_type_header(env, declarations, file, offset)?
+        query_declaration_type_header(env, declarations, file, offset, type_headers)?
     } else {
         false
     }
@@ -226,6 +263,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
             interfaces = env.interfaces
             functions = functions
             headers = headers
+            type_headers = type_headers
             declarations = get(env.inputs, 0).declaration_references
         })
 }

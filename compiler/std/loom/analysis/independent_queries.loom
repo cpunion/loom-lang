@@ -31,6 +31,18 @@ fn independent_scope(analysis Analysis, file Int, offset Int) Option[Independent
     }
     let owners = new[Node]()
     independent_owners(get(analysis.bindings.files, file).tree, offset, owners)
+    if length(owners) == 0 {
+        // A type-header query validates the whole original impl/associated
+        // declaration header. Its cache never supplies method-body evidence.
+        var index = 0
+        while index < length(analysis.bindings.symbols) {
+            let item = get(analysis.bindings.symbols, index)
+            if item.file == file && declaration_type_header(item.node, offset) {
+                push(owners, item.node)
+            }
+            index = index + 1
+        }
+    }
     // Overlapping/generated declarations need the checker's own selection.
     // Cache eligibility must never invent an owner from an ambiguous span.
     if length(owners) != 1 {
@@ -39,6 +51,15 @@ fn independent_scope(analysis Analysis, file Int, offset Int) Option[Independent
     let owner = get(owners, 0)
     if has(owner, NodeKind.ExpansionId) {
         return Option.None
+    }
+    if owner.kind != NodeKind.Function {
+        return Option.Some(IndependentScope {
+                location = Location {
+                    file = file
+                    span = owner.span
+                }
+                header = true
+            })
     }
     var index = 0
     while index < length(owner.children) {

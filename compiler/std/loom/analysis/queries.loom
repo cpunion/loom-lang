@@ -8,6 +8,7 @@ import std.loom.ast.has
 import std.option.Option
 import std.loom.checking.CheckedQuery
 import std.loom.checking.SignatureHeader
+import std.loom.checking.TypeHeader
 import std.loom.checking.check_query
 import std.loom.binding.Program
 import std.loom.checking.type_name
@@ -130,7 +131,7 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
     } else {
         if kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Scoped ||
         kind == NodeKind.Parameter || kind == NodeKind.Pattern || kind == NodeKind.Assign || kind == NodeKind.Field ||
-        kind == NodeKind.AssociatedType {
+        kind == NodeKind.AssociatedType || kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined {
             match name_span(tokens, node, node.value) {
                 Option.Some(span) => {
                     if !same_span(span, token.span) {
@@ -821,12 +822,18 @@ fn checked_inspection(analysis Analysis, file Int, offset Int, tokens List[Token
         }
         index = index + 1
     }
+    // A declaration is written against its lexical parameters, not whichever
+    // concrete callers happened to enter this application build.
+    if source_header_at(analysis, file, offset) {
+        return independent_inspection(analysis, file, offset, tokens)
+    }
     let view = CheckedQuery {
         bindings = analysis.bindings
         types = analysis.program.types
         interfaces = analysis.program.interfaces
         functions = analysis.program.functions
         headers = new[SignatureHeader]()
+        type_headers = new[TypeHeader]()
         declarations = if length(analysis.declarations) == 0 {
             new[std.loom.checking.DeclarationReference]()
         } else {
@@ -836,7 +843,7 @@ fn checked_inspection(analysis Analysis, file Int, offset Int, tokens List[Token
     match inspect_view(view, file, offset, tokens) {
         Option.Some(found) => Option.Some(found)
         Option.None => {
-            match inspect_source_scope(analysis, file, offset, tokens) {
+            match inspect_abstract_body(analysis, file, offset, tokens) {
                 Option.Some(found) => Option.Some(found)
                 Option.None => inspect_declaration_at(analysis, view, file, offset, tokens)
             }
@@ -907,6 +914,27 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int, tokens List[Token])
             inspect_signature_header(analysis, report, header.symbol, header.params, header.output, target, true)
         }
         index = index + 1
+    }
+    index = 0
+    while index < length(analysis.type_headers) {
+        let header = get(analysis.type_headers, index)
+        let declaration = get(analysis.bindings.symbols, header.symbol)
+        if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
+            inspect_header_parameter(analysis, report, header.symbol, target)
+            if header.node.kind == NodeKind.Record || header.node.kind == NodeKind.Enum || header.node.kind == NodeKind.Refined {
+                if target.node.kind == header.node.kind && same_span(target.node.span, header.node.span) {
+                    add_type(report, header_type_name(analysis, header.symbol, header.ty))
+                    symbol_location(analysis, report, header.symbol)
+                }
+                inspect_data_header(analysis, report, get(analysis.types, header.ty), target)
+            } else {
+                inspect_header_type(analysis, report, target, header.symbol, header.node, header.ty, 0)
+            }
+        }
+        index = index + 1
+    }
+    if length(report.definitions) > 0 {
+        return Option.Some(report)
     }
     index = 0
     while index < length(analysis.types) {

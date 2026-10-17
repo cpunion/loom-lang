@@ -196,12 +196,7 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
         return Result.Ok(intern(env, TypeKind.List, -1, args))
     }
     if declaration < 0 { return Result.Err(failure(env, owner, node, "unknown or inaccessible type")) }
-    let resolved = data_type_grouped(env, declaration, args, selected.widths, depth + 1)?
-    if get(env.inputs, 0).declaration_queries &&
-    (symbol(env, owner).node.kind == NodeKind.Impl || symbol(env, owner).node.kind == NodeKind.AssociatedType) {
-        record_declaration_type(env, owner, node, resolved)
-    }
-    Result.Ok(resolved)
+    data_type_grouped(env, declaration, args, selected.widths, depth + 1)
 }
 fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) Result[Int, Failure] {
     let node = symbol(env, declaration).node
