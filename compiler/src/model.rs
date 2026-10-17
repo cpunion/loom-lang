@@ -120,6 +120,7 @@ pub enum Primitive {
     SocketAddress,
     SocketSetNodelay,
     SocketSetKeepalive,
+    SocketBuffer,
     SocketShutdownWrite,
     SocketAbort,
     TlsClient,

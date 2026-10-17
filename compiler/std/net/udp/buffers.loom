@@ -1,0 +1,52 @@
+intrinsic fn socket_buffer(token Int, direction Int, size Int) Int
+
+fn buffer_result(token Int, direction Int, size Int) Result[Int, UdpError] {
+    let status = socket_buffer(token, direction, size)
+    if status < 0 {
+        Result.Err(UdpError.Option)
+    } else {
+        Result.Ok(status)
+    }
+}
+
+fn set_buffer_size(token Int, direction Int, size Int) Result[Int, UdpError] {
+    if size <= 0 || size > 2147483647 {
+        return Result.Err(UdpError.Option)
+    }
+    buffer_result(token, direction, size)
+}
+
+// The OS may round or cap requests; queries return its effective byte counts,
+// not a promise of packet capacity. All copies share the configuration and keep
+// existing waits. This is independent of receive's per-packet limit.
+pub fn receive_buffer_size(socket Socket) Result[Int, UdpError] {
+    buffer_result(socket.state.token, 0, -1)
+}
+
+pub fn send_buffer_size(socket Socket) Result[Int, UdpError] {
+    buffer_result(socket.state.token, 1, -1)
+}
+
+pub fn set_receive_buffer_size(socket Socket, size Int) Result[Int, UdpError] {
+    set_buffer_size(socket.state.token, 0, size)
+}
+
+pub fn set_send_buffer_size(socket Socket, size Int) Result[Int, UdpError] {
+    set_buffer_size(socket.state.token, 1, size)
+}
+
+pub fn receive_buffer_size(connection Connection) Result[Int, UdpError] {
+    receive_buffer_size(as_socket(connection))
+}
+
+pub fn send_buffer_size(connection Connection) Result[Int, UdpError] {
+    send_buffer_size(as_socket(connection))
+}
+
+pub fn set_receive_buffer_size(connection Connection, size Int) Result[Int, UdpError] {
+    set_receive_buffer_size(as_socket(connection), size)
+}
+
+pub fn set_send_buffer_size(connection Connection, size Int) Result[Int, UdpError] {
+    set_send_buffer_size(as_socket(connection), size)
+}
