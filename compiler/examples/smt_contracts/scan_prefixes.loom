@@ -1,0 +1,52 @@
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+
+fn guarded_matching(first List[Int], second List[Int]) Bool {
+    if length(first) != length(second) {
+        return false
+    }
+    if length(first) == 0 {
+        return true
+    }
+    var index = 0
+    while index < length(first) {
+        if get(first, index) != get(second, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn guarded_copy(values List[Int]) List[Int]
+ensures guarded_matching(result, old(values))
+{
+    let output = new[Int]()
+    var index = 0
+    while index < length(values) {
+        push(output, get(values, index))
+        index = index + 1
+    }
+    output
+}
+
+fn guarded_length(first List[Int], second List[Int])
+requires guarded_matching(first, second)
+ensures length(first) == length(second)
+{
+}
+
+fn scan_prefix_cases() {
+    let values = [2, 1, 2]
+    assert guarded_matching(guarded_copy(values), values)
+    assert guarded_matching(guarded_copy([]), [])
+    assert !guarded_matching([1], [1, 2])
+    assert !guarded_matching([1], [2])
+    guarded_length(values, values)
+}
+
+test fn guarded_scans_preserve_prefix_paths_and_copy_contracts() {
+    scan_prefix_cases()
+}

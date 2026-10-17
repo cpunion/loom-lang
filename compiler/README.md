@@ -3305,6 +3305,11 @@ The [search example](examples/smt_contracts/searches.loom) composes these duals,
 write witnesses and loop clearing over immutable fields beside shared children.
 The [branch example](examples/smt_contracts/scan_branches.loom) covers local
 rebinding, ordered exits and constrained reads/replacements.
+Function-level branches, local updates and early returns before the scan use
+the ordinary helper path rules. Only continuing paths enter the bounded scan;
+eager arguments and guarded access checks remain required. The
+[prefix example](examples/smt_contracts/scan_prefixes.loom) composes checked
+length/empty guards with a copy contract without splitting the predicate.
 Local element
 observations expand within the iteration; the tail cannot depend on the updated
 cursor. A complete equality scan over `List[Int]` with a

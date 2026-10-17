@@ -275,6 +275,11 @@ fn expanded_branches(context Expansion, value Expr, guard Expr, bindings List[Ex
         returned = false
     }
     let paths = helper_branch(context, value, start, locals, self, calls, depth + 1, returns)?
+    expanded_paths(context, value, guard, bindings, paths, returns)
+}
+
+fn expanded_paths(context Expansion, value Expr, guard Expr,
+    bindings List[ExpansionBinding], paths List[HelperPath], returns Bool) Result[Expr, Text] {
     if length(paths) == 0 {
         return Result.Err("helper body has no scalar result")
     }
