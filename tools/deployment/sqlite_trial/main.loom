@@ -6,6 +6,10 @@ import deployment.current
 import deployment.assume_historical
 import deployment.initialize
 import deployment.replace_unstarted_attempt
+import deployment.cancel_unstarted_attempt
+import deployment.inspect_attempt
+import deployment.DeploymentState
+import std.option.Option
 import deployment.dry_run
 import deployment.Schema
 import deployment.MigrationCatalog
@@ -23,8 +27,32 @@ fn recorded_roundtrip(database Text) Result[Bool, Text] {
     let target = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     discard initialize("/usr/bin/sqlite3", database)?
     discard assume_historical("/usr/bin/sqlite3", database, "baseline", baseline)?
+    let abandoned = prepare("unused", baseline, target, FailurePolicy.Rollback)?
+    discard register("/usr/bin/sqlite3", database, abandoned)?
+    discard cancel_unstarted_attempt("/usr/bin/sqlite3", database, abandoned.id)?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.Assumed(basis) => basis == baseline
+        _ => false
+    }
+    assert match start_attempt("/usr/bin/sqlite3", database, abandoned.id) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match register("/usr/bin/sqlite3", database, abandoned) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
     let attempt = prepare("upgrade_2", baseline, target, FailurePolicy.Rollback)?
     discard register("/usr/bin/sqlite3", database, attempt)?
+    assert cancel_unstarted_attempt("/usr/bin/sqlite3", database, abandoned.id)?.state == DeploymentState.Cancelled
+    assert match inspect_attempt("/usr/bin/sqlite3", database, abandoned.id)? {
+        Option.Some(value) => value.state == DeploymentState.Cancelled && value.to_basis == target
+        Option.None => false
+    }
+    assert match inspect_attempt("/usr/bin/sqlite3", database, "unknown")? {
+        Option.None => true
+        Option.Some(_) => false
+    }
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.Assumed(basis) => basis == baseline
         _ => false
@@ -77,6 +105,10 @@ fn recorded_roundtrip(database Text) Result[Bool, Text] {
         _ => false
     }
     discard start_attempt("/usr/bin/sqlite3", database, "upgrade_3")?
+    assert match cancel_unstarted_attempt("/usr/bin/sqlite3", database, "upgrade_3") {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.None => true
         _ => false
@@ -87,6 +119,10 @@ fn recorded_roundtrip(database Text) Result[Bool, Text] {
         _ => false
     }
     discard note_failure("/usr/bin/sqlite3", database, "upgrade_3")?
+    assert match cancel_unstarted_attempt("/usr/bin/sqlite3", database, "upgrade_3") {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
     assert match register("/usr/bin/sqlite3", database, future) {
         Result.Err(_) => true
         _ => false

@@ -14,6 +14,7 @@ pub enum DeploymentState {
     RollbackFailed
     RollbackComplete
     AssumedComplete
+    Cancelled
 }
 
 pub enum Transition {
@@ -25,6 +26,7 @@ pub enum Transition {
     FinishRollback
     Resume
     AssumeComplete
+    Cancel
 }
 
 pub record Attempt {
@@ -74,6 +76,7 @@ pub fn advance(attempt Attempt, event Transition) Result[Attempt, Text] {
         DeploymentState.NotDeployed => match event {
             Transition.Begin => DeploymentState.Started,
             Transition.AssumeComplete => DeploymentState.AssumedComplete,
+            Transition.Cancel => DeploymentState.Cancelled,
             _ => {
                 return Result.Err("deployment has not started")
             }
@@ -121,6 +124,9 @@ pub fn advance(attempt Attempt, event Transition) Result[Attempt, Text] {
         },
         DeploymentState.AssumedComplete => {
             return Result.Err("assumed historical completion is not an observed operation")
+        },
+        DeploymentState.Cancelled => {
+            return Result.Err("cancelled deployment plan is closed")
         }
     }
     Result.Ok(Attempt {

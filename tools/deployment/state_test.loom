@@ -81,3 +81,26 @@ test fn concrete_plan_identity_survives_state_transitions() {
     }
     assert moved(planned, Transition.Begin).plan_digest == identity
 }
+
+test fn only_unstarted_plans_can_be_cancelled_and_cancellation_is_not_completion() {
+    let plan = prepared(FailurePolicy.Rollback)
+    let cancelled = moved(plan, Transition.Cancel)
+    assert cancelled.state == DeploymentState.Cancelled && same_attempt_plan(plan, cancelled)
+    assert match effective(cancelled) {
+        BasisEvidence.None => true
+        _ => false
+    }
+    let states = [cancelled, moved(plan, Transition.Begin), moved(plan, Transition.AssumeComplete)]
+    var index = 0
+    while index < length(states) {
+        assert match advance(get(states, index), Transition.Cancel) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+    assert match advance(cancelled, Transition.Begin) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
