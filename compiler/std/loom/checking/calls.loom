@@ -791,45 +791,6 @@ fn choose_overload(context Context, node Node, matches OverloadSet) Result[Insta
     Result.Ok(get(matches.candidates, selected))
 }
 
-// The first expanded field owns the one runtime tuple evaluation. A later
-// comptime field may be erased only after that first field survives as a
-// runtime argument; static_argument separately proves the field is pure and
-// independently computable without capturing runtime locals.
-fn saved_tuple_prepared(inputs CallInputs, signature Signature, position Int) Bool {
-    let saved = match saved_input(inputs, position) {
-        Option.Some(value) => value,
-        Option.None => {
-            return true
-        }
-    }
-    if saved.kind != ExprKind.Field || length(saved.children) != 1 {
-        return false
-    }
-    let source = get(saved.children, 0)
-    if source.kind != ExprKind.Local {
-        return false
-    }
-    var index = 0
-    while index < position {
-        if !is_static(signature, index) {
-            match saved_input(inputs, index) {
-                Option.Some(candidate) => {
-                    if candidate.kind == ExprKind.Block && length(candidate.children) > 0 {
-                        let first = get(candidate.children, 0)
-                        if first.kind == ExprKind.Let && first.index == source.index {
-                            return true
-                        }
-                    }
-                }
-                Option.None => {
-                }
-            }
-        }
-        index = index + 1
-    }
-    false
-}
-
 fn invoke_selected(context Context, node Node, instance Instance, inputs CallInputs, values List[Expr], probes List[Bool]) Result[Expr, Failure] {
     if length(context.env.packs) != 0 {
         discard check_pack_arity(context.env, instance.signature)?
@@ -852,9 +813,6 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
         let target = substitute(context.env, context.signature.symbol, get(signature.params, index), instance.arguments, node)?
         let input = get(inputs.nodes, index)
         if is_static(signature, index) {
-            if !saved_tuple_prepared(inputs, signature, index) {
-                return Result.Err(error(context, input, "a comptime field cannot erase the saved tuple evaluation; pass its first field as a runtime argument or supply static arguments explicitly"))
-            }
             let checked = if sequencing && has_input_effects(inputs, index) {
                 static_probe(context, input, target)?
             } else {
