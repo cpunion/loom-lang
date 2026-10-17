@@ -1011,9 +1011,9 @@ fn checked_context(base Revision, merged Revision, production Project, tests Pro
     Result.Ok(merged)
 }
 
-// Select each file skeleton by three-way equality, then fill its declaration
-// slots by stable identity. Layout obligations are checked independently, so
-// separate files can carry different branches without losing or duplicating IDs.
+// Join file presentation and fill declaration slots by stable identity. Layout
+// obligations are independent: files may carry different branches, but no ID
+// may be lost, resurrected or duplicated.
 fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text] {
     let original = indexed(base)?
     let edited_left = indexed(left)?
@@ -1027,32 +1027,11 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
     var index = 0
     while index < length(sources) {
         let path = get(sources, index).path
-        let carrier = file_carrier(original, edited_left, edited_right, path)?
-        let selected = file_index(carrier.revision.files, path)
-        if selected < 0 {
-            index = index + 1
-            continue
-        }
-        let file = get(carrier.revision.files, selected)
-        var output = ""
-        var offset = 0
-        var ordinal = 0
-        while true {
-            let entry_position = entry_in_file(carrier.entries, file.path, ordinal)
-            if entry_position < 0 {
-                break
+        match rendered_file(original, edited_left, edited_right, path)? {
+            Option.Some(file) => push(files, file)
+            Option.None => {
             }
-            let entry = get(carrier.entries, entry_position)
-            output = concat(output, slice(file.text, offset, entry.start))
-            output = concat(output, chosen_entry(original, edited_left, edited_right, entry.id).body)
-            offset = entry.end
-            ordinal = ordinal + 1
         }
-        output = concat(output, slice(file.text, offset, length(file.text)))
-        push(files, File {
-                path = file.path
-                text = output
-            })
         index = index + 1
     }
     let merged = Revision {

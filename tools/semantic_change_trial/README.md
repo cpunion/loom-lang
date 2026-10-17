@@ -367,15 +367,18 @@ can take different branches, including moves, additions and removals; identical
 changes shared by both branches are not cross-side conflicts. A separate placement
 join and re-indexing of the rendered source prevent missing or duplicate IDs.
 Retained metadata order stays stable and fresh identity rows have deterministic
-ID order. Structural merges still require checked retained bindings.
+ID order. When all three files have the same declaration-ID order, independent
+surrounding gaps can also combine without reformatting. A gap disagreement or a
+concurrent reorder/move needs resolution; comment attachment is never inferred.
+Structural merges still require checked retained bindings.
 For a one-sided addition, the library scans the other side's declarations for the new name as
 an identifier token, including in types, contracts, and `comptime` code.
 Comments and string contents do not count. This conservative collision check
 can reject harmless local names or field names; it is not a proof of unchanged
 binding. Cross-side deletion plus body edits,
 cross-side signature or contract changes plus body edits, retained identifier
-collisions, competing declaration destinations, differing changes to one file's
-skeleton, conflicting body edits and unsupported declaration forms
+collisions, competing declaration destinations, incompatible file layouts or
+gap changes, conflicting body edits and unsupported declaration forms
 are reported instead of guessed.
 
 This is a bounded checked-source workflow, not behavior-equivalence proof. It does

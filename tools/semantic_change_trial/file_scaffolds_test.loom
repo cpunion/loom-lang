@@ -7,11 +7,12 @@ fn git_file_scaffold_lifecycle(staging Text) Result[Text, Text] {
     discard std.file.write_text(path(repository, ".gitignore"), ".loom-ids-stage-*/\ntarget/\n")
     discard std.file.write_text(path(repository, "alpha.loom"), "fn alpha() Int {\n    1\n}\n")
     discard std.file.write_text(path(repository, "beta.loom"), "fn beta() Int {\n    2\n}\n")
-    discard std.file.write_text(path(repository, "entry.loom"), """
+    let entry = """
         fn entry() Int {
             alpha() + beta()
         }
-        """)
+        """
+    discard std.file.write_text(path(repository, "entry.loom"), entry)
     discard std.file.write_text(path(repository, "entry_test.loom"), """
         test fn positive() {
             assert entry() > 0
@@ -23,12 +24,14 @@ fn git_file_scaffold_lifecycle(staging Text) Result[Text, Text] {
     let base = git_fixture_commit(repository, "")?
     discard rename(path(repository, "alpha.loom"), path(repository, "alpha_moved.loom"))
     discard std.file.write_text(path(repository, "beta.loom"), "fn beta() Int {\n    20\n}\n")
+    discard std.file.write_text(path(repository, "entry.loom"), concat("// file header\r\n", entry))
     discard moved_identity(repository, "alpha", "alpha_moved.loom")?
     let left = git_fixture_commit(repository, base)?
     discard remove_file(path(repository, "alpha_moved.loom"))
     discard git_fixture_package(repository, original)?
     discard rename(path(repository, "beta.loom"), path(repository, "beta_moved.loom"))
     discard std.file.write_text(path(repository, "alpha.loom"), "fn alpha() Int {\n    10\n}\n")
+    discard std.file.write_text(path(repository, "entry.loom"), concat(entry, "\n// final note\n"))
     discard moved_identity(repository, "beta", "beta_moved.loom")?
     let right = git_fixture_commit(repository, base)?
     discard git("git", repository, ["update-ref", "HEAD", right])?
@@ -58,6 +61,8 @@ fn git_file_scaffold_lifecycle(staging Text) Result[Text, Text] {
     assert git("git", repository, ["ls-tree", tree, "--", "alpha.loom", "beta.loom"])? == ""
     assert contains(git("git", repository, ["show", concat(tree, ":alpha_moved.loom")])?, "10")
     assert contains(git("git", repository, ["show", concat(tree, ":beta_moved.loom")])?, "20")
+    assert git("git", repository, ["show", concat(tree, ":entry.loom")])? ==
+    concat("// file header\r\n", concat(entry, "\n// final note\n"))
     assert git_commit("git", repository, "HEAD")? == right
     Result.Ok("opposite file moves preserve identity metadata and crossed body edits")
 }

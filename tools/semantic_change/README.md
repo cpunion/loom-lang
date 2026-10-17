@@ -13,8 +13,11 @@ one. Different files can carry different branches, including independent moves
 and additions. Declaration placement is joined separately and the rendered
 source is re-indexed against it, preventing loss, resurrection or duplication.
 Retained identity-row order stays stable; fresh rows have deterministic ID order.
-Competing destinations or incompatible skeleton changes in one file require
-resolution. This does not guess comment attachment or merge inside a declaration.
+With the same declaration-ID sequence in all three versions of a file, independent
+gaps between declarations join by the same equality rules. Exact bytes and line
+endings remain intact. Competing destinations, disagreeing changes to one gap, or
+concurrent layout and gap edits require resolution. This does not infer comment
+attachment across movement or merge inside a declaration.
 
 `merge_packages(base, left, right, production, tests)` accepts lists of
 `PackageRevision { directory, revision }` from one module, with a nonempty baseline.
