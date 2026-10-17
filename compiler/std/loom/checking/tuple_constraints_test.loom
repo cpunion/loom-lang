@@ -1,0 +1,67 @@
+test fn tuple_constraints_share_construction_projection_and_destructuring() {
+    discard accepted_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        type Ordered = (Int, Int) where self.0 <= self.1
+
+        fn constant() Ordered {
+            Ordered((1, 2))
+        }
+
+        fn checked(value (Int, Int)) Result[Ordered, ConstraintError] {
+            Ordered(value)
+        }
+
+        fn guarded(lower Int, upper Int) Ordered
+        requires lower <= upper
+        {
+            Ordered((lower, upper))
+        }
+
+        fn upper(value Ordered) Int
+        ensures result >= value.0
+        {
+            value.1
+        }
+
+        fn unpack(value Ordered) (Int, Int) {
+            let lower, upper = value
+            (lower, upper)
+        }
+
+        fn prepared() Ordered {
+            comptime { Ordered((1, 2)) }
+        }
+
+        type Priced = (Text, Float) where self.0 != "" && self.1 >= 0.0
+        fn priced() Priced {
+            Priced(("item", 1.5))
+        }
+        """)
+}
+
+test fn tuple_constraints_reject_invalid_constants_and_shared_observations() {
+    assert match with_result("""
+        type Ordered = (Int, Int) where self.0 <= self.1
+        fn invalid() { discard Ordered((2, 1)) }
+        """) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "does not satisfy")
+        Result.Ok(_) => false
+    }
+    rejects_result("type Invalid = (Int, Int) where self.2 > 0")
+    rejects_result("type Invalid = (Int, List[Int]) where self.1[0] > 0")
+    discard accepted_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        type Positive = (Int, List[Int]) where self.0 > 0
+        fn checked(value (Int, List[Int])) Result[Positive, ConstraintError] {
+            Positive(value)
+        }
+        fn mutate_unobserved(value Positive) Int
+        ensures result > 0
+        {
+            value.1[0] = -1
+            value.0
+        }
+        """)
+}

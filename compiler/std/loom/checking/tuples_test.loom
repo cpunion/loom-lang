@@ -51,7 +51,6 @@ test fn tuples_stage_without_weakening_type_or_layout_rules() {
     rejects("record Cycle { value (Cycle, Int) }")
     rejects("record A { pair (B, Int) }\nenum B { More((A,)) }")
     rejects("record Grow[T] { children List[Grow[(T, Int)]] }")
-    rejects("type Bad = (Int, Int) where true\n")
     rejects("fn false_proof() (Int, Bool) ensures false { (1, true) }")
 }
 

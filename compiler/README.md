@@ -2835,6 +2835,10 @@ stable; unknown alternatives remain unknown. See the
 [Text construction example](examples/text_contracts/construction.loom).
 The [Boolean constraint example](examples/bool_constraints) combines direct and
 checked construction, helper predicates, weakening and concept guarantees.
+The [tuple constraint example](examples/tuple_constraints) applies the same
+boundary rules to immutable tuple fields, with projections and destructuring.
+As with records, unobserved shared siblings stay mutable; predicates cannot
+depend on their mutable contents or length.
 
 ```loom
 type Positive = Int where self > 0

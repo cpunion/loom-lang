@@ -91,6 +91,13 @@ fn destructure_fields(context Context, node Node, value Expr, values List[Expr],
         return Result.Ok(current)
     }
     let shape = get(context.env.types, value.ty)
+    if shape.kind == TypeKind.Refined {
+        // Keep the RHS snapshot, weakening only the aggregate being unpacked.
+        // Named and wildcard bindings above retain their original type.
+        let base = base_type(context.env, value.ty)
+        let receiver = expression(ExprKind.Coerce, base, node, "", -1, expressions(value), value.falls)
+        return destructure_fields(context, node, receiver, values, mutable, boundary, depth + 1)
+    }
     if node.kind == NodeKind.RecordPattern {
         discard resource_binding(context, node, value)?
         let fields = record_pattern_fields(context, node, value.ty)?
