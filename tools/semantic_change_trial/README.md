@@ -125,8 +125,24 @@ unchanged, including the implicit `std.result` edge introduced by refined
 types. Imports are package-wide: a move can retain its bindings when the
 existing package import graph stays unchanged. It can add or remove package
 source files, but does not merge import-graph changes or output the dependency
-closure. The Git-object mode still rejects imports rather than borrowing a live
-checkout. The context and output paths must be trusted local paths. This does
+closure. Git-object input can use the same explicit baseline context:
+
+```sh
+target/loom run tools/semantic_change_trial -- --context BASE_PACKAGE_DIR compiler/std \
+  --git /path/to/git /path/to/repo package/directory BASE_REV LEFT_REV RIGHT_REV
+```
+
+To apply, prepend `--apply TOKEN NEW_PACKAGE_DIR` before `--context`. The context
+must contain the exact baseline package, including its private tests. Git inputs
+are resolved to commits and read without checkout; the review binds those commits
+and the supplied project closure. Moving a ref or changing the closure invalidates
+the review. The tool re-reads refs and context before writing the new package,
+without changing the repository's working tree, index or refs. Without `--context`,
+Git input still rejects imports. This is not a module snapshot loader for Git
+manifests, locks or dependencies: those come from the explicitly supplied offline
+context, whose package/import graph stays fixed.
+
+The context and output paths must be trusted local paths. This does
 not make review and publication race-free against hostile concurrent filesystem
 writers. For move-plus-edit proposals, retained references in supported function
 and record declarations are checked against the branch that supplied each unchanged body

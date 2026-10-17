@@ -1,0 +1,103 @@
+fn git_fixture_package(directory Text, snapshot Loaded) Result[Bool, Text] {
+    var index = 0
+    while index < length(snapshot.revision.files) {
+        let file = get(snapshot.revision.files, index)
+        discard std.file.write_text(path(directory, file.path), file.text)
+        index = index + 1
+    }
+    discard std.file.write_text(path(directory, ".loom-ids"), snapshot.sidecar)
+    Result.Ok(true)
+}
+
+fn git_fixture_commit(repository Text, parent Text) Result[Text, Text] {
+    discard git("git", repository, ["-c", "core.autocrlf=false", "add", "--all"])?
+    let tree = trim(git("git", repository, ["write-tree"])?)
+    let operation = ["-c", "user.name=Loom test", "-c", "user.email=loom@example.invalid",
+        "-c", "commit.gpgsign=false", "commit-tree", tree, "-m", "semantic merge fixture"]
+    if parent != "" {
+        push(operation, "-p")
+        push(operation, parent)
+    }
+    Result.Ok(trim(git("git", repository, operation)?))
+}
+
+fn git_context_lifecycle(staging Text) Result[Text, Text] {
+    let repository = path(staging, "repository")
+    let directory = path(staging, "context")
+    let fixture = "tools/semantic_change_trial/fixtures/project"
+    let baseline = read(fixture)?
+    discard create_dir(repository)
+    discard create_dir(directory)
+    discard git_fixture_package(directory, baseline)?
+    discard std.file.write_text(path(directory, "loom.toml"), text_at(path(fixture, "loom.toml")))
+    discard std.file.write_text(path(directory, "loom.lock"), text_at(path(fixture, "loom.lock")))
+    discard create_dir(path(directory, "math"))
+    let dependency = path(directory, "math/math.loom")
+    let original_dependency = text_at(path(fixture, "math/math.loom"))
+    discard std.file.write_text(dependency, original_dependency)
+
+    discard git("git", repository, ["init", "--template="])?
+    discard git_fixture_package(repository, baseline)?
+    let base = git_fixture_commit(repository, "")?
+    discard git_fixture_package(repository, read("tools/semantic_change_trial/fixtures/project_left")?)?
+    let left = git_fixture_commit(repository, base)?
+    discard git_fixture_package(repository, read("tools/semantic_change_trial/fixtures/project_right")?)?
+    let right = git_fixture_commit(repository, base)?
+    discard git("git", repository, ["update-ref", "HEAD", right])?
+    let before = git("git", repository, ["status", "--porcelain=v1"])?
+    let context = read_context(directory, "compiler/std")?
+    let review = review_context(read_git("git", repository, ".", base)?,
+        read_git("git", repository, ".", left)?, read_git("git", repository, ".", right)?, context)?
+    let preview = preview_git_context(directory, "compiler/std", "git", repository, ".", base, left, "HEAD")?
+    assert contains(preview, concat("review token: ", review.token))
+    assert contains(preview, "fn amount() Int { bump(1) }")
+    assert contains(preview, "fn extra() Int { bump(2) }")
+    assert git("git", repository, ["status", "--porcelain=v1"])? == before
+
+    // A ref moving to a different commit invalidates review even with equal bytes.
+    let moved = git_fixture_commit(repository, right)?
+    discard git("git", repository, ["update-ref", "HEAD", moved])?
+    let rejected = path(staging, "rejected")
+    assert match apply_git_context(review.token, rejected, directory, "compiler/std",
+        "git", repository, ".", base, left, "HEAD") {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    discard vacant(rejected)?
+
+    // Changed dependency bytes invalidate the token even when both programs check.
+    discard std.file.write_text(dependency, """
+        pub fn bump(value Int) Int {
+            value + 2
+        }
+        """)
+    assert match apply_git_context(review.token, rejected, directory, "compiler/std",
+        "git", repository, ".", base, left, right) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    discard vacant(rejected)?
+    discard std.file.write_text(dependency, original_dependency)
+    assert match preview_git_context(directory, "compiler/std", "git", repository, ".", right, left, right) {
+        Result.Err(message) => contains(message, "exact baseline package")
+        Result.Ok(_) => false
+    }
+
+    let output = path(staging, "merged")
+    discard apply_git_context(review.token, output, directory, "compiler/std",
+        "git", repository, ".", base, left, right)?
+    assert contains(text_at(path(output, "value.loom")), "fn amount() Int { bump(1) }")
+    assert contains(text_at(path(output, "value.loom")), "fn extra() Int { bump(2) }")
+    assert read(output)?.next == 6
+    assert git("git", repository, ["status", "--porcelain=v1"])? == before
+    assert git_commit("git", repository, "HEAD")? == moved
+    Result.Ok("Git context merge checked and published")
+}
+
+test fn git_objects_use_the_exact_context_and_bind_commits_and_dependencies() {
+    let staging = module_test_directory("git-context")
+    defer {
+        remove_module_fixture(staging)
+    }
+    assert successful(git_context_lifecycle(staging)) == "Git context merge checked and published"
+}
