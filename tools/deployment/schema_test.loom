@@ -1,6 +1,7 @@
 import std.list.new
 import std.list.get
 import std.list.push
+import std.list.set
 import std.list.length
 import std.result.Result
 
@@ -124,5 +125,55 @@ test fn adding_optional_column_still_requires_a_physical_change() {
         Result.Err(_) => {
             assert false
         }
+    }
+}
+
+test fn changing_requiredness_needs_migration_coverage_in_both_directions() {
+    let strict = version("strict", "", false)
+    let optional = version("optional", "", false)
+    let columns = get(optional.tables, 0).columns
+    set(columns, 0, Column {
+            required = false,
+            ..get(columns, 0)
+        })
+    let directions = [(strict, optional), (optional, strict)]
+    var index = 0
+    while index < length(directions) {
+        let from, to = get(directions, index)
+        assert match conflicts(from, to) {
+            Result.Ok(found) => length(found) == 2 &&
+            get(found, 0).kind == ConflictKind.ChangedRequiredColumn &&
+            get(found, 0).table == "orders" && get(found, 0).column == "amount"
+            Result.Err(_) => false
+        }
+        let handlers = [Handling {
+                kind = ConflictKind.ChangedBasis
+                table = ""
+                column = ""
+                action = "verify_behavior"
+            }]
+        let catalog = MigrationCatalog {
+            from_basis = from.basis
+            to_basis = to.basis
+            forward = handlers
+            recovery = handlers
+        }
+        assert match coverage(from, to, catalog) {
+            Result.Ok(missing) => length(missing.forward) == 1 && length(missing.recovery) == 1 &&
+            get(missing.forward, 0).kind == ConflictKind.ChangedRequiredColumn &&
+            get(missing.recovery, 0).kind == ConflictKind.ChangedRequiredColumn
+            Result.Err(_) => false
+        }
+        push(handlers, Handling {
+                kind = ConflictKind.ChangedRequiredColumn
+                table = "orders"
+                column = "amount"
+                action = "change_requiredness"
+            })
+        assert match coverage(from, to, catalog) {
+            Result.Ok(missing) => length(missing.forward) == 0 && length(missing.recovery) == 0
+            Result.Err(_) => false
+        }
+        index = index + 1
     }
 }

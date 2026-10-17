@@ -46,7 +46,7 @@ pub enum ConflictKind {
     RenamedColumn
     ChangedType
     NewRequiredColumn
-    TightenedRequiredColumn
+    ChangedRequiredColumn
     ChangedPredicate
 }
 
@@ -161,8 +161,11 @@ pub fn conflicts(from Schema, to Schema) Result[List[Conflict], Text] {
                     if old_column.kind != next_column.kind {
                         add(found, ConflictKind.ChangedType, old_table.id, old_column.id)
                     }
-                    if !old_column.required && next_column.required {
-                        add(found, ConflictKind.TightenedRequiredColumn, old_table.id, old_column.id)
+                    // Relaxing application requiredness still changes the
+                    // physical mapping: an old NOT NULL column rejects new
+                    // nullable writes. Both directions need explicit handling.
+                    if old_column.required != next_column.required {
+                        add(found, ConflictKind.ChangedRequiredColumn, old_table.id, old_column.id)
                     }
                     if old_column.predicate != next_column.predicate {
                         add(found, ConflictKind.ChangedPredicate, old_table.id, old_column.id)
