@@ -10,6 +10,52 @@ import std.list.push
 import std.list.set
 import std.list.length
 import std.result.Result
+import std.loom.proof.verify_with_helpers
+import std.loom.proof.verify_expression_with_helpers
+
+// Constructor and propagation certificates use the same proof strategy.
+// Expand input guarantees only after failure, and only when such facts exist;
+// ordinary unknown scalar construction must not pay for a second solver query.
+fn proves_with_input_invariants(stage Context, program std.loom.typed.Program, function Function) Bool {
+    proves_with_input_invariants(stage, program, function, false)
+}
+
+fn proves_with_input_invariants(stage Context, program std.loom.typed.Program, function Function, continuation Bool) Bool {
+    let backend = get(stage.env.inputs, 0).build.proof_backend
+    let checked = if continuation {
+        verify_expression_with_helpers(program, function, backend)
+    } else {
+        verify_with_helpers(program, function, backend)
+    }
+    match checked {
+        Result.Ok(_) => {
+            return true
+        }
+        Result.Err(_) => {
+        }
+    }
+    let selected = new[Int]()
+    let seen = new[Int]()
+    var index = 0
+    while index < length(function.params) {
+        value_invariant_types(stage.env, get(function.params, index), seen, selected, 0)
+        index = index + 1
+    }
+    if length(selected) == 0 {
+        return false
+    }
+    match expanded_invariant_types(stage, function) {
+        Result.Ok(types) => match if continuation {
+            verify_expression_with_helpers(proof_types(program, types), function, backend)
+        } else {
+            verify_with_helpers(proof_types(program, types), function, backend)
+        } {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        }
+        Result.Err(_) => false
+    }
+}
 
 record InvariantPredicate {
     value Expr

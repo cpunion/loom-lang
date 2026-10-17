@@ -23,6 +23,15 @@ ensures length(result) == count
     values
 }
 
+async fn selected_generation(stop Bool) Result[GeneratedPair[Text], Text] {
+    let pair = GeneratedPair(delayed_generation(if stop {
+                return Result.Err("stop")
+            } else {
+                2
+            }, to_text).await)
+    Result.Ok(pair)
+}
+
 async fn exercise_generated() {
     let trace = new[Int]()
     let pair = generated_pair(fn(index Int) Text {
@@ -49,6 +58,14 @@ async fn exercise_generated() {
     raw[0] = "saved"
     sleep_ms(1).await
     assert get(saved, 0) == "saved" && length(saved) == 2
+    assert match selected_generation(true).await {
+        Result.Err(error) => error == "stop"
+        Result.Ok(_) => false
+    }
+    assert match selected_generation(false).await {
+        Result.Ok(value) => length(value) == 2 && get(value, 1) == "1"
+        Result.Err(_) => false
+    }
 }
 
 test async fn source_generation_composes_a_proved_shape_without_runtime_rechecking() {

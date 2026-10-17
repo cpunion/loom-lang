@@ -25,7 +25,8 @@ fn match_guarded(arm Node) Bool {
 // Flat matches, nested decisions and editor scopes share nominal lookup and
 // visibility. The flat path need not allocate a recursive pattern tree.
 fn pattern_variant(context Context, node Node, ty Int) Result[Int, Failure] {
-    let shape = get(context.env.types, ty)
+    let base = base_type(context.env, ty)
+    let shape = get(context.env.types, base)
     var selected = -1
     var index = 0
     while index < length(shape.variants) {
@@ -41,7 +42,7 @@ fn pattern_variant(context Context, node Node, ty Int) Result[Int, Failure] {
         } else {
             find_data(context.env, context.signature.symbol, node, package(node.value))?
         }
-        if shape.kind != TypeKind.Enum || target != shape.symbol || (chosen >= 0 && chosen != ty) {
+        if shape.kind != TypeKind.Enum || target != shape.symbol || (chosen >= 0 && chosen != base) {
             return Result.Err(error(context, node, "pattern belongs to a different nominal enum"))
         }
     }
@@ -57,9 +58,9 @@ fn pattern_variant(context Context, node Node, ty Int) Result[Int, Failure] {
         }
         if get(context.env.inputs, 0).declaration_queries {
             let segment = reference_path_segment(node.value)
-            record_pattern_reference(context, node, ty, segment, ty)
+            record_pattern_reference(context, node, base, segment, base)
             if segment > 0 {
-                record_pattern_reference(context, node, ty, segment - 1, ty)
+                record_pattern_reference(context, node, base, segment - 1, base)
             }
         }
     }

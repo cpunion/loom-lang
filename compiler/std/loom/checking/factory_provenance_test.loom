@@ -131,3 +131,34 @@ test fn constrained_factories_project_successful_async_completion() {
         }
         """)
 }
+
+test fn constructor_completion_keeps_contextual_instances_and_caller_exits() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.result.Result
+        type Empty[T] = List[T] where length(self) == 0
+        type Pair = List[Int] where length(self) == 2
+        async fn empty[T]() List[T]
+        ensures length(result) == 0
+        {
+            []
+        }
+        async fn contextual() Empty[Text] {
+            Empty[Text](empty().await)
+        }
+        async fn two(count Int) List[Int]
+        requires count == 2
+        ensures length(result) == count
+        {
+            [1, 2]
+        }
+        async fn selected(stop Bool) Result[Pair, Text] {
+            let value = Pair(two(if stop {
+                    return Result.Err("stop")
+                } else {
+                    2
+                }).await)
+            Result.Ok(value)
+        }
+        """)
+}

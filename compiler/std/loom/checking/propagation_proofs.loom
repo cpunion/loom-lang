@@ -1,0 +1,67 @@
+// The identity body always returns. Its postcondition asks only whether an
+// input Err can be returned under the destination constraint; an Ok is vacuous.
+// Keep the predicate in the postcondition, not the body: a non-returning
+// predicate must never authorize an unchecked runtime return.
+fn proved_error_propagation(context Context, node Node, shape ResultShape,
+    input Int, target_base Int) Result[Bool, Failure] {
+    let stage = staging(context, node)?
+    let arguments = result_types(stage, node, shape, base_type(stage.env, input))?
+    let locals = new[Local]()
+    let types = [input, input, target_base, get(arguments, 0), get(arguments, 1)]
+    var index = 0
+    while index < length(types) {
+        push(locals, Local {
+                name = ""
+                ty = get(types, index)
+                mutable = false
+                is_scoped = false
+            })
+        index = index + 1
+    }
+    let predicate = refinement_expression(
+        predicate_context(stage.env, context.signature.result, locals, 2, true)?,
+        context.signature.result)?
+    let reason = atom(ExprKind.Local, get(arguments, 1), node, 4)
+    let rejected = expression(ExprKind.Variant, target_base, node, "", shape.err, expressions(reason), true)
+    let saved = expression(ExprKind.Let, 0, node, "", 2, expressions(rejected), true)
+    let arms = new[Arm]()
+    push(arms, Arm {
+            variant = shape.ok
+            bindings = ints(3)
+            whole = -1
+            body = expressions(expression(ExprKind.Bool, 2, node, "true", -1, [], true))
+        })
+    push(arms, Arm {
+            variant = shape.err
+            bindings = ints(4)
+            whole = -1
+            body = expressions(expression(ExprKind.Block, 2, node, "", -1, pair(saved, predicate), true))
+        })
+    let condition = Expr {
+        kind = ExprKind.Match
+        ty = 2
+        span = node.span
+        text = ""
+        index = -1
+        children = expressions(atom(ExprKind.Local, input, node, 1))
+        arms = arms
+        falls = true
+    }
+    let proof = Function {
+        is_async = false
+        symbol = -1
+        arguments = []
+        params = ints(input)
+        result = input
+        locals = locals
+        preconditions = []
+        postconditions = expressions(condition)
+        result_cleanup = []
+        result_local = 1
+        body = atom(ExprKind.Local, input, node, 0)
+        runtime_name = ""
+        span = node.span
+    }
+    let program = prepared_in(stage, true)?
+    Result.Ok(proves_with_input_invariants(stage, program, proof))
+}

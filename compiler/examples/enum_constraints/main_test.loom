@@ -1,0 +1,3 @@
+test async fn constrained_enums_keep_payloads_sharing_and_propagation_guarantees() {
+    main().await
+}

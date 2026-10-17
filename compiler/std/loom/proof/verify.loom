@@ -689,6 +689,10 @@ fn verify_body(proof Verification, protected List[InputGuarantee]) Result[Bool, 
 }
 
 fn verify_body(source Verification, protected List[InputGuarantee], allocations List[Int], entries List[Int]) Result[Bool, Text] {
+    verify_body(source, protected, allocations, entries, false)
+}
+
+fn verify_body(source Verification, protected List[InputGuarantee], allocations List[Int], entries List[Int], continuation Bool) Result[Bool, Text] {
     let proof = protected_verification(source, protected)
     let function = proof.function
     if length(function.postconditions) == 0 {
@@ -803,7 +807,7 @@ fn verify_body(source Verification, protected List[InputGuarantee], allocations 
                 discard required_conditions(entry_proof, proof.preservation,
                     get(entries, entry).state)?
             }
-            discard verify_entered(proof, get(entries, entry).state)?
+            discard verify_entered(proof, get(entries, entry).state, continuation)?
             entry = entry + 1
         }
         index = index + 1
@@ -811,7 +815,7 @@ fn verify_body(source Verification, protected List[InputGuarantee], allocations 
     discharge(proof.query)
 }
 
-fn verify_entered(proof Verification, state State) Result[Bool, Text] {
+fn verify_entered(proof Verification, state State, continuation Bool) Result[Bool, Text] {
     let function = proof.function
     let captured = capture_conditions(if length(proof.preservation) == 0 {
             proof
@@ -831,14 +835,26 @@ fn verify_entered(proof Verification, state State) Result[Bool, Text] {
         identity_stores = proof.identity_stores
         protected = proof.protected
         body_calls = proof.body_calls
-        capture_returns = proof.capture_returns
-        returns = proof.returns
+        capture_returns = proof.capture_returns || continuation
+        returns = if continuation {
+            new[Outcome]()
+        } else {
+            proof.returns
+        }
     }
     let exits = execute(prepared, function.body, captured.state, 256)?
     var index = 0
     while index < length(exits) {
         let exit = get(exits, index)
-        discard returned(prepared, exit.state, exit.value)?
+        if continuation {
+            // Source exits leave the enclosing expression. Only its falling
+            // values reach this constructor; callee returns keep their normal
+            // call-local handling. The predicate remains a required clause.
+            discard required_conditions(prepared, observed_function.postconditions,
+                assigned(exit.state, observed_function.result_local, exit.value))?
+        } else {
+            discard returned(prepared, exit.state, exit.value)?
+        }
         index = index + 1
     }
     Result.Ok(true)
@@ -873,6 +889,17 @@ pub fn verify_with_helpers(program Program, function Function, backend ProofBack
     let proof = contract_verification(program, function, backend, false)?
     if length(function.postconditions) != 0 {
         discard verify_body(proof)?
+    }
+    Result.Ok(proof.function.postconditions)
+}
+
+// Prove a checked expression's normal value, not returns to its source caller.
+// This shares the function verifier and its helper/definedness rules. It does
+// not prove that the expression terminates, or excuse any callee obligation.
+pub fn verify_expression_with_helpers(program Program, function Function, backend ProofBackend) Result[List[Expr], Text] {
+    let proof = contract_verification(program, function, backend, false)?
+    if length(function.postconditions) != 0 {
+        discard verify_body(proof, [], [], [], true)?
     }
     Result.Ok(proof.function.postconditions)
 }

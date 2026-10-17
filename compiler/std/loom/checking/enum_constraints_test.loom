@@ -1,0 +1,216 @@
+test fn enum_constraints_share_construction_and_payload_proofs() {
+    discard accepted_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        enum Item {
+            Count(Int)
+            Named(Text)
+            Missing
+        }
+        fn admitted(value Item) Bool {
+            match value {
+                Item.Count(number) => number >= 0
+                Item.Named(label) => label != ""
+                Item.Missing => false
+            }
+        }
+        type Present = Item where admitted(self)
+        fn constant() Present {
+            Present(Item.Count(1))
+        }
+        fn checked(value Item) Result[Present, ConstraintError] {
+            Present(value)
+        }
+        fn guarded(value Int) Present
+        requires value >= 0
+        {
+            Present(Item.Count(value))
+        }
+        fn read(value Present) Int
+        ensures result >= 0
+        {
+            match value {
+                Item.Count(number) => number
+                Item.Named(_) => 0
+                Item.Missing => 0
+            }
+        }
+        fn prepared() Present {
+            comptime { Present(Item.Named("ready")) }
+        }
+        """)
+}
+
+test fn enum_constraints_reject_invalid_constants_and_mutable_observations() {
+    assert match with_result("""
+        enum Item {
+            Count(Int)
+            Missing
+        }
+        fn admitted(value Item) Bool {
+            match value {
+                Item.Count(number) => number >= 0
+                Item.Missing => false
+            }
+        }
+        type Present = Item where admitted(self)
+        fn invalid() { discard Present(Item.Count(-1)) }
+        """) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "does not satisfy")
+        Result.Ok(_) => false
+    }
+    assert match with_result("""
+        enum Item {
+            Values(List[Int])
+        }
+        fn observed(value Item) Bool {
+            match value { Item.Values(values) => values[0] > 0 }
+        }
+        type Invalid = Item where observed(self)
+        """) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "shared mutable contents")
+        Result.Ok(_) => false
+    }
+    assert match with_result("""
+        enum Pending {
+            Work(Task[Int])
+        }
+        type Invalid = Pending where true
+        """) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "one-shot Tasks")
+        Result.Ok(_) => false
+    }
+    let files = list_constraint_files("""
+        import std.list.length
+        type Nonempty = List[Int] where length(self) > 0
+        enum Box {
+            Values(List[Int])
+        }
+        type Wrapped = Box where true
+        fn escape(value Nonempty) Wrapped {
+            Wrapped(Box.Values(value))
+        }
+        """)
+    assert match checked(files) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "constrained sequence")
+        Result.Ok(_) => false
+    }
+}
+
+fn refined_result_source() Text {
+    concat("""
+        import std.result.Result
+        fn nonnegative(value Result[Int, Text]) Bool {
+            match value {
+                Result.Ok(number) => number >= 0
+                Result.Err(_) => true
+            }
+        }
+        fn successful(value Result[Int, Text]) Bool {
+            match value {
+                Result.Ok(_) => true
+                Result.Err(_) => false
+            }
+        }
+        fn informative(value Result[Int, Text]) Bool {
+            match value {
+                Result.Ok(_) => true
+                Result.Err(error) => error != ""
+            }
+        }
+        fn fixed_error(value Result[Int, Text]) Bool {
+            match value {
+                Result.Ok(_) => true
+                Result.Err(error) => error == "expected"
+            }
+        }
+        type Nonnegative = Result[Int, Text] where nonnegative(self)
+        type Success = Result[Int, Text] where successful(self)
+        type Informative = Result[Int, Text] where informative(self)
+        type FixedError = Result[Int, Text] where fixed_error(self)
+        """, "\n")
+}
+
+test fn enum_constraints_check_both_sides_of_result_propagation() {
+    discard accepted_result(concat(refined_result_source(), """
+        fn consume(value Nonnegative) Result[Int, Text] {
+            Result.Ok(value?)
+        }
+        fn forward(value Result[Int, Text]) Nonnegative {
+            let number = value?
+            if number >= 0 {
+                Nonnegative(Result.Ok(number))
+            } else {
+                Nonnegative(Result.Ok(0))
+            }
+        }
+        fn preserve(value Success) Success {
+            Success(Result.Ok(value?))
+        }
+        fn relay(value Nonnegative) Nonnegative {
+            Nonnegative(Result.Ok(value?))
+        }
+        fn converted(value FixedError) Informative {
+            Informative(value)
+        }
+        fn weaken(value FixedError) Informative {
+            Informative(Result.Ok(value?))
+        }
+        """))
+    assert match with_result(concat(refined_result_source(), """
+        fn invalid(value Result[Int, Text]) Success {
+            Success(Result.Ok(value?))
+        }
+        """)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "propagated error")
+        Result.Ok(_) => false
+    }
+    assert match with_result(concat(refined_result_source(), """
+        fn loops_on_error(value Result[Int, Text]) Bool {
+            match value {
+                Result.Ok(_) => true
+                Result.Err(_) => loops_on_error(value)
+            }
+        }
+        type Limited = Result[Int, Text] where loops_on_error(self)
+        fn invalid(value Result[Int, Text]) Limited {
+            Limited(Result.Ok(value?))
+        }
+        """)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "propagated error")
+        Result.Ok(_) => false
+    }
+}
+
+test fn constructor_control_proofs_keep_only_reachable_normal_values() {
+    discard accepted_result("""
+        import std.result.Result
+        type Positive = Int where self > 0
+        fn selected(flag Bool) Positive {
+            Positive(if flag { 1 } else { 2 })
+        }
+        fn exited(flag Bool) Result[Positive, Text] {
+            let value = Positive(if flag {
+                return Result.Err("exit")
+            } else {
+                1
+            })
+            Result.Ok(value)
+        }
+        """)
+    rejects_result("""
+        type Positive = Int where self > 0
+        type Never = Int where false
+        fn unreachable_value() Never {
+            while true {}
+        }
+        fn invalid(flag Bool) Positive {
+            Positive(if flag {
+                let unused = unreachable_value()
+                1
+            } else {
+                -1
+            })
+        }
+        """)
+}
