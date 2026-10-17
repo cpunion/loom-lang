@@ -1,0 +1,32 @@
+test fn git_batch_reads_binary_lengths_and_rejects_mismatched_or_truncated_frames() {
+    let entry = GitEntry {
+        relative = "data.bin"
+        object = "object"
+        regular = true
+    }
+    let bytes = to_bytes("object blob 3\n")
+    std.bytes.push(bytes, 0)
+    std.bytes.push(bytes, 10)
+    std.bytes.push(bytes, 255)
+    std.bytes.push(bytes, 10)
+    let decoded = match decode_git_blobs([entry], bytes) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(decoded) == 1 && std.bytes.length(get(decoded, 0)) == 3
+    assert std.bytes.get(get(decoded, 0), 0) == 0 && std.bytes.get(get(decoded, 0), 1) == 10 &&
+    std.bytes.get(get(decoded, 0), 2) == 255
+    let invalid = ["object blob 3\nxx", "other blob 0\n\n", "object tree 0\n\n",
+        "object blob -1\n\n", "object blob 0\nx", "object blob 0\n\nextra"]
+    var index = 0
+    while index < length(invalid) {
+        assert match decode_git_blobs([entry], to_bytes(get(invalid, index))) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}

@@ -118,8 +118,7 @@ fn git_package_files(groups List[GitPackageFiles], relative Text) Int {
 fn read_git_module(executable Text, repository Text, directory Text, revision Text,
     context_directory Text) Result[ModuleSnapshot, Text] {
     let tree = git_tree(executable, repository, directory, revision)?
-    let groups = new[GitPackageFiles]()
-    let assets = new[Asset]()
+    let selected = new[GitEntry]()
     var index = 0
     while index < length(tree.entries) {
         let entry = get(tree.entries, index)
@@ -127,43 +126,52 @@ fn read_git_module(executable Text, repository Text, directory Text, revision Te
             if !entry.regular {
                 return Result.Err(concat("Git module entry is not a regular blob: ", entry.relative))
             }
-            let parts = split(entry.relative, "/")
-            let name = get(parts, length(parts) - 1)
-            let relative = if length(parts) == 1 {
-                ""
-            } else {
-                std.text.slice(entry.relative, 0, std.text.length(entry.relative) - std.text.length(name) - 1)
-            }
-            if name == "loom.toml" && relative != "" {
-                return Result.Err("nested modules require a separate semantic merge")
-            }
-            let bytes = git_bytes(executable, repository, ["cat-file", "blob", entry.object])?
-            if name == ".loom-ids" || ends_with(name, ".loom") {
-                let text = match decode_utf8(bytes) {
-                    Result.Ok(value) => value
-                    Result.Err(_) => {
-                        return Result.Err("Git source or identity sidecar is not UTF-8")
-                    }
+            push(selected, entry)
+        }
+        index = index + 1
+    }
+    let blobs = git_blobs(executable, repository, selected)?
+    let groups = new[GitPackageFiles]()
+    let assets = new[Asset]()
+    index = 0
+    while index < length(selected) {
+        let entry = get(selected, index)
+        let parts = split(entry.relative, "/")
+        let name = get(parts, length(parts) - 1)
+        let relative = if length(parts) == 1 {
+            ""
+        } else {
+            std.text.slice(entry.relative, 0, std.text.length(entry.relative) - std.text.length(name) - 1)
+        }
+        if name == "loom.toml" && relative != "" {
+            return Result.Err("nested modules require a separate semantic merge")
+        }
+        let bytes = get(blobs, index)
+        if name == ".loom-ids" || ends_with(name, ".loom") {
+            let text = match decode_utf8(bytes) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Err("Git source or identity sidecar is not UTF-8")
                 }
-                let group = git_package_files(groups, relative)
-                let current = get(groups, group)
-                if name == ".loom-ids" {
-                    set(groups, group, GitPackageFiles {
-                            metadata = text
-                            ..current
-                        })
-                } else {
-                    push(current.files, File {
-                            path = name
-                            text = text
-                        })
-                }
+            }
+            let group = git_package_files(groups, relative)
+            let current = get(groups, group)
+            if name == ".loom-ids" {
+                set(groups, group, GitPackageFiles {
+                        metadata = text
+                        ..current
+                    })
             } else {
-                push(assets, Asset {
-                        relative = entry.relative
-                        bytes = bytes
+                push(current.files, File {
+                        path = name
+                        text = text
                     })
             }
+        } else {
+            push(assets, Asset {
+                    relative = entry.relative
+                    bytes = bytes
+                })
         }
         index = index + 1
     }

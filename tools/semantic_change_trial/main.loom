@@ -30,7 +30,7 @@ import std.list.length
 import std.list.new
 import std.list.push
 import std.process.arguments
-import std.process.capture
+import std.process.capture_input
 import std.process.exit_code
 import std.process.ExitStatus
 import std.result.Result
@@ -295,6 +295,10 @@ fn read(directory Text) Result[Loaded, Text] {
 // Every Git operation reads an existing object or tree. Arguments are passed
 // directly to the process API, never through a shell.
 fn git_bytes(git_executable Text, repository Text, operation List[Text]) Result[Bytes, Text] {
+    git_bytes(git_executable, repository, operation, std.bytes.new())
+}
+
+fn git_bytes(git_executable Text, repository Text, operation List[Text], input Bytes) Result[Bytes, Text] {
     let command = new[Text]()
     push(command, git_executable)
     push(command, "-C")
@@ -304,7 +308,7 @@ fn git_bytes(git_executable Text, repository Text, operation List[Text]) Result[
         push(command, get(operation, index))
         index = index + 1
     }
-    let captured = match capture(command) {
+    let captured = match capture_input(command, input) {
         Result.Ok(value) => value
         Result.Err(_) => {
             return Result.Err("could not execute Git")
@@ -339,18 +343,9 @@ fn git_commit(git_executable Text, repository Text, revision Text) Result[Text, 
     Result.Ok(commit)
 }
 
-fn git_blob(git_executable Text, repository Text, object Text) Result[Text, Text] {
-    let operation = new[Text]()
-    push(operation, "cat-file")
-    push(operation, "blob")
-    push(operation, object)
-    git(git_executable, repository, operation)
-}
-
 fn read_git(git_executable Text, repository Text, directory Text, revision Text) Result[Loaded, Text] {
     let snapshot = git_tree(git_executable, repository, directory, revision)?
-    let files = new[File]()
-    var metadata = ""
+    let selected = new[GitEntry]()
     var index = 0
     while index < length(snapshot.entries) {
         let entry = get(snapshot.entries, index)
@@ -359,15 +354,29 @@ fn read_git(git_executable Text, repository Text, directory Text, revision Text)
             if !entry.regular {
                 return Result.Err(concat("Git source is not a regular blob: ", name))
             }
-            let contents = git_blob(git_executable, repository, entry.object)?
-            if name == ".loom-ids" {
-                metadata = contents
-            } else {
-                push(files, File {
-                        path = name
-                        text = contents
-                    })
+            push(selected, entry)
+        }
+        index = index + 1
+    }
+    let blobs = git_blobs(git_executable, repository, selected)?
+    let files = new[File]()
+    var metadata = ""
+    index = 0
+    while index < length(selected) {
+        let contents = match decode_utf8(get(blobs, index)) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("Git source or identity sidecar is not UTF-8")
             }
+        }
+        let name = get(selected, index).relative
+        if name == ".loom-ids" {
+            metadata = contents
+        } else {
+            push(files, File {
+                    path = name
+                    text = contents
+                })
         }
         index = index + 1
     }

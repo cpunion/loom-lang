@@ -95,6 +95,7 @@ offline `BASE_MODULE_DIR` must exactly match the Git baseline's selected sources
 sidecars and assets, including manifest and lock presence/bytes. It supplies the
 dependency context, not branch source substitutions. All branch packages and
 binary assets come from resolved Git objects; no checkout or worktree is created.
+Blob reads use one binary-safe batch per snapshot, not one Git process per file.
 Apply rechecks refs and context before publication. Tree exclusions and asset
 merge policy are the same as directory input, including rejection of symlinks,
 submodules, nested modules and unsupported config changes; file modes are not

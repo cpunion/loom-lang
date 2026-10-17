@@ -1,0 +1,70 @@
+import std.text.join
+import std.text.to_bytes
+
+// Batch headers are text, but payload boundaries are byte counts, not lines or
+// UTF-8 characters. Verify each response before returning its isolated bytes.
+fn decode_git_blobs(entries List[GitEntry], data Bytes) Result[List[Bytes], Text] {
+    let blobs = new[Bytes]()
+    var offset = 0
+    var index = 0
+    while index < length(entries) {
+        let header_bytes = std.bytes.new()
+        while offset < std.bytes.length(data) && std.bytes.get(data, offset) != 10 {
+            std.bytes.push(header_bytes, std.bytes.get(data, offset))
+            offset = offset + 1
+        }
+        if offset == std.bytes.length(data) {
+            return Result.Err("truncated Git blob response")
+        }
+        offset = offset + 1
+        let header = match decode_utf8(header_bytes) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("invalid Git blob response header")
+            }
+        }
+        let fields = split(header, " ")
+        if length(fields) != 3 || get(fields, 0) != get(entries, index).object || get(fields, 1) != "blob" {
+            return Result.Err("Git blob response does not match the requested object")
+        }
+        let size = match std.int.parse(get(fields, 2)) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("invalid Git blob byte length")
+            }
+        }
+        if size < 0 || size >= std.bytes.length(data) - offset {
+            return Result.Err("truncated Git blob payload")
+        }
+        let end = offset + size
+        if std.bytes.get(data, end) != 10 {
+            return Result.Err("invalid Git blob response delimiter")
+        }
+        let blob = std.bytes.new()
+        while offset < end {
+            std.bytes.push(blob, std.bytes.get(data, offset))
+            offset = offset + 1
+        }
+        push(blobs, blob)
+        offset = end + 1
+        index = index + 1
+    }
+    if offset != std.bytes.length(data) {
+        return Result.Err("unexpected data after Git blob responses")
+    }
+    Result.Ok(blobs)
+}
+
+fn git_blobs(executable Text, repository Text, entries List[GitEntry]) Result[List[Bytes], Text] {
+    if length(entries) == 0 {
+        return Result.Ok(new[Bytes]())
+    }
+    let objects = new[Text]()
+    var index = 0
+    while index < length(entries) {
+        push(objects, get(entries, index).object)
+        index = index + 1
+    }
+    let input = to_bytes(concat(join(objects, "\n"), "\n"))
+    decode_git_blobs(entries, git_bytes(executable, repository, ["cat-file", "--batch"], input)?)
+}
