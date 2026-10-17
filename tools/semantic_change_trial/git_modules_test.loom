@@ -1,0 +1,120 @@
+fn git_fixture_module(repository Text, snapshot ModuleSnapshot) Result[Bool, Text] {
+    // Replace only tracked fixture leaves; the private test repository's Git
+    // objects and refs are retained for the next branch snapshot.
+    let tracked = split(git("git", repository, ["ls-files", "-z"])?, "\0")
+    var index = 0
+    while index < length(tracked) {
+        let name = get(tracked, index)
+        if name != "" {
+            discard remove_file(module_path(repository, name))
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(snapshot.assets) {
+        let entry = get(snapshot.assets, index)
+        discard module_directories(repository, entry.relative, false)?
+        discard write_bytes(module_path(repository, entry.relative), entry.bytes)
+        index = index + 1
+    }
+    index = 0
+    while index < length(snapshot.packages) {
+        let package = get(snapshot.packages, index)
+        discard module_directories(repository, package.relative, true)?
+        discard git_fixture_package(module_path(repository, package.relative), package.loaded)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn git_module_lifecycle(staging Text) Result[Text, Text] {
+    discard module_fixture_branches(staging)?
+    let directory = path(staging, "base")
+    let repository = path(staging, "repository")
+    discard create_dir(repository)
+    discard git("git", repository, ["init", "--template="])?
+    discard git_fixture_module(repository, read_module(directory)?)?
+    let base = git_fixture_commit(repository, "")?
+    discard git_fixture_module(repository, read_module(path(staging, "left"))?)?
+    let left = git_fixture_commit(repository, base)?
+    discard git_fixture_module(repository, read_module(path(staging, "right"))?)?
+    let right = git_fixture_commit(repository, base)?
+    discard git("git", repository, ["update-ref", "HEAD", right])?
+    let before = git("git", repository, ["status", "--porcelain=v1"])?
+    let original = read_git_module("git", repository, ".", base, directory)?
+    let context = git_module_context(original, "compiler/std")?
+    let review = review_module(original,
+        read_git_module("git", repository, ".", left, directory)?,
+        read_git_module("git", repository, ".", right, directory)?, context)?
+    let preview = preview_git_module(directory, "compiler/std", "git", repository, ".", base, left, "HEAD")?
+    assert contains(preview, concat("review token: ", review.token))
+    assert contains(preview, "=== lib/moved.loom ===")
+    assert contains(preview, "=== checks/nested/.loom-ids ===")
+    assert contains(preview, "asset data.bin sha256 ")
+    assert git("git", repository, ["status", "--porcelain=v1"])? == before
+
+    let asset_path = path(directory, "obsolete.txt")
+    let old_asset = text_at(asset_path)
+    discard std.file.write_text(asset_path, "context drift\n")
+    let rejected = path(staging, "rejected")
+    assert match apply_git_module(review.token, rejected, directory, "compiler/std",
+        "git", repository, ".", base, left, right) {
+        Result.Err(message) => contains(message, "context assets differ")
+        Result.Ok(_) => false
+    }
+    discard vacant(rejected)?
+    discard std.file.write_text(asset_path, old_asset)
+
+    let moved = git_fixture_commit(repository, right)?
+    discard git("git", repository, ["update-ref", "HEAD", moved])?
+    assert match apply_git_module(review.token, rejected, directory, "compiler/std",
+        "git", repository, ".", base, left, "HEAD") {
+        Result.Err(message) => contains(message, "review token")
+        Result.Ok(_) => false
+    }
+    discard vacant(rejected)?
+
+    let output = path(staging, "merged")
+    discard apply_git_module(review.token, output, directory, "compiler/std",
+        "git", repository, ".", base, left, right)?
+    assert contains(text_at(path(output, "lib/moved.loom")), "2")
+    assert contains(text_at(path(output, "lib/value.loom")), "fn private_value()")
+    assert contains(text_at(path(output, "app/entry.loom")), "+ 10")
+    assert text_at(path(output, "docs/usage.txt")) == "updated alongside the library\n"
+    discard vacant(path(output, "obsolete.txt"))?
+    let data = match read_bytes(path(output, "data.bin")) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("missing merged binary asset")
+        }
+    }
+    assert std.bytes.length(data) == 3 && std.bytes.get(data, 0) == 0 && std.bytes.get(data, 1) == 254
+    let published = read_module(output)?
+    discard review_module(published, published, published, module_context(published, "compiler/std")?)?
+    assert git("git", repository, ["status", "--porcelain=v1"])? == before
+    assert git_commit("git", repository, "HEAD")? == moved
+    Result.Ok("Git module merge checked and published")
+}
+
+test fn git_module_snapshots_preserve_binary_assets_and_check_the_complete_baseline() {
+    let staging = module_test_directory("git-module")
+    defer {
+        remove_module_fixture(staging)
+    }
+    assert successful(git_module_lifecycle(staging)) == "Git module merge checked and published"
+}
+
+test fn git_module_paths_use_the_ordinary_snapshot_exclusions() {
+    assert !match selected_git_module_path("node_modules/source.loom") {
+        Result.Ok(value) => value
+        Result.Err(_) => true
+    }
+    assert match selected_git_module_path("lib/../escape.loom") {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match selected_git_module_path("data.bin") {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
