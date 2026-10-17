@@ -4650,6 +4650,17 @@ exact policy is required. Keepalive is neither an application heartbeat nor an
 I/O deadline; use Task cancellation/deadlines for the latter. Connections keep
 their OS defaults until explicitly configured.
 
+TCP listeners/streams and UDP sockets/connections expose `receive_buffer_size`
+and `send_buffer_size`, plus `set_receive_buffer_size(socket, bytes)` and
+`set_send_buffer_size(socket, bytes)`. Setters return `Ok(0)` and accept positive
+byte counts through 2147483647; invalid values, stale identities and OS errors
+return the package's `Option` error. Queries return the effective OS size, which
+may be rounded, capped or adjusted by platform policy, not an exact application
+or packet capacity. Changes affect aliases without retiring pending I/O.
+Listener inheritance and TCP autotuning are platform policy; query/configure
+accepted streams when required. Defaults remain unchanged until configured.
+These options add neither buffering in Loom nor an I/O deadline.
+
 `abort(stream)` revokes all aliases and retires active socket waits. Pending I/O
 wakes to fail, including a wait Task that has not started yet. Already-sent bytes
 are not rolled back; callers must still consume or cancel their child Tasks.

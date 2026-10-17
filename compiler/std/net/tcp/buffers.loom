@@ -1,0 +1,54 @@
+intrinsic fn socket_buffer(token Int, direction Int, size Int) Int
+
+fn buffer_result(token Int, direction Int, size Int) Result[Int, TcpError] {
+    let status = socket_buffer(token, direction, size)
+    if status < 0 {
+        Result.Err(TcpError.Option)
+    } else {
+        Result.Ok(status)
+    }
+}
+
+fn set_buffer_size(token Int, direction Int, size Int) Result[Int, TcpError] {
+    if size <= 0 || size > 2147483647 {
+        return Result.Err(TcpError.Option)
+    }
+    buffer_result(token, direction, size)
+}
+
+// OS buffer sizes are byte counts, not exact application capacities. The OS
+// may round or cap a request; query the effective size separately. Configuration
+// affects every alias, without closing the socket or retiring pending I/O.
+pub fn receive_buffer_size(stream Stream) Result[Int, TcpError] {
+    buffer_result(stream.state.token, 0, -1)
+}
+
+pub fn send_buffer_size(stream Stream) Result[Int, TcpError] {
+    buffer_result(stream.state.token, 1, -1)
+}
+
+pub fn set_receive_buffer_size(stream Stream, size Int) Result[Int, TcpError] {
+    set_buffer_size(stream.state.token, 0, size)
+}
+
+pub fn set_send_buffer_size(stream Stream, size Int) Result[Int, TcpError] {
+    set_buffer_size(stream.state.token, 1, size)
+}
+
+// Listener configuration applies before accept. Inheritance and subsequent
+// autotuning are OS policy; query/configure accepted streams when required.
+pub fn receive_buffer_size(listener Listener) Result[Int, TcpError] {
+    buffer_result(listener.state.token, 0, -1)
+}
+
+pub fn send_buffer_size(listener Listener) Result[Int, TcpError] {
+    buffer_result(listener.state.token, 1, -1)
+}
+
+pub fn set_receive_buffer_size(listener Listener, size Int) Result[Int, TcpError] {
+    set_buffer_size(listener.state.token, 0, size)
+}
+
+pub fn set_send_buffer_size(listener Listener, size Int) Result[Int, TcpError] {
+    set_buffer_size(listener.state.token, 1, size)
+}
