@@ -1,0 +1,167 @@
+import std.list.clone
+import std.text.starts_with
+import std.text.split
+import std.loom.manifest.segment
+
+record PackageSet {
+    base List[PackageRevision]
+    left List[PackageRevision]
+    right List[PackageRevision]
+    production Project
+    tests Project
+}
+
+fn package_present(values List[PackageRevision], directory Text) Bool {
+    var index = 0
+    while index < length(values) {
+        if get(values, index).directory == directory {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn package_union(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision]) List[PackageRevision] {
+    let selected = new[PackageRevision]()
+    let branches = [base, left, right]
+    var branch = 0
+    while branch < length(branches) {
+        let values = get(branches, branch)
+        var index = 0
+        while index < length(values) {
+            let value = get(values, index)
+            if !package_present(selected, value.directory) {
+                push(selected, value)
+            }
+            index = index + 1
+        }
+        branch = branch + 1
+    }
+    selected
+}
+
+// Absence is an empty source revision, not a guessed identity or a surviving
+// empty source file. Tombstone slots retain project-local IDs during checking.
+fn package_set_branch(values List[PackageRevision], selected List[PackageRevision]) Result[List[PackageRevision], Text] {
+    let output = new[PackageRevision]()
+    var index = 0
+    while index < length(selected) {
+        let value = get(selected, index)
+        push(output, if package_present(values, value.directory) {
+                package_revision(values, value.directory)?
+            } else {
+                PackageRevision {
+                    directory = value.directory
+                    revision = Revision {
+                        package_name = value.revision.package_name
+                        files = new[File]()
+                        identities = new[Identity]()
+                    }
+                }
+            })
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+
+fn added_package_context(project Project, selected List[PackageRevision]) Result[Project, Text] {
+    let packages = std.list.clone(project.packages)
+    let owner = get(packages, project.root).instance
+    let module = get(project.modules, owner)
+    var index = 0
+    while index < length(selected) {
+        let value = get(selected, index)
+        if match project_package(project, value.revision.package_name) {
+            Result.Ok(_) => false
+            Result.Err(_) => true
+        } {
+            let prefix = concat(module.name, ".")
+            let label = value.revision.package_name
+            if module.name == "" || (label != module.name && !std.text.starts_with(label, prefix)) {
+                return Result.Err("new package must belong to the selected named module")
+            }
+            let relative = if label == module.name {
+                ""
+            } else {
+                slice(label, length(prefix), length(label))
+            }
+            let parts = if relative == "" {
+                new[Text]()
+            } else {
+                std.text.split(relative, ".")
+            }
+            var directory = module.source
+            var part = 0
+            while part < length(parts) {
+                let segment = get(parts, part)
+                if !std.loom.manifest.segment(segment) {
+                    return Result.Err("new package has an invalid directory identity")
+                }
+                directory = join_path(directory, segment)
+                part = part + 1
+            }
+            if directory != value.directory {
+                return Result.Err("new package label and directory identity disagree")
+            }
+            push(packages, Package {
+                    instance = owner
+                    relative = relative
+                    imports = new[PackageImport]()
+                })
+        }
+        index = index + 1
+    }
+    Result.Ok(Project {
+            packages = packages,
+            ..project
+        })
+}
+
+fn package_set(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
+    production Project, tests Project) Result[PackageSet, Text] {
+    if length(base) == 0 {
+        return Result.Err("package merge needs a nonempty baseline package set")
+    }
+    discard package_scopes(production, base)?
+    discard package_scopes(tests, base)?
+    let selected = package_union(base, left, right)
+    let branches = [left, right]
+    var branch = 0
+    while branch < length(branches) {
+        let values = get(branches, branch)
+        var index = 0
+        while index < length(values) {
+            let value = get(values, index)
+            if !package_present(base, value.directory) &&
+            (has_imports(value.revision)? || needs_result_import(value.revision, true)?) {
+                return Result.Err("new package dependencies require an expanded pinned project context; explicit resolution required")
+            }
+            index = index + 1
+        }
+        branch = branch + 1
+    }
+    Result.Ok(PackageSet {
+            base = package_set_branch(base, selected)?
+            left = package_set_branch(left, selected)?
+            right = package_set_branch(right, selected)?
+            production = added_package_context(production, selected)?
+            tests = added_package_context(tests, selected)?
+        })
+}
+
+fn identical_package(left Revision, right Revision) Result[Bool, Text] {
+    if left.package_name != right.package_name || !same_layout(indexed(left)?, indexed(right)?) {
+        return Result.Ok(false)
+    }
+    var index = 0
+    while index < length(left.files) {
+        let file = get(left.files, index)
+        let other = file_index(right.files, file.path)
+        if other < 0 || file.text != get(right.files, other).text {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

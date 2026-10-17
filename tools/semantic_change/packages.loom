@@ -346,8 +346,8 @@ fn package_changes(base List[PackageRevision], branch List[PackageRevision]) Res
     Result.Ok(changes)
 }
 
-// Imports, module instances and the selected package set stay pinned. Package
-// scope/visibility changes and unaccounted references require explicit review.
+// Module instances stay pinned. Independent new packages and whole-package
+// deletions share the ordinary checked merge through explicit absence slots.
 pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
     production Project, tests Project) Result[List[PackageRevision], Text] {
     merge_packages(base, left, right, production, tests, no_proof_backend())
@@ -355,9 +355,22 @@ pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], ri
 
 pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
     production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
-    if length(base) == 0 || length(base) != length(left) || length(base) != length(right) {
-        return Result.Err("package merge branches must select the same nonempty package set")
+    let batch = package_set(base, left, right, production, tests)?
+    let checked = merge_fixed_packages(batch.base, batch.left, batch.right, batch.production, batch.tests, backend)?
+    let output = new[PackageRevision]()
+    var index = 0
+    while index < length(checked) {
+        let value = get(checked, index)
+        if length(value.revision.files) != 0 {
+            push(output, value)
+        }
+        index = index + 1
     }
+    Result.Ok(output)
+}
+
+fn merge_fixed_packages(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
+    production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
     discard package_scopes(production, base)?
     discard package_scopes(tests, base)?
     discard same_package_identities(production, base, left)?
@@ -413,8 +426,8 @@ fn package_imports_unchanged(base List[PackageRevision], left List[PackageRevisi
         let original = get(base, index)
         let a = package_revision(left, original.directory)?.revision
         let b = package_revision(right, original.directory)?.revision
-        if !same_imports(original.revision, a)? || !same_imports(original.revision, b)? ||
-        !same_implicit_imports(original.revision, a)? || !same_implicit_imports(original.revision, b)? {
+        if (length(a.files) != 0 && (!same_imports(original.revision, a)? || !same_implicit_imports(original.revision, a)?)) ||
+        (length(b.files) != 0 && (!same_imports(original.revision, b)? || !same_implicit_imports(original.revision, b)?)) {
             return Result.Err("package merge import bindings changed; explicit resolution required")
         }
         index = index + 1
@@ -429,11 +442,16 @@ fn merge_package_names(base List[PackageRevision], left List[PackageRevision], r
     var index = 0
     while index < length(base) {
         let original = get(base, index)
+        let a = package_revision(left, original.directory)?.revision
+        let b = package_revision(right, original.directory)?.revision
         push(merged, PackageRevision {
                 directory = original.directory
-                revision = proposed(original.revision,
-                    package_revision(left, original.directory)?.revision,
-                    package_revision(right, original.directory)?.revision)?
+                revision = if (length(a.files) == 0 && length(b.files) == 0) ||
+                (length(original.revision.files) == 0 && identical_package(a, b)?) {
+                    a
+                } else {
+                    proposed(original.revision, a, b)?
+                }
             })
         index = index + 1
     }

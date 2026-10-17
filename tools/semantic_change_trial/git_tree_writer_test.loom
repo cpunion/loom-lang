@@ -30,6 +30,7 @@ test fn git_modes_merge_independently_without_losing_deletion_conflicts() {
     let empty = ModuleReview {
         packages = new[Review]()
         relative = new[Text]()
+        removed = new[Text]()
         assets = new[Asset]()
         token = ""
     }

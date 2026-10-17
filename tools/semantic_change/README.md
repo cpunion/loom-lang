@@ -7,8 +7,12 @@ one package against pinned production/test projects. The
 identity maintenance and reviewed application to a new tree.
 
 `merge_packages(base, left, right, production, tests)` accepts lists of
-`PackageRevision { directory, revision }`. Each branch selects the same nonempty
-set of packages from one module. `directory` is the package's path in the pinned
+`PackageRevision { directory, revision }` from one module, with a nonempty baseline.
+Branches may add self-contained packages or omit whole packages. New packages
+must have fresh declaration IDs and the directory identity given by their module
+and package name; new explicit/implicit dependencies require expanded context and
+explicit resolution. Identical additions or deletions combine; competing additions
+and deletion versus edit do not. `directory` is the package's path in the pinned
 project, not its branch snapshot location. Every baseline must match exactly;
 declaration IDs must be unique across the batch and remain in their package.
 
@@ -33,7 +37,7 @@ signature rather than sibling-body byte offsets; this does not synthesize durabl
 member IDs or merge concurrent container-body edits. Interface/default-presence
 changes and ambiguous member slots still require resolution.
 
-The package/import graph stays fixed. Cross-package header/contract or deletion
+Retained-package imports and external module instances stay pinned. Cross-package header/contract or deletion
 changes can combine with edits only in completely disconnected import components.
 The graph includes production and private-test imports, pinned consumers and
 external module instances; common consumers or dependencies keep packages connected.
@@ -62,8 +66,8 @@ parameters; missing or conflicting evidence still requires resolution.
 Public function, record, enum, refined-type and concept renames also compose in a complete selected-module batch,
 including checked import members, calls and each package's private tests. Every
 known package in that module must participate; known consumers in other module
-instances require separate resolution. Visibility and the package/dependency
-graph stay fixed. Public overload imports split into the names required by
+instances require separate resolution. Visibility and existing dependency edges
+stay fixed. Public overload imports split into the names required by
 their identified declarations; calls and contextual function values follow only
 their own selected target. Existing import lines and trailing comments stay in
 place, and additional imports retain the file's line ending. Normalized member

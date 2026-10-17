@@ -1,0 +1,170 @@
+fn independent_package(label Text, directory Text, value Int, testing Bool) PackageRevision {
+    let files = [File {
+            path = "value.loom"
+            text = concat("fn value() Int {\n    ", concat(to_text(value), "\n}\n"))
+        }]
+    if testing {
+        push(files, File {
+                path = "value_test.loom"
+                text = """
+                    test fn private_value() {
+                        assert value() > 0
+                    }
+                    """
+            })
+    }
+    package_fixture(label, directory, files)
+}
+
+fn independent_context(values List[PackageRevision], testing Bool) Project {
+    let files = new[SourceFile]()
+    let packages = new[Package]()
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        let label = value.revision.package_name
+        push(packages, Package {
+                instance = 0
+                relative = if label == "sample" {
+                    ""
+                } else {
+                    slice(label, 7, length(label))
+                }
+                imports = new[PackageImport]()
+            })
+        var file = 0
+        while file < length(value.revision.files) {
+            let source = get(value.revision.files, file)
+            let tests = ends_with(source.path, "_test.loom")
+            if testing || !tests {
+                push(files, SourceFile {
+                        package = index
+                        path = join_path(value.directory, source.path)
+                        text = source.text
+                        tree = package_tree(source.text)
+                        test_only = tests
+                        trusted_std = false
+                    })
+            }
+            file = file + 1
+        }
+        index = index + 1
+    }
+    Project {
+        files = files
+        packages = packages
+        modules = [ModuleInstance {
+                name = "sample"
+                source = "/module"
+            }]
+        root = 0
+    }
+}
+
+test fn package_set_additions_and_unused_deletions_compose_with_existing_body_edits() {
+    let root = independent_package("sample", "/module", 1, true)
+    let unused = independent_package("sample.unused", "/module/unused", 1, true)
+    let base = [root, unused]
+    let a = independent_package("sample.alpha", "/module/alpha", 3, true)
+    let b = independent_package("sample.beta", "/module/beta", 4, true)
+    let left = [root, a]
+    let right = [independent_package("sample", "/module", 2, true), unused, b]
+    let branches = [left, right]
+    var order = 0
+    while order < 2 {
+        let merged = match merge_packages(base, get(branches, order), get(branches, 1 - order),
+            independent_context(base, false), independent_context(base, true)) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        assert length(merged) == 3
+        assert !package_present(merged, unused.directory)
+        assert package_present(merged, a.directory) && package_present(merged, b.directory)
+        assert match package_revision(merged, root.directory) {
+            Result.Ok(value) => contains(get(value.revision.files, 0).text, "2")
+            Result.Err(_) => false
+        }
+        order = order + 1
+    }
+    assert match merge_packages(base, [root, unused, a], [root, unused, a],
+        independent_context(base, false), independent_context(base, true)) {
+        Result.Ok(value) => length(value) == 3
+        Result.Err(_) => false
+    }
+    assert match merge_packages(base, [root], [root],
+        independent_context(base, false), independent_context(base, true)) {
+        Result.Ok(value) => length(value) == 1 && !package_present(value, unused.directory)
+        Result.Err(_) => false
+    }
+    assert match merge_packages([unused], [unused, root], [unused],
+        independent_context([unused], false), independent_context([unused], true)) {
+        Result.Ok(value) => length(value) == 2 && package_present(value, root.directory)
+        Result.Err(_) => false
+    }
+}
+
+test fn package_set_changes_keep_identity_dependency_and_private_test_obligations() {
+    let root = independent_package("sample", "/module", 1, true)
+    let unused = independent_package("sample.unused", "/module/unused", 1, true)
+    let base = [root, unused]
+    let production = independent_context(base, false)
+    let tests = independent_context(base, true)
+    assert match merge_packages(base, [root], [root, independent_package("sample.unused", "/module/unused", 2, true)], production, tests) {
+        Result.Err(message) => contains(message, "deletion versus edit")
+        Result.Ok(_) => false
+    }
+    let added = independent_package("sample.extra", "/module/extra", 1, true)
+    let bad = package_fixture("sample.extra", added.directory, [get(added.revision.files, 0), File {
+                path = "value_test.loom"
+                text = """
+                    test fn bad() {
+                        assert value() == true
+                    }
+                    """
+            }])
+    assert match merge_packages(base, [root, unused, bad], base, production, tests) {
+        Result.Err(message) => contains(message, "requires checked source")
+        Result.Ok(_) => false
+    }
+    let false_contract = package_fixture("sample.extra", added.directory, [File {
+                path = "value.loom"
+                text = """
+                    fn value() Int ensures result > 0 {
+                        0
+                    }
+                    """
+            }, get(added.revision.files, 1)])
+    assert match merge_packages(base, [root, unused, false_contract], base, production, tests) {
+        Result.Err(message) => contains(message, "requires checked source")
+        Result.Ok(_) => false
+    }
+    let importing = package_fixture("sample.extra", added.directory, [File {
+                path = "value.loom"
+                text = """
+                    import sample.value
+
+                    fn extra() Int {
+                        value()
+                    }
+                    """
+            }])
+    assert match merge_packages(base, [root, unused, importing], base, production, tests) {
+        Result.Err(message) => contains(message, "expanded pinned project context")
+        Result.Ok(_) => false
+    }
+    let stolen = PackageRevision {
+        directory = added.directory
+        revision = Revision {
+            package_name = "sample.extra",
+            ..root.revision
+        }
+    }
+    assert match merge_packages(base, [root, unused, stolen], base, production, tests) {
+        Result.Err(message) => contains(message, "identity appears in two packages")
+        Result.Ok(_) => false
+    }
+}
