@@ -1,0 +1,233 @@
+import std.text.replace
+
+fn public_batch_case(name Text, moved Bool, changed Bool, caller_changed Bool) List[PackageRevision] {
+    let library = replace(if changed {
+            """
+            pub fn NAME() Int {
+                // Keep this body from the independent edit.
+                2
+            }
+
+            pub fn NAME(value Int) Int {
+                value + 1
+            }
+            """
+        } else {
+            """
+            pub fn NAME() Int {
+                1
+            }
+
+            pub fn NAME(value Int) Int {
+                value + 1
+            }
+            """
+        }, "NAME", name)
+    let packages = [package_fixture("sample.lib", "/module/lib", [
+                File {
+                    path = "value.loom"
+                    text = if moved {
+                        ""
+                    } else {
+                        library
+                    }
+                }, File {
+                    path = "moved.loom"
+                    text = if moved {
+                        library
+                    } else {
+                        ""
+                    }
+                }, File {
+                    path = "value_test.loom"
+                    text = replace("""
+                        test fn positive() {
+                            assert NAME() > 0 && NAME(1) == 2
+                        }
+                        """, "NAME", name)
+                }
+            ])]
+    let identities = get(packages, 0).revision.identities
+    var index = 0
+    while index < length(identities) {
+        let identity = get(identities, index)
+        if identity.name == name {
+            set(identities, index, Identity {
+                    id = concat("public-overload:", identity.key)
+                    ..identity
+                })
+        }
+        index = index + 1
+    }
+    let callers = ["app", "reader"]
+    index = 0
+    while index < length(callers) {
+        let caller = get(callers, index)
+        let source = replace("""
+            // The import stays attached to this comment.
+            import sample.lib.NAME
+
+            pub fn entry() Int {
+                NAME() + EXTRA
+            }
+
+            fn private_value() Int {
+                3
+            }
+            """, "NAME", name)
+        push(packages, package_fixture(concat("sample.", caller), concat("/module/", caller), [
+                    File {
+                        path = "main.loom"
+                        text = replace(source, "EXTRA", if caller_changed && caller == "app" {
+                                "10"
+                            } else {
+                                "0"
+                            })
+                    }, File {
+                        path = "main_test.loom"
+                        text = replace("""
+                            import sample.lib.NAME
+
+                            test fn available() {
+                                assert NAME(1) == 2 && entry() > 0 && private_value() == 3
+                            }
+                            """, "NAME", name)
+                    }
+                ]))
+        index = index + 1
+    }
+    packages
+}
+
+fn public_batch_context(base List[PackageRevision], testing Bool) Project {
+    let context = match package_project(batch_context(base, testing), base) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            batch_context(base, testing)
+        }
+    }
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(context.files) {
+        let file = get(context.files, index)
+        if testing || !file.test_only {
+            push(files, file)
+        }
+        index = index + 1
+    }
+    Project {
+        files = files
+        ..context
+    }
+}
+
+test fn public_function_renames_compose_moves_edits_imports_and_private_package_tests() {
+    let base = public_batch_case("amount", false, false, false)
+    let branches = [public_batch_case("balance", true, false, false), public_batch_case("amount", false, true, true)]
+    let production = public_batch_context(base, false)
+    let tests = public_batch_context(base, true)
+    var order = 0
+    while order < 2 {
+        let merged = match merge_packages(base, get(branches, order), get(branches, 1 - order), production, tests) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        let library = get(merged, 0).revision
+        assert get(library.files, 0).text == ""
+        assert contains(get(library.files, 1).text, "pub fn balance()")
+        assert contains(get(library.files, 1).text, "Keep this body from the independent edit.")
+        assert contains(get(get(merged, 1).revision.files, 0).text, "balance() + 10")
+        var package = 1
+        while package < length(merged) {
+            let revision = get(merged, package).revision
+            assert contains(get(revision.files, 0).text, "import sample.lib.balance")
+            assert contains(get(revision.files, 0).text, "// The import stays attached to this comment.")
+            assert contains(get(revision.files, 1).text, "balance(1) == 2")
+            package = package + 1
+        }
+        order = order + 1
+    }
+}
+
+test fn public_renames_refuse_unselected_consumers_and_checked_local_capture() {
+    let base = public_batch_case("amount", false, false, false)
+    let renamed = public_batch_case("balance", true, false, false)
+    let edited = public_batch_case("amount", false, true, false)
+    let production = public_batch_context(base, false)
+    let tests = public_batch_context(base, true)
+    assert match merge_packages([get(base, 0), get(base, 1)], [get(renamed, 0), get(renamed, 1)],
+        [get(edited, 0), get(edited, 1)], production, tests) {
+        Result.Err(message) => contains(message, "including consumers")
+        Result.Ok(_) => false
+    }
+    let external = public_external_consumer(production)
+    assert match package_analysis(external, false, no_proof_backend()) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match merge_packages(base, renamed, edited, external, tests) {
+        Result.Err(message) => contains(message, "external module consumer")
+        Result.Ok(_) => false
+    }
+    let app = get(edited, 1).revision.files
+    let source = get(app, 0)
+    set(app, 0, File {
+            text = replace(source.text, "    amount() + 0", """
+                    let balance = fn() Int {
+                        7
+                    }
+                    discard balance
+                    amount() + 0
+                """)
+            ..source
+        })
+    assert match merge_packages(base, renamed, edited, production, tests) {
+        Result.Err(message) => contains(message, "reference binding")
+        Result.Ok(_) => false
+    }
+}
+
+fn public_external_consumer(project Project) Project {
+    let modules = std.list.clone(project.modules)
+    let packages = std.list.clone(project.packages)
+    let files = std.list.clone(project.files)
+    push(modules, ModuleInstance {
+            name = "external"
+            source = "/external"
+        })
+    let package = length(packages)
+    push(packages, Package {
+            instance = length(modules) - 1
+            relative = ""
+            imports = [PackageImport {
+                    spelling = "sample.lib"
+                    target = 0
+                }]
+        })
+    let text = """
+        import sample.lib.amount
+
+        pub fn consume() Int {
+            amount()
+        }
+        """
+    push(files, SourceFile {
+            package = package
+            path = "/external/main.loom"
+            text = text
+            tree = package_tree(text)
+            test_only = false
+            trusted_std = false
+        })
+    Project {
+        modules = modules
+        packages = packages
+        files = files
+        ..project
+    }
+}

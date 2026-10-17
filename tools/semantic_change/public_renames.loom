@@ -1,0 +1,410 @@
+import std.loom.binding.candidates
+
+record RenameDefinition {
+    directory Text
+    entry Entry
+}
+
+fn rename_definition(scopes List[PackageScope], id Text) Result[RenameDefinition, Text] {
+    var index = 0
+    while index < length(scopes) {
+        let scope = get(scopes, index)
+        let selected = entry_index(scope.indexed.entries, id)
+        if selected >= 0 {
+            return Result.Ok(RenameDefinition {
+                    directory = scope.directory
+                    entry = get(scope.indexed.entries, selected)
+                })
+        }
+        index = index + 1
+    }
+    Result.Err("renamed declaration has no stable package identity")
+}
+
+fn public_function(entry Entry) Result[Bool, Text] {
+    let tree = match parse(entry.body) {
+        Result.Ok(value) => value
+        Result.Err(problem) => {
+            return Result.Err(problem.message)
+        }
+    }
+    Result.Ok(entry.kind == NodeKind.Function && has(get(tree.children, 0), NodeKind.Public))
+}
+
+fn public_rename_plan(base List[PackageRevision], plans List[PackageRenames], project Project) Result[Bool, Text] {
+    let scopes = package_scopes(project, base)?
+    var found = false
+    var index = 0
+    while index < length(plans) {
+        let renames = get(plans, index).renames
+        var item = 0
+        while item < length(renames) {
+            found = found || public_function(rename_definition(scopes, get(renames, item).id)?.entry)?
+            item = item + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(found)
+}
+
+fn public_symbol_identity(analysis Analysis, scopes List[PackageScope], symbol Int) Text {
+    let selected = get(analysis.bindings.symbols, symbol)
+    let file = get(analysis.bindings.files, selected.file)
+    var index = 0
+    while index < length(scopes) {
+        let scope = get(scopes, index)
+        if scope.package == file.package {
+            var item = 0
+            while item < length(scope.indexed.entries) {
+                let entry = get(scope.indexed.entries, item)
+                if file.path == join_path(scope.directory, entry.path) &&
+                selected.node.span.start >= entry.start && selected.node.span.end <= entry.end {
+                    return entry.id
+                }
+                item = item + 1
+            }
+        }
+        index = index + 1
+    }
+    ""
+}
+
+fn public_import_name(analysis Analysis, scopes List[PackageScope], renames List[FunctionRename],
+    file Int, spelling Text) Result[Text, Text] {
+    let selected = candidates(analysis.bindings, file, true, spelling)
+    var renamed = false
+    var target = ""
+    var split = false
+    var index = 0
+    while index < length(selected) {
+        let symbol = get(selected, index)
+        let requested = rename_requested(renames, public_symbol_identity(analysis, scopes, symbol))
+        let name = if requested == "" {
+            get(analysis.bindings.symbols, symbol).node.value
+        } else {
+            requested
+        }
+        renamed = renamed || requested != ""
+        split = split || (target != "" && name != target)
+        target = name
+        index = index + 1
+    }
+    if renamed && split {
+        return Result.Err("splitting a public overload import needs explicit resolution")
+    }
+    Result.Ok(if renamed {
+            target
+        } else {
+            ""
+        })
+}
+
+fn public_package_edits(analysis Analysis, scopes List[PackageScope], scope PackageScope,
+    renames List[FunctionRename], edits List[SourceRenameEdit], backend ProofBackend) Result[Bool, Text] {
+    discard checked_rename_generators(analysis, scope.package, backend)?
+    var index = 0
+    while index < length(scope.indexed.entries) {
+        let entry = get(scope.indexed.entries, index)
+        let sites = reference_sites(entry)?
+        let requested = rename_requested(renames, entry.id)
+        let declaration = if requested == "" {
+            -1
+        } else {
+            rename_name(entry, true)?.span.start
+        }
+        let tokens = match lex(entry.body) {
+            Result.Ok(value) => value
+            Result.Err(problem) => {
+                return Result.Err(problem.message)
+            }
+        }
+        let path = join_path(scope.directory, entry.path)
+        var token_index = 0
+        while token_index < length(tokens) {
+            let token = get(tokens, token_index)
+            var name = if token.span.start == declaration {
+                requested
+            } else {
+                ""
+            }
+            if rename_site(sites, token.span.start) {
+                let target = package_target(analysis, scopes, scope.package, path,
+                    entry.start + token.span.start, entry.abstract_body)?
+                let selected = rename_requested(renames, target.id)
+                if selected != "" {
+                    let definition = rename_definition(scopes, target.id)?.entry
+                    let defined = rename_name(definition, true)?.span
+                    if target.start == defined.start && target.end == defined.end {
+                        name = selected
+                    }
+                }
+            }
+            if name != "" && name != token.value {
+                push(edits, SourceRenameEdit {
+                        path = path
+                        span = Span {
+                            start = entry.start + token.span.start
+                            end = entry.start + token.span.end
+                        }
+                        text = name
+                    })
+            }
+            token_index = token_index + 1
+        }
+        index = index + 1
+    }
+    var file = 0
+    while file < length(analysis.bindings.files) {
+        let source = get(analysis.bindings.files, file)
+        if source.package == scope.package {
+            var item = 0
+            while item < length(source.tree.children) {
+                let node = get(source.tree.children, item)
+                if node.kind == NodeKind.Import {
+                    let requested = public_import_name(analysis, scopes, renames, file, node.value)?
+                    if requested != "" && requested != std.loom.project.name(node.value) {
+                        let tokens = match lex(slice(source.text, node.span.start, node.span.end)) {
+                            Result.Ok(value) => value
+                            Result.Err(problem) => {
+                                return Result.Err(problem.message)
+                            }
+                        }
+                        var token_index = length(tokens) - 1
+                        while token_index >= 0 && get(tokens, token_index).kind != Kind.Name {
+                            token_index = token_index - 1
+                        }
+                        if token_index < 0 {
+                            return Result.Err("public import has no member token")
+                        }
+                        let token = get(tokens, token_index)
+                        push(edits, SourceRenameEdit {
+                                path = source.path
+                                span = Span {
+                                    start = node.span.start + token.span.start
+                                    end = node.span.start + token.span.end
+                                }
+                                text = requested
+                            })
+                    }
+                }
+                item = item + 1
+            }
+        }
+        file = file + 1
+    }
+    Result.Ok(true)
+}
+
+record SourceRenameFile {
+    path Text
+    edits List[SourceRenameEdit]
+}
+
+fn renamed_file_edits(files List[SourceRenameFile], path Text) List[SourceRenameEdit] {
+    var index = 0
+    while index < length(files) {
+        let file = get(files, index)
+        if file.path == path {
+            return file.edits
+        }
+        index = index + 1
+    }
+    []
+}
+
+fn public_original_target(target BindingTarget, before List[PackageScope], after List[PackageScope],
+    files List[SourceRenameFile]) Result[BindingTarget, Text] {
+    if target.id == "" {
+        let edits = renamed_file_edits(files, target.path)
+        return Result.Ok(BindingTarget {
+                start = source_original_offset(edits, target.start)?
+                end = source_original_offset(edits, target.end)?
+                ..target
+            })
+    }
+    let original = rename_definition(before, target.id)?
+    let updated = rename_definition(after, target.id)?
+    let edits = renamed_file_edits(files, join_path(updated.directory, updated.entry.path))
+    Result.Ok(BindingTarget {
+            start = source_original_offset(edits, updated.entry.start + target.start)? - original.entry.start
+            end = source_original_offset(edits, updated.entry.start + target.end)? - original.entry.start
+            ..target
+        })
+}
+
+fn compare_public_renamed(before Analysis, after Analysis, revisions List[PackageRevision],
+    updated List[PackageRevision], files List[SourceRenameFile]) Result[Bool, Text] {
+    let original = package_scopes(before.source, revisions)?
+    let current = package_scopes(after.source, updated)?
+    let package = before.bindings.root
+    var index = 0
+    while index < length(original) {
+        let scope = get(original, index)
+        if scope.package == package {
+            var item = 0
+            while item < length(scope.indexed.entries) {
+                let entry = get(scope.indexed.entries, item)
+                if package_entry_active(before, package, entry)? {
+                    let changed = rename_definition(current, entry.id)?
+                    let sites = reference_sites(entry)?
+                    let next = reference_sites(changed.entry)?
+                    if length(sites) != length(next) {
+                        return Result.Err("public rename changed the reference structure")
+                    }
+                    var site = 0
+                    while site < length(sites) {
+                        let expected = package_target(before, original, package,
+                            join_path(scope.directory, entry.path), entry.start + get(sites, site), entry.abstract_body)?
+                        let target = package_target(after, current, package,
+                            join_path(changed.directory, changed.entry.path), changed.entry.start + get(next, site),
+                            changed.entry.abstract_body)?
+                        if !same_target(expected, public_original_target(target, original, current, files)?) {
+                            return Result.Err("public rename changed a checked reference binding")
+                        }
+                        site = site + 1
+                    }
+                }
+                item = item + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn complete_rename_scope(project Project, revisions List[PackageRevision]) Result[Bool, Text] {
+    let scopes = package_scopes(project, revisions)?
+    let owner = get(project.packages, project.root).instance
+    var package = 0
+    while package < length(project.packages) {
+        if get(project.packages, package).instance == owner {
+            var found = false
+            var index = 0
+            while index < length(scopes) {
+                found = found || get(scopes, index).package == package
+                index = index + 1
+            }
+            if !found {
+                return Result.Err("public rename requires every selected-module package, including consumers")
+            }
+        } else {
+            // Dependency snapshots are not editable consumers of this module.
+            // Do not normalize them first and accidentally bless a changed
+            // overload binding in a caller outside the selected authority.
+            let imports = get(project.packages, package).imports
+            var index = 0
+            while index < length(imports) {
+                let target = get(imports, index).target
+                if target < 0 || target >= length(project.packages) {
+                    return Result.Err("public rename has an unknown package dependency")
+                }
+                if get(project.packages, target).instance == owner {
+                    return Result.Err("public rename cannot cover an external module consumer")
+                }
+                index = index + 1
+            }
+        }
+        package = package + 1
+    }
+    Result.Ok(true)
+}
+
+fn normalize_public_package_renames(revisions List[PackageRevision], plans List[PackageRenames],
+    production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
+    discard complete_rename_scope(production, revisions)?
+    discard complete_rename_scope(tests, revisions)?
+    let ordinary = package_project(production, revisions)?
+    let testing = package_project(tests, revisions)?
+    let scopes = package_scopes(testing, revisions)?
+    let renames = new[FunctionRename]()
+    var index = 0
+    while index < length(plans) {
+        let selected = get(plans, index).renames
+        var item = 0
+        while item < length(selected) {
+            push(renames, get(selected, item))
+            item = item + 1
+        }
+        index = index + 1
+    }
+    let edits = new[SourceRenameEdit]()
+    index = 0
+    while index < length(scopes) {
+        let scope = get(scopes, index)
+        let context = Project {
+            root = scope.package
+            ..testing
+        }
+        discard public_package_edits(package_analysis(context, true, backend)?, scopes, scope, renames, edits, backend)?
+        index = index + 1
+    }
+    let files = new[SourceRenameFile]()
+    let output = new[PackageRevision]()
+    index = 0
+    while index < length(revisions) {
+        let selected = get(revisions, index)
+        let rewritten = new[File]()
+        var item = 0
+        while item < length(selected.revision.files) {
+            let file = get(selected.revision.files, item)
+            let path = join_path(selected.directory, file.path)
+            let ordered = source_edits(edits, path)
+            push(files, SourceRenameFile {
+                    path = path
+                    edits = ordered
+                })
+            push(rewritten, File {
+                    path = file.path
+                    text = source_renamed(file.text, ordered)?
+                })
+            item = item + 1
+        }
+        let identities = new[Identity]()
+        item = 0
+        while item < length(selected.revision.identities) {
+            let identity = get(selected.revision.identities, item)
+            let requested = rename_requested(renames, identity.id)
+            push(identities, Identity {
+                    name = if requested == "" {
+                        identity.name
+                    } else {
+                        requested
+                    }
+                    ..identity
+                })
+            item = item + 1
+        }
+        push(output, PackageRevision {
+                directory = selected.directory
+                revision = Revision {
+                    files = rewritten
+                    identities = identities
+                    ..selected.revision
+                }
+            })
+        index = index + 1
+    }
+    let contexts = [ordinary, testing]
+    var pass = 0
+    while pass < 2 {
+        let previous = get(contexts, pass)
+        let changed = package_project(previous, output)?
+        let selected = package_scopes(previous, revisions)?
+        index = 0
+        while index < length(selected) {
+            let root = get(selected, index).package
+            let before = package_analysis(Project {
+                    root = root
+                    ..previous
+                }, pass == 1, backend)?
+            let after = package_analysis(Project {
+                    root = root
+                    ..changed
+                }, pass == 1, backend)?
+            discard compare_public_renamed(before, after, revisions, output, files)?
+            index = index + 1
+        }
+        pass = pass + 1
+    }
+    Result.Ok(output)
+}

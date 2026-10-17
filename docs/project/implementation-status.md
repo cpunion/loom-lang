@@ -304,12 +304,17 @@ not a second performance changelog here.
 ## Semantic changes, deployment and delivery
 
 The [semantic merge trial](../../tools/semantic_change_trial/README.md) supports
-reviewed move-plus-edit, private rename-plus-edit and independent
+reviewed move-plus-edit, function rename-plus-edit and independent
 additions within one package or a fixed-package module, using explicit identities
 and pinned source/test bases.
+Complete module batches can rename public functions across checked imports,
+calls and independent private tests, including whole overload groups. Visibility
+stays fixed. Splitting a public overload import, missing module consumers and
+known external-module consumers require resolution; unknown external consumers
+are not updated and API compatibility is not proved.
 Selected overload renames use the same checked binding normalizer; names alone
 neither identify a declaration nor justify an overload conflict.
-Private rename composition rejects exported macro providers whose generated
+Function rename composition rejects exported macro providers whose generated
 definition-context references cannot be completely compared.
 All merge APIs accept an optional explicit proof capability; the CLI uses the
 shared Z3 adapter for ordinary contract checks, including rename/binding checks
@@ -319,7 +324,7 @@ Checked bindings prevent silent nominal/field drift.
 Generic reference comparison requires checked abstract bodies and agreement
 with observed concrete instances; missing or ambiguous bindings and unselected
 static branches still reject.
-Public rename composition, automatic identities, arbitrary edits and
+Other public declaration renames, automatic identities, arbitrary edits and
 package/import-graph changes remain open.
 
 The [SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md)

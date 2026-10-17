@@ -53,21 +53,24 @@ Failed staging is retained for recovery and never replaces the requested output.
 As with single-package apply, publication assumes a trusted local workspace;
 native rename is neither no-clobber against racing writers nor crash-durable.
 
-Explicit private function renames also compose with independent
+Explicit function renames also compose with independent
 body edits and moves within these packages. Each rename uses stable sidecar
 identity and checked reference-token edits in that complete branch's module
-context, including the package's own tests. A selected overload may change name
+context, including the package's own tests. For private functions, a selected overload may change name
 without renaming its siblings; creating a valid overload set still requires
 every retained call and function reference to keep its checked target.
-Local capture, ambiguous overloads,
-public targets and missing binding evidence require resolution; names
-in other packages are not rewritten. The combined result still passes the
-normal production and per-package test checks.
+Public function renames update checked imports and uses across the complete
+selected module. All selected declarations of one public overload import must
+retain a common resulting name; splitting an import requires resolution.
+Local capture, visibility changes, ambiguous overloads, missing binding evidence
+and known consumers in external module instances require resolution. Unknown
+external consumers are not updated; this is not API-compatibility proof.
+The combined result still passes the normal production and per-package test checks.
 Generic bodies require checked abstract bindings, not guessed type arguments
 or only the observed concrete instances. Those bindings must agree. Every
 reference must still have a unique checked definition;
 unselected static branches and unsupported generic forms require resolution.
-Exported macro providers require explicit resolution for private rename
+Exported macro providers require explicit resolution for function rename
 composition, even without a current invocation in the selected package.
 Source-token checks cannot preserve their hidden definition-context references.
 
@@ -166,7 +169,7 @@ that explicit identity change with an independent move/body edit by normalizing
 declaration and checked reference tokens, then comparing bindings in production
 and test views. Comments and unrelated strings are retained. A local shadow
 that captures a renamed call rejects even if it still type-checks. Conflicting
-renames, overload/name collisions, public API renames and
+renames, overload/name collisions, public API renames in this single-package mode and
 reference forms without complete evidence still need explicit resolution.
 Keep `.loom-ids-stage-*` recovery directories out of source commits.
 `scan DIR` lists current kind/name/file/key locators without writing metadata;

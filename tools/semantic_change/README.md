@@ -38,8 +38,16 @@ Generic bodies require checked abstract bindings as well as agreement with any
 observed concrete instances; every retained reference still needs one checked
 definition. Unselected static branches, unsupported generic forms and missing
 evidence require resolution.
-Public renames and moves across package identities still require explicit resolution.
-Private rename composition also rejects packages exporting a macro generator:
+Public function renames also compose in a complete selected-module batch,
+including checked import members, calls and each package's private tests. Every
+known package in that module must participate; known consumers in other module
+instances require separate resolution. Visibility and the package/dependency
+graph stay fixed. A public overload import can be rewritten when all of its
+selected declarations retain one resulting name; splitting that import still
+requires explicit resolution. Single-package public renames, other public
+declaration kinds and moves across package identities remain unsupported.
+This does not update unknown external consumers or prove API compatibility.
+Function rename composition also rejects packages exporting a macro generator:
 generated Text/AST can bind private helpers in the definition context, outside
 the checked import closure. The shared invocation-signature query identifies
 these providers; ordinary functions returning Text are not treated as macros.

@@ -20,6 +20,10 @@ record RenamedRevisions {
 }
 
 fn rename_name(entry Entry) Result[Token, Text] {
+    rename_name(entry, false)
+}
+
+fn rename_name(entry Entry, public_allowed Bool) Result[Token, Text] {
     let tree = match parse(entry.body) {
         Result.Ok(value) => value
         Result.Err(problem) => {
@@ -27,7 +31,7 @@ fn rename_name(entry Entry) Result[Token, Text] {
         }
     }
     let declaration = get(tree.children, 0)
-    if entry.kind != NodeKind.Function || has(declaration, NodeKind.Public) {
+    if entry.kind != NodeKind.Function || (!public_allowed && has(declaration, NodeKind.Public)) {
         return Result.Err("rename composition requires a private function")
     }
     let tokens = match lex(entry.body) {
@@ -48,6 +52,10 @@ fn rename_name(entry Entry) Result[Token, Text] {
 }
 
 fn function_renames(base Indexed, left Indexed, right Indexed) Result[List[FunctionRename], Text] {
+    function_renames(base, left, right, false)
+}
+
+fn function_renames(base Indexed, left Indexed, right Indexed, public_allowed Bool) Result[List[FunctionRename], Text] {
     let renames = new[FunctionRename]()
     var index = 0
     while index < length(base.entries) {
@@ -61,9 +69,13 @@ fn function_renames(base Indexed, left Indexed, right Indexed) Result[List[Funct
                 if a.name != original.name && b.name != original.name && a.name != b.name {
                     return Result.Err("conflicting declaration renames require explicit resolution")
                 }
-                discard rename_name(original)?
-                discard rename_name(a)?
-                discard rename_name(b)?
+                discard rename_name(original, public_allowed)?
+                discard rename_name(a, public_allowed)?
+                discard rename_name(b, public_allowed)?
+                if public_allowed && (public_function(original)? != public_function(a)? ||
+                    public_function(original)? != public_function(b)?) {
+                    return Result.Err("rename cannot change declaration visibility; explicit resolution required")
+                }
                 let name = if a.name != original.name {
                     a.name
                 } else {
@@ -308,14 +320,11 @@ fn rename_analysis(revision Revision, directory Text, production Project, tests 
     }
 }
 
-fn normalize_rename(revision Revision, renames List[FunctionRename], directory Text, production Project, tests Project,
-    backend ProofBackend) Result[Revision, Text] {
-    let original = indexed(revision)?
-    let before = rename_analysis(revision, directory, production, tests, true, backend)?
+fn checked_rename_generators(analysis Analysis, package Int, backend ProofBackend) Result[Bool, Text] {
     // An exported generator can retain definition-context references in Text
     // or AST output, including calls outside this package's checked closure.
     // Source-token comparison cannot account for those generated bindings.
-    let generators = match macro_generator_candidates(before.bindings, proof_inputs(backend)) {
+    let generators = match macro_generator_candidates(analysis.bindings, proof_inputs(backend)) {
         Result.Ok(value) => value
         Result.Err(problem) => {
             return Result.Err(problem.diagnostic.message)
@@ -323,12 +332,20 @@ fn normalize_rename(revision Revision, renames List[FunctionRename], directory T
     }
     var generator = 0
     while generator < length(generators) {
-        let item = get(before.bindings.symbols, get(generators, generator))
-        if item.public && get(before.bindings.files, item.file).package == before.bindings.root {
+        let item = get(analysis.bindings.symbols, get(generators, generator))
+        if item.public && get(analysis.bindings.files, item.file).package == package {
             return Result.Err("rename cannot account for generated definition-context references; explicit resolution required")
         }
         generator = generator + 1
     }
+    Result.Ok(true)
+}
+
+fn normalize_rename(revision Revision, renames List[FunctionRename], directory Text, production Project, tests Project,
+    backend ProofBackend) Result[Revision, Text] {
+    let original = indexed(revision)?
+    let before = rename_analysis(revision, directory, production, tests, true, backend)?
+    discard checked_rename_generators(before, before.bindings.root, backend)?
     let edits = rename_edits(original, renames, before, directory)?
     let renamed = renamed_revision(original, renames, edits)
     let updated = indexed(renamed)?
