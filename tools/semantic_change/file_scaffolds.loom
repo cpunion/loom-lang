@@ -1,0 +1,137 @@
+import std.list.sorted
+import std.text.byte
+
+// A file skeleton is its declaration-ID order plus all bytes outside those
+// declarations. Absence differs from an intentionally empty source file.
+fn same_file_scaffold(left Indexed, right Indexed, path Text) Bool {
+    let a = file_index(left.revision.files, path)
+    let b = file_index(right.revision.files, path)
+    if a < 0 || b < 0 {
+        return a == b
+    }
+    let original = get(left.revision.files, a)
+    let changed = get(right.revision.files, b)
+    var before = 0
+    var after = 0
+    var ordinal = 0
+    while true {
+        let original_index = entry_in_file(left.entries, path, ordinal)
+        let current = entry_in_file(right.entries, path, ordinal)
+        if original_index < 0 || current < 0 {
+            if original_index != current {
+                return false
+            }
+            break
+        }
+        let a_entry = get(left.entries, original_index)
+        let b_entry = get(right.entries, current)
+        if a_entry.id != b_entry.id ||
+        slice(original.text, before, a_entry.start) != slice(changed.text, after, b_entry.start) {
+            return false
+        }
+        before = a_entry.end
+        after = b_entry.end
+        ordinal = ordinal + 1
+    }
+    slice(original.text, before, length(original.text)) == slice(changed.text, after, length(changed.text))
+}
+
+fn file_carrier(base Indexed, left Indexed, right Indexed, path Text) Result[Indexed, Text] {
+    if same_file_scaffold(left, right, path) || same_file_scaffold(base, right, path) {
+        return Result.Ok(left)
+    }
+    if same_file_scaffold(base, left, path) {
+        return Result.Ok(right)
+    }
+    Result.Err(concat("conflicting file layout or text outside declaration bodies: ", path))
+}
+
+fn source_files(base Indexed, left Indexed, right Indexed) List[File] {
+    let files = new[File]()
+    let branches = [base, left, right]
+    var branch = 0
+    while branch < length(branches) {
+        let sources = get(branches, branch).revision.files
+        var index = 0
+        while index < length(sources) {
+            let file = get(sources, index)
+            if file_index(files, file.path) < 0 {
+                push(files, file)
+            }
+            index = index + 1
+        }
+        branch = branch + 1
+    }
+    files
+}
+
+fn identity_before(left Identity, right Identity) Bool {
+    var index = 0
+    while index < length(left.id) && index < length(right.id) {
+        let a = std.text.byte(left.id, index)
+        let b = std.text.byte(right.id, index)
+        if a != b {
+            return a < b
+        }
+        index = index + 1
+    }
+    length(left.id) < length(right.id)
+}
+
+fn placed_identity(entry Entry, path Text) Identity {
+    Identity {
+        id = entry.id
+        path = path
+        kind = entry.kind
+        name = entry.name
+        key = entry.key
+    }
+}
+
+// Merge declaration placement independently of file presentation. Re-indexing
+// the rendered source against these obligations catches lost, resurrected or
+// duplicated declarations. Retained metadata order stays stable; fresh rows are
+// sorted by ID so swapping branches cannot reorder persistent identity metadata.
+fn joined_identities(base Indexed, left Indexed, right Indexed) List[Identity] {
+    let output = new[Identity]()
+    var index = 0
+    while index < length(base.revision.identities) {
+        let identity = get(base.revision.identities, index)
+        let a = entry_index(left.entries, identity.id)
+        let b = entry_index(right.entries, identity.id)
+        if a >= 0 && b >= 0 {
+            let a_path = get(left.entries, a).path
+            let b_path = get(right.entries, b).path
+            let selected = if a_path == identity.path {
+                b_path
+            } else {
+                a_path
+            }
+            push(output, placed_identity(chosen_entry(base, left, right, identity.id), selected))
+        }
+        index = index + 1
+    }
+    let fresh = new[Identity]()
+    let branches = [left, right]
+    var branch = 0
+    while branch < length(branches) {
+        let entries = get(branches, branch).entries
+        index = 0
+        while index < length(entries) {
+            let entry = get(entries, index)
+            if entry_index(base.entries, entry.id) < 0 &&
+            (branch == 0 || entry_index(left.entries, entry.id) < 0) {
+                push(fresh, placed_identity(entry, entry.path))
+            }
+            index = index + 1
+        }
+        branch = branch + 1
+    }
+    let ordered = sorted(fresh, identity_before)
+    index = 0
+    while index < length(ordered) {
+        push(output, get(ordered, index))
+        index = index + 1
+    }
+    output
+}

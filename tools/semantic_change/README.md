@@ -6,6 +6,16 @@ one package against pinned production/test projects. The
 [CLI trial](../semantic_change_trial/README.md) supplies directory/Git snapshots,
 identity maintenance and reviewed application to a new tree.
 
+File presentation uses a per-file three-way join: equal skeletons combine, and
+an unchanged skeleton accepts the other side. Skeletons retain declaration-ID
+order and exact surrounding bytes, distinguishing an absent file from an empty
+one. Different files can carry different branches, including independent moves
+and additions. Declaration placement is joined separately and the rendered
+source is re-indexed against it, preventing loss, resurrection or duplication.
+Retained identity-row order stays stable; fresh rows have deterministic ID order.
+Competing destinations or incompatible skeleton changes in one file require
+resolution. This does not guess comment attachment or merge inside a declaration.
+
 `merge_packages(base, left, right, production, tests)` accepts lists of
 `PackageRevision { directory, revision }` from one module, with a nonempty baseline.
 Branches may add packages or omit whole packages. New packages
@@ -79,7 +89,7 @@ their identified declarations; calls and contextual function values follow only
 their own selected target. Existing import lines and trailing comments stay in
 place, and additional imports retain the file's line ending. Normalized member
 bindings must agree in production and effective private-test scope. Conflicting
-file-level import scaffolds still require resolution rather than a guessed text
+same-file import scaffolds still require resolution rather than a guessed text
 merge. Type renames refresh affected function
 and impl locators while retaining their explicit IDs and checked member scopes.
 Single-package public renames, member renames and moves across package identities

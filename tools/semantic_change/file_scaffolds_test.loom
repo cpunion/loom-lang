@@ -1,0 +1,169 @@
+fn file_fixture(files List[File]) Revision {
+    package_fixture("sample", "/module", files).revision
+}
+
+fn file_function(path Text, name Text, value Int) File {
+    File {
+        path = path
+        text = concat("fn ", concat(name, concat("() Int {\n    ", concat(to_text(value), "\n}\n"))))
+    }
+}
+
+fn accepted_file_merge(base Revision, left Revision, right Revision) Revision {
+    match merge(base, left, right) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            base
+        }
+    }
+}
+
+fn same_file_result(left Revision, right Revision) Bool {
+    if length(left.files) != length(right.files) || length(left.identities) != length(right.identities) {
+        return false
+    }
+    var index = 0
+    while index < length(left.files) {
+        let file = get(left.files, index)
+        let other = file_index(right.files, file.path)
+        if other < 0 || get(right.files, other).text != file.text {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(left.identities) {
+        let a = get(left.identities, index)
+        let b = get(right.identities, index)
+        if a.id != b.id || a.path != b.path || a.kind != b.kind || a.name != b.name || a.key != b.key {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+test fn independent_moves_and_crossed_body_edits_keep_one_destination_per_identity() {
+    let alpha = file_function("alpha.loom", "alpha", 1)
+    let beta = file_function("beta.loom", "beta", 2)
+    let caller = File {
+        path = "entry.loom"
+        text = """
+            fn entry() Int {
+                alpha() + beta()
+            }
+            """
+    }
+    let base = file_fixture([alpha, beta, caller])
+    let left = file_fixture([file_function("alpha_moved.loom", "alpha", 1),
+            file_function("beta.loom", "beta", 20), caller])
+    let right = file_fixture([file_function("alpha.loom", "alpha", 10),
+            file_function("beta_moved.loom", "beta", 2), caller])
+    let merged = accepted_file_merge(base, left, right)
+    assert same_file_result(merged, accepted_file_merge(base, right, left))
+    assert file_index(merged.files, "alpha.loom") < 0 && file_index(merged.files, "beta.loom") < 0
+    assert get(merged.files, file_index(merged.files, "alpha_moved.loom")).text == file_function("", "alpha", 10).text
+    assert get(merged.files, file_index(merged.files, "beta_moved.loom")).text == file_function("", "beta", 20).text
+    assert length(merged.identities) == 3
+}
+
+test fn independent_file_trivia_and_new_files_merge_without_reformatting_or_metadata_order_drift() {
+    let a = file_function("a.loom", "alpha", 1)
+    let b = file_function("b.loom", "beta", 2)
+    let base = file_fixture([a, b])
+    let left = file_fixture([File {
+                text = concat("// left file note\n", a.text),
+                ..a
+            }, b,
+            file_function("z_new.loom", "extra", 3)])
+    let right = file_fixture([a, File {
+                text = concat("// right file note\r\n", b.text),
+                ..b
+            },
+            file_function("c_new.loom", "another", 4)])
+    let merged = accepted_file_merge(base, left, right)
+    assert same_file_result(merged, accepted_file_merge(base, right, left))
+    assert get(merged.files, 0).text == get(left.files, 0).text
+    assert get(merged.files, 1).text == get(right.files, 1).text
+    assert length(merged.identities) == 4
+    assert get(merged.identities, 0).id == get(base.identities, 0).id
+    assert get(merged.identities, 1).id == get(base.identities, 1).id
+}
+
+test fn common_additions_deletions_and_contract_changes_are_not_cross_side_conflicts() {
+    let a = file_function("a.loom", "alpha", 1)
+    let b = file_function("b.loom", "beta", 2)
+    let common = File {
+        path = "common.loom"
+        text = """
+            fn shared() Int ensures result > 0 {
+                7
+            }
+            """
+    }
+    let base = file_fixture([a, b])
+    let left = file_fixture([b, common])
+    let right = file_fixture([file_function("b.loom", "beta", 9), common])
+    let merged = accepted_file_merge(base, left, right)
+    assert same_file_result(merged, accepted_file_merge(base, right, left))
+    assert file_index(merged.files, "a.loom") < 0 && length(merged.identities) == 2
+    let base_package = PackageRevision {
+        directory = "/module"
+        revision = base
+    }
+    assert match merge_packages([base_package], [PackageRevision {
+                revision = left,
+                ..base_package
+            }],
+        [PackageRevision {
+                revision = right,
+                ..base_package
+            }], independent_context([base_package], false),
+        independent_context([base_package], true)) {
+        Result.Ok(value) => same_file_result(get(value, 0).revision, merged)
+        Result.Err(message) => {
+            discard write_error(message)
+            false
+        }
+    }
+    let strengthened = File {
+        path = "b.loom"
+        text = """
+            fn beta() Int ensures result > 0 {
+                2
+            }
+            """
+    }
+    assert same_file_result(accepted_file_merge(base, file_fixture([a, strengthened]),
+            file_fixture([file_function("a.loom", "alpha", 3), strengthened])),
+        file_fixture([file_function("a.loom", "alpha", 3), strengthened]))
+}
+
+test fn conflicting_destinations_common_additions_and_same_file_scaffolds_require_resolution() {
+    let a = file_function("a.loom", "alpha", 1)
+    let base = file_fixture([a])
+    let left = file_fixture([file_function("left.loom", "alpha", 1)])
+    let right = file_fixture([file_function("right.loom", "alpha", 1)])
+    assert match merge(base, left, right) {
+        Result.Err(message) => contains(message, "concurrent declaration destinations")
+        Result.Ok(_) => false
+    }
+    assert match merge(base, file_fixture([a, file_function("new.loom", "fresh", 2)]),
+        file_fixture([a, file_function("new.loom", "fresh", 3)])) {
+        Result.Err(message) => contains(message, "concurrent added declaration differs")
+        Result.Ok(_) => false
+    }
+    assert match merge(base, file_fixture([File {
+                    text = concat("// left\n", a.text),
+                    ..a
+                }]),
+        file_fixture([File {
+                    text = concat("// right\n", a.text),
+                    ..a
+                }])) {
+        Result.Err(message) => contains(message, "outside declaration bodies")
+        Result.Ok(_) => false
+    }
+}

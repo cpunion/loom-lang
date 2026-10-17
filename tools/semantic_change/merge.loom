@@ -445,37 +445,6 @@ fn compare_retained(source Analysis, source_revision Indexed, merged Analysis, m
     Result.Ok(true)
 }
 
-fn move_plus_edit(base Indexed, left Indexed, right Indexed) Bool {
-    var moved = false
-    var edited = false
-    var index = 0
-    while index < length(base.entries) {
-        let original = get(base.entries, index)
-        let left_index = entry_index(left.entries, original.id)
-        let right_index = entry_index(right.entries, original.id)
-        if left_index >= 0 {
-            let value = get(left.entries, left_index)
-            if value.path != original.path {
-                moved = true
-            }
-            if value.body != original.body {
-                edited = true
-            }
-        }
-        if right_index >= 0 {
-            let value = get(right.entries, right_index)
-            if value.path != original.path {
-                moved = true
-            }
-            if value.body != original.body {
-                edited = true
-            }
-        }
-        index = index + 1
-    }
-    moved && edited
-}
-
 fn entry_in_file(entries List[Entry], path Text, ordinal Int) Int {
     var found = 0
     var index = 0
@@ -517,49 +486,6 @@ fn same_layout(base Indexed, branch Indexed) Bool {
             ordinal = ordinal + 1
         }
         index = index + 1
-    }
-    true
-}
-
-// Compare all bytes outside declaration bodies, including comments and imports.
-// A merge keeps one-sided or identical scaffolds, never guesses between two
-// different concurrent file-level edits.
-fn same_scaffold(base Indexed, branch Indexed) Bool {
-    var file_index_value = 0
-    while file_index_value < length(base.revision.files) {
-        let original = get(base.revision.files, file_index_value)
-        let changed_index = file_index(branch.revision.files, original.path)
-        if changed_index < 0 {
-            return false
-        }
-        let changed = get(branch.revision.files, changed_index)
-        var original_end = 0
-        var changed_end = 0
-        var ordinal = 0
-        while true {
-            let original_index = entry_in_file(base.entries, original.path, ordinal)
-            let changed_entry_index = entry_in_file(branch.entries, original.path, ordinal)
-            if original_index < 0 || changed_entry_index < 0 {
-                if original_index != changed_entry_index {
-                    return false
-                }
-                break
-            }
-            let original_entry = get(base.entries, original_index)
-            let changed_entry = get(branch.entries, changed_entry_index)
-            if slice(original.text, original_end, original_entry.start) !=
-            slice(changed.text, changed_end, changed_entry.start) {
-                return false
-            }
-            original_end = original_entry.end
-            changed_end = changed_entry.end
-            ordinal = ordinal + 1
-        }
-        if slice(original.text, original_end, length(original.text)) !=
-        slice(changed.text, changed_end, length(changed.text)) {
-            return false
-        }
-        file_index_value = file_index_value + 1
     }
     true
 }
@@ -614,14 +540,15 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
         let original = get(base.entries, index)
         let left_index = entry_index(left.entries, original.id)
         let right_index = entry_index(right.entries, original.id)
+        if left_index < 0 && right_index < 0 {
+            index = index + 1
+            continue
+        }
         if left_index < 0 {
             left_deleted = true
         }
         if right_index < 0 {
             right_deleted = true
-        }
-        if left_index < 0 && right_index < 0 {
-            return Result.Err(concat("both sides deleted declaration ", original.id))
         }
         if left_index < 0 || right_index < 0 {
             let remaining = if left_index < 0 {
@@ -636,21 +563,25 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
         } else {
             let edited_left = get(left.entries, left_index)
             let edited_right = get(right.entries, right_index)
-            if edited_left.body != original.body {
+            if edited_left.body != original.body && edited_left.body != edited_right.body {
                 left_edited = true
             }
-            if edited_right.body != original.body {
+            if edited_right.body != original.body && edited_right.body != edited_left.body {
                 right_edited = true
             }
-            if edited_left.header != original.header {
+            if edited_left.header != original.header && edited_left.header != edited_right.header {
                 left_header_changed = true
             }
-            if edited_right.header != original.header {
+            if edited_right.header != original.header && edited_right.header != edited_left.header {
                 right_header_changed = true
             }
             if ends_with(edited_left.path, "_test.loom") != ends_with(original.path, "_test.loom") ||
             ends_with(edited_right.path, "_test.loom") != ends_with(original.path, "_test.loom") {
                 return Result.Err(concat("declaration crossed production/test boundary: ", original.id))
+            }
+            if edited_left.path != original.path && edited_right.path != original.path &&
+            edited_left.path != edited_right.path {
+                return Result.Err(concat("concurrent declaration destinations: ", original.id))
             }
             if edited_left.kind != original.kind || edited_left.name != original.name ||
             edited_right.kind != original.kind || edited_right.name != original.name {
@@ -668,54 +599,41 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
     if (left_deleted && right_edited) || (right_deleted && left_edited) {
         return Result.Err("cross-side deletion and declaration edit may rebind references; explicit resolution required")
     }
-    var left_added = false
-    index = 0
-    while index < length(left.entries) {
-        let added = get(left.entries, index)
-        if entry_index(base.entries, added.id) < 0 {
-            left_added = true
-            if reuses_name(base, added) {
-                return Result.Err("new declaration reuses an existing name; binding changes need explicit review")
-            }
-            if retained_name_token(right.entries, added.name)? {
-                return Result.Err("new declaration collides with a name token retained on the other side; binding review required")
-            }
-        }
-        index = index + 1
-    }
-    var right_added = false
-    index = 0
-    while index < length(right.entries) {
-        let added = get(right.entries, index)
-        if entry_index(base.entries, added.id) < 0 {
-            right_added = true
-            if reuses_name(base, added) {
-                return Result.Err("new declaration reuses an existing name; binding changes need explicit review")
-            }
-            if retained_name_token(left.entries, added.name)? {
-                return Result.Err("new declaration collides with a name token retained on the other side; binding review required")
-            }
-        }
-        index = index + 1
-    }
-    if left_added && right_added {
-        return Result.Err("concurrent added declarations need explicit resolution")
-    }
+    let left_added = validate_added(base, left, right)?
+    let right_added = validate_added(base, right, left)?
     if (left_header_changed && (right_edited || right_added)) ||
     (right_header_changed && (left_edited || left_added)) {
         return Result.Err("cross-side signature or contract change may rebind references; explicit resolution required")
     }
-    if left_added || right_added {
-        index = 0
-        while index < length(base.entries) {
-            let id = get(base.entries, index).id
-            if entry_index(left.entries, id) < 0 || entry_index(right.entries, id) < 0 {
-                return Result.Err("addition with deletion needs explicit resolution")
-            }
-            index = index + 1
-        }
-    }
     Result.Ok(true)
+}
+
+fn validate_added(base Indexed, branch Indexed, other Indexed) Result[Bool, Text] {
+    var added = false
+    var index = 0
+    while index < length(branch.entries) {
+        let entry = get(branch.entries, index)
+        if entry_index(base.entries, entry.id) < 0 {
+            let peer = entry_index(other.entries, entry.id)
+            if peer >= 0 {
+                let common = get(other.entries, peer)
+                if common.path != entry.path || common.body != entry.body || common.kind != entry.kind ||
+                common.name != entry.name || common.key != entry.key {
+                    return Result.Err(concat("concurrent added declaration differs: ", entry.id))
+                }
+            } else {
+                added = true
+                if reuses_name(base, entry) {
+                    return Result.Err("new declaration reuses an existing name; binding changes need explicit review")
+                }
+                if retained_name_token(other.entries, entry.name)? {
+                    return Result.Err("new declaration collides with a name token retained on the other side; binding review required")
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(added)
 }
 
 fn chosen_entry(base Indexed, left Indexed, right Indexed, id Text) Entry {
@@ -1093,11 +1011,9 @@ fn checked_context(base Revision, merged Revision, production Project, tests Pro
     Result.Ok(merged)
 }
 
-// One side may rearrange/remove declarations and files. The other side may
-// independently edit declaration bodies; its surrounding text must be intact.
-// The carrier side's complete file skeleton (including comments) is retained.
-// One carrier may add fresh, uniquely named declarations. Concurrent
-// structural changes still need explicit resolution.
+// Select each file skeleton by three-way equality, then fill its declaration
+// slots by stable identity. Layout obligations are checked independently, so
+// separate files can carry different branches without losing or duplicating IDs.
 fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text] {
     let original = indexed(base)?
     let edited_left = indexed(left)?
@@ -1106,32 +1022,18 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
         return Result.Err("semantic merge cannot cross package identities")
     }
     discard validate_changes(original, edited_left, edited_right)?
-    let left_layout = !same_layout(original, edited_left)
-    let right_layout = !same_layout(original, edited_right)
-    if left_layout && right_layout {
-        return Result.Err("concurrent file or declaration layout changes need explicit resolution")
-    }
-    let right_scaffold = !same_scaffold(original, edited_right)
-    let left_scaffold = !same_scaffold(original, edited_left)
-    let right_carrier = right_layout || (!left_layout && right_scaffold && !left_scaffold)
-    let carrier = if right_carrier {
-        edited_right
-    } else {
-        edited_left
-    }
-    let other = if right_carrier {
-        edited_left
-    } else {
-        edited_right
-    }
-    if !same_scaffold(original, other) && !same_scaffold(carrier, other) {
-        return Result.Err("non-layout side changed text outside declaration bodies")
-    }
     let files = new[File]()
-    let identities = new[Identity]()
+    let sources = source_files(original, edited_left, edited_right)
     var index = 0
-    while index < length(carrier.revision.files) {
-        let file = get(carrier.revision.files, index)
+    while index < length(sources) {
+        let path = get(sources, index).path
+        let carrier = file_carrier(original, edited_left, edited_right, path)?
+        let selected = file_index(carrier.revision.files, path)
+        if selected < 0 {
+            index = index + 1
+            continue
+        }
+        let file = get(carrier.revision.files, selected)
         var output = ""
         var offset = 0
         var ordinal = 0
@@ -1153,24 +1055,13 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
             })
         index = index + 1
     }
-    index = 0
-    while index < length(carrier.revision.identities) {
-        let identity = get(carrier.revision.identities, index)
-        let selected = chosen_entry(original, edited_left, edited_right, identity.id)
-        push(identities, Identity {
-                id = identity.id
-                path = identity.path
-                kind = identity.kind
-                name = identity.name
-                key = selected.key
-            })
-        index = index + 1
+    let merged = Revision {
+        package_name = base.package_name
+        files = files
+        identities = joined_identities(original, edited_left, edited_right)
     }
-    Result.Ok(Revision {
-            package_name = carrier.revision.package_name
-            files = files
-            identities = identities
-        })
+    discard indexed(merged)?
+    Result.Ok(merged)
 }
 
 pub fn merge(base Revision, left Revision, right Revision) Result[Revision, Text] {
@@ -1191,7 +1082,8 @@ fn merge_same_names(base Revision, left Revision, right Revision, backend ProofB
         return Result.Err("import-bearing merges require an explicit pinned project context")
     }
     discard checked(merged, backend)?
-    if move_plus_edit(indexed(base)?, indexed(left)?, indexed(right)?) {
+    let original = indexed(base)?
+    if !same_layout(original, indexed(left)?) || !same_layout(original, indexed(right)?) {
         let project = project_of(base)?
         discard checked_bindings(left, right, merged, "", project, project, backend)?
     }
@@ -1229,7 +1121,7 @@ fn merge_same_names_with_context(base Revision, left Revision, right Revision,
         return Result.Err("merged imports differ from the pinned project context")
     }
     discard checked_context(base, merged, production, tests, directory, backend)?
-    if move_plus_edit(original, indexed(left)?, indexed(right)?) {
+    if !same_layout(original, indexed(left)?) || !same_layout(original, indexed(right)?) {
         discard checked_bindings(left, right, merged, directory, production, tests, backend)?
     }
     Result.Ok(merged)

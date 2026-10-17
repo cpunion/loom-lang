@@ -44,7 +44,11 @@ fn identities(amount_path Text, source Text, app Text) List[Identity] {
             path = amount_path
             kind = NodeKind.Function
             name = "amount"
-            key = key_in(if amount_path == "app.loom" { app } else { source }, "amount")
+            key = key_in(if amount_path == "app.loom" {
+                    app
+                } else {
+                    source
+                }, "amount")
         })
     push(bindings, Identity {
             id = "entry-id"
@@ -328,7 +332,7 @@ test fn added_name_in_comment_or_string_does_not_block_independent_edit() {
     }
 }
 
-test fn dual_additions_and_binding_sensitive_names_need_resolution() {
+test fn disjoint_additions_combine_but_binding_sensitive_names_need_resolution() {
     let base = baseline()
     let left = revision("value.loom", "fn amount() Int { 1 }\nfn extra() Int { 3 }\n",
         "fn entry() Int { amount() }\n")
@@ -349,11 +353,14 @@ test fn dual_additions_and_binding_sensitive_names_need_resolution() {
             key = "-"
         })
     match merge(base, left, right) {
-        Result.Ok(_) => {
-            assert false
+        Result.Ok(merged) => {
+            assert length(merged.identities) == 4
+            assert contains(get(merged.files, 0).text, "fn extra()")
+            assert contains(get(merged.files, 1).text, "fn another()")
         }
         Result.Err(message) => {
-            assert contains(message, "concurrent added declarations")
+            discard write_error(message)
+            assert false
         }
     }
     let reused = revision("value.loom", "fn amount() Int { 1 }\n",

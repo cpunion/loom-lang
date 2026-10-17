@@ -331,6 +331,10 @@ The [semantic merge trial](../../tools/semantic_change_trial/README.md) supports
 reviewed move-plus-edit, function rename-plus-edit and independent
 additions within one package or a bounded module, using explicit identities
 and pinned source/test bases.
+File skeletons join independently, allowing different files to carry each branch's
+layout and trivia edits. Stable-ID placement is checked separately and rendered
+source is re-indexed before ordinary checking; competing destinations, ambiguous
+same-file skeleton changes and incomplete binding evidence still require resolution.
 Complete module batches can rename public functions, records, enums, refined
 types and concepts across checked imports,
 calls and independent private tests, including partial overload-group renames
