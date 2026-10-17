@@ -52,6 +52,9 @@ fn static_first_expansions() {
     assert static_tuple_use_shared(static_tuple_shared()...) == 42
     assert static_tuple_use_record(static_tuple_record()...) == 42
     assert static_tuple_apply(static_tuple_callback()...) == 42
+    assert 1.mix(static_tuple_values()...) == 43
+    let receiver dyn EmptyStaticAdd = 1
+    assert receiver.mix(static_tuple_values()...) == 43
     let log = [0]
     assert empty_static_first(empty_static_gap(log, 1)..., static_tuple_values()...,
         empty_static_gap(log, 2)...) == 42
@@ -71,4 +74,7 @@ async fn static_first_after_suspend() {
     assert static_tuple_first(empty_static_async_gap(log, 1).await...,
         static_tuple_values()..., empty_static_async_gap(log, 2).await...) == 42
     assert log[0] == 12
+    assert static_tuple_use_shared(static_tuple_shared()...,
+        empty_static_async_gap(log, 3).await...) == 42
+    assert log[0] == 123
 }
