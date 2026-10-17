@@ -1,0 +1,83 @@
+import std.fs.create_dir
+import std.fs.remove_file
+import std.fs.remove_empty_dir
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.bytes.push
+import std.bytes.get
+
+fn retain_chunk(chunks List[Bytes], chunk Bytes) List[Bytes] {
+    std.list.push(chunks, chunk)
+    chunks
+}
+
+fn count_chunk(total Int, chunk Bytes) Int {
+    total + length(chunk)
+}
+
+test fn chunk_folds_preserve_binary_buffers_and_handle_empty_files() {
+    let directory = "loom-file-fold-test.tmp"
+    assert match create_dir(directory) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let path = "loom-file-fold-test.tmp/input"
+    defer {
+        discard remove_file(path)
+        discard remove_empty_dir(directory)
+    }
+    let input = new()
+    var index = 0
+    while index < 17000 {
+        std.bytes.push(input, index % 256)
+        index = index + 1
+    }
+    assert match write_bytes(path, input) {
+        Result.Ok(count) => count == length(input)
+        Result.Err(_) => false
+    }
+    let chunks = match fold_chunks(path, 7, std.list.new[Bytes](), retain_chunk) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    var position = 0
+    index = 0
+    while index < std.list.length(chunks) {
+        let chunk = std.list.get(chunks, index)
+        assert length(chunk) > 0 && length(chunk) <= 7
+        var offset = 0
+        while offset < length(chunk) {
+            assert std.bytes.get(chunk, offset) == std.bytes.get(input, position)
+            position = position + 1
+            offset = offset + 1
+        }
+        index = index + 1
+    }
+    assert position == length(input)
+    assert match fold_chunks(path, 0, count_chunk) {
+        Result.Ok(count) => count == 17000
+        Result.Err(_) => false
+    }
+    assert match write_bytes(path, new()) {
+        Result.Ok(count) => count == 0
+        Result.Err(_) => false
+    }
+    assert match fold_chunks(path, 1, 42, count_chunk) {
+        Result.Ok(count) => count == 42
+        Result.Err(_) => false
+    }
+}
+
+test fn chunk_fold_open_errors_do_not_call_the_consumer() {
+    let observed = std.list.new[Bytes]()
+    assert match fold_chunks("\0invalid", observed, retain_chunk) {
+        Result.Err(error) => error == FileError.Open
+        Result.Ok(_) => false
+    }
+    assert std.list.length(observed) == 0
+}

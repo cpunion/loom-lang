@@ -406,11 +406,14 @@ target/loom build compiler/examples/data --frontend-cache target/frontend-cache 
 Every invocation reloads and parses the selected package closure and validates
 its manifests, imports and locked dependency snapshots. A key covers the invoked
 compiler executable's actual bytes, source paths/contents/membership, module
-instances, import edges, standard-library trust and command mode. Production
-build/run/emit-checked share an artifact; checking and isolated tests have separate
-entries. Manifest edits that leave this validated semantic input unchanged need
-not invalidate reuse. Source moves, changed dependencies, and new selected files
-do invalidate it. Omitted dependency/test files do not become build inputs.
+instances, import edges, standard-library trust and command mode.
+The executable digest is computed incrementally from bounded file chunks, not
+from a whole executable buffered in the managed heap.
+Production build/run/emit-checked share an artifact; checking and isolated tests
+have separate entries. Manifest edits that leave this validated semantic input
+unchanged need not invalidate reuse. Source moves, changed dependencies, and new
+selected files do invalidate it. Omitted dependency/test files do not become
+build inputs.
 
 A whole-closure hit skips binding, type/effect/contract checking, compile-time
 evaluation and lowering. After an edit, a separate last-successful definition
@@ -671,6 +674,11 @@ timings; local variables remain conservatively rooted for the function.
   error policy, partial-write loops, and explicit file closure are ordinary Loom
   source. `file.write_text` creates or truncates a file; it is not an atomic or
   transactional write. `io.write_text` writes stdout without closing it.
+  `file.fold_chunks(path, initial, combine)` folds fresh nonempty binary chunks
+  synchronously, using at most 8192 bytes per chunk. Its four-argument form
+  `(path, limit, initial, combine)` selects a positive bound. Short reads continue
+  until EOF; the file closes on normal return, I/O errors and callback faults.
+  A callback that retains chunks can still retain the entire file.
 - Source UTF-8 scalar helpers, shared byte buffers, integer rendering, Unicode
   property wrappers, stderr output, process arguments/exit, and direct child
   process invocation without a shell, with optional stdin input. Filesystem
