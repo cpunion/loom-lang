@@ -39,6 +39,32 @@ test fn reference_obligations_include_bounds_but_not_lexical_type_labels() {
     }
 }
 
+test fn reference_obligations_keep_concept_bounds_distinct_from_type_binders() {
+    let source = """
+        concept Marker {
+        }
+        concept Other {
+        }
+        fn shadow[Marker Other, T Marker](value T) T {
+            value
+        }
+        """
+    let obligations = source_obligations(source)
+    assert length(obligations.unknown) == 0
+    assert length(obligations.offsets) == 3
+    let bound = query_offset(source, "Marker](value")
+    var found = false
+    var index = 0
+    while index < length(obligations.offsets) {
+        found = found || get(obligations.offsets, index) == bound
+        index = index + 1
+    }
+    assert found
+    let analysis = accepted(input(source))
+    let declared = query_offset(source, "Marker {\n")
+    only_definition(inspection(analysis, source, "Marker](value"), declared, declared + 6)
+}
+
 test fn reference_obligations_cover_cleanup_and_keep_unknown_ranges() {
     let source = """
         fn work(value Resource) Int {

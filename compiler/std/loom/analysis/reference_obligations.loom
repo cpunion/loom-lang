@@ -77,14 +77,20 @@ fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited Lis
                 push(output.unknown, parameter.span)
             } else {
                 // A parameter's bounds are uses even though its label is not.
-                reference_children(parameter, tokens, parameters, output)
+                var bound = 0
+                while bound < length(parameter.children) {
+                    reference_nodes(get(parameter.children, bound), NodeKind.Bounds, tokens, parameters, output)
+                    bound = bound + 1
+                }
             }
             index = index + 1
         }
         return
     }
-    let named_type = kind == NodeKind.Type && !builtin_type_name(node.value) &&
-    node.value != "type" && !reference_bound(parameters, node.value)
+    // Bounds resolve concepts in their own namespace, even if a type binder
+    // has the same spelling. Ordinary type uses still resolve lexical binders.
+    let named_type = kind == NodeKind.Type && (parent == NodeKind.Bounds ||
+        (!builtin_type_name(node.value) && node.value != "type" && !reference_bound(parameters, node.value)))
     let field_use = kind == NodeKind.Field && parent == NodeKind.Construct
     if named_type || field_use || kind == NodeKind.Name || kind == NodeKind.Call ||
     kind == NodeKind.Construct || kind == NodeKind.Assign || kind == NodeKind.Select || kind == NodeKind.MethodCall {
