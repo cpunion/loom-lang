@@ -347,9 +347,11 @@ All merge APIs accept an optional explicit proof capability; the CLI uses the
 shared Z3 adapter for ordinary contract checks, including rename/binding checks
 and each package's private tests. Defaults stay I/O-free; unknown proofs reject.
 Ambiguities can persist as source-bound drafts; compilation ignores that metadata.
-Git-object package merges accept an explicit exact-baseline project context for
-imports, binding resolved commits and the offline dependency closure into review.
-They do not load the whole module context from Git or change its working tree.
+Git-object package and module merges accept an explicit exact-baseline project
+context, binding resolved commits and the offline dependency closure into review.
+Module input includes package sidecars and binary assets, with the same merge
+policy and publication checks as directory input. Context loading wholly from
+Git remains open; these operations do not change its working tree, index or refs.
 Checked bindings prevent silent nominal/field drift.
 Anonymous impls now participate through explicit owner IDs and header locators.
 Method bodies are separate from interface headers; member positions normalize

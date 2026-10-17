@@ -1,0 +1,265 @@
+import std.list.set
+
+record GitEntry {
+    relative Text
+    object Text
+    regular Bool
+}
+
+record GitTree {
+    commit Text
+    entries List[GitEntry]
+}
+
+record GitPackageFiles {
+    relative Text
+    files List[File]
+    metadata Text
+}
+
+// One tree listing serves both package and module inputs. Blobs are read by
+// object ID, so moving a ref cannot mix sources from different commits.
+fn git_tree(executable Text, repository Text, directory Text, revision Text) Result[GitTree, Text] {
+    if directory == "" || starts_with(directory, "/") || contains(directory, "..") ||
+    contains(directory, "\\") || ends_with(directory, "/") {
+        return Result.Err("Git snapshot path must be a relative directory")
+    }
+    let commit = git_commit(executable, repository, revision)?
+    let records = split(git(executable, repository, ["ls-tree", "-r", "-z", commit, "--", directory])?, "\0")
+    let prefix = if directory == "." {
+        ""
+    } else {
+        concat(directory, "/")
+    }
+    let entries = new[GitEntry]()
+    var index = 0
+    while index < length(records) {
+        let line = get(records, index)
+        if line != "" {
+            let separator = find(line, "\t")
+            if separator < 0 {
+                return Result.Err("invalid Git tree entry")
+            }
+            let fields = split(std.text.slice(line, 0, separator), " ")
+            let full = std.text.slice(line, separator + 1, std.text.length(line))
+            if length(fields) != 3 || get(fields, 2) == "" {
+                return Result.Err("invalid Git tree metadata")
+            }
+            if starts_with(full, prefix) {
+                push(entries, GitEntry {
+                        relative = std.text.slice(full, std.text.length(prefix), std.text.length(full))
+                        object = get(fields, 2)
+                        regular = (get(fields, 0) == "100644" || get(fields, 0) == "100755") && get(fields, 1) == "blob"
+                    })
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(GitTree {
+            commit = commit
+            entries = entries
+        })
+}
+
+fn git_loaded(files List[File], metadata Text, commit Text) Result[Loaded, Text] {
+    if metadata == "" {
+        return Result.Err("Git revision has no .loom-ids in the package directory")
+    }
+    let parsed = header(metadata, ".loom-ids")?
+    if parsed.draft != "" {
+        return Result.Err("Git snapshot contains an unresolved identity draft")
+    }
+    Result.Ok(Loaded {
+            revision = Revision {
+                package_name = parsed.package_name
+                files = files
+                identities = parsed.identities
+            }
+            sidecar = metadata
+            commit = commit
+            next = parsed.next
+        })
+}
+
+fn selected_git_module_path(relative Text) Result[Bool, Text] {
+    let parts = split(relative, "/")
+    var index = 0
+    while index < length(parts) {
+        let part = get(parts, index)
+        if part == "" || part == "." || part == ".." || contains(part, "\\") ||
+        contains(part, ":") || contains(part, "\n") || contains(part, "\r") || contains(part, "\0") {
+            return Result.Err("Git module snapshot contains an unsafe path component")
+        }
+        if part == ".git" || (index + 1 < length(parts) &&
+            (part == "target" || part == "node_modules" || starts_with(part, ".loom-ids-stage-"))) {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn git_package_files(groups List[GitPackageFiles], relative Text) Int {
+    var index = 0
+    while index < length(groups) {
+        if get(groups, index).relative == relative {
+            return index
+        }
+        index = index + 1
+    }
+    push(groups, GitPackageFiles {
+            relative = relative
+            files = new[File]()
+            metadata = ""
+        })
+    length(groups) - 1
+}
+
+fn read_git_module(executable Text, repository Text, directory Text, revision Text,
+    context_directory Text) Result[ModuleSnapshot, Text] {
+    let tree = git_tree(executable, repository, directory, revision)?
+    let groups = new[GitPackageFiles]()
+    let assets = new[Asset]()
+    var index = 0
+    while index < length(tree.entries) {
+        let entry = get(tree.entries, index)
+        if selected_git_module_path(entry.relative)? {
+            if !entry.regular {
+                return Result.Err(concat("Git module entry is not a regular blob: ", entry.relative))
+            }
+            let parts = split(entry.relative, "/")
+            let name = get(parts, length(parts) - 1)
+            let relative = if length(parts) == 1 {
+                ""
+            } else {
+                std.text.slice(entry.relative, 0, std.text.length(entry.relative) - std.text.length(name) - 1)
+            }
+            if name == "loom.toml" && relative != "" {
+                return Result.Err("nested modules require a separate semantic merge")
+            }
+            let bytes = git_bytes(executable, repository, ["cat-file", "blob", entry.object])?
+            if name == ".loom-ids" || ends_with(name, ".loom") {
+                let text = match decode_utf8(bytes) {
+                    Result.Ok(value) => value
+                    Result.Err(_) => {
+                        return Result.Err("Git source or identity sidecar is not UTF-8")
+                    }
+                }
+                let group = git_package_files(groups, relative)
+                let current = get(groups, group)
+                if name == ".loom-ids" {
+                    set(groups, group, GitPackageFiles {
+                            metadata = text
+                            ..current
+                        })
+                } else {
+                    push(current.files, File {
+                            path = name
+                            text = text
+                        })
+                }
+            } else {
+                push(assets, Asset {
+                        relative = entry.relative
+                        bytes = bytes
+                    })
+            }
+        }
+        index = index + 1
+    }
+    if asset_index(assets, "loom.toml") < 0 || length(groups) == 0 {
+        return Result.Err("Git module snapshot needs loom.toml and Loom packages")
+    }
+    let packages = new[ModulePackage]()
+    index = 0
+    while index < length(groups) {
+        let group = get(groups, index)
+        if length(group.files) == 0 {
+            return Result.Err("identity sidecar has no package source files")
+        }
+        push(packages, ModulePackage {
+                relative = group.relative
+                loaded = git_loaded(group.files, group.metadata, tree.commit)?
+            })
+        index = index + 1
+    }
+    Result.Ok(ModuleSnapshot {
+            directory = context_directory
+            packages = packages
+            assets = assets
+        })
+}
+
+fn git_module_context(base ModuleSnapshot, standard Text) Result[Context, Text] {
+    let actual = read_module(base.directory)?
+    if length(actual.packages) != length(base.packages) || length(actual.assets) != length(base.assets) {
+        return Result.Err("module context must contain the exact Git baseline")
+    }
+    var index = 0
+    while index < length(base.assets) {
+        let entry = get(base.assets, index)
+        if !equal_asset(base.assets, index, actual.assets, asset_index(actual.assets, entry.relative)) {
+            return Result.Err("module context assets differ from the Git baseline")
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(base.packages) {
+        let package = get(base.packages, index)
+        let found = module_package(actual, package.relative)?
+        let before = std.bytes.new()
+        let after = std.bytes.new()
+        frame_files(before, package.loaded.revision.files)
+        frame_files(after, found.revision.files)
+        if package.loaded.sidecar != found.sidecar || hex(before) != hex(after) {
+            return Result.Err("module context sources or identities differ from the Git baseline")
+        }
+        index = index + 1
+    }
+    module_context(base, standard)
+}
+
+fn preview_git_module(directory Text, standard Text, executable Text, repository Text,
+    module Text, base Text, left Text, right Text) Result[Text, Text] {
+    let original = read_git_module(executable, repository, module, base, directory)?
+    let context = git_module_context(original, standard)?
+    Result.Ok(show_module(review_module(original,
+                read_git_module(executable, repository, module, left, directory)?,
+                read_git_module(executable, repository, module, right, directory)?, context)?))
+}
+
+fn apply_git_module(expected Text, destination Text, directory Text, standard Text,
+    executable Text, repository Text, module Text, base Text, left Text, right Text) Result[Text, Text] {
+    discard checked_directory_path(destination, false)?
+    discard vacant(destination)?
+    let original = read_git_module(executable, repository, module, base, directory)?
+    let a = read_git_module(executable, repository, module, left, directory)?
+    let b = read_git_module(executable, repository, module, right, directory)?
+    let context = git_module_context(original, standard)?
+    let value = review_module(original, a, b, context)?
+    let stage = create_module_stage(expected, destination, value)?
+    let outcome = publish_git_module(stage, destination, value, original, a, b, context,
+        standard, executable, repository, module, base, left, right)
+    match outcome {
+        Result.Ok(summary) => Result.Ok(summary)
+        Result.Err(message) => Result.Err(concat(message, concat("; module stage retained at ", stage)))
+    }
+}
+
+fn publish_git_module(stage Text, destination Text, value ModuleReview, base ModuleSnapshot,
+    left ModuleSnapshot, right ModuleSnapshot, context Context, standard Text,
+    executable Text, repository Text, module Text, base_ref Text, left_ref Text, right_ref Text) Result[Text, Text] {
+    discard write_module(stage, value)?
+    let fresh = read_git_module(executable, repository, module, base_ref, base.directory)?
+    if module_stamp(base) != module_stamp(fresh) ||
+    module_stamp(left) != module_stamp(read_git_module(executable, repository, module, left_ref, base.directory)?) ||
+    module_stamp(right) != module_stamp(read_git_module(executable, repository, module, right_ref, base.directory)?) ||
+    context.stamp != git_module_context(fresh, standard)?.stamp {
+        return Result.Err("Git module inputs or pinned project context changed before publication")
+    }
+    discard vacant(destination)?
+    match rename(stage, destination) {
+        Result.Ok(_) => Result.Ok(concat("wrote checked module merge to ", concat(destination, "\n")))
+        Result.Err(_) => Result.Err("cannot publish module stage")
+    }
+}
