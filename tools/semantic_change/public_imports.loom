@@ -1,0 +1,193 @@
+import std.text.byte
+
+fn import_name_seen(values List[Text], name Text) Bool {
+    var index = 0
+    while index < length(values) {
+        if get(values, index) == name {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn public_import_names(analysis Analysis, scopes List[PackageScope], renames List[FunctionRename],
+    file Int, spelling Text) List[Text] {
+    let selected = candidates(analysis.bindings, file, get(analysis.bindings.files, file).test_only, spelling)
+    let names = new[Text]()
+    var renamed = false
+    var index = 0
+    while index < length(selected) {
+        let symbol = get(selected, index)
+        let requested = rename_requested(renames, public_symbol_identity(analysis, scopes, symbol))
+        let name = if requested == "" {
+            get(analysis.bindings.symbols, symbol).node.value
+        } else {
+            requested
+        }
+        renamed = renamed || requested != ""
+        if !import_name_seen(names, name) {
+            push(names, name)
+        }
+        index = index + 1
+    }
+    if renamed {
+        names
+    } else {
+        []
+    }
+}
+
+fn public_import_edits(source SourceFile, node Node, names List[Text], edits List[SourceRenameEdit]) Result[Bool, Text] {
+    if length(names) == 0 {
+        return Result.Ok(true)
+    }
+    let member = std.loom.project.name(node.value)
+    let selected = if import_name_seen(names, member) {
+        member
+    } else {
+        get(names, 0)
+    }
+    if selected != member {
+        let tokens = match lex(slice(source.text, node.span.start, node.span.end)) {
+            Result.Ok(value) => value
+            Result.Err(problem) => {
+                return Result.Err(problem.message)
+            }
+        }
+        var index = length(tokens) - 1
+        while index >= 0 && get(tokens, index).kind != Kind.Name {
+            index = index - 1
+        }
+        if index < 0 {
+            return Result.Err("public import has no member token")
+        }
+        let token = get(tokens, index)
+        push(edits, SourceRenameEdit {
+                path = source.path
+                span = Span {
+                    start = node.span.start + token.span.start
+                    end = node.span.start + token.span.end
+                }
+                text = selected
+            })
+    }
+    if length(names) == 1 {
+        return Result.Ok(true)
+    }
+    // Insert after the entire original line, including its trailing comment.
+    // Existing import bytes and comments stay in place; no file is reformatted.
+    var end = node.span.end
+    while end < length(source.text) && byte(source.text, end) != 10 {
+        end = end + 1
+    }
+    if end < length(source.text) {
+        end = end + 1
+    }
+    let newline = if end >= 2 && byte(source.text, end - 2) == 13 {
+        "\r\n"
+    } else {
+        "\n"
+    }
+    let lines = new[Text]()
+    if end > 0 && byte(source.text, end - 1) != 10 {
+        push(lines, newline)
+    }
+    let prefix = slice(node.value, 0, length(node.value) - length(member))
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        if name != selected {
+            push(lines, concat("import ", concat(prefix, concat(name, newline))))
+        }
+        index = index + 1
+    }
+    push(edits, SourceRenameEdit {
+            path = source.path
+            span = Span {
+                start = end
+                end = end
+            }
+            text = join(lines, "")
+        })
+    Result.Ok(true)
+}
+
+fn public_package_import_edits(analysis Analysis, scopes List[PackageScope], scope PackageScope,
+    renames List[FunctionRename], edits List[SourceRenameEdit]) Result[Bool, Text] {
+    var file = 0
+    while file < length(analysis.bindings.files) {
+        let source = get(analysis.bindings.files, file)
+        if source.package == scope.package {
+            var item = 0
+            while item < length(source.tree.children) {
+                let node = get(source.tree.children, item)
+                if node.kind == NodeKind.Import {
+                    discard public_import_edits(source, node,
+                        public_import_names(analysis, scopes, renames, file, node.value), edits)?
+                }
+                item = item + 1
+            }
+        }
+        file = file + 1
+    }
+    Result.Ok(true)
+}
+
+fn public_import_scope(revision Revision, testing Bool) Result[List[Text], Text] {
+    let imports = new[Text]()
+    var index = 0
+    while index < length(revision.files) {
+        let file = get(revision.files, index)
+        if testing || !ends_with(file.path, "_test.loom") {
+            let names = imports_in_file(revision, file.path)?
+            var item = 0
+            while item < length(names) {
+                let name = get(names, item)
+                if !import_name_seen(imports, name) {
+                    push(imports, name)
+                }
+                item = item + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(imports)
+}
+
+fn same_public_imports(before Revision, after Revision) Result[Bool, Text] {
+    if !same_implicit_imports(before, after)? {
+        return Result.Ok(false)
+    }
+    var pass = 0
+    while pass < 2 {
+        let original = public_import_scope(before, pass == 1)?
+        let current = public_import_scope(after, pass == 1)?
+        if length(original) != length(current) {
+            return Result.Ok(false)
+        }
+        var index = 0
+        while index < length(original) {
+            if !import_name_seen(current, get(original, index)) {
+                return Result.Ok(false)
+            }
+            index = index + 1
+        }
+        pass = pass + 1
+    }
+    Result.Ok(true)
+}
+
+fn public_package_imports_unchanged(base List[PackageRevision], left List[PackageRevision],
+    right List[PackageRevision]) Result[Bool, Text] {
+    var index = 0
+    while index < length(base) {
+        let original = get(base, index)
+        if !same_public_imports(original.revision, package_revision(left, original.directory)?.revision)? ||
+        !same_public_imports(original.revision, package_revision(right, original.directory)?.revision)? {
+            return Result.Err("package merge import bindings changed; explicit resolution required")
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

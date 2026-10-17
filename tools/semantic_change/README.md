@@ -42,9 +42,12 @@ Public function renames also compose in a complete selected-module batch,
 including checked import members, calls and each package's private tests. Every
 known package in that module must participate; known consumers in other module
 instances require separate resolution. Visibility and the package/dependency
-graph stay fixed. A public overload import can be rewritten when all of its
-selected declarations retain one resulting name; splitting that import still
-requires explicit resolution. Single-package public renames, other public
+graph stay fixed. Public overload imports split into the names required by
+their identified declarations; calls and contextual function values follow only
+their own selected target. Existing import lines and trailing comments stay in
+place, and additional imports retain the file's line ending. Normalized member
+sets must agree in both production and effective private-test scope; unrelated
+import changes still require resolution. Single-package public renames, other public
 declaration kinds and moves across package identities remain unsupported.
 This does not update unknown external consumers or prove API compatibility.
 Function rename composition also rejects packages exporting a macro generator:

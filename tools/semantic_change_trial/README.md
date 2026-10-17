@@ -60,8 +60,12 @@ context, including the package's own tests. For private functions, a selected ov
 without renaming its siblings; creating a valid overload set still requires
 every retained call and function reference to keep its checked target.
 Public function renames update checked imports and uses across the complete
-selected module. All selected declarations of one public overload import must
-retain a common resulting name; splitting an import requires resolution.
+selected module. When only part of an overload group changes name, additional
+imports retain access to each identified target, including contextual function
+values. Existing import lines/comments and CRLF endings are preserved. Imports
+are package-wide: normalization compares effective member sets in production
+and private-test scope rather than imposing one file's import order. Unrelated
+member or package-target changes still require resolution.
 Local capture, visibility changes, ambiguous overloads, missing binding evidence
 and known consumers in external module instances require resolution. Unknown
 external consumers are not updated; this is not API-compatibility proof.

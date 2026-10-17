@@ -391,7 +391,7 @@ pub fn merge_packages(base List[PackageRevision], left List[PackageRevision], ri
             let original = normalize_public_package_renames(base, plans, production, tests, backend)?
             let a = normalize_public_package_renames(left, plans, production, tests, backend)?
             let b = normalize_public_package_renames(right, plans, production, tests, backend)?
-            discard package_imports_unchanged(original, a, b)?
+            discard public_package_imports_unchanged(original, a, b)?
             return merge_package_names(original, a, b,
                 package_project(production, original)?, package_project(tests, original)?, backend)
         }

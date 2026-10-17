@@ -1,0 +1,241 @@
+fn split_public_case(renamed Bool, moved Bool, changed Bool, caller_changed Bool, reversed Bool) List[PackageRevision] {
+    let packages = public_batch_case("amount", moved, changed, caller_changed)
+    let library = get(packages, 0).revision
+    let selected = if moved {
+        1
+    } else {
+        0
+    }
+    let source = get(library.files, selected)
+    let extra = """
+
+        pub fn unrelated() Int {
+            9
+        }
+        """
+    set(library.files, selected, File {
+            text = concat(if renamed {
+                    replace(source.text, "pub fn amount(value Int)", "pub fn balance(value Int)")
+                } else {
+                    source.text
+                }, extra)
+            ..source
+        })
+    push(library.identities, Identity {
+            id = "untouched-public-member"
+            path = source.path
+            kind = NodeKind.Function
+            name = "unrelated"
+            key = "-"
+        })
+    var index = 0
+    while index < length(library.identities) {
+        let identity = get(library.identities, index)
+        if renamed && identity.name == "amount" && identity.key != "-" {
+            set(library.identities, index, Identity {
+                    name = "balance"
+                    ..identity
+                })
+        }
+        index = index + 1
+    }
+    if renamed {
+        let testing = get(library.files, 2)
+        set(library.files, 2, File {
+                text = replace(testing.text, "amount(1)", "balance(1)")
+                ..testing
+            })
+    }
+    var package = 1
+    while package < length(packages) {
+        let files = get(packages, package).revision.files
+        let main = get(files, 0)
+        var text = replace(main.text, "    amount() + ",
+            "    let transform fn(Int) Int = amount\n    amount() + transform(1) - 2 + ")
+        text = replace(text, "import sample.lib.amount", "import sample.lib.amount // keep the overload comment")
+        if renamed {
+            text = replace(text, "= amount\n", "= balance\n")
+            text = replace(text, "import sample.lib.amount // keep the overload comment", if reversed {
+                    "import sample.lib.balance\nimport sample.lib.amount // keep the overload comment"
+                } else {
+                    "import sample.lib.amount // keep the overload comment\nimport sample.lib.balance"
+                })
+            let testing = get(files, 1)
+            set(files, 1, File {
+                    text = replace(testing.text, "amount(1)", "balance(1)")
+                    ..testing
+                })
+        }
+        set(files, 0, File {
+                text = text
+                ..main
+            })
+        package = package + 1
+    }
+    packages
+}
+
+test fn partial_public_overload_renames_keep_imports_callbacks_and_both_branch_orders() {
+    let base = split_public_case(false, false, false, false, false)
+    let edited = split_public_case(false, false, true, true, false)
+    let production = public_batch_context(base, false)
+    let tests = public_batch_context(base, true)
+    var reversed = 0
+    while reversed < 2 {
+        let renamed = split_public_case(true, true, false, false, reversed == 1)
+        let branches = [renamed, edited]
+        var order = 0
+        while order < 2 {
+            let merged = match merge_packages(base, get(branches, order), get(branches, 1 - order), production, tests) {
+                Result.Ok(value) => value
+                Result.Err(message) => {
+                    discard write_error(message)
+                    assert false
+                    base
+                }
+            }
+            let library = get(get(merged, 0).revision.files, 1).text
+            assert contains(library, "pub fn amount()") && contains(library, "pub fn balance(value Int)")
+            assert contains(library, "Keep this body from the independent edit.")
+            let app = get(get(merged, 1).revision.files, 0).text
+            assert contains(app, "import sample.lib.amount // keep the overload comment")
+            assert contains(app, "import sample.lib.balance")
+            assert contains(app, "let transform fn(Int) Int = balance")
+            assert contains(app, "amount() + transform(1) - 2 + 10")
+            order = order + 1
+        }
+        reversed = reversed + 1
+    }
+}
+
+test fn overload_import_inserts_preserve_eof_comments_and_crlf() {
+    let endings = ["", "\r\n"]
+    var index = 0
+    while index < length(endings) {
+        let ending = get(endings, index)
+        let text = concat("import sample.lib.amount // retained", ending)
+        let source = SourceFile {
+            package = 0
+            path = "imports.loom"
+            text = text
+            tree = package_tree(text)
+            test_only = false
+            trusted_std = false
+        }
+        let edits = new[SourceRenameEdit]()
+        assert match public_import_edits(source, get(source.tree.children, 0), ["amount", "balance"], edits) {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        }
+        let expected = concat("import sample.lib.amount // retained", if ending == "" {
+                "\nimport sample.lib.balance\n"
+            } else {
+                "\r\nimport sample.lib.balance\r\n"
+            })
+        assert match source_renamed(text, source_edits(edits, source.path)) {
+            Result.Ok(value) => value == expected
+            Result.Err(_) => false
+        }
+        index = index + 1
+    }
+}
+
+fn check_production_import_scope() Result[Bool, Text] {
+    let packages = public_batch_case("amount", false, false, false)
+    let library = get(packages, 0).revision
+    let source = get(library.files, 0)
+    set(library.files, 0, File {
+            text = concat("import sample.lib.amount\n", source.text)
+            ..source
+        })
+    let helper = """
+        fn amount(value Text) Int {
+            discard value
+            3
+        }
+        """
+    let testing = get(library.files, 2)
+    set(library.files, 2, File {
+            text = concat(testing.text, concat("\n", helper))
+            ..testing
+        })
+    push(library.identities, Identity {
+            id = "test-only-overload"
+            path = testing.path
+            kind = NodeKind.Function
+            name = "amount"
+            key = key(helper)
+        })
+    let project = public_batch_context(packages, true)
+    let analysis = package_analysis(Project {
+            root = 0
+            ..project
+        }, true, no_proof_backend())?
+    let scopes = package_scopes(analysis.source, packages)?
+    let renames = new[FunctionRename]()
+    var index = 0
+    while index < length(library.identities) {
+        let identity = get(library.identities, index)
+        if identity.name == "amount" && identity.key != "-" {
+            push(renames, FunctionRename {
+                    id = identity.id
+                    name = if identity.id == "test-only-overload" {
+                        "notes"
+                    } else {
+                        "balance"
+                    }
+                })
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(analysis.bindings.files) {
+        let file = get(analysis.bindings.files, index)
+        if file.package == 0 {
+            let names = public_import_names(analysis, scopes, renames, index, "sample.lib.amount")
+            assert import_name_seen(names, "balance")
+            assert import_name_seen(names, "notes") == file.test_only
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+test fn production_imports_do_not_acquire_test_only_overload_names() {
+    assert match check_production_import_scope() {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            false
+        }
+    }
+}
+
+test fn overload_rename_does_not_hide_an_independent_member_import_change() {
+    let base = split_public_case(false, false, false, false, false)
+    let renamed = split_public_case(true, true, false, false, false)
+    let edited = split_public_case(false, false, true, true, false)
+    let files = get(edited, 1).revision.files
+    let main = get(files, 0)
+    set(files, 0, File {
+            text = concat("import sample.lib.unrelated\n", main.text)
+            ..main
+        })
+    let production = public_batch_context(base, false)
+    let tests = public_batch_context(base, true)
+    let branch = match package_project(production, edited) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            production
+        }
+    }
+    assert match package_analysis(branch, false, no_proof_backend()) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match merge_packages(base, renamed, edited, production, tests) {
+        Result.Err(message) => contains(message, "import bindings changed")
+        Result.Ok(_) => false
+    }
+}

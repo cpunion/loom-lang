@@ -308,8 +308,10 @@ reviewed move-plus-edit, function rename-plus-edit and independent
 additions within one package or a fixed-package module, using explicit identities
 and pinned source/test bases.
 Complete module batches can rename public functions across checked imports,
-calls and independent private tests, including whole overload groups. Visibility
-stays fixed. Splitting a public overload import, missing module consumers and
+calls and independent private tests, including partial overload-group renames
+and contextual function values. Checked imports split without reformatting the
+original lines or comments; production and private-test scopes stay separate.
+Visibility stays fixed. Unrelated import changes, missing module consumers and
 known external-module consumers require resolution; unknown external consumers
 are not updated and API compatibility is not proved.
 Selected overload renames use the same checked binding normalizer; names alone
