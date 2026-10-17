@@ -183,8 +183,10 @@ fn public_package_imports_unchanged(base List[PackageRevision], left List[Packag
     var index = 0
     while index < length(base) {
         let original = get(base, index)
-        if !same_public_imports(original.revision, package_revision(left, original.directory)?.revision)? ||
-        !same_public_imports(original.revision, package_revision(right, original.directory)?.revision)? {
+        let a = package_revision(left, original.directory)?.revision
+        let b = package_revision(right, original.directory)?.revision
+        if (length(a.files) != 0 && !same_public_imports(original.revision, a)?) ||
+        (length(b.files) != 0 && !same_public_imports(original.revision, b)?) {
             return Result.Err("package merge import bindings changed; explicit resolution required")
         }
         index = index + 1

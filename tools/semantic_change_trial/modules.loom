@@ -25,6 +25,7 @@ record ModuleSnapshot {
 record ModuleReview {
     packages List[Review]
     relative List[Text]
+    removed List[Text]
     assets List[Asset]
     token Text
 }
@@ -253,6 +254,32 @@ fn module_package(snapshot ModuleSnapshot, relative Text) Result[Loaded, Text] {
     Result.Err("module snapshots must select the same package directories")
 }
 
+fn module_next(snapshot ModuleSnapshot, relative Text) Int {
+    match module_package(snapshot, relative) {
+        Result.Ok(value) => value.next
+        Result.Err(_) => 0
+    }
+}
+
+fn reviewed_package(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
+    basis Text, directory Text) Result[ModulePackage, Text] {
+    let snapshots = [base, left, right]
+    var index = 0
+    while index < length(snapshots) {
+        let packages = get(snapshots, index).packages
+        var item = 0
+        while item < length(packages) {
+            let package = get(packages, item)
+            if module_path(basis, package.relative) == directory {
+                return Result.Ok(package)
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    Result.Err("reviewed package has no module directory identity")
+}
+
 fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot, context Context) Result[ModuleReview, Text] {
     let assets = merge_assets(base.assets, left.assets, right.assets)?
     let merged = merge_packages(module_revisions(base, context.directory),
@@ -260,6 +287,7 @@ fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
         context.production, context.tests, backend("z3"))?
     let packages = new[Review]()
     let relative = new[Text]()
+    let removed = new[Text]()
     let bytes = std.bytes.new()
     frame(bytes, "loom-semantic-module-review-v1")
     frame(bytes, module_stamp(base))
@@ -269,11 +297,11 @@ fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
     frame_assets(bytes, assets)
     var index = 0
     while index < length(merged) {
-        let package = get(base.packages, index)
-        let a = module_package(left, package.relative)?
-        let b = module_package(right, package.relative)?
-        let revision = get(merged, index).revision
-        let next = std.int.maximum(package.loaded.next, std.int.maximum(a.next, b.next))
+        let selected = get(merged, index)
+        let package = reviewed_package(base, left, right, context.directory, selected.directory)?
+        let revision = selected.revision
+        let next = std.int.maximum(module_next(base, package.relative),
+            std.int.maximum(module_next(left, package.relative), module_next(right, package.relative)))
         push(relative, package.relative)
         push(packages, Review {
                 merged = revision
@@ -285,17 +313,49 @@ fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
         frame_files(bytes, revision.files)
         index = index + 1
     }
+    index = 0
+    while index < length(base.packages) {
+        let package = get(base.packages, index)
+        if !module_relative_present(relative, package.relative) {
+            push(removed, package.relative)
+            frame(bytes, "removed package")
+            frame(bytes, package.relative)
+        }
+        index = index + 1
+    }
     Result.Ok(ModuleReview {
             packages = packages
             relative = relative
+            removed = removed
             assets = assets
             token = hex(bytes)
         })
 }
 
+fn module_relative_present(values List[Text], relative Text) Bool {
+    var index = 0
+    while index < length(values) {
+        if get(values, index) == relative {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
 fn show_module(value ModuleReview) Text {
     var output = concat("dry-run module semantic merge; no input source or Git state changed\nreview token: ", concat(value.token, "\n"))
     var index = 0
+    while index < length(value.removed) {
+        let relative = get(value.removed, index)
+        output = concat(output, concat("removed package ", concat(if relative == "" {
+                        "."
+                    } else {
+                        relative
+                    }, "\n")))
+        index = index + 1
+    }
+    index = 0
     while index < length(value.packages) {
         let relative = get(value.relative, index)
         output = concat(output, show_revision(get(value.packages, index),

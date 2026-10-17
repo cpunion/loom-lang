@@ -329,7 +329,7 @@ not a second performance changelog here.
 
 The [semantic merge trial](../../tools/semantic_change_trial/README.md) supports
 reviewed move-plus-edit, function rename-plus-edit and independent
-additions within one package or a fixed-package module, using explicit identities
+additions within one package or a bounded module, using explicit identities
 and pinned source/test bases.
 Complete module batches can rename public functions, records, enums, refined
 types and concepts across checked imports,
@@ -357,8 +357,11 @@ extracts baseline configuration and monorepo dependencies into an owned temporar
 stage and reuses verified offline Git sources. Logical source paths keep review
 tokens independent of that stage. Reviewed application creates a Git tree with
 three-way regular-file modes, without changing existing refs, index or working
-files. Unselected changes require resolution; regular portable repositories and
-fixed graphs remain restrictions, not general semantic VCS completion.
+files. Independent package additions and unused whole-package deletions compose
+with existing edits; new packages keep fresh identities and ordinary private-test
+and proof checks. Removed packages appear in review. Unselected changes require
+resolution; regular portable repositories, pinned dependencies and retained import
+graphs remain restrictions, not general semantic VCS completion.
 Checked bindings prevent silent nominal/field drift.
 Anonymous impls now participate through explicit owner IDs and header locators.
 Method bodies are separate from interface headers; member positions normalize
@@ -372,7 +375,7 @@ static branches still reject.
 Type renames retain the IDs of affected function/impl locators and checked member
 scopes. Inline `test fn` declarations are excluded from production comparison,
 like colocated test files. Member renames, automatic identities, arbitrary edits
-and package/import-graph changes remain open.
+and arbitrary package/import-graph changes remain open.
 
 The [SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md)
 executes an offline orders upgrade, data-preserving downgrade and re-upgrade.

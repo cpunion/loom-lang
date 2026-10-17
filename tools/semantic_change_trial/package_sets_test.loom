@@ -1,0 +1,55 @@
+fn module_package_set_lifecycle(staging Text) Result[Text, Text] {
+    let names = ["base", "left", "right"]
+    var index = 0
+    while index < length(names) {
+        discard module_fixture(path(staging, get(names, index)))?
+        index = index + 1
+    }
+    let base = path(staging, "base")
+    let left = path(staging, "left")
+    let right = path(staging, "right")
+    // A test-only package is still an explicit package, not an ignored asset.
+    remove_module_fixture(path(left, "checks/nested"))
+    let added = path(left, "math")
+    discard create_dir(added)
+    discard std.file.write_text(path(added, "value.loom"), """
+        fn private_value() Int {
+            3
+        }
+        """)
+    discard std.file.write_text(path(added, "value_test.loom"), """
+        test fn new_private_scope() {
+            assert private_value() == 3
+        }
+        """)
+    discard initialize("sample.math", added)?
+    discard std.file.write_text(path(right, "lib/value.loom"), """
+        fn secret() Int {
+            7
+        }
+
+        pub fn amount() Int {
+            2
+        }
+        """)
+    let preview = preview_module("compiler/std", base, left, right)?
+    assert contains(preview, "removed package checks/nested\n")
+    assert contains(preview, "=== math/value_test.loom ===")
+    let token = get(split(get(split(preview, "\n"), 1), " "), 2)
+    let output = path(staging, "output")
+    discard apply_module(token, output, "compiler/std", base, left, right)?
+    discard vacant(path(output, "checks/nested"))?
+    assert contains(text_at(path(output, "lib/value.loom")), "2")
+    let published = read_module(output)?
+    assert module_package(published, "math")?.next == read(added)?.next
+    discard review_module(published, published, published, module_context(published, "compiler/std")?)?
+    Result.Ok("module package addition and deletion checked and published")
+}
+
+test fn module_package_sets_keep_private_tests_and_show_deleted_packages_in_review() {
+    let staging = module_test_directory("package-sets")
+    defer {
+        remove_module_fixture(staging)
+    }
+    assert successful(module_package_set_lifecycle(staging)) == "module package addition and deletion checked and published"
+}

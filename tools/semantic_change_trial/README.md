@@ -1,6 +1,6 @@
 # Semantic change trial
 
-This tool previews a three-way merge of one Loom package or a fixed-package
+This tool previews a three-way merge of one Loom package or a bounded
 module. Preview **does not change input source, identity files or Git state**:
 
 ```sh
@@ -30,7 +30,13 @@ Each snapshot has a regular `loom.toml` file and a `.loom-ids`
 sidecar in every directory package, including test-only packages. For example,
 initialize `sample` at the module root and `sample.parser` in its `parser`
 directory with the existing `init` command; carry those sidecars between branches.
-The package set and import graph remain fixed. Cross-package header/contract or
+Branches may add self-contained packages and delete unused whole packages.
+New packages require fresh identities and no new explicit/implicit dependencies;
+their production and private tests pass the ordinary checks. Identical additions
+or deletions combine, while different concurrent additions, deletion versus edit
+and transfers of declaration identity across packages require resolution.
+Review names removed packages explicitly. Retained-package imports and pinned
+external dependencies remain fixed. Cross-package header/contract or
 deletion changes compose with edits only across disconnected production/test
 import components; shared consumers or dependencies still require resolution.
 The offline loader requires a lock for reached Git dependencies; modules with
@@ -99,8 +105,8 @@ Blob reads use one binary-safe batch per snapshot, not one Git process per file.
 Apply rechecks refs and context before publication. Tree exclusions and asset
 merge policy are the same as directory input, including rejection of symlinks,
 submodules, nested modules and unsupported config changes; file modes are not
-preserved by this directory-output mode. Package/import-graph changes remain
-unimplemented.
+preserved by this directory-output mode. New dependency edges and arbitrary
+package/import-graph changes remain unimplemented.
 
 Every Git merge mode requires `BASE` to be the unique Git merge base of the
 resolved `LEFT` and `RIGHT` commits, not merely an older common ancestor with
@@ -149,7 +155,7 @@ regular executable modes merge by three-way equality; conflicting modes and
 deletion versus a mode change require resolution. Changes outside that module's
 semantic scope (including excluded tracked build files) also require resolution,
 not silent omission. Repository snapshots currently require regular files with
-portable paths: symlinks, submodules and case aliases reject. Fixed package/import
+portable paths: symlinks, submodules and case aliases reject. Pinned dependency
 graphs and compiler binding/proof restrictions still apply. This is not general
 repository merging or behavioral compatibility proof.
 
@@ -368,7 +374,7 @@ to the non-layout side's surrounding text, and unsupported declaration forms
 are reported instead of guessed.
 
 This is a deliberately narrow proof of the move-plus-edit workflow. It does
-not yet manage Git/jj changes or commits, reconcile package/import-graph changes,
+not yet manage Git/jj changes or commits, reconcile arbitrary package/import-graph changes,
 infer identities for generated declarations, or merge competing edits within a
 single declaration body. Adding a new overload can change
 lookup, so cross-side addition of an existing name still requires review.
