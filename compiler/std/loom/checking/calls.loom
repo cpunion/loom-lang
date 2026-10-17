@@ -818,26 +818,22 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
             } else {
                 get(values, index)
             }
-            let value = static_argument(context, input, checked, target)?
-            match saved_input(inputs, index) {
-                Option.Some(_) => {
-                    // Re-evaluating a captured function would materialize a
-                    // second environment, losing aliases with runtime fields
-                    // of the saved tuple.
-                    if value.storage >= 0 {
-                        return Result.Err(error(context, input, "a comptime function field cannot split a saved tuple's captured environment"))
-                    }
-                }
-                Option.None => {
-                }
+            let identity = get(context.env.types, target).kind == TypeKind.Function && match saved_input(inputs, index) {
+                Option.Some(_) => true
+                Option.None => false
             }
+            let value = static_argument(context, input, checked, target, identity)?
             push(constants, value)
             if value.storage >= 0 {
                 if first_runtime < 0 {
                     first_runtime = index
                 }
+                let environment = match saved_input(inputs, index) {
+                    Option.Some(source) => static_field_environment(context, input, value, source)
+                    Option.None => static_environment_argument(context, input, value)
+                }?
                 push(runtime_values, input_effects(context, inputs, index, input,
-                        static_environment_argument(context, input, value)?))
+                        environment))
             } else if sequencing && has_input_effects(inputs, index) && length(runtime_values) > 0 {
                 let previous = length(runtime_values) - 1
                 set(runtime_values, previous, input_range_effects(context, inputs, index,

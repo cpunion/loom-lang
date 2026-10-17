@@ -1,0 +1,23 @@
+import std.loom.typed.Expr
+import std.list.get
+import std.list.length
+import std.result.Result
+
+fn closure_environment(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
+    let source = execute(state, child(expr, 0)?, frame, depth + 1)?
+    if source.control != Control.Normal {
+        return Result.Ok(source)
+    }
+    let value = source.value
+    if value.text != "closure" || length(value.items) == 0 {
+        return Result.Err(failure(expr, "compile-time function has no captured environment"))
+    }
+    if expr.index >= 0 && function_target(state, expr, value)? != expr.index {
+        return Result.Err(failure(expr, "compile-time captured function target mismatch"))
+    }
+    let environment = get(value.items, length(value.items) - 1)
+    if environment.ty != expr.ty {
+        return Result.Err(failure(expr, "compile-time captured environment type mismatch"))
+    }
+    Result.Ok(step(environment))
+}

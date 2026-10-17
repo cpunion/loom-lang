@@ -295,6 +295,47 @@ fn captured_functions_escape_share_state_and_survive_container_gc() {
             int(10),
         ),
         equal(invoke(Type::Int, local(callable, 0), vec![int(0)]), int(99)),
+        // A statically selected callback passes the existing environment
+        // directly. Allocation in a later operand must relocate that snapshot.
+        equal(
+            value(
+                Type::Int,
+                E::Call(
+                    0,
+                    vec![
+                        value(
+                            environment,
+                            E::Field(
+                                Box::new(primitive(
+                                    callable,
+                                    Primitive::ListGet,
+                                    vec![local(list, 3), int(0)],
+                                )),
+                                0,
+                            ),
+                        ),
+                        primitive(
+                            Type::Int,
+                            Primitive::TextLen,
+                            vec![primitive(
+                                Type::Text,
+                                Primitive::TextConcat,
+                                vec![text("de"), text("lt")],
+                            )],
+                        ),
+                    ],
+                ),
+            ),
+            int(14),
+        ),
+        equal(
+            invoke(
+                Type::Int,
+                primitive(callable, Primitive::ListGet, vec![local(list, 3), int(0)]),
+                vec![int(0)],
+            ),
+            int(14),
+        ),
     ];
     let alternate = function(vec![Type::Int], Type::Int, Some(int(99)));
     let unused = function(vec![environment, Type::Int], Type::Int, Some(int(9001)));

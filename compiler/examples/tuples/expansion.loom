@@ -65,6 +65,7 @@ fn spread_static_add(value Int, comptime extra Int) Int {
 fn expansions() {
     empty_static_expansions()
     static_first_expansions()
+    static_captured_expansions()
     let events = new[Int]()
     spread_check(mark(events, 1), spread_values(events)..., mark(events, 3))
     let callback_events = new[Int]()
@@ -109,6 +110,7 @@ async fn spread_consume(a Task[Int], b Task[Text]) {
 async fn spread_tasks() {
     empty_static_tasks().await
     static_first_after_suspend().await
+    static_captured_after_suspend().await
     let tasks = (spread_task(7), spread_task(concat("rea", "dy")))
     spread_consume(tasks...).await
     let collected = [(spread_task(1), spread_task(2))...]

@@ -153,6 +153,15 @@ fn record_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Fai
     if expr.ty < 0 || expr.ty >= length(state.program.types) { return Result.Err(failure(expr, "invalid checked record type")) }
     let shape = get(state.program.types, expr.ty)
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple && shape.kind != TypeKind.Frame { return Result.Err(failure(expr, "invalid checked aggregate construction")) }
+    if expr.kind == ExprKind.FrameNew && expr.text == "opaque environment" {
+        return Result.Ok(step(Value {
+                    ty = expr.ty
+                    number = 0
+                    floating = 0.0
+                    text = "opaque environment"
+                    items = new[Value]()
+                }))
+    }
     let fields = slots(state, expr, length(shape.fields))?
     var index = 0
     while index < length(expr.children) {
@@ -238,6 +247,9 @@ fn projected_or_stored(state State, expr Expr, frame Frame, depth Int) Result[St
         return Result.Ok(step(Value { ty = expr.ty number = value.value.number floating = value.value.floating text = value.value.text items = value.value.items }))
     }
     if expr.kind == ExprKind.Field {
+        if value.value.text == "opaque environment" {
+            return Result.Err(failure(expr, "comptime cannot inspect a live captured environment"))
+        }
         if expr.index < 0 || expr.index >= length(value.value.items) { return Result.Err(failure(expr, "compile-time field index out of bounds")) }
         return Result.Ok(step(get(value.value.items, expr.index)))
     }
@@ -328,10 +340,16 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
         return Result.Ok(Step { value = unit() control = if expr.kind == ExprKind.Break { Control.Break } else { Control.Continue } })
     }
     if expr.kind == ExprKind.FunctionRef { return function_value(state, expr, frame, depth) }
+    if expr.kind == ExprKind.ClosureEnvironment {
+        return closure_environment(state, expr, frame, depth)
+    }
     if expr.kind == ExprKind.FrameStore {
         let values = arguments(state, expr, frame, depth)?
         if values.control != Control.Normal { return Result.Ok(values) }
         let target = get(values.value.items, 0)
+        if target.text == "opaque environment" {
+            return Result.Err(failure(expr, "comptime cannot modify a live captured environment"))
+        }
         if expr.index < 0 || expr.index >= length(target.items) { return Result.Err(failure(expr, "compile-time cell field is out of bounds")) }
         set(target.items, expr.index, get(values.value.items, 1))
         return Result.Ok(step(unit()))

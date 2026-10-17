@@ -1,0 +1,74 @@
+fn static_captured_values() (List[Int], fn() Int) {
+    let state = [1]
+    (state, fn() Int {
+            state[0]
+        })
+}
+
+fn static_captured_read(state List[Int], comptime read fn() Int) Int {
+    state[0] = 42
+    read()
+}
+
+fn static_captured_pair() (fn() Int, fn() Int) {
+    let state = [0]
+    (fn() Int {
+            state[0] = state[0] + 1
+            state[0]
+        }, fn() Int {
+            state[0] = state[0] + 10
+            state[0]
+        })
+}
+
+fn static_captured_both(comptime first fn() Int, comptime second fn() Int) Int {
+    first() + second()
+}
+
+fn static_captured_task_values() (fn() Task[Int], List[Int]) {
+    let state = [1]
+    (fn() Task[Int] {
+            spread_task(state[0])
+        }, state)
+}
+
+async fn static_captured_task(comptime next fn() Task[Int], state List[Int]) Int {
+    state[0] = 42
+    next().await
+}
+
+fn static_captured_pack[A, B](first A, second B) (A, B) {
+    (first, second)
+}
+
+fn static_captured_forward(comptime next fn() Int) Int {
+    assert next() == 1
+    let answer = empty_static_captured_with_extra(static_captured_pack(next, 40)...)
+    assert next() == 3
+    answer
+}
+
+fn empty_static_captured_with_extra(comptime next fn() Int, extra Int) Int {
+    next() + extra
+}
+
+fn static_captured_expansions() {
+    assert static_captured_read(static_captured_values()...) == 42
+    assert static_captured_both(static_captured_pair()...) == 12
+    assert static_captured_forward(empty_static_counter()) == 42
+    let log = [0]
+    assert static_captured_read(empty_static_gap(log, 1)..., static_captured_values()...,
+        empty_static_gap(log, 2)...) == 42
+    assert log[0] == 12
+    assert comptime {
+        static_captured_read(static_captured_values()...)
+    } == 42
+}
+
+async fn static_captured_after_suspend() {
+    let log = [0]
+    assert static_captured_read(static_captured_values()...,
+        empty_static_async_gap(log, 1).await...) == 42
+    assert log[0] == 1
+    assert static_captured_task(static_captured_task_values()...).await == 42
+}

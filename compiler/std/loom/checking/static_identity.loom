@@ -1,0 +1,46 @@
+import std.loom.ast.Node
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Local
+import std.loom.typed.TypeKind
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+
+// Identity-only staging may carry a known function through ordinary pure
+// computations. Its live environment is opaque, never a frozen substitute for
+// mutable runtime state. The evaluator rejects inspecting or reifying it.
+fn static_identity_prefix(stage Context, node Node) List[Expr] {
+    let prefix = new[Expr]()
+    var index = 0
+    while index < length(stage.bindings) {
+        let binding = get(stage.bindings, index)
+        if binding.constant >= 0 {
+            let value = get(stage.constants, binding.constant)
+            if value.storage >= 0 && get(stage.env.types, value.ty).kind == TypeKind.Function {
+                let ty = static_environment_type(stage.env, value)
+                let local = length(stage.locals)
+                push(stage.locals, Local {
+                        name = ""
+                        ty = ty
+                        mutable = false
+                        is_scoped = false
+                    })
+                set(stage.bindings, index, Binding {
+                        name = binding.name
+                        local = local
+                        constant = binding.constant
+                        previous = binding.previous
+                        resource_payload = binding.resource_payload
+                    })
+                let opaque = expression(ExprKind.FrameNew, ty, node,
+                    "opaque environment", -1, new[Expr](), true)
+                push(prefix, expression(ExprKind.Let, 0, node, "", local, expressions(opaque), true))
+            }
+        }
+        index = index + 1
+    }
+    prefix
+}

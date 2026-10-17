@@ -1,0 +1,101 @@
+test fn tuple_capture_environments_share_storage_and_forward_live_state() {
+    discard accepted("""
+        fn shared() (List[Int], fn() Int) {
+            let state = [1]
+            (state, fn() Int {
+                state[0]
+            })
+        }
+        fn read(shared List[Int], comptime callback fn() Int) Int {
+            shared[0] = 2
+            callback()
+        }
+        fn callbacks() (fn() Int, fn() Int) {
+            let state = [0]
+            (fn() Int {
+                state[0] = state[0] + 1
+                state[0]
+            }, fn() Int {
+                state[0] = state[0] + 10
+                state[0]
+            })
+        }
+        fn both(comptime first fn() Int, comptime second fn() Int) Int {
+            first() + second()
+        }
+        fn counter() fn() Int {
+            let state = [0]
+            fn() Int {
+                state[0] = state[0] + 1
+                state[0]
+            }
+        }
+        fn pair[A, B](first A, second B) (A, B) {
+            (first, second)
+        }
+        fn invoke(comptime next fn() Int, extra Int) Int {
+            next() + extra
+        }
+        fn forward(comptime next fn() Int) Int {
+            assert next() == 1
+            let answer = invoke(pair(next, 40)...)
+            assert next() == 3
+            answer
+        }
+        fn main() {
+            assert comptime { read(shared()...) } == 2
+            assert comptime { both(callbacks()...) } == 12
+            assert comptime { forward(counter()) } == 42
+        }
+        """)
+}
+
+test fn tuple_capture_identity_does_not_observe_live_state_or_runtime_values() {
+    let header = """
+        fn pair[A, B](first A, second B) (A, B) {
+            (first, second)
+        }
+        fn counter() fn() Int {
+            let state = [0]
+            fn() Int {
+                state[0] = state[0] + 1
+                state[0]
+            }
+        }
+        fn selected(comptime next fn() Int, extra Int) Int {
+            next() + extra
+        }
+        fn zero() Int {
+            0
+        }
+        fn choose(next fn() Int) fn() Int {
+            if next() > 0 {
+                next
+            } else {
+                zero
+            }
+        }
+        """
+    let observes = concat(header, """
+        fn forward(comptime next fn() Int) {
+            discard selected(pair(choose(next), 40)...)
+        }
+        fn main() {
+            forward(counter())
+        }
+        """)
+    match checked(source_files(observes)) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "comptime cannot inspect a live captured environment"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+    rejects(concat(header, """
+        fn main() {
+            let runtime = counter()
+            discard selected(pair(runtime, 40)...)
+        }
+        """))
+}

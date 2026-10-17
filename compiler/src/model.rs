@@ -336,6 +336,8 @@ pub mod checked {
             value: Box<Expr>,
         },
         List(Vec<Expr>),
+        /// Aggregate projection. Function field 0 is its managed environment;
+        /// the input boundary has established the frame type and lifted ABI.
         Field(Box<Expr>, usize),
         Variant {
             variant: usize,

@@ -9,19 +9,28 @@ import std.result.Result
 // Capture snapshots reuse the current checking basis's computation table.
 // Native calls pass only an environment, not a runtime-selected entry pointer.
 fn static_environment_type(env Environment, value StaticValue) Int {
-    if value.storage < 0 { return -1 }
+    if value.storage < 0 {
+        return -1
+    }
     let snapshot = get(env.computations, value.storage).value
     get(snapshot.items, length(snapshot.items) - 1).ty
 }
 
 fn static_source_binding(context Context, node Node) Int {
     match static_alias_source(context, node) {
-        Option.Some(source) => { return static_source_binding(context, source) }
-        Option.None => {}
+        Option.Some(source) => {
+            return static_source_binding(context, source)
+        }
+        Option.None => {
+        }
     }
-    if node.kind != NodeKind.Name { return -1 }
+    if node.kind != NodeKind.Name {
+        return -1
+    }
     let binding = lookup(context, node.value)
-    if binding >= 0 && get(context.bindings, binding).constant >= 0 { return binding }
+    if binding >= 0 && get(context.bindings, binding).constant >= 0 {
+        return binding
+    }
     -1
 }
 
@@ -29,7 +38,9 @@ fn static_environment_local(context Context, constant Int) Int {
     var binding = length(context.bindings) - 1
     while binding >= 0 {
         let value = get(context.bindings, binding)
-        if value.constant == constant { return value.local }
+        if value.constant == constant {
+            return value.local
+        }
         binding = binding - 1
     }
     -1
@@ -50,4 +61,13 @@ fn static_environment_argument(context Context, node Node, value StaticValue) Re
     let environment = get(reference.children, 0)
     std.list.set(body, length(body) - 1, environment)
     Result.Ok(expression(ExprKind.Block, environment.ty, node, "", -1, body, true))
+}
+
+// Identity has already passed static_argument. Reuse the saved function's live
+// environment: rebuilding its CTFE graph would split shared fields or reset a
+// forwarded environment that has changed since its compile-time snapshot.
+fn static_field_environment(context Context, node Node, value StaticValue, source Expr) Result[Expr, Failure] {
+    let reference = reify_function(context, node, source.ty, value.number, value.arguments)?
+    Result.Ok(expression(ExprKind.ClosureEnvironment, static_environment_type(context.env, value),
+            node, "", reference.index, expressions(source), source.falls))
 }

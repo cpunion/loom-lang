@@ -209,7 +209,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
         get(value.children, 0).ty == reads.root_list
         let operation = std.loom.proof.sequence_operation(value.text)
         if !root || (operation != "list_len" && operation != "list_get" && operation != "list_retain_range" &&
-                value.text != "bytes_utf8" && value.text != "bytes_text_copy") {
+            value.text != "bytes_utf8" && value.text != "bytes_text_copy") {
             set(reads.valid, 0, false)
         }
         if shared && (operation == "list_get" || operation == "list_retain_range") {
@@ -225,6 +225,19 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
             set(reads.valid, 0, false)
         }
         borrowed = origin_project(get(inputs, 0), value.index)
+    }
+    if kind == ExprKind.ClosureEnvironment && length(value.children) == 1 {
+        // Function origins tag their environment with the known target. Do
+        // not mistake a projection for fresh or disjoint capture storage.
+        borrowed = if value.index >= 0 {
+            origin_project(get(inputs, 0), -1 - value.index)
+        } else {
+            origin_input(get(inputs, 0).indirect)
+        }
+        if origin_shared(get(inputs, 0)) && !origin_shared(borrowed) {
+            // Unaccounted target evidence loses precision, not borrowed data.
+            borrowed = origin_input(get(inputs, 0).indirect)
+        }
     }
     if kind == ExprKind.Deferred || kind == ExprKind.Await || kind == ExprKind.TaskCall ||
     kind == ExprKind.Suspend || kind == ExprKind.ResourceDrain {
