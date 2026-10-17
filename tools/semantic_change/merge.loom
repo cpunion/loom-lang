@@ -4,6 +4,7 @@ import std.loom.analysis.inspect_at
 import std.loom.analysis.inspect_independent
 import std.loom.analysis.inspect_references
 import std.loom.analysis.reference_obligations
+import std.loom.analysis.abstract_reference_scope
 import std.loom.analysis.Location
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
@@ -70,18 +71,6 @@ record Entry {
 record Indexed {
     revision Revision
     entries List[Entry]
-}
-
-fn needs_abstract_bindings(node Node) Bool {
-    var index = 0
-    while index < length(node.children) {
-        let child = get(node.children, index)
-        if child.kind == NodeKind.TypeParameters && length(child.children) > 0 {
-            return true
-        }
-        index = index + 1
-    }
-    false
 }
 
 // A source location is only stable across analyses after it is tied either to
@@ -233,7 +222,7 @@ fn indexed(revision Revision) Result[Indexed, Text] {
                     end = node.span.end
                     body = slice(file.text, node.span.start, node.span.end)
                     header = declaration_header(file.text, node)
-                    abstract_body = needs_abstract_bindings(node)
+                    abstract_body = abstract_reference_scope(node)
                 })
             declaration = declaration + 1
         }

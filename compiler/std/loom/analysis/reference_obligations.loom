@@ -11,6 +11,12 @@ pub record ReferenceObligations {
     unknown List[Span]
 }
 
+// This declaration has generic/static bindings. Concepts also bind Self even
+// without explicit type parameters. No concrete witness/value is implied.
+pub fn abstract_reference_scope(node Node) Bool {
+    node.kind == NodeKind.Concept || !ordinary_query_owner(node)
+}
+
 fn reference_bound(parameters List[Text], name Text) Bool {
     var index = 0
     while index < length(parameters) {
@@ -58,8 +64,7 @@ fn reference_children(node Node, tokens List[Token], parameters List[Text], outp
 fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited List[Text], output ReferenceObligations) {
     let kind = node.kind
     if has(node, NodeKind.ExpansionId) || kind == NodeKind.ExpansionId ||
-    (kind == NodeKind.Comptime && length(node.children) != 0) ||
-    (kind == NodeKind.Function && parent == NodeKind.Concept && has(node, NodeKind.Block)) {
+    (kind == NodeKind.Comptime && length(node.children) != 0) {
         push(output.unknown, node.span)
         return
     }

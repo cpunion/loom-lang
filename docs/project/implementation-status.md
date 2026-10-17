@@ -91,6 +91,8 @@ consumers share this evidence without treating it as complete source coverage.
 Compiler-owned reference obligations also expose unsupported source ranges;
 semantic merge uses them for bounded generics and cleanup blocks instead of
 maintaining a second syntax whitelist. All required binding checks still apply.
+Default methods use their implicit abstract `Self` scope; valid abstract evidence
+is required without inventing implementations or dropping observed-target checks.
 Their IDs and spans belong to a snapshot, not persistent semantic history.
 
 ## Language and compile-time programming

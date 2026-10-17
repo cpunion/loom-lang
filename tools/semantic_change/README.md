@@ -42,6 +42,9 @@ The compiler's public reference obligations supply the source forms and unknown
 ranges; this tool does not keep a second syntax whitelist. Explicit concept
 bounds and lexical cleanup blocks participate in binding comparison. This is
 explicit-name coverage, not a proof of implicit effects or behavior compatibility.
+Default-method bodies participate through their implicit generic `Self` scope.
+The same declaration-wide checks apply to explicit generics and compile-time
+parameters; missing or conflicting evidence still requires resolution.
 Public function renames also compose in a complete selected-module batch,
 including checked import members, calls and each package's private tests. Every
 known package in that module must participate; known consumers in other module
