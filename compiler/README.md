@@ -4787,7 +4787,9 @@ handoffs and nonallocating reads need no temporary root. Pending arguments and
 aggregate fields keep independent snapshots, while completed expressions and
 mutually exclusive branches reuse same-type slots. Consumed operand snapshots
 deactivate after result handoff; reusing a slot activates it only after storing
-the new value. Loop exits retire internal operands without releasing pending
+the new value. Temporary storage starts inactive and needs no entry clearing;
+its declaration survives even if optimization removes every capture.
+Loop exits retire internal operands without releasing pending
 outer arguments. Static Text references and inline compositions containing no
 collectable references need no snapshot. A match binding whose only
 use is immediate result handoff needs no local root; the enclosing expression

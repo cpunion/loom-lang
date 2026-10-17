@@ -13,19 +13,43 @@ use inkwell::{
 
 const BEGIN: &str = "loom.gc.begin";
 const END: &str = "loom.gc.end";
+const DECLARE: &str = "loom.gc.slot";
+
+enum Region {
+    Declare,
+    Begin,
+    End,
+}
 
 fn marker<'ctx>(context: &'ctx Context, module: &Module<'ctx>, name: &str) -> FunctionValue<'ctx> {
     module.get_function(name).unwrap_or_else(|| {
         let pointer = context.ptr_type(AddressSpace::default());
-        let params = if name == BEGIN {
-            vec![pointer.into(); 2]
-        } else {
+        let params = if name == END {
             vec![pointer.into()]
+        } else {
+            vec![pointer.into(); 2]
         };
         // These calls must be opaque and capturing: allocation can observe the
         // slots before physical root registration has been inserted.
         module.add_function(name, context.void_type().fn_type(&params, false), None)
     })
+}
+
+pub(super) fn declare<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    slot: PointerValue<'ctx>,
+    trace: PointerValue<'ctx>,
+) -> NativeResult<()> {
+    // Declaration survives even when optimization removes every capture.
+    // It registers storage without making uninitialized contents observable.
+    builder.build_call(
+        marker(context, module, DECLARE),
+        &[slot.into(), trace.into()],
+        "",
+    )?;
+    Ok(())
 }
 
 pub(super) fn begin<'ctx>(
@@ -104,7 +128,7 @@ pub(super) fn lower<'ctx>(
                     continue;
                 };
                 let name = target.get_name().to_bytes();
-                if name == BEGIN.as_bytes() {
+                if name == BEGIN.as_bytes() || name == DECLARE.as_bytes() {
                     let slot = operand(instruction, 0)?;
                     let trace = operand(instruction, 1)?;
                     if let Some(index) = positions.get(&slot) {
@@ -115,9 +139,16 @@ pub(super) fn lower<'ctx>(
                         positions.insert(slot, slots.len());
                         slots.push((slot, trace));
                     }
-                    markers.push((instruction, false));
+                    markers.push((
+                        instruction,
+                        if name == BEGIN.as_bytes() {
+                            Region::Begin
+                        } else {
+                            Region::Declare
+                        },
+                    ));
                 } else if name == END.as_bytes() {
-                    markers.push((instruction, true));
+                    markers.push((instruction, Region::End));
                 }
             }
         }
@@ -178,8 +209,9 @@ pub(super) fn lower<'ctx>(
             "",
         )?;
         builder.build_unconditional_branch(entry)?;
-        for (instruction, end) in markers {
-            if !end || !ends_at_return(instruction) {
+        for (instruction, region) in markers {
+            let end = matches!(region, Region::End);
+            if !matches!(region, Region::Declare) && (!end || !ends_at_return(instruction)) {
                 let slot = operand(instruction, 0)?;
                 let index = positions.get(&slot).ok_or("unregistered GC region")?;
                 builder.position_before(&instruction);
@@ -273,6 +305,60 @@ mod tests {
         assert!(initialized < activated && activated < allocation);
         assert!(allocation < deactivated && deactivated < expired);
         assert!(!ir.contains("call void @loom.gc."));
+        assert_eq!(ir.matches("call void @loom_rt_roots_enter(").count(), 1);
+        assert_eq!(ir.matches("call void @loom_rt_roots_leave(").count(), 1);
+    }
+
+    #[test]
+    fn declared_storage_stays_inactive_when_optimization_removes_its_capture() {
+        let context = Context::create();
+        let input = MemoryBuffer::create_from_memory_range_copy(
+            br#"
+                declare void @trace(ptr)
+                declare void @allocate()
+                declare void @loom.gc.slot(ptr, ptr)
+                declare void @loom.gc.begin(ptr, ptr)
+                declare void @loom.gc.end(ptr)
+
+                define void @unused() {
+                entry:
+                    %slot = alloca ptr
+                    call void @loom.gc.slot(ptr %slot, ptr @trace)
+                    br i1 false, label %capture, label %done
+                capture:
+                    store ptr null, ptr %slot
+                    call void @loom.gc.begin(ptr %slot, ptr @trace)
+                    br label %done
+                done:
+                    call void @allocate()
+                    call void @loom.gc.end(ptr %slot)
+                    call void @allocate()
+                    ret void
+                }
+            "#,
+            "gc.unused",
+        );
+        let module = context.create_module_from_ir(input).unwrap();
+        let target = NativeTarget::new(Optimization::O2).unwrap();
+        module
+            .run_passes(
+                "function(simplifycfg)",
+                &target.machine,
+                PassBuilderOptions::create(),
+            )
+            .unwrap();
+        assert!(
+            !module
+                .print_to_string()
+                .to_string()
+                .contains("call void @loom.gc.begin")
+        );
+        lower(&context, &module, &target.machine).unwrap();
+        module.verify().unwrap();
+        let ir = module.print_to_string().to_string();
+        assert!(ir.contains("{ ptr null, ptr @trace }"));
+        assert!(!ir.contains("call void @loom.gc."));
+        assert!(!ir.contains("store ptr %"));
         assert_eq!(ir.matches("call void @loom_rt_roots_enter(").count(), 1);
         assert_eq!(ir.matches("call void @loom_rt_roots_leave(").count(), 1);
     }
