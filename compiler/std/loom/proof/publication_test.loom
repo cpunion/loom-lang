@@ -75,3 +75,20 @@ test fn nested_publication_requires_complete_cells_and_retains_unknown_alias_ove
         Result.Err(_) => false
     }
 }
+
+test fn local_summaries_restore_only_existing_privacy_not_entry_values() {
+    let entry = with_extent(10, constant(integer(1)), true, State {
+            locals = []
+            facts = []
+            extents = []
+            observations = []
+        })
+    let changed = with_extent(10, variable(20), true, published_storage(entry))
+    let restored = local_summary_privacy(entry, changed)
+    let extent = get(restored.extents, 0)
+    assert extent.private_storage && length(extent.cells) == 0
+    assert !index_relation("==", extent.size, constant(integer(1)), restored)
+    assert index_relation("==", extent.size, variable(20), restored)
+    let unknown = with_extent(10, constant(integer(1)), false, entry)
+    assert !get(local_summary_privacy(published_storage(unknown), changed).extents, 0).private_storage
+}

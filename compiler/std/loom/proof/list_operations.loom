@@ -255,7 +255,7 @@ fn list_operation_outcomes(proof Verification, primitive Text, ty Int, receiver_
         state = assume(assume(state, Predicate.Compare(">=", index)),
             Predicate.Compare("<", add(index, scale(size, integer(-1)))))
         if name == "list_get" {
-            return read_element_outcomes(proof, ty, identity, index, state)
+            return read_element_outcomes(proof, ty, receiver_type, identity, index, state)
         }
         if preserve_existing {
             return unchanged_store(proof, primitive, receiver_type, identity, index, get(inputs.values, 2), state)

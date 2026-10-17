@@ -39,6 +39,11 @@ fn publication_captures(proof Verification, target Int, values List[Value], comp
 
 fn publication_value(proof Verification, ty Int, value Value, state State,
     graph Publication, budget List[Int], depth Int) Bool {
+    publication_value(proof, ty, value, state, graph, budget, depth, false)
+}
+
+fn publication_value(proof Verification, ty Int, value Value, state State,
+    graph Publication, budget List[Int], depth Int, opaque_only Bool) Bool {
     if immutable_storage_type(proof.program, ty, 0) || ty == 4 {
         return true
     }
@@ -57,9 +62,14 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
     let shape = get(proof.program.types, ty)
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         return publication_value(proof, get(shape.fields, 0).ty, value,
-            state, graph, budget, depth + 1)
+            state, graph, budget, depth + 1, opaque_only)
     }
     if shape.kind == TypeKind.List && length(shape.arguments) == 1 {
+        // Tracked headers keep their graph roots. Unknown elements are exposed
+        // when read, not merely because their container is returned.
+        if opaque_only {
+            return true
+        }
         return match value {
             Value.List(identity) => {
                 if storage_identity_member(graph.identities, identity) {
@@ -116,7 +126,7 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
                 var index = 0
                 while index < length(fields) {
                     if !publication_value(proof, get(shape.fields, index).ty,
-                        get(fields, index), state, graph, budget, depth + 1) {
+                        get(fields, index), state, graph, budget, depth + 1, opaque_only) {
                         return false
                     }
                     index = index + 1
@@ -146,7 +156,7 @@ fn publication_value(proof Verification, ty Int, value Value, state State,
                     var field = 0
                     while field < length(fields) {
                         if !publication_value(proof, get(types, field), get(fields, field),
-                            state, graph, budget, depth + 1) {
+                            state, graph, budget, depth + 1, opaque_only) {
                             return false
                         }
                         field = field + 1
@@ -189,6 +199,19 @@ fn publication_reaches(extent ListExtent, state State, graph Publication) Bool {
     false
 }
 
+// Erasing a closure/task's roots must expose the graphs it can retain. A
+// sampled frontier alone cannot follow later stores into a private capture.
+fn published_opaque_result(proof Verification, ty Int, value Value, state State) State {
+    let graph = Publication {
+        identities = new[Int]()
+        opaque = new[Value]()
+    }
+    if !publication_value(proof, ty, value, state, graph, [256], 0, true) {
+        return published_storage(state)
+    }
+    published_graph(state, graph)
+}
+
 fn published_inputs(proof Verification, types List[Int], values List[Value], first Int, state State) State {
     if length(types) != length(values) {
         return published_storage(state)
@@ -215,15 +238,48 @@ fn published_inputs(proof Verification, types List[Int], values List[Value], fir
         }
         index = index + 1
     }
+    published_graph(state, graph)
+}
+
+fn published_graph(state State, graph Publication) State {
     if length(graph.identities) == 0 && length(graph.opaque) == 0 {
         return state
     }
     let extents = new[ListExtent]()
-    index = 0
+    var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
         push(extents, if extent.private_storage && publication_reaches(extent, state, graph) {
                 private_extent(extent, false)
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
+    }
+}
+
+// A finite Local footprint excludes external publication, even when it resizes
+// an input. Recover only that existing privacy, never entry lengths or cells.
+fn local_summary_privacy(entry State, state State) State {
+    if !private_storage_lost(entry, state) {
+        return state
+    }
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        let private = match list_state(extent.identity, entry) {
+            Result.Ok(previous) => previous.private_storage
+            Result.Err(_) => false
+        }
+        push(extents, if private {
+                private_extent(extent, true)
             } else {
                 extent
             })

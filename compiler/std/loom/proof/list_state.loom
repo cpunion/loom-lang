@@ -170,14 +170,18 @@ fn published_storage(state State, identities List[Int]) State {
 }
 
 fn mutable_value(value Value) Bool {
+    mutable_value(value, false)
+}
+
+fn mutable_value(value Value, opaque_only Bool) Bool {
     match value {
-        Value.List(_) => true
+        Value.List(_) => !opaque_only
         Value.Opaque(_, _) => true
         Value.Projected(_, _, _) => true
         Value.Record(fields) => {
             var index = 0
             while index < length(fields) {
-                if mutable_value(get(fields, index)) {
+                if mutable_value(get(fields, index), opaque_only) {
                     return true
                 }
                 index = index + 1
@@ -187,15 +191,15 @@ fn mutable_value(value Value) Bool {
         Value.Sum(_, _, payloads) => {
             var variant = 0
             while variant < length(payloads) {
-                if mutable_value(Value.Record(get(payloads, variant))) {
+                if mutable_value(Value.Record(get(payloads, variant)), opaque_only) {
                     return true
                 }
                 variant = variant + 1
             }
             false
         }
-        Value.Function(_, captures) => mutable_value(Value.Record(captures))
-        Value.Task(_, inputs, _) => mutable_value(Value.Record(inputs))
+        Value.Function(_, captures) => mutable_value(Value.Record(captures), opaque_only)
+        Value.Task(_, inputs, _) => mutable_value(Value.Record(inputs), opaque_only)
         _ => false
     }
 }

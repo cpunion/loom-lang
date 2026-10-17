@@ -1,0 +1,260 @@
+fn summary_frame_source() Text {
+    concat("""
+        import std.list.length
+        import std.list.push
+        import std.list.get
+        fn touch(values List[Int]) Int
+        ensures result == 7
+        {
+            push(values, 7)
+            7
+        }
+        fn invoked[T](value T, effect fn(T)) Int
+        ensures result == 7
+        {
+            effect(value)
+            7
+        }
+        fn returned(values List[Int]) List[Int]
+        ensures length(result) == length(values)
+        {
+            values
+        }
+        fn wrapped(values List[Int]) List[List[Int]]
+        ensures length(result) == 1
+        {
+            [values]
+        }
+        """, "\n")
+}
+
+test fn contracted_effects_and_returned_graphs_frame_unexposed_private_storage() {
+    list_length_contract(concat(summary_frame_source(), """
+        fn framed(values List[Int]) List[Int]
+        ensures length(result) == 2
+        {
+            let output = [1, 2]
+            discard touch(values)
+            output
+        }
+        fn callback[T](values List[T], effect fn(T)) List[Int]
+        requires length(values) > 0
+        ensures length(result) == 2
+        {
+            let output = [1, 2]
+            discard invoked(get(values, 0), effect)
+            output
+        }
+        fn direct_result(values List[Int]) Int
+        ensures result == 1
+        {
+            let output = [1]
+            push(returned(values), 3)
+            length(output)
+        }
+        fn nested_result(values List[Int]) Int
+        ensures result == 1
+        {
+            let output = [1]
+            push(get(wrapped(values), 0), 3)
+            length(output)
+        }
+        """), true)
+}
+
+test fn contracted_effects_cannot_frame_exposed_inputs_or_returned_aliases() {
+    let cases = ["""
+        fn invalid() Int
+        ensures result == 1
+        {
+            let output = [1]
+            discard touch(output)
+            length(output)
+        }
+        """, """
+        fn invalid() Int
+        ensures result == 1
+        {
+            let output = [1]
+            push(returned(output), 3)
+            length(output)
+        }
+        """, """
+        fn invalid() Int
+        ensures result == 1
+        {
+            let output = [1]
+            push(get(wrapped(output), 0), 3)
+            length(output)
+        }
+        """, """
+        fn invalid() Int
+        ensures result == 1
+        {
+            let output = [1]
+            discard invoked(output, fn(values List[Int]) {
+                    push(values, 3)
+                })
+            length(output)
+        }
+        """]
+    var index = 0
+    while index < length(cases) {
+        assert match checked(list_length_files(concat(summary_frame_source(), get(cases, index)))) {
+            Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn contracted_calls_cannot_recover_privacy_from_their_result_guarantees() {
+    let files = list_constraint_files("""
+        import std.list.length
+        import std.result.Result
+        import std.result.ConstraintError
+        type Nonempty = List[Int] where length(self) > 0
+        fn published(values List[Int], effect fn(List[Int])) Int
+        ensures result == 7
+        {
+            effect(values)
+            7
+        }
+        fn invalid(effect fn(List[Int])) Result[Nonempty, ConstraintError] {
+            let output = [1]
+            discard published(output, effect)
+            Nonempty(output)
+        }
+        """)
+    assert match checked(files) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "fresh unpublished")
+        Result.Ok(_) => false
+    }
+}
+
+test fn erased_callbacks_cannot_hide_later_stores_into_their_captures() {
+    let source = """
+        import std.list.new
+        import std.list.length
+        import std.list.get
+        import std.list.push
+        fn forwarded(effect fn()) fn()
+        ensures true
+        {
+            effect
+        }
+        fn wrapped(effect fn()) List[fn()]
+        ensures length(result) == 1
+        {
+            [effect]
+        }
+        """
+    list_length_contract(concat(source, """
+        fn framed() Int
+        ensures result == 1
+        {
+            let holder = [[3]]
+            let effect = forwarded(fn() {
+                    push(get(holder, 0), 2)
+                })
+            let output = [1]
+            effect()
+            length(output)
+        }
+        """), true)
+    let effects = ["forwarded(effect)", "get(wrapped(effect), 0)"]
+    var index = 0
+    while index < length(effects) {
+        let body = concat("""
+            fn invalid() Int
+            ensures result == 1
+            {
+                let holder = new[List[Int]]()
+                let effect = fn() {
+                    push(get(holder, 0), 2)
+                }
+                let saved =
+            """, concat(get(effects, index), """
+
+                let output = [1]
+                push(holder, output)
+                saved()
+                length(output)
+            }
+            """))
+        assert match checked(list_length_files(concat(source, body))) {
+            Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn returned_callback_siblings_do_not_create_private_storage_evidence() {
+    let source = """
+        import std.list.length
+        import std.list.push
+        fn invalid_pair() (List[Int], fn()) {
+            let values = [1]
+            (values, fn() {
+                    push(values, 2)
+                })
+        }
+        fn observed() Int
+        ensures result == 1
+        {
+            let values, effect = invalid_pair()
+            effect()
+            length(values)
+        }
+        """
+    assert match checked(list_length_files(source)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+        Result.Ok(_) => false
+    }
+}
+
+test fn sampled_callback_fields_cannot_exclude_their_sibling_handles() {
+    let cases = ["""
+        fn pair() (fn(), List[Int])
+        ensures true
+        {
+            let values = [1]
+            (fn() {
+                    push(values, 2)
+                }, values)
+        }
+        fn invalid() Int
+        ensures result == 1
+        {
+            let effect, values = pair()
+            effect()
+            length(values)
+        }
+        """, """
+        fn pair() (List[Int], fn())
+        ensures true
+        {
+            let values = [1]
+            (values, fn() {
+                    push(values, 2)
+                })
+        }
+        fn invalid() Int
+        ensures result == 1
+        {
+            let values, effect = pair()
+            effect()
+            length(values)
+        }
+        """]
+    var index = 0
+    while index < length(cases) {
+        let source = concat("import std.list.length\nimport std.list.push\n", get(cases, index))
+        assert match checked(list_length_files(source)) {
+            Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}

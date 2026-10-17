@@ -31,7 +31,7 @@ fn list_replace_outcomes(proof Verification, ty Int, receiver_type Int, identity
     let size = list_extent(identity, state)?
     let valid = assume(assume(state, Predicate.Compare(">=", index)),
         Predicate.Compare("<", add(index, scale(size, integer(-1)))))
-    let previous = read_element_outcomes(proof, element, identity, index, valid)?
+    let previous = read_element_outcomes(proof, element, receiver_type, identity, index, valid)?
     let output = new[Outcome]()
     var path = 0
     while path < length(previous) {
@@ -64,7 +64,7 @@ fn list_take_outcomes(proof Verification, ty Int, receiver_type Int, identity In
         return Result.Ok(output)
     }
     let index = add(size, constant(integer(-1)))
-    let values = read_element_outcomes(proof, element, identity, index, nonempty)?
+    let values = read_element_outcomes(proof, element, receiver_type, identity, index, nonempty)?
     var path = 0
     while path < length(values) {
         let removed = get(values, path)

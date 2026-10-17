@@ -36,9 +36,11 @@ fn suspension_state(proof Verification, state State) State {
 }
 
 fn unknown_completion(proof Verification, source Expr, state State) Outcome {
-    let value = opaque_completion(record_parameter_value(proof, source.ty, 0), state)
+    let sampled = record_parameter_value(proof, source.ty, 0)
+    let value = opaque_completion(sampled, state, get(proof.fresh, 0))
+    let exposed = published_opaque_result(proof, source.ty, value, state)
     Outcome {
-        state = completion_separation(value, typed_value_state(proof, source.ty, value, state))
+        state = completion_separation(value, typed_value_state(proof, source.ty, value, exposed))
         value = value
     }
 }
