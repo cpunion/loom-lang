@@ -211,7 +211,10 @@ fn main() {
         ...params, context: { includeDeclaration: true },
       });
       assert.equal(references.length, count, fragment);
-      const edits = await client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'renamed' });
+      const edits = await client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'renamed' }).catch(error => {
+        error.message = `${fragment}: ${error.message}`;
+        throw error;
+      });
       assert.equal(edits.changes[uri].length, count, fragment);
       assert.ok(edits.changes[uri].every(edit => document.getText(edit.range) === name));
       const revised = TextDocument.applyEdits(document, edits.changes[uri]);
@@ -248,9 +251,11 @@ fn main() {
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('pending Int')), newName: 'renamed',
     }), /every occurrence of this local binding/);
-    assert.equal(await client.rpc.sendRequest('textDocument/rename', {
+    // Variants now have checked definition locations, but renaming a std
+    // variant is not a supported local/declaration edit in this module.
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('Option.None') + 7), newName: 'Changed',
-    }), null);
+    }), /Rename supports checked local/);
     const fieldEdit = await client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('left = chosen')), newName: 'changed',
     });
