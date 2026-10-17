@@ -33,4 +33,5 @@ fn exercise() {
 
 fn main() {
     exercise()
+    range_cases()
 }

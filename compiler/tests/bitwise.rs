@@ -3,6 +3,21 @@ mod common;
 use common::{loom, success};
 
 #[test]
+fn word_interval_transfer_laws_hold_for_all_signed_64_bit_operands() {
+    let directory = tempfile::tempdir().unwrap();
+    let theory = directory.path().join("intervals.smt2");
+    fs::write(&theory, include_str!("fixtures/bitwise_intervals.smt2")).unwrap();
+    let output = Command::new("z3").arg(&theory).output().unwrap();
+    success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["unsat"; 6]
+    );
+}
+
+#[test]
 fn bitwise_operations_use_native_instructions_and_match_compile_time_results() {
     let source = common::root().join("compiler/examples/bitwise");
     let temporary = tempfile::tempdir().unwrap();

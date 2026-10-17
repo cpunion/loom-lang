@@ -1,0 +1,85 @@
+; Independent QF_BV checks of the interval transfer laws, not sampled words.
+; The source checker does not interpret or simplify these obligations.
+(set-logic QF_BV)
+(set-option :timeout 30000)
+(declare-const x (_ BitVec 64))
+(declare-const y (_ BitVec 64))
+(declare-const lo (_ BitVec 64))
+(declare-const hi (_ BitVec 64))
+(declare-const yl (_ BitVec 64))
+(declare-const yh (_ BitVec 64))
+(declare-const c (_ BitVec 64))
+(declare-const cl (_ BitVec 64))
+(declare-const ch (_ BitVec 64))
+(define-fun zero () (_ BitVec 64) #x0000000000000000)
+(define-fun minimum () (_ BitVec 64) #x8000000000000000)
+(define-fun maximum () (_ BitVec 64) #x7fffffffffffffff)
+(define-fun negative () (_ BitVec 64) #xffffffffffffffff)
+(assert (and (bvsle lo x) (bvsle x hi) (bvsle yl y) (bvsle y yh)))
+(define-fun fill ((a (_ BitVec 64))) (_ BitVec 64)
+  (let ((b (bvor a (bvlshr a (_ bv1 64)))))
+    (let ((d (bvor b (bvlshr b (_ bv2 64)))))
+      (let ((e (bvor d (bvlshr d (_ bv4 64)))))
+        (let ((f (bvor e (bvlshr e (_ bv8 64)))))
+          (let ((g (bvor f (bvlshr f (_ bv16 64)))))
+            (bvor g (bvlshr g (_ bv32 64)))))))))
+(define-fun lp () Bool (bvsge lo zero))
+(define-fun rp () Bool (bvsge yl zero))
+(define-fun ln () Bool (bvslt hi zero))
+(define-fun rn () Bool (bvslt yh zero))
+
+; Complement reverses signed order, including MIN and MAX.
+(push)
+(assert (not (and (bvsge (bvnot x) (bvnot hi)) (bvsle (bvnot x) (bvnot lo)))))
+(check-sat)
+(pop)
+
+; AND never increases a nonnegative operand; two negative words remain negative.
+(push)
+(assert (not (and
+  (=> lp (and (bvsge (bvand x y) zero) (bvsle (bvand x y) hi)))
+  (=> rp (and (bvsge (bvand x y) zero) (bvsle (bvand x y) yh)))
+  (=> (and ln rn) (and (bvsle (bvand x y) hi) (bvsle (bvand x y) yh))))))
+(check-sat)
+(pop)
+
+; OR keeps any known negative sign, or the largest nonnegative endpoint mask.
+(push)
+(define-fun or-mask () (_ BitVec 64) (fill (ite (bvsge hi yh) hi yh)))
+(assert (not (and
+  (=> ln (and (bvslt (bvor x y) zero) (bvsge (bvor x y) lo)))
+  (=> rn (and (bvslt (bvor x y) zero) (bvsge (bvor x y) yl)))
+  (=> (and lp rp) (and (bvsge (bvor x y) lo) (bvsge (bvor x y) yl)
+    (bvsle (bvor x y) or-mask))))))
+(check-sat)
+(pop)
+
+; XOR magnitude masks use complements for negative operands, not signed abs.
+(push)
+(define-fun a () (_ BitVec 64) (ite ln (bvnot lo) hi))
+(define-fun b () (_ BitVec 64) (ite rn (bvnot yl) yh))
+(define-fun xor-mask () (_ BitVec 64) (fill (ite (bvsge a b) a b)))
+(assert (and (or lp ln) (or rp rn)))
+(assert (not (ite (= ln rn)
+  (and (bvsge (bvxor x y) zero) (bvsle (bvxor x y) xor-mask))
+  (and (bvsge (bvxor x y) (bvnot xor-mask)) (bvslt (bvxor x y) zero)))))
+(check-sat)
+(pop)
+
+; All counts in the inclusive interval are defined source shift counts.
+(assert (and (bvsge cl zero) (bvsle cl c) (bvsle c ch) (bvsle ch (_ bv63 64))))
+(push)
+(define-fun right-low () (_ BitVec 64) (bvashr lo (ite (bvslt lo zero) cl ch)))
+(define-fun right-high () (_ BitVec 64) (bvashr hi (ite (bvslt hi zero) ch cl)))
+(assert (not (and (bvsge (bvashr x c) right-low) (bvsle (bvashr x c) right-high))))
+(check-sat)
+(pop)
+
+; Left-shift intervals require no signed truncation for the largest count.
+(push)
+(assert (and (bvsge lo (bvashr minimum ch)) (bvsle hi (bvashr maximum ch))))
+(define-fun left-low () (_ BitVec 64) (bvshl lo (ite (bvslt lo zero) ch cl)))
+(define-fun left-high () (_ BitVec 64) (bvshl hi (ite (bvslt hi zero) cl ch)))
+(assert (not (and (bvsge (bvshl x c) left-low) (bvsle (bvshl x c) left-high))))
+(check-sat)
+(pop)

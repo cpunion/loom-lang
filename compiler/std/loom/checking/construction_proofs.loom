@@ -286,10 +286,9 @@ fn proved_construction(context Context, node Node, source Node, value Expr, targ
     if value.kind != ExprKind.Call {
         // Preserve bounded pure scalar computations, not just bare bindings.
         // fact_size excludes mutable locals, heap observations and calls.
-        let destination = get(context.env.types, target)
-        if context.fact_head >= 0 && fact_size(context, value, 0) > 0 &&
-        (contract_call(predicate_node(context.env, destination.symbol)) ||
-            (length(destination.constraint) == 1 && predicate_expansion(get(destination.constraint, 0), 0)) || helper_facts(context)) {
+        // This is the same normal-return proof for every immutable scalar
+        // expression. A direct predicate needs no helper call to qualify.
+        if context.fact_head >= 0 && fact_size(context, value, 0) > 0 {
             return flow_construction_proof(context, node, value, target)
         }
         return Result.Ok(false)

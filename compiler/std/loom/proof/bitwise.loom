@@ -79,44 +79,6 @@ fn integer_bitwise_literal(operator Text, left Int, right Int) Result[Value, Tex
     Result.Ok(Value.Number(constant(integer(value))))
 }
 
-fn integer_bitwise_bounds(operator Text, inputs List[IntegerTerm], facts List[Predicate],
-    budget List[Int]) Result[Bounds, Text] {
-    if length(inputs) != (if operator == "~" {
-            1
-        } else {
-            2
-        }) {
-        return Result.Err("invalid bit operation operands")
-    }
-    var bounds = Bounds {
-        low = integer(-9223372036854775808)
-        high = integer(9223372036854775807)
-    }
-    if operator == "&" {
-        var index = 0
-        while index < length(inputs) {
-            match integer_bounds(get(inputs, index), facts, budget) {
-                Result.Ok(mask) => {
-                    if compare(mask.low, integer(0)) >= 0 && compare(mask.high, integer(9223372036854775807)) <= 0 {
-                        bounds = Bounds {
-                            low = integer(0)
-                            high = if compare(mask.high, bounds.high) < 0 {
-                                mask.high
-                            } else {
-                                bounds.high
-                            }
-                        }
-                    }
-                }
-                Result.Err(_) => {
-                }
-            }
-            index = index + 1
-        }
-    }
-    Result.Ok(bounds)
-}
-
 fn smt_bitwise(writer SmtWriter, operator Text, inputs List[IntegerTerm], depth Int) Result[Text, Text] {
     Result.Ok(concat("(sbv_to_int ", concat(smt_bitwise_word(writer, operator, inputs, depth)?, ")")))
 }
