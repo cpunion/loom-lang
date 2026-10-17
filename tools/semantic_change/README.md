@@ -38,6 +38,10 @@ Generic bodies require checked abstract bindings as well as agreement with any
 observed concrete instances; every retained reference still needs one checked
 definition. Unselected static branches, unsupported generic forms and missing
 evidence require resolution.
+The compiler's public reference obligations supply the source forms and unknown
+ranges; this tool does not keep a second syntax whitelist. Explicit concept
+bounds and lexical cleanup blocks participate in binding comparison. This is
+explicit-name coverage, not a proof of implicit effects or behavior compatibility.
 Public function renames also compose in a complete selected-module batch,
 including checked import members, calls and each package's private tests. Every
 known package in that module must participate; known consumers in other module

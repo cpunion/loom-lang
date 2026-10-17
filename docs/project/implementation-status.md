@@ -88,6 +88,9 @@ failed or ambiguous scopes cannot supply cached binding facts.
 Public reference queries share a token stream for a batch or exact-name scan,
 retaining unanswered and ambiguous candidates. Editor and semantic-change
 consumers share this evidence without treating it as complete source coverage.
+Compiler-owned reference obligations also expose unsupported source ranges;
+semantic merge uses them for bounded generics and cleanup blocks instead of
+maintaining a second syntax whitelist. All required binding checks still apply.
 Their IDs and spans belong to a snapshot, not persistent semantic history.
 
 ## Language and compile-time programming

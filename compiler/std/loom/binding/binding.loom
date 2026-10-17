@@ -60,7 +60,8 @@ pub record Program {
 fn failure(file Int, node Node, message Text) Failure {
     Failure { source = file diagnostic = Diagnostic { span = node.span message = message } }
 }
-fn builtin(name Text) Bool {
+// Reserved core type names; this does not validate arity or source legality.
+pub fn builtin_type_name(name Text) Bool {
     name == "Int" || name == "Float" || name == "Bool" || name == "Text" || name == "Bytes" || name == "List" || name == "Task" || name == "Unit"
 }
 fn contains(values List[Text], value Text) Bool {
@@ -173,7 +174,7 @@ fn names(file Int, nodes List[Node], reserved_types Bool) Result[Bool, Failure] 
     var index = 0
     while index < length(nodes) {
         let node = get(nodes, index)
-        if contains(seen, node.value) || (reserved_types && builtin(node.value)) {
+        if contains(seen, node.value) || (reserved_types && builtin_type_name(node.value)) {
             return Result.Err(failure(file, node, if reserved_types {
                 "duplicate or reserved type parameter"
             } else { "duplicate declaration member" }))
@@ -307,7 +308,7 @@ fn bind_mode(project Project, tests Bool, strict Bool) Result[Program, Failure] 
                 if node.kind != NodeKind.Import && (!test_only || (tests && source.package == root)) {
                     discard declaration_names(file, node)?
                     if named_type(node.kind) {
-                        if builtin(node.value) {
+                        if builtin_type_name(node.value) {
                             return Result.Err(failure(file, node, "duplicate or reserved data declaration"))
                         }
                         var other = 0
