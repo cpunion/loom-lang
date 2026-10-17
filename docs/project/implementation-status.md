@@ -342,6 +342,12 @@ shared Z3 adapter for ordinary contract checks, including rename/binding checks
 and each package's private tests. Defaults stay I/O-free; unknown proofs reject.
 Ambiguities can persist as source-bound drafts; compilation ignores that metadata.
 Checked bindings prevent silent nominal/field drift.
+Anonymous impls now participate through explicit owner IDs and header locators.
+Method bodies are separate from interface headers; member positions normalize
+within checked slots, so an earlier body edit does not retarget a later method.
+Concurrent container-body edits remain explicit conflicts, not inferred nested
+declaration merges. Symbolic impl/associated headers need no concrete caller;
+unexpanded pack queries retain their conservative boundary.
 Generic reference comparison requires checked abstract bodies and agreement
 with observed concrete instances; missing or ambiguous bindings and unselected
 static branches still reject.

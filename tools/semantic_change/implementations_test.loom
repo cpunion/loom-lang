@@ -1,0 +1,218 @@
+fn implementation_case(moved Bool, first Bool, second Bool) Revision {
+    let implementation = replace(replace("""
+            impl Read for Int {
+                fn first(self Int) Int {
+                    FIRST
+                }
+                fn second(self Int) Int {
+                    SECOND
+                }
+            }
+            """, "FIRST", if first {
+                "let computed = self + 2\n        computed"
+            } else {
+                "self + 1"
+            }), "SECOND", if second {
+            "self * 3"
+        } else {
+            "self * 2"
+        })
+    package_fixture("sample", "pkg", [File {
+                path = "api.loom"
+                text = """
+                    concept Read {
+                        fn first(self Self) Int
+                        fn second(self Self) Int
+                    }
+                    fn entry() Int {
+                        let value = 7
+                        value.first() + value.second()
+                    }
+                    """
+            }, File {
+                path = "impl.loom"
+                text = if moved {
+                    ""
+                } else {
+                    implementation
+                }
+            }, File {
+                path = "moved.loom"
+                text = if moved {
+                    implementation
+                } else {
+                    ""
+                }
+            }]).revision
+}
+
+test fn implementation_locators_identify_headers_not_method_bodies() {
+    assert key("impl Read for Int {}") == key("""
+        impl Read for Int {
+            fn read(self Int) Int {
+                self
+            }
+        }
+        """)
+    assert key("impl Read for Int {}") != key("impl Read for Bool {}")
+    assert key("impl Read for Int {}") != key("impl Write for Int {}")
+    assert key("impl[T] Read for Box[T] {}") != key("impl[T Marker] Read for Box[T] {}")
+}
+
+test fn implementation_moves_and_body_edits_keep_checked_member_slots() {
+    let base = implementation_case(false, false, false)
+    let moved = implementation_case(true, false, false)
+    let edited = implementation_case(false, true, false)
+    let context = rename_context(base)
+    let branches = [moved, edited]
+    var order = 0
+    while order < 2 {
+        let a = get(branches, order)
+        let b = get(branches, 1 - order)
+        let merged = match merge(base, a, b) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        assert contains(get(merged.files, 2).text, "let computed = self + 2")
+        assert match merge_with_context(base, a, b, context, context, "pkg") {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        assert match merge_packages(generic_package_case(base), generic_package_case(a),
+            generic_package_case(b), context, context) {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        order = order + 1
+    }
+}
+
+fn default_container_case(moved Bool, edited Bool) Revision {
+    let source = replace("""
+            concept Read {
+                fn first(self Self) Int {
+                    discard self
+                    FIRST
+                }
+                fn second(self Self) Int {
+                    discard self
+                    2
+                }
+            }
+            """, "FIRST", if edited {
+            "let computed = 3\n        computed"
+        } else {
+            "1"
+        })
+    package_fixture("sample", "pkg", [File {
+                path = "api.loom"
+                text = """
+                    impl Read for Int {
+                    }
+                    fn entry() Int {
+                        let value = 7
+                        value.first() + value.second()
+                    }
+                    """
+            }, File {
+                path = "default.loom"
+                text = if moved {
+                    ""
+                } else {
+                    source
+                }
+            }, File {
+                path = "moved.loom"
+                text = if moved {
+                    source
+                } else {
+                    ""
+                }
+            }]).revision
+}
+
+test fn default_member_binding_survives_an_earlier_method_body_edit() {
+    let base = default_container_case(false, false)
+    assert match merge(base, default_container_case(true, false), default_container_case(false, true)) {
+        Result.Ok(value) => contains(get(value.files, 2).text, "let computed = 3")
+        Result.Err(message) => {
+            discard write_error(message)
+            false
+        }
+    }
+}
+
+test fn implementation_body_conflicts_do_not_guess_nested_edit_intent() {
+    let base = implementation_case(false, false, false)
+    assert match merge(base, implementation_case(false, true, false), implementation_case(false, false, true)) {
+        Result.Err(message) => contains(message, "concurrent body edits")
+        Result.Ok(_) => false
+    }
+}
+
+fn generic_implementation_case(moved Bool, edited Bool) Revision {
+    let source = replace("""
+            impl[T] Read for Box[T] {
+                type Item = Box[T]
+                fn read(self Self) Int {
+                    discard self
+                    VALUE
+                }
+            }
+            """, "VALUE", if edited {
+            "2"
+        } else {
+            "1"
+        })
+    package_fixture("sample", "pkg", [File {
+                path = "api.loom"
+                text = """
+                    concept Read {
+                        type Item
+                        fn read(self Self) Int
+                    }
+                    record Box[T] {
+                        value T
+                    }
+                    fn entry() Int {
+                        let value = Box { value = 7 }
+                        value.read()
+                    }
+                    """
+            }, File {
+                path = "impl.loom"
+                text = if moved {
+                    ""
+                } else {
+                    source
+                }
+            }, File {
+                path = "moved.loom"
+                text = if moved {
+                    source
+                } else {
+                    ""
+                }
+            }]).revision
+}
+
+test fn generic_implementation_moves_keep_abstract_source_bindings() {
+    let base = generic_implementation_case(false, false)
+    assert match merge(base, generic_implementation_case(true, false), generic_implementation_case(false, true)) {
+        Result.Ok(value) => contains(get(value.files, 2).text, "2")
+        Result.Err(message) => {
+            discard write_error(message)
+            false
+        }
+    }
+}

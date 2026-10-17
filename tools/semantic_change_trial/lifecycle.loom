@@ -2,6 +2,8 @@ import semantic_change.File
 import semantic_change.Identity
 import semantic_change.Revision
 import semantic_change.declaration_key
+import semantic_change.declaration_label
+import semantic_change.declaration_supported
 import std.loom.ast.NodeKind
 import std.loom.manifest.segment
 import std.loom.parser.parse
@@ -43,11 +45,6 @@ fn lifecycle_leaf(value Text) Bool {
     !contains(value, "/") && !contains(value, "\\")
 }
 
-fn lifecycle_kind(kind NodeKind) Bool {
-    kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum ||
-    kind == NodeKind.Refined || kind == NodeKind.Concept
-}
-
 fn declarations(files List[File]) Result[List[Identity], Text] {
     let found = new[Identity]()
     var file_index = 0
@@ -69,16 +66,17 @@ fn declarations(files List[File]) Result[List[Identity], Text] {
                 index = index + 1
                 continue
             }
-            if !lifecycle_kind(node.kind) || !lifecycle_word(node.value) {
+            let label = declaration_label(node)
+            if !declaration_supported(node.kind) || !lifecycle_word(label) {
                 return Result.Err(concat("unsupported or unnamed top-level declaration in ", file.path))
             }
             let key = declaration_key(node)?
             var previous = 0
             while previous < length(found) {
                 let prior = get(found, previous)
-                if prior.name == node.value &&
-                (prior.kind != NodeKind.Function || node.kind != NodeKind.Function || prior.key == key) {
-                    return Result.Err(concat("duplicate or indistinguishable declaration: ", node.value))
+                let keyed = prior.kind == node.kind && (node.kind == NodeKind.Function || node.kind == NodeKind.Impl)
+                if prior.name == label && (!keyed || prior.key == key) {
+                    return Result.Err(concat("duplicate or indistinguishable declaration: ", label))
                 }
                 previous = previous + 1
             }
@@ -86,7 +84,7 @@ fn declarations(files List[File]) Result[List[Identity], Text] {
                     id = ""
                     path = file.path
                     kind = node.kind
-                    name = node.value
+                    name = label
                     key = key
                 })
             index = index + 1

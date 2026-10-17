@@ -12,6 +12,20 @@ import std.text.byte
 import std.text.length
 import std.int.to_text
 
+pub fn declaration_supported(kind NodeKind) Bool {
+    kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum ||
+    kind == NodeKind.Refined || kind == NodeKind.Concept || kind == NodeKind.Impl
+}
+
+// The placeholder is a locator label, never a synthesized declaration ID.
+pub fn declaration_label(node Node) Text {
+    if node.kind == NodeKind.Impl {
+        "-"
+    } else {
+        node.value
+    }
+}
+
 fn key_frame(output Bytes, text Text) {
     let size = to_text(std.text.length(text))
     var index = 0
@@ -58,9 +72,22 @@ fn key_type(output Bytes, node Node) Result[Bool, Text] {
 // A revision-local locator, NOT declaration identity or semantic equivalence.
 // Ignore name, parameter names, return type, contracts, body, and trivia.
 // Type spelling remains conservative: no alias or generic-name guessing.
-// Nullary nongeneric functions and non-functions use the compact key "-".
+// Impl keys retain concept, target and generics, never method bodies. Other
+// non-functions and nullary nongeneric functions use the compact key "-".
 pub fn declaration_key(node Node) Result[Text, Text] {
     let output = std.bytes.new()
+    if node.kind == NodeKind.Impl {
+        if length(node.children) < 3 || get(node.children, 2).kind != NodeKind.TypeParameters {
+            return Result.Err("implementation locator requires concept, target and generic declarations")
+        }
+        key_frame(output, "impl")
+        var index = 0
+        while index < 3 {
+            discard key_type(output, get(node.children, index))?
+            index = index + 1
+        }
+        return Result.Ok(hex(output))
+    }
     if node.kind == NodeKind.Function {
         var index = 0
         while index < length(node.children) {

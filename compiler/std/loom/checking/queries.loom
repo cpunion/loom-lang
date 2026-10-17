@@ -109,6 +109,49 @@ fn query_header_owner(env Environment, declarations Int, file Int, offset Int) I
     -1
 }
 
+fn query_declaration_type_header(env Environment, declarations Int, file Int, offset Int) Result[Bool, Failure] {
+    var index = 0
+    while index < declarations {
+        let item = symbol(env, index)
+        if item.file == file && item.node.kind == NodeKind.AssociatedType && !has(item.node, NodeKind.ExpansionId) &&
+        offset >= item.node.span.start && offset < item.node.span.end {
+            if pack_parameter(item.node) >= 0 || (item.owner >= 0 && pack_parameter(symbol(env, item.owner).node) >= 0) {
+                return Result.Ok(false)
+            }
+            let arguments = abstract_arguments(env, length(type_parameters(env, index)) + parameter_offset(env, index))
+            let obligations = requirements(env, index, arguments)?
+            let part = type_part(item.node)
+            if part >= 0 {
+                let target = child(item.node, part)
+                let ty = resolve_bound(env, index, target, arguments, obligations, 0)?
+                discard well_formed(env, index, ty, obligations, target, 0)?
+            }
+            return Result.Ok(true)
+        }
+        if item.file == file && item.node.kind == NodeKind.Impl && !has(item.node, NodeKind.ExpansionId) {
+            var part = 0
+            while part < 3 {
+                let span = child(item.node, part).span
+                if offset >= span.start && offset < span.end {
+                    // A pack's arity is not guessed for an uninstantiated query.
+                    if pack_parameter(item.node) >= 0 {
+                        return Result.Ok(false)
+                    }
+                    let arguments = abstract_arguments(env, length(type_parameters(env, index)))
+                    let obligations = requirements(env, index, arguments)?
+                    let target = child(item.node, 1)
+                    let ty = resolve_bound(env, index, target, arguments, obligations, 0)?
+                    discard well_formed(env, index, ty, obligations, target, 0)?
+                    return Result.Ok(true)
+                }
+                part = part + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
+
 fn query_templates(env Environment) Result[Bool, Failure] {
     var index = 0
     while index < length(env.signatures) {
@@ -152,7 +195,12 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
             })
     }
     var functions = new[Function]()
-    if length(headers) == 0 {
+    let declaration_type_header = if length(headers) == 0 {
+        query_declaration_type_header(env, declarations, file, offset)?
+    } else {
+        false
+    }
+    if length(headers) == 0 && !declaration_type_header {
         // Choose the original declaration, not a specialization produced while
         // checking a type/header that happens to share its source span.
         let owner = query_function_owner(env, declarations, file, offset)

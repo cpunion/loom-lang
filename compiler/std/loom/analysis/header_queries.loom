@@ -64,6 +64,19 @@ fn inspect_source_scope(analysis Analysis, file Int, offset Int, tokens List[Tok
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let item = get(analysis.bindings.symbols, index)
+        if item.file == file && item.node.kind == NodeKind.AssociatedType &&
+        inside(item.node.span, offset) && !macro_generated(item.node) {
+            return independent_inspection(analysis, file, offset, tokens)
+        }
+        if item.file == file && item.node.kind == NodeKind.Impl && !macro_generated(item.node) {
+            var part = 0
+            while part < 3 {
+                if inside(get(item.node.children, part).span, offset) {
+                    return independent_inspection(analysis, file, offset, tokens)
+                }
+                part = part + 1
+            }
+        }
         if item.file == file && item.node.kind == NodeKind.Function && inside(item.node.span, offset) && !macro_generated(item.node) {
             var group = 0
             while group < length(item.node.children) {

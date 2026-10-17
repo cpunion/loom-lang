@@ -287,11 +287,10 @@ fn compare_renamed(before Analysis, original Indexed, after Analysis, updated In
             let expected = target_at(before, original, directory, entry, get(sites, site))?
             let target = target_at(after, updated, directory, changed, get(current, site))?
             let restored = BindingTarget {
-                id = target.id
-                package = target.package
-                path = target.path
+                anchor = rename_original_offset(edits, target.id, target.anchor)?
                 start = rename_original_offset(edits, target.id, target.start)?
                 end = rename_original_offset(edits, target.id, target.end)?
+                ..target
             }
             if !same_target(expected, restored) {
                 return Result.Err("rename changed a checked reference binding")

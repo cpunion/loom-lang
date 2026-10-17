@@ -1,0 +1,36 @@
+fn implementation_header_source() Text {
+    """
+    concept Read {
+        fn read(self Self) Int
+    }
+    record Box[T] {
+        value T
+    }
+    impl[T] Read for Box[T] {
+        fn read(self Self) Int {
+            discard self
+            7
+        }
+    }
+    """
+}
+
+test fn implementation_headers_retain_symbolic_targets_without_a_concrete_caller() {
+    let source = implementation_header_source()
+    let analysis = accepted(input(source))
+    let functions = length(analysis.program.functions)
+    let declared = query_offset(source, "Box[T] {\n")
+    let found = inspection(analysis, source, "Box[T] {\n    fn")
+    only_definition(found, declared, declared + 3)
+    only_type(found, "app.Box[T]")
+    only_definition(independent_found(analysis.bindings, source, "Box[T] {\n    fn"), declared, declared + 3)
+    assert length(analysis.program.functions) == functions
+}
+
+test fn implementation_header_queries_do_not_accept_invalid_type_arguments() {
+    let source = std.text.replace(implementation_header_source(), "Read for Box[T]", "Read for Box[T, T]")
+    assert match inspect_independent(query_bindings(input(source)), 0, query_offset(source, "Box[T, T]")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
