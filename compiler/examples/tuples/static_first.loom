@@ -1,0 +1,80 @@
+record StaticTupleBias {
+    amount Int
+}
+
+fn static_tuple_values() (Int, Int) {
+    (2, 40)
+}
+
+fn static_tuple_shared() (Int, List[Int], List[Int]) {
+    let state = [40]
+    (2, state, state)
+}
+
+fn static_tuple_record() (StaticTupleBias, Int) {
+    (StaticTupleBias {
+            amount = 2
+        }, 40)
+}
+
+fn static_tuple_twice(value Int) Int {
+    value * 2
+}
+
+fn static_tuple_callback() (fn(Int) Int, Int) {
+    (static_tuple_twice, 21)
+}
+
+fn static_tuple_first(comptime extra Int, value Int) Int {
+    extra + value
+}
+
+fn static_tuple_both(comptime extra Int, comptime value Int) Int {
+    extra + value
+}
+
+fn static_tuple_use_shared(comptime extra Int, left List[Int], right List[Int]) Int {
+    left[0] = left[0] + extra
+    right[0]
+}
+
+fn static_tuple_use_record(comptime bias StaticTupleBias, value Int) Int {
+    bias.amount + value
+}
+
+fn static_tuple_apply(comptime callback fn(Int) Int, value Int) Int {
+    callback(value)
+}
+
+fn static_first_expansions() {
+    assert static_tuple_first(static_tuple_values()...) == 42
+    assert static_tuple_both(static_tuple_values()...) == 42
+    assert static_tuple_use_shared(static_tuple_shared()...) == 42
+    assert static_tuple_use_record(static_tuple_record()...) == 42
+    assert static_tuple_apply(static_tuple_callback()...) == 42
+    assert 1.mix(static_tuple_values()...) == 43
+    let receiver dyn EmptyStaticAdd = 1
+    assert receiver.mix(static_tuple_values()...) == 43
+    let log = [0]
+    assert empty_static_first(empty_static_gap(log, 1)..., static_tuple_values()...,
+        empty_static_gap(log, 2)...) == 42
+    assert log[0] == 12
+    log[0] = 1
+    assert empty_static_consecutive(log[0], empty_static_gap(log, 2)...,
+        static_tuple_values()..., empty_static_gap(log, 3)...,
+        empty_static_mark(log, 4)) == 47
+    assert log[0] == 1234
+    assert comptime {
+        static_tuple_first(static_tuple_values()...)
+    } == 42
+}
+
+async fn static_first_after_suspend() {
+    let log = [0]
+    assert static_tuple_first(empty_static_async_gap(log, 1).await...,
+        static_tuple_values()..., empty_static_async_gap(log, 2).await...) == 42
+    assert log[0] == 12
+    assert static_tuple_use_shared(static_tuple_shared()...,
+        empty_static_async_gap(log, 3).await...) == 42
+    assert log[0] == 123
+}

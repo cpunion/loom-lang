@@ -47,8 +47,9 @@ fn input_value(context Context, inputs CallInputs, index Int, expected Int, prob
     Result.Ok(input_effects(context, inputs, index, node, value))
 }
 
-// Empty expansion contributes evaluation, but no parameter. Keep that work at
-// its source gap; ordinary inputs have no effect table or extra typed nodes.
+// Tuple preparation belongs to its source gap, not its first parameter. Static
+// erasure may remove that parameter without removing or repeating preparation.
+// Ordinary inputs have no effect table or extra typed nodes.
 fn effect_at(inputs CallInputs, position Int, index Int) Bool {
     position == index || (index == length(inputs.nodes) - 1 && position == length(inputs.nodes))
 }
@@ -93,7 +94,11 @@ fn input_effects(context Context, inputs CallInputs, index Int, node Node, value
                             })
                         push(body, expression(ExprKind.Let, 0, node, "", saved, expressions(value), value.falls))
                     }
-                    push(body, expression(ExprKind.Discard, 0, node, "", -1, expressions(effect.value), effect.value.falls))
+                    push(body, if effect.value.kind == ExprKind.Let {
+                            effect.value
+                        } else {
+                            expression(ExprKind.Discard, 0, node, "", -1, expressions(effect.value), effect.value.falls)
+                        })
                 }
                 current = current + 1
             }
@@ -115,7 +120,7 @@ fn empty_inputs(context Context, inputs CallInputs, node Node, value Expr) Expr 
     }
 }
 
-// Static argument erasure does not erase empty operands in the surrounding
+// Static argument erasure does not erase tuple preparation in the surrounding
 // gaps. Reuse ordinary sequencing, including its saved trailing value.
 fn input_range_effects(context Context, inputs CallInputs, start Int, end Int,
     before Bool, node Node, value Expr) Expr {
@@ -281,6 +286,10 @@ fn expand_input(context Context, source Node, nodes List[Node], ready List[Optio
             mutable = false
             is_scoped = false
         })
+    push(effects, InputEffect {
+            position = length(nodes)
+            value = expression(ExprKind.Let, 0, source, "", local, expressions(value), value.falls)
+        })
     var index = 0
     while index < length(shape.arguments) {
         let node = Node {
@@ -291,15 +300,8 @@ fn expand_input(context Context, source Node, nodes List[Node], ready List[Optio
         }
         let projection = expression(ExprKind.Field, get(shape.arguments, index), node, "", index,
             expressions(atom(ExprKind.Local, value.ty, source, local)), true)
-        let field = if index == 0 {
-            let body = expressions(expression(ExprKind.Let, 0, source, "", local, expressions(value), value.falls))
-            push(body, projection)
-            expression(ExprKind.Block, projection.ty, source, "", -1, body, value.falls)
-        } else {
-            projection
-        }
         push(nodes, node)
-        push(ready, Option.Some(field))
+        push(ready, Option.Some(projection))
         index = index + 1
     }
     Result.Ok(true)

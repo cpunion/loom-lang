@@ -33,7 +33,7 @@ test fn empty_expansions_keep_their_effects_when_static_parameters_disappear() {
         """)
 }
 
-test fn empty_expansions_do_not_relax_static_capture_or_tuple_snapshot_rules() {
+test fn empty_expansions_do_not_relax_static_capture_rules() {
     let header = """
         fn gap[Ts...](values Ts...) (Ts...) {
             values
@@ -56,7 +56,8 @@ test fn empty_expansions_do_not_relax_static_capture_or_tuple_snapshot_rules() {
             extra + value
         }
         fn main() {
-            discard choose(gap()..., pair()...)
+            let runtime = pair()
+            discard choose(gap()..., runtime...)
         }
         """))
 }

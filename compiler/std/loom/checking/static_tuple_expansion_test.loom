@@ -1,0 +1,36 @@
+test fn tuple_preparation_survives_erasing_its_first_or_every_parameter() {
+    discard accepted("""
+        fn values() (Int, Int) {
+            (2, 40)
+        }
+        fn first(comptime extra Int, value Int) Int {
+            extra + value
+        }
+        fn both(comptime extra Int, comptime value Int) Int {
+            extra + value
+        }
+        fn shared() (Int, List[Int], List[Int]) {
+            let state = [40]
+            (2, state, state)
+        }
+        fn use_shared(comptime extra Int, left List[Int], right List[Int]) Int {
+            left[0] = left[0] + extra
+            right[0]
+        }
+        record Bias {
+            amount Int
+        }
+        fn records() (Bias, Int) {
+            (Bias { amount = 2 }, 40)
+        }
+        fn use_record(comptime bias Bias, value Int) Int {
+            bias.amount + value
+        }
+        fn main() {
+            assert comptime { first(values()...) } == 42
+            assert comptime { both(values()...) } == 42
+            assert comptime { use_shared(shared()...) } == 42
+            assert comptime { use_record(records()...) } == 42
+        }
+        """)
+}
