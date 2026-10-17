@@ -45,6 +45,36 @@ fn scan_prefix_cases() {
     assert !guarded_matching([1], [1, 2])
     assert !guarded_matching([1], [2])
     guarded_length(values, values)
+    append_keeps_prefix(values, [4, 5])
+    assert guarded_matching(values, [2, 1, 2, 4, 5])
+    append_keeps_prefix(values, values)
+    assert guarded_matching(values, [2, 1, 2, 4, 5, 2, 1, 2, 4, 5])
+}
+
+fn guarded_prefix(first List[Int], second List[Int]) Bool {
+    if length(first) < length(second) {
+        return false
+    }
+    var index = 0
+    while index < length(second) {
+        if get(first, index) != get(second, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn append_keeps_prefix(target List[Int], source List[Int])
+ensures length(target) - old(length(target)) == old(length(source))
+ensures guarded_prefix(target, old(target))
+{
+    let count = length(source)
+    var index = 0
+    while index < count {
+        push(target, get(source, index))
+        index = index + 1
+    }
 }
 
 test fn guarded_scans_preserve_prefix_paths_and_copy_contracts() {

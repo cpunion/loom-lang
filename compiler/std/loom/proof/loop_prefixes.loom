@@ -112,6 +112,16 @@ fn loop_prefix_leaves(proof Verification, candidates List[LoopCandidate], receiv
                                 proof_expr(before, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(before, index)),
                                 proof_expr(receiver, ExprKind.Integer, 1, "0", -1, new[Expr]()),
                                 end, bound, limit, proof_bool(receiver, true), entry, depth - 1)
+                            // The common prefix is bounded by either extent.
+                            // Growing sequences may retain the complete entry
+                            // prefix; this independent proposal still needs
+                            // entry and every-backedge proof, including writes.
+                            let extended = proof_expr(receiver, ExprKind.Binary, 2, "<=", -1, proof_children(size, end))
+                            loop_prefix_columns(proof, candidates,
+                                proof_expr(receiver, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(receiver, index)),
+                                proof_expr(before, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(before, index)),
+                                proof_expr(receiver, ExprKind.Integer, 1, "0", -1, new[Expr]()),
+                                size, bound, extended, proof_bool(receiver, true), entry, depth - 1)
                             return
                         }
                     }

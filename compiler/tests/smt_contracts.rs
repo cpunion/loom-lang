@@ -338,6 +338,10 @@ fn scan_prefixes_preserve_early_returns_and_eager_argument_checks() {
             "if length(first) != length(second) {\n        return false",
             "if length(first) != length(second) {\n        return true",
         ),
+        program.replace(
+            "        push(target, get(source, index))",
+            "        push(target, get(source, index))\n        if length(target) > 0 {\n            target[0] = 0\n        }",
+        ),
     ] {
         assert_ne!(changed, program);
         fs::write(&source, &changed).unwrap();
