@@ -259,14 +259,14 @@ Other framing and general borrow-retaining adapters remain open.
 
 Stop-the-world copying GC preserves precise roots, sharing and cycles.
 Nonallocating functions stay root-free; liveness retires dead locals at checked
-boundaries and consumed operand snapshots after handoff or loop exits. Static
+boundaries, final reads and conditional joins, and consumed operand snapshots
+after handoff or loop exits. Static
 references need no temporary snapshot. Large inline managed values use local
 storage directly as GC roots;
 pending arguments retain independent snapshots. Large objects use separate
 storage; stress tests relocate all sizes.
 Source exposes no addresses, finalizers, weak references or ownership/borrow
-syntax. Finer expression-local variable liveness and generational/concurrent GC
-remain open.
+syntax. Finer cleanup/lifetime precision and generational/concurrent GC remain open.
 
 [Lexical cleanup](../../compiler/README.md#lexical-cleanup) handles block exits,
 returns, propagation, faults, suspension and cancellation.

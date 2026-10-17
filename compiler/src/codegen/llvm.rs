@@ -1334,6 +1334,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 gc_lower::end(self.context, self.module, self.builder, *slot)?;
             }
         }
+        if self.live()
+            && let Some(retired) = self
+                .liveness
+                .expressions
+                .get(&(expr as *const checked::Expr))
+        {
+            for local in retired {
+                self.clear_dead_local(*local)?;
+            }
+        }
         Ok(value)
     }
 
