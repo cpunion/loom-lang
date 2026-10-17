@@ -308,7 +308,8 @@ fn body_expression_supported(reuse BodyReuse, value Expr, span Span) Bool {
     if !body_type_supported(reuse, value.ty) || value.span.start < span.start || value.span.end > span.end {
         return false
     }
-    if (kind == ExprKind.Call || kind == ExprKind.TaskCall || kind == ExprKind.FunctionRef) && !body_target_supported(reuse, value.index) {
+    if (kind == ExprKind.Call || kind == ExprKind.TaskCall || kind == ExprKind.FunctionRef ||
+        kind == ExprKind.ClosureEnvironment) && !body_target_supported(reuse, value.index) {
         return false
     }
     if kind == ExprKind.DynCall && !body_instance_supported(reuse, body_dynamic_slot(reuse, value)) {
@@ -518,7 +519,8 @@ fn body_expression(env Environment, reuse BodyReuse, value Expr, owner Int, offs
             } else {
                 value.text
             }
-            index = if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.FunctionRef {
+            index = if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.FunctionRef ||
+            value.kind == ExprKind.ClosureEnvironment {
                 body_target(env, reuse, value.index)?
             } else {
                 value.index

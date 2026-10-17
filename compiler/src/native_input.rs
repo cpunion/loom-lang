@@ -1266,6 +1266,9 @@ impl Converter<'_> {
                 E::List(values)
             }
             31 => {
+                if node.text == "opaque environment" {
+                    return Err("opaque captured environment escaped identity staging".into());
+                }
                 let fields = self.frame(ty)?;
                 let mut seen = vec![false; fields.len()];
                 let mut values = Vec::new();
@@ -1471,6 +1474,33 @@ impl Converter<'_> {
                     callee: Box::new(callee),
                     arguments,
                 }
+            }
+            34 => {
+                // The source checker establishes code identity before static
+                // argument erasure. Validate that target's lifted ABI; this is
+                // not a source-visible cast or a runtime target lookup.
+                self.frame(ty)?;
+                let value = self.expr(self.child(node, 0, 1)?)?;
+                let Type::Function(signature) = value.ty else {
+                    return Err("checked environment projection requires a function value".into());
+                };
+                let target = at(self.functions, index(node.index)?)?;
+                let signature = at(&self.program.function_types, signature)?;
+                let params = target
+                    .params
+                    .iter()
+                    .map(|ty| self.ty(*ty))
+                    .collect::<Result<Vec<_>>>()?;
+                if params.first() != Some(&ty)
+                    || params[1..] != signature.params
+                    || self.ty(target.result)? != signature.result
+                {
+                    return Err("checked environment projection signature mismatch".into());
+                }
+                // Native function values are {environment, entry}. Existing
+                // typed field lowering, root tracking and all backends reuse
+                // this ordinary projection; no runtime operation is needed.
+                E::Field(Box::new(value), 0)
             }
             _ => return Err("unknown or misplaced checked expression tag".into()),
         };
@@ -2246,6 +2276,56 @@ mod tests {
             decode(&stream(&[frame], 1))
                 .unwrap_err()
                 .contains("reference signature mismatch")
+        );
+    }
+
+    #[test]
+    fn known_environment_projection_checks_the_lifted_abi() {
+        let lifted = node(11, 1, "", -1, &[node(3, 1, "", 1, &[])]);
+        let frame = node(
+            31,
+            2,
+            "",
+            -1,
+            &[node(9, 1, "", 0, &[node(0, 1, "4", -1, &[])])],
+        );
+        let reference = node(24, 3, "", 0, &[frame]);
+        let stream = |value: String| {
+            let main = node(11, 0, "", -1, &[node(16, 0, "", -1, &[value])]);
+            format!(
+                concat!(
+                    "loom-checked-1\n4\n0\n-1\n1\n-1\n",
+                    "14\n-1\n1\n1\nn1\n12\n-1\n1\n1\n1\n",
+                    "2\n0\n0\n0\n2\n2\n1\n1\n2\n2\n1\n0\n{lifted}",
+                    "1\n0\n0\n0\n0\n0\n0\n{main}1\n0\n0\n",
+                ),
+                lifted = lifted,
+                main = main,
+            )
+        };
+        let program = decode(&stream(node(34, 2, "", 0, &[reference.clone()]))).unwrap();
+        let c::StmtKind::Discard(value) = &program.functions[1].body.statements[0].kind else {
+            panic!("expected projection")
+        };
+        assert!(matches!(&value.kind, c::ExprKind::Field(source, 0)
+            if matches!(source.ty, Type::Function(_))));
+        assert!(
+            decode(&stream(node(34, 2, "", 1, &[reference.clone()])))
+                .unwrap_err()
+                .contains("projection signature mismatch")
+        );
+        assert!(decode(&stream(node(34, 1, "", 0, &[reference]))).is_err());
+        assert!(
+            decode(&stream(node(34, 2, "", 0, &[node(0, 1, "7", -1, &[])])))
+                .unwrap_err()
+                .contains("requires a function value")
+        );
+        let opaque = node(31, 2, "opaque environment", -1, &[]);
+        let reference = node(24, 3, "", 0, &[opaque]);
+        assert!(
+            decode(&stream(node(34, 2, "", 0, &[reference])))
+                .unwrap_err()
+                .contains("escaped identity staging")
         );
     }
 

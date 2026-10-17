@@ -286,7 +286,7 @@ fn remap(program Program, callbacks List[Int], value Expr, offset Int) Expr {
         index = if local_index {
             value.index + offset
         } else {
-            if value.kind == ExprKind.FunctionRef {
+            if value.kind == ExprKind.FunctionRef || value.kind == ExprKind.ClosureEnvironment {
                 callback_target(program, callbacks, value.index)
             } else {
                 value.index

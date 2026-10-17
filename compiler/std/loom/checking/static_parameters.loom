@@ -178,7 +178,7 @@ fn static_probe_context(context Context, node Node) Result[Context, Failure] {
 fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] {
     expr(static_probe_context(context, node)?, node, expected)
 }
-fn static_argument(context Context, node Node, checked Expr, expected Int) Result[StaticValue, Failure] {
+fn static_argument(context Context, node Node, checked Expr, expected Int, identity Bool) Result[StaticValue, Failure] {
     if !static_parameter_type(context.env, expected) {
         return Result.Err(error(context, node, "comptime parameters require immutable stored values or a function type after specialization"))
     }
@@ -203,7 +203,7 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
         let value = get(context.constants, get(context.bindings, forwarded).constant)
         if value.ty == expected { return Result.Ok(value) }
     }
-    if get(context.env.types, expected).kind == TypeKind.Function {
+    if get(context.env.types, expected).kind == TypeKind.Function && !identity {
         let stage = staging(context, node)?
         let reference = expr(stage, node, expected)?
         discard isolated(context, node, reference, length(context.locals))?
@@ -219,7 +219,7 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
                 text = "" arguments = instance.arguments storage = -1 })
         }
     }
-    let computation = computed_index(context, node, node, expected)?
+    let computation = computed_index(context, node, node, expected, identity)?
     let value = get(context.env.computations, computation).value
     let kind = get(context.env.types, expected).kind
     if kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum || kind == TypeKind.Refined {

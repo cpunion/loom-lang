@@ -66,6 +66,7 @@ test fn function_signatures_are_structural_and_references_are_explicit() {
     data(buffer, value)
     assert std.bytes.to_text(buffer) == "12\n-1\n1\n1\n3\n"
     assert expression_tag(ExprKind.FunctionRef) == 24 && expression_tag(ExprKind.IndirectCall) == 25
+    assert expression_tag(ExprKind.ClosureEnvironment) == 34
 }
 
 test fn lowered_tasks_and_frames_have_explicit_native_storage_tags() {

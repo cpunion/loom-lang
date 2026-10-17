@@ -181,6 +181,7 @@ fn expression_tag(kind ExprKind) Int {
         ExprKind.FrameNew => 31,
         ExprKind.FrameStore => 32
         ExprKind.Bytes => 33
+        ExprKind.ClosureEnvironment => 34
         ExprKind.ResourceDrain => {
             assert false
             -1

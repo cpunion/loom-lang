@@ -114,6 +114,10 @@ pub enum ExprKind {
     ResourceDrain
     // index identifies a type in this checking session, never a runtime ID.
     TypeValue
+    // index identifies the statically established lifted target. Its first
+    // parameter is this expression's managed environment type; child 0 is
+    // the existing function value, not a separately materialized snapshot.
+    ClosureEnvironment
 }
 
 // FunctionRef.index is a concrete scheduled function ID; an optional child is

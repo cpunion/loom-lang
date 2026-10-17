@@ -61,6 +61,9 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
         return reify_visit(state, original, depth + 1)
     }
     let shared = kind == TypeKind.List || kind == TypeKind.Bytes || kind == TypeKind.Frame
+    if kind == TypeKind.Frame && value.text == "opaque environment" {
+        return Result.Err(error(state.context, state.node, "comptime cannot materialize a live captured environment"))
+    }
     if shared {
         if value.number <= 0 || value.number > 100000 {
             return Result.Err(error(state.context, state.node, "comptime result has no fresh container identity"))

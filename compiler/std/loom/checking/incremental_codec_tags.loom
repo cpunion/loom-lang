@@ -130,6 +130,7 @@ fn cache_expression_tag(value ExprKind) Int {
         ExprKind.Bytes => 37
         ExprKind.ResourceDrain => 38
         ExprKind.TypeValue => 39
+        ExprKind.ClosureEnvironment => 40
     }
 }
 
@@ -253,6 +254,9 @@ fn cache_expression_kind(value Int) Result[ExprKind, Text] {
     }
     if value == 39 {
         return Result.Ok(ExprKind.TypeValue)
+    }
+    if value == 40 {
+        return Result.Ok(ExprKind.ClosureEnvironment)
     }
     Result.Err("unknown cached expression kind")
 }
