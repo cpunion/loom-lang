@@ -19,6 +19,7 @@ import std.loom.project.Project
 import std.loom.project.SourceFile
 import std.loom.project.join_path
 import std.loom.project.package_label
+import std.loom.project.rebuild_imports
 import std.loom.project.name
 import std.list.get
 import std.list.length

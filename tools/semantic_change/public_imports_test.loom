@@ -211,7 +211,7 @@ test fn production_imports_do_not_acquire_test_only_overload_names() {
     }
 }
 
-test fn overload_rename_does_not_hide_an_independent_member_import_change() {
+test fn overload_rename_does_not_hide_a_conflicting_file_import_scaffold() {
     let base = split_public_case(false, false, false, false, false)
     let renamed = split_public_case(true, true, false, false, false)
     let edited = split_public_case(false, false, true, true, false)
@@ -223,7 +223,7 @@ test fn overload_rename_does_not_hide_an_independent_member_import_change() {
         })
     let production = public_batch_context(base, false)
     let tests = public_batch_context(base, true)
-    let branch = match package_project(production, edited) {
+    let branch = match package_project(production, edited, false) {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
@@ -235,7 +235,9 @@ test fn overload_rename_does_not_hide_an_independent_member_import_change() {
         Result.Err(_) => false
     }
     assert match merge_packages(base, renamed, edited, production, tests) {
-        Result.Err(message) => contains(message, "import bindings changed")
+        // Normalization changed a private test file's import scaffold too;
+        // independently changing the main file does not select one carrier.
+        Result.Err(message) => contains(message, "outside declaration bodies")
         Result.Ok(_) => false
     }
 }

@@ -381,38 +381,12 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
                         return Result.Err(render(source_path, text, error))
                     }
                 }
-                let selected_imports = if test_only {
-                    test_imports
-                } else {
-                    imports
-                }
-                var item = 0
-                while item < length(tree.children) {
-                    let node = get(tree.children, item)
-                    // Await loads trusted std.task helpers without exposing
-                    // names. Embedded tests extend the completed production
-                    // package, just like declarations in *_test.loom files.
-                    if package != "std.task" && contains_await(node) {
-                        let await_imports = if test_only || (node.kind == NodeKind.Function && has(node, NodeKind.Test)) {
-                            test_imports
-                        } else {
-                            imports
-                        }
-                        include(await_imports, "std.task")
+                match collect_source_imports(tree, package, test_only, imports, test_imports) {
+                    Result.Ok(_) => {
                     }
-                    if node.kind == NodeKind.Refined && package != "std.result" {
-                        include(selected_imports, "std.result")
+                    Result.Err(message) => {
+                        return Result.Err(concat(source_path, concat(": ", message)))
                     }
-                    if node.kind == NodeKind.Import {
-                        let target = std.loom.project.package(node.value)
-                        if target == "" {
-                            return Result.Err(concat(source_path, ": imports name a module/package and declaration"))
-                        }
-                        if target != package {
-                            include(selected_imports, target)
-                        }
-                    }
-                    item = item + 1
                 }
                 let resolved = if physical && length(loader.overlays) == 0 {
                     canonical(path)?

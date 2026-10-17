@@ -1,0 +1,145 @@
+fn graph_source(package Int, text Text, testing Bool) SourceFile {
+    let tree = match std.loom.parser.parse(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return graph_source(package, "", testing)
+        }
+    }
+    SourceFile {
+        package = package
+        path = concat(concat("/basis/", std.int.to_text(package)), if testing {
+                "/value_test.loom"
+            } else {
+                "/value.loom"
+            })
+        text = text
+        tree = tree
+        test_only = testing
+        trusted_std = false
+    }
+}
+
+fn graph_fixture(text Text) Project {
+    Project {
+        files = [graph_source(0, text, false), graph_source(2, """
+                    pub fn value() Int {
+                        7
+                    }
+                    """, false), graph_source(2, """
+                    import app.root
+
+                    test fn parent_is_available() {
+                        assert root() > 0
+                    }
+                    """, true), graph_source(1, "pub fn decode() {}\n", false),
+            graph_source(3, "pub fn secret() {}\n", false), graph_source(4, "pub fn decode() {}\n", false)]
+        modules = [ModuleInstance {
+                name = "app"
+                source = "/app"
+            }, ModuleInstance {
+                name = "codec"
+                source = "/codec"
+            }, ModuleInstance {
+                name = "codec"
+                source = "/fork"
+            }, ModuleInstance {
+                name = "hidden"
+                source = "/hidden"
+            }]
+        packages = [Package {
+                instance = 0
+                relative = ""
+                imports = [PackageImport {
+                        spelling = "codec.value"
+                        target = 1
+                    }]
+            }, Package {
+                instance = 1
+                relative = "value"
+                imports = [PackageImport {
+                        spelling = "hidden.value"
+                        target = 3
+                    }]
+            }, Package {
+                instance = 0
+                relative = "child"
+                imports = new[PackageImport]()
+            }, Package {
+                instance = 3
+                relative = "value"
+                imports = new[PackageImport]()
+            }, Package {
+                instance = 2
+                relative = "value"
+                imports = new[PackageImport]()
+            }]
+        root = 0
+    }
+}
+
+test fn edited_import_graphs_keep_ids_and_independent_private_test_back_edges() {
+    let project = graph_fixture("""
+        import app.child.value
+
+        pub fn root() Int {
+            value()
+        }
+        """)
+    let ordinary = match rebuild_imports(project, false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            project
+        }
+    }
+    assert get(get(ordinary.packages, 0).imports, 0).target == 2
+    assert length(get(ordinary.packages, 2).imports) == 0
+    let testing = match rebuild_imports(project, true) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            project
+        }
+    }
+    assert get(get(testing.packages, 2).imports, 0).target == 0
+    assert length(testing.packages) == length(project.packages) && testing.root == project.root
+    assert get(get(project.packages, 0).imports, 0).target == 1
+    // Turning that private back-edge into an ordinary import is a real cycle.
+    let files = [get(project.files, 0), SourceFile {
+            test_only = false,
+            ..get(project.files, 2)
+        }]
+    assert match rebuild_imports(Project {
+            files = files,
+            ..project
+        }, true) {
+        Result.Err(message) => message == "package import cycle in edited source"
+        Result.Ok(_) => false
+    }
+}
+
+test fn edited_imports_never_guess_forks_or_grant_transitive_module_access() {
+    let project = graph_fixture("import codec.value.decode\n")
+    assert match rebuild_imports(project, false) {
+        Result.Ok(value) => get(get(value.packages, 0).imports, 0).target == 1
+        Result.Err(_) => false
+    }
+    assert match rebuild_imports(graph_fixture("import hidden.value.secret\n"), false) {
+        Result.Err(message) => std.text.contains(message, "expanded pinned module basis")
+        Result.Ok(_) => false
+    }
+    assert match rebuild_imports(graph_fixture("import app.missing.value\n"), false) {
+        Result.Err(message) => std.text.contains(message, "expanded pinned package sources")
+        Result.Ok(_) => false
+    }
+    // Conflicting direct namespace evidence cannot select the first same name.
+    push(get(project.packages, 2).imports, PackageImport {
+            spelling = "codec.other"
+            target = 4
+        })
+    assert match rebuild_imports(project, false) {
+        Result.Err(message) => message == "ambiguous pinned module binding"
+        Result.Ok(_) => false
+    }
+}

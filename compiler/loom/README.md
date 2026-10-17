@@ -241,6 +241,14 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
   bytes/membership and never fetches, writes or borrows cache-root policy.
   A fifth `source_root` argument confines effective path dependencies from that
   root, while preserving verified Git snapshots and their own containment rules.
+- `std.loom.project.rebuild_imports(project, tests)` purely reconstructs source
+  edges without changing package IDs, reading files or fetching dependencies.
+  It shares the loader's explicit/implicit dependency collector and private-test
+  rules. Targets must already have production sources in the pinned project;
+  existing direct namespace bindings select module instances, never same-name
+  guesses or transitive grants. Ordinary cycles reject. This uses `SourceFile.tree`:
+  hosts must keep AST/text snapshots consistent. It is graph construction, not
+  typing, proof or evidence that the input matches a filesystem/deployment.
 - `std.loom.project.git_snapshot_input(tree, oid_size)` validates a NUL-delimited
   Git tree and produces binary-safe `cat-file --batch` requests.
   `extract_git_snapshot(root, tree, output, oid_size)` writes those responses

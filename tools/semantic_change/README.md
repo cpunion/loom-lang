@@ -8,10 +8,12 @@ identity maintenance and reviewed application to a new tree.
 
 `merge_packages(base, left, right, production, tests)` accepts lists of
 `PackageRevision { directory, revision }` from one module, with a nonempty baseline.
-Branches may add self-contained packages or omit whole packages. New packages
+Branches may add packages or omit whole packages. New packages
 must have fresh declaration IDs and the directory identity given by their module
-and package name; new explicit/implicit dependencies require expanded context and
-explicit resolution. Identical additions or deletions combine; competing additions
+and package name. Source imports may connect them to existing consumers and
+producers in the pinned source basis. Unavailable packages or previously unbound
+module namespaces require expanded context and explicit resolution.
+Identical additions or deletions combine; competing additions
 and deletion versus edit do not. `directory` is the package's path in the pinned
 project, not its branch snapshot location. Every baseline must match exactly;
 declaration IDs must be unique across the batch and remain in their package.
@@ -37,12 +39,17 @@ signature rather than sibling-body byte offsets; this does not synthesize durabl
 member IDs or merge concurrent container-body edits. Interface/default-presence
 changes and ambiguous member slots still require resolution.
 
-Retained-package imports and external module instances stay pinned. Cross-package header/contract or deletion
+Import edges are rebuilt from each complete source tree with the ordinary
+loader's dependency rules. External module identities remain pinned: a same-named
+fork or transitive dependency cannot become a direct dependency by inference.
+The baseline's source imports must agree with its pinned graph. Ordinary cycles
+reject; private test back-edges retain the loader's separate scope rules.
+Cross-package header/contract or deletion
 changes can combine with edits only in completely disconnected import components.
-The graph includes production and private-test imports, pinned consumers and
+The graph includes baseline, branch and candidate production/private-test imports, pinned consumers and
 external module instances; common consumers or dependencies keep packages connected.
 This is a conservative dependency separation rule, not declaration-level independence
-or behavior equivalence. Changes to package scope, imports, conflicting
+or behavior equivalence. Changes to package scope, conflicting
 headers/contracts, connected deletion versus edits, unsupported declarations and references
 without complete checked evidence require explicit resolution.
 Explicit private named-declaration renames compose in package batches too:
@@ -66,13 +73,14 @@ parameters; missing or conflicting evidence still requires resolution.
 Public function, record, enum, refined-type and concept renames also compose in a complete selected-module batch,
 including checked import members, calls and each package's private tests. Every
 known package in that module must participate; known consumers in other module
-instances require separate resolution. Visibility and existing dependency edges
+instances require separate resolution. Visibility and module-instance identity
 stay fixed. Public overload imports split into the names required by
 their identified declarations; calls and contextual function values follow only
 their own selected target. Existing import lines and trailing comments stay in
 place, and additional imports retain the file's line ending. Normalized member
-sets must agree in both production and effective private-test scope; unrelated
-import changes still require resolution. Type renames refresh affected function
+bindings must agree in production and effective private-test scope. Conflicting
+file-level import scaffolds still require resolution rather than a guessed text
+merge. Type renames refresh affected function
 and impl locators while retaining their explicit IDs and checked member scopes.
 Single-package public renames, member renames and moves across package identities
 remain unsupported.

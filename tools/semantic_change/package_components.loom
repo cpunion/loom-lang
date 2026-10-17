@@ -80,7 +80,7 @@ fn conflicting_changes(left PackageChanges, right PackageChanges) Bool {
 // nominal types and shared dependencies all keep packages connected. This is
 // deliberately coarser than a declaration/call graph, not behavior equivalence.
 fn separate_package_changes(left List[PackageChanges], right List[PackageChanges],
-    production Project, tests Project) Result[Bool, Text] {
+    production Project, tests Project, branches List[Project]) Result[Bool, Text] {
     var needed = false
     var a = 0
     while a < length(left) {
@@ -100,6 +100,11 @@ fn separate_package_changes(left List[PackageChanges], right List[PackageChanges
     }
     discard include_dependencies(graph, production)?
     discard include_dependencies(graph, tests)?
+    var branch = 0
+    while branch < length(branches) {
+        discard include_dependencies(graph, get(branches, branch))?
+        branch = branch + 1
+    }
     let components = new[Int]()
     a = 0
     while a < length(left) {

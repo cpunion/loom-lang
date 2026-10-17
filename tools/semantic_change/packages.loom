@@ -76,7 +76,7 @@ fn package_scopes(project Project, revisions List[PackageRevision]) Result[List[
     Result.Ok(scopes)
 }
 
-fn package_project(project Project, revisions List[PackageRevision]) Result[Project, Text] {
+fn package_project(project Project, revisions List[PackageRevision], tests Bool) Result[Project, Text] {
     let scopes = package_scopes(project, revisions)?
     var updated = project
     var index = 0
@@ -85,7 +85,38 @@ fn package_project(project Project, revisions List[PackageRevision]) Result[Proj
         updated = contextual_package(updated, scope.package, scope.directory, scope.indexed.revision)?
         index = index + 1
     }
-    Result.Ok(updated)
+    std.loom.project.rebuild_imports(updated, tests)
+}
+
+fn checked_basis_imports(project Project, tests Bool) Result[Bool, Text] {
+    let rebuilt = std.loom.project.rebuild_imports(project, tests)?
+    var index = 0
+    while index < length(project.packages) {
+        let original = get(project.packages, index).imports
+        let required = get(rebuilt.packages, index).imports
+        var edge = 0
+        while edge < length(required) {
+            let expected = get(required, edge)
+            var found = false
+            var previous = 0
+            while previous < length(original) {
+                let actual = get(original, previous)
+                if actual.spelling == expected.spelling {
+                    if actual.target != expected.target {
+                        return Result.Err("pinned project import graph does not match its baseline source")
+                    }
+                    found = true
+                }
+                previous = previous + 1
+            }
+            if !found {
+                return Result.Err("pinned project import graph does not match its baseline source")
+            }
+            edge = edge + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
 }
 
 fn package_target(analysis Analysis, scopes List[PackageScope], package Int, path Text,
@@ -375,6 +406,8 @@ fn merge_fixed_packages(base List[PackageRevision], left List[PackageRevision], 
     discard package_scopes(tests, base)?
     discard same_package_identities(production, base, left)?
     discard same_package_identities(production, base, right)?
+    discard checked_basis_imports(production, false)?
+    discard checked_basis_imports(tests, true)?
     let plans = new[PackageRenames]()
     var renaming = false
     var index = 0
@@ -404,40 +437,23 @@ fn merge_fixed_packages(base List[PackageRevision], left List[PackageRevision], 
             let original = normalize_public_package_renames(base, plans, production, tests, backend)?
             let a = normalize_public_package_renames(left, plans, production, tests, backend)?
             let b = normalize_public_package_renames(right, plans, production, tests, backend)?
-            discard public_package_imports_unchanged(original, a, b)?
             return merge_package_names(original, a, b,
-                package_project(production, original)?, package_project(tests, original)?, backend)
+                package_project(production, original, false)?, package_project(tests, original, true)?, backend)
         }
-        discard package_imports_unchanged(base, left, right)?
         let original = normalize_package_renames(base, plans, production, tests, backend)?
         let a = normalize_package_renames(left, plans, production, tests, backend)?
         let b = normalize_package_renames(right, plans, production, tests, backend)?
         return merge_package_names(original, a, b,
-            package_project(production, original)?, package_project(tests, original)?, backend)
+            package_project(production, original, false)?, package_project(tests, original, true)?, backend)
     }
-    discard package_imports_unchanged(base, left, right)?
     merge_package_names(base, left, right, production, tests, backend)
-}
-
-fn package_imports_unchanged(base List[PackageRevision], left List[PackageRevision],
-    right List[PackageRevision]) Result[Bool, Text] {
-    var index = 0
-    while index < length(base) {
-        let original = get(base, index)
-        let a = package_revision(left, original.directory)?.revision
-        let b = package_revision(right, original.directory)?.revision
-        if (length(a.files) != 0 && (!same_imports(original.revision, a)? || !same_implicit_imports(original.revision, a)?)) ||
-        (length(b.files) != 0 && (!same_imports(original.revision, b)? || !same_implicit_imports(original.revision, b)?)) {
-            return Result.Err("package merge import bindings changed; explicit resolution required")
-        }
-        index = index + 1
-    }
-    Result.Ok(true)
 }
 
 fn merge_package_names(base List[PackageRevision], left List[PackageRevision], right List[PackageRevision],
     production Project, tests Project, backend ProofBackend) Result[List[PackageRevision], Text] {
-    discard separate_package_changes(package_changes(base, left)?, package_changes(base, right)?, production, tests)?
+    let left_changes = package_changes(base, left)?
+    let right_changes = package_changes(base, right)?
+    discard separate_package_changes(left_changes, right_changes, production, tests, new[Project]())?
     let merged = new[PackageRevision]()
     var index = 0
     while index < length(base) {
@@ -455,6 +471,16 @@ fn merge_package_names(base List[PackageRevision], left List[PackageRevision], r
             })
         index = index + 1
     }
+    // Parse/rebuild each complete branch once, not once per private test root.
+    // All graphs contribute to dependency separation, including newly added edges.
+    let left_production = package_project(production, left, false)?
+    let right_production = package_project(production, right, false)?
+    let merged_production = package_project(production, merged, false)?
+    let left_tests = package_project(tests, left, true)?
+    let right_tests = package_project(tests, right, true)?
+    let merged_tests = package_project(tests, merged, true)?
+    discard separate_package_changes(left_changes, right_changes, production, tests,
+        [left_production, right_production, merged_production, left_tests, right_tests, merged_tests])?
     let owner = get(tests.packages, tests.root).instance
     var pass = -1
     while pass < length(tests.packages) {
@@ -469,9 +495,30 @@ fn merge_package_names(base List[PackageRevision], left List[PackageRevision], r
                 production
             }
             discard package_analysis(context, testing, backend)?
-            let before_left = package_analysis(package_project(context, left)?, testing, backend)?
-            let before_right = package_analysis(package_project(context, right)?, testing, backend)?
-            let after = package_analysis(package_project(context, merged)?, testing, backend)?
+            let before_left = package_analysis(if testing {
+                    Project {
+                        root = pass,
+                        ..left_tests
+                    }
+                } else {
+                    left_production
+                }, testing, backend)?
+            let before_right = package_analysis(if testing {
+                    Project {
+                        root = pass,
+                        ..right_tests
+                    }
+                } else {
+                    right_production
+                }, testing, backend)?
+            let after = package_analysis(if testing {
+                    Project {
+                        root = pass,
+                        ..merged_tests
+                    }
+                } else {
+                    merged_production
+                }, testing, backend)?
             discard compare_packages(before_left, left, after, merged)?
             discard compare_packages(before_right, right, after, merged)?
         }

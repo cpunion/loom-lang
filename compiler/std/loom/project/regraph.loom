@@ -1,0 +1,196 @@
+fn basis_module(project Project, owner Int, spelling Text) Result[Int, Text] {
+    let first = get(parts(spelling, 46), 0)
+    if first == get(project.modules, owner).name {
+        return Result.Ok(owner)
+    }
+    var found = -1
+    var index = 0
+    if first == "std" {
+        while index < length(project.modules) {
+            if get(project.modules, index).name == "std" {
+                if found >= 0 && found != index {
+                    return Result.Err("ambiguous pinned standard-library instance")
+                }
+                found = index
+            }
+            index = index + 1
+        }
+    } else {
+        // A module's existing direct edges establish namespace identity. A
+        // same-named transitive module is not permission to import it.
+        while index < length(project.packages) {
+            let current = get(project.packages, index)
+            if current.instance == owner {
+                var edge = 0
+                while edge < length(current.imports) {
+                    let imported = get(current.imports, edge)
+                    if get(parts(imported.spelling, 46), 0) == first {
+                        if imported.target < 0 || imported.target >= length(project.packages) {
+                            return Result.Err("pinned import has an unknown target")
+                        }
+                        let instance = get(project.packages, imported.target).instance
+                        if found >= 0 && found != instance {
+                            return Result.Err("ambiguous pinned module binding")
+                        }
+                        found = instance
+                    }
+                    edge = edge + 1
+                }
+            }
+            index = index + 1
+        }
+    }
+    if found < 0 || found >= length(project.modules) {
+        return Result.Err(concat("import needs an expanded pinned module basis: ", spelling))
+    }
+    Result.Ok(found)
+}
+
+fn basis_import(project Project, owner Int, spelling Text) Result[Int, Text] {
+    let instance = basis_module(project, owner, spelling)?
+    var found = -1
+    var index = 0
+    while index < length(project.packages) {
+        if get(project.packages, index).instance == instance &&
+        package_label(project.modules, project.packages, index) == spelling {
+            if found >= 0 {
+                return Result.Err("duplicate pinned package identity")
+            }
+            found = index
+        }
+        index = index + 1
+    }
+    if found < 0 {
+        return Result.Err(concat("import needs expanded pinned package sources: ", spelling))
+    }
+    Result.Ok(found)
+}
+
+fn acyclic_imports(edges List[List[Int]]) Result[Bool, Text] {
+    let incoming = new[Int](length(edges))
+    let ready = new[Int]()
+    var index = 0
+    while index < length(edges) {
+        push(incoming, 0)
+        index = index + 1
+    }
+    index = 0
+    while index < length(edges) {
+        let targets = get(edges, index)
+        var edge = 0
+        while edge < length(targets) {
+            let target = get(targets, edge)
+            set(incoming, target, get(incoming, target) + 1)
+            edge = edge + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(incoming) {
+        if get(incoming, index) == 0 {
+            push(ready, index)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(ready) {
+        let targets = get(edges, get(ready, index))
+        var edge = 0
+        while edge < length(targets) {
+            let target = get(targets, edge)
+            let count = get(incoming, target) - 1
+            set(incoming, target, count)
+            if count == 0 {
+                push(ready, target)
+            }
+            edge = edge + 1
+        }
+        index = index + 1
+    }
+    if length(ready) != length(edges) {
+        return Result.Err("package import cycle in edited source")
+    }
+    Result.Ok(true)
+}
+
+// Rebuild source edges without filesystem access, fetching, name-based module
+// deduplication or changing package IDs. All target sources must already be in
+// the pinned Project. With tests enabled, edges include independent private
+// scopes; only ordinary edges participate in production-cycle validation.
+pub fn rebuild_imports(project Project, tests Bool) Result[Project, Text] {
+    let ordinary = new[List[Text]](length(project.packages))
+    let testing = new[List[Text]](length(project.packages))
+    let production_sources = new[Bool](length(project.packages))
+    var index = 0
+    while index < length(project.packages) {
+        push(ordinary, new[Text]())
+        push(testing, new[Text]())
+        push(production_sources, false)
+        index = index + 1
+    }
+    index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        if !file.test_only || tests {
+            if file.package < 0 || file.package >= length(project.packages) {
+                return Result.Err("source has an unknown package identity")
+            }
+            if !file.test_only {
+                set(production_sources, file.package, true)
+            }
+            discard collect_source_imports(select_source(file.tree, tests),
+                package_label(project.modules, project.packages, file.package), file.test_only,
+                get(ordinary, file.package), get(testing, file.package))?
+        }
+        index = index + 1
+    }
+    let packages = new[Package](length(project.packages))
+    let edges = new[List[Int]](length(project.packages))
+    index = 0
+    while index < length(project.packages) {
+        let current = get(project.packages, index)
+        let imports = new[PackageImport]()
+        let normal = new[Int]()
+        let groups = [get(ordinary, index), get(testing, index)]
+        var group = 0
+        while group < length(groups) {
+            let names = get(groups, group)
+            var name = 0
+            while name < length(names) {
+                let spelling = get(names, name)
+                let target = basis_import(project, current.instance, spelling)?
+                if !get(production_sources, target) {
+                    return Result.Err(concat("import target has no pinned production sources: ", spelling))
+                }
+                var seen = false
+                var previous = 0
+                while previous < length(imports) {
+                    seen = seen || get(imports, previous).spelling == spelling
+                    previous = previous + 1
+                }
+                if !seen {
+                    push(imports, PackageImport {
+                            spelling = spelling
+                            target = target
+                        })
+                }
+                if group == 0 {
+                    push(normal, target)
+                }
+                name = name + 1
+            }
+            group = group + 1
+        }
+        push(edges, normal)
+        push(packages, Package {
+                imports = imports,
+                ..current
+            })
+        index = index + 1
+    }
+    discard acyclic_imports(edges)?
+    Result.Ok(Project {
+            packages = packages,
+            ..project
+        })
+}

@@ -1,0 +1,152 @@
+fn graph_math(text Text) PackageRevision {
+    package_fixture("sample.math", "/module/math", [File {
+                path = "value.loom"
+                text = text
+            }])
+}
+
+fn graph_extra() PackageRevision {
+    package_fixture("sample.extra", "/module/extra", [File {
+                path = "value.loom"
+                text = """
+                    import sample.math.base
+
+                    pub fn extra() Int {
+                        base(1) + 1
+                    }
+                    """
+            }, File {
+                path = "value_test.loom"
+                text = """
+                    test fn own_private_scope() {
+                        assert extra() > 0
+                    }
+                    """
+            }])
+}
+
+fn graph_using_root() PackageRevision {
+    package_fixture("sample", "/module", [File {
+                path = "value.loom"
+                text = """
+                    import sample.extra.extra
+
+                    fn value() Int {
+                        extra()
+                    }
+                    """
+            }, get(independent_package("sample", "/module", 1, true).revision.files, 1)])
+}
+
+test fn new_packages_can_use_pinned_sources_and_be_imported_by_existing_code() {
+    let root = independent_package("sample", "/module", 1, true)
+    let math = graph_math("""
+        pub fn base(value Int) Int {
+            value
+        }
+        """)
+    let base = [root, math]
+    let left = [graph_using_root(), math, graph_extra()]
+    let right = [root, graph_math("""
+            pub fn base(value Int) Int {
+                value + 1
+            }
+            """)]
+    let branches = [left, right]
+    var order = 0
+    while order < 2 {
+        let merged = match merge_packages(base, get(branches, order), get(branches, 1 - order),
+            independent_context(base, false), independent_context(base, true)) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        assert length(merged) == 3 && package_present(merged, "/module/extra")
+        assert match package_revision(merged, "/module/math") {
+            Result.Ok(value) => contains(get(value.revision.files, 0).text, "value + 1")
+            Result.Err(_) => false
+        }
+        order = order + 1
+    }
+}
+
+test fn new_import_edges_cannot_hide_cross_package_contract_conflicts() {
+    let root = independent_package("sample", "/module", 1, true)
+    let math = graph_math("""
+        pub fn base(value Int) Int {
+            value
+        }
+        """)
+    let base = [root, math]
+    let left = [graph_using_root(), math, graph_extra()]
+    let right = [root, graph_math("""
+            pub fn base(value Int) Int ensures result == value {
+                value
+            }
+            """)]
+    assert match merge_packages(base, left, right, independent_context(base, false), independent_context(base, true)) {
+        Result.Err(message) => contains(message, "cross-package signature, contract or deletion versus edit")
+        Result.Ok(_) => false
+    }
+}
+
+test fn import_retargeting_cannot_silently_change_a_retained_body_binding() {
+    let root = package_fixture("sample", "/module", [File {
+                path = "value.loom"
+                text = """
+                    import sample.alpha.read
+
+                    fn value() Int {
+                        read()
+                    }
+                    """
+            }])
+    let alpha = package_fixture("sample.alpha", "/module/alpha", [File {
+                path = "value.loom"
+                text = "pub fn read() Int {\n    1\n}\n"
+            }])
+    let beta = package_fixture("sample.beta", "/module/beta", [File {
+                path = "value.loom"
+                text = "pub fn read() Int {\n    2\n}\n"
+            }])
+    let base = [root, alpha, beta]
+    let production = independent_context(base, false)
+    let tests = independent_context(base, true)
+    push(get(production.packages, 0).imports, PackageImport {
+            spelling = "sample.alpha"
+            target = 1
+        })
+    push(get(tests.packages, 0).imports, PackageImport {
+            spelling = "sample.alpha"
+            target = 1
+        })
+    let changed = package_fixture("sample", "/module", [File {
+                path = "value.loom"
+                text = """
+                    import sample.beta.read
+
+                    fn value() Int {
+                        read()
+                    }
+                    """
+            }])
+    assert match merge_packages(base, [changed, alpha, beta], base, production, tests) {
+        Result.Err(message) => contains(message, "changed a retained checked reference binding")
+        Result.Ok(_) => false
+    }
+    set(get(production.packages, 0).imports, 0, PackageImport {
+            spelling = "sample.alpha"
+            target = 2
+        })
+    push(get(production.packages, 0).imports, PackageImport {
+            spelling = "sample.alpha"
+            target = 1
+        })
+    assert match merge_packages(base, base, base, production, tests) {
+        Result.Err(message) => contains(message, "pinned project import graph does not match")
+        Result.Ok(_) => false
+    }
+}

@@ -357,11 +357,13 @@ extracts baseline configuration and monorepo dependencies into an owned temporar
 stage and reuses verified offline Git sources. Logical source paths keep review
 tokens independent of that stage. Reviewed application creates a Git tree with
 three-way regular-file modes, without changing existing refs, index or working
-files. Independent package additions and unused whole-package deletions compose
-with existing edits; new packages keep fresh identities and ordinary private-test
-and proof checks. Removed packages appear in review. Unselected changes require
-resolution; regular portable repositories, pinned dependencies and retained import
-graphs remain restrictions, not general semantic VCS completion.
+files. Package additions and unused whole-package deletions compose with existing
+edits, including source imports among the available pinned packages. New packages
+keep fresh identities and ordinary private-test/proof checks. Conflict analysis
+includes new edges; changed retained bindings, ordinary cycles and inferred
+transitive/fork access reject. Removed packages appear in review. Unselected
+changes require resolution; regular portable repositories, pinned module identities
+and available dependency sources remain restrictions, not general semantic VCS completion.
 Checked bindings prevent silent nominal/field drift.
 Anonymous impls now participate through explicit owner IDs and header locators.
 Method bodies are separate from interface headers; member positions normalize
