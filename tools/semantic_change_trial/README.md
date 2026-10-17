@@ -129,7 +129,8 @@ As with other merge modes, ambient file/target inputs are not enabled for proofs
 
 Preview writes no Git objects. Apply validates the token and refs, then prints a
 new **Git tree ID**, not a directory or commit. It writes only content-addressed
-blob/tree objects, using an invocation-private index. Existing refs, index and
+blob/tree objects in ordinary or bare repositories, using an invocation-private
+index. Existing refs, index and
 working files remain untouched; repeating the same reviewed operation yields
 the same tree. Inspect it with `git diff BASE TREE`, export it with `git archive`,
 or explicitly commit it through Git. A failed application may leave unreachable

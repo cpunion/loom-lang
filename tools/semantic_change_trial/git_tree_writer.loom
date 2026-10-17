@@ -176,17 +176,18 @@ fn write_git_result(executable Text, repository Text, stage Text, base GitTree,
     }
     let index_file = join_path(stage, "index")
     discard git_bytes(executable, repository, ["read-tree", base.commit], std.bytes.new(), index_file)?
-    let removed = std.bytes.new()
+    // Index-info removes entries without consulting a worktree, so the same
+    // private-index operation works for ordinary and bare repositories.
+    let updates = std.bytes.new()
     index = 0
     while index < length(base.entries) {
         let entry = get(base.entries, index)
         if git_scope(entry.relative, prefix)? {
-            git_append(removed, entry.relative)
-            std.bytes.push(removed, 0)
+            git_append(updates, concat("0 ", concat(entry.object, concat("\t", entry.relative))))
+            std.bytes.push(updates, 0)
         }
         index = index + 1
     }
-    discard git_bytes(executable, repository, ["update-index", "--force-remove", "-z", "--stdin"], removed, index_file)?
     let raw = git_bytes(executable, repository, ["hash-object", "-w", "--no-filters", "--stdin-paths"], paths)?
     let text = match decode_utf8(raw) {
         Result.Ok(value) => value
@@ -198,7 +199,6 @@ fn write_git_result(executable Text, repository Text, stage Text, base GitTree,
     if length(objects) != length(writes) + 1 || get(objects, length(writes)) != "" {
         return Result.Err("Git blob count differs from the reviewed files")
     }
-    let updates = std.bytes.new()
     index = 0
     while index < length(writes) {
         let write = get(writes, index)

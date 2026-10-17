@@ -298,8 +298,8 @@ fn read(directory Text) Result[Loaded, Text] {
     Result.Ok(state.0)
 }
 
-// Every Git operation reads an existing object or tree. Arguments are passed
-// directly to the process API, never through a shell.
+// Git arguments go directly to the process API, never through a shell. Apply
+// supplies a private index and writes objects without updating refs or worktrees.
 fn git_bytes(git_executable Text, repository Text, operation List[Text]) Result[Bytes, Text] {
     git_bytes(git_executable, repository, operation, std.bytes.new())
 }

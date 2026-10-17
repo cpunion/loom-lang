@@ -49,6 +49,27 @@ fn automatic_git_lifecycle(staging Text) Result[Text, Text] {
     }
     assert git("git", repository, ["status", "--porcelain=v1"])? == before
     assert git_commit("git", repository, "HEAD")? == right
+    let git_directory = path(repository, ".git")
+    let original_index = match read_bytes(path(git_directory, "index")) {
+        Result.Ok(value) => hex(value)
+        Result.Err(_) => {
+            return Result.Err("cannot read original Git index")
+        }
+    }
+    // A bare object store has no worktree for update-index to inspect.
+    discard git("git", repository, ["config", "core.bare", "true"])?
+    let bare = GitAutoRequest {
+        repository = git_directory,
+        ..request
+    }
+    let bare_preview = automatic_git_module(bare, false, "")?
+    let bare_token = get(split(get(split(bare_preview, "\n"), 1), " "), 2)
+    assert automatic_git_module(bare, true, bare_token)? == applied
+    assert git_commit("git", git_directory, "HEAD")? == right
+    assert match read_bytes(path(git_directory, "index")) {
+        Result.Ok(value) => hex(value) == original_index
+        Result.Err(_) => false
+    }
     assert match entries(first) {
         Result.Ok(value) => length(value) == 0,
         Result.Err(_) => false
