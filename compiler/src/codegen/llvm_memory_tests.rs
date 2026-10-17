@@ -242,6 +242,85 @@ fn dead_inner_bindings_retire_without_releasing_their_result_handoff() {
 }
 
 #[test]
+fn a_final_field_read_retires_its_local_before_the_next_operand_allocates() {
+    let concat = primitive(
+        Type::Text,
+        Primitive::TextConcat,
+        vec![text("dead"), text("value")],
+    );
+    let mut source = program(
+        vec![Type::Data(0), Type::Int],
+        vec![
+            statement(S::Let {
+                local: 0,
+                value: value(Type::Data(0), E::Record(vec![(0, concat), (1, int(7))])),
+            }),
+            statement(S::Let {
+                local: 1,
+                value: value(
+                    Type::Int,
+                    E::Binary(
+                        Binary::Add,
+                        Box::new(value(
+                            Type::Int,
+                            E::Field(Box::new(local(Type::Data(0), 0)), 1),
+                        )),
+                        Box::new(value(Type::Int, E::Call(1, vec![]))),
+                    ),
+                ),
+            }),
+            equal(local(Type::Int, 1), int(7)),
+        ],
+    );
+    source.functions.push(checked::Function {
+        name: "collect.after.read".into(),
+        params: vec![],
+        result: Type::Int,
+        locals: vec![],
+        requires: vec![],
+        span: Span::default(),
+        body: checked::Block {
+            statements: vec![statement(S::Discard(primitive(
+                Type::Text,
+                Primitive::TextConcat,
+                vec![text("collect"), text("now")],
+            )))],
+            tail: Some(Box::new(int(0))),
+            falls_through: true,
+        },
+    });
+    for optimization in [Optimization::O0, Optimization::O2] {
+        let (ir, output) = emit_run(&source, optimization);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if optimization == Optimization::O0 {
+            let body = ir.split("define internal void @loom.fn.0").nth(1).unwrap();
+            let body = body.split("\n}").next().unwrap();
+            let loaded = body.find("field.load = load").unwrap();
+            let collect = body.find("call i64 @loom.fn.1").unwrap();
+            let root = body
+                .lines()
+                .find(|line| line.contains(", ptr %gc.address,"))
+                .unwrap();
+            let root = root
+                .trim()
+                .strip_prefix("store ptr ")
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap();
+            assert!(
+                body[loaded..collect].contains(&format!("zeroinitializer, ptr {root},")),
+                "{body}"
+            );
+        }
+    }
+}
+
+#[test]
 fn match_edge_retirement_preserves_a_fresh_binding_reused_by_another_arm() {
     let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
     let mut source = program(

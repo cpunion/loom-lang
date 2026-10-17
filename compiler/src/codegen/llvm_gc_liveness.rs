@@ -26,10 +26,28 @@ pub(super) struct Plan {
     // Only live-set differences on selected edges, not every nonlive slot.
     pub entries: HashMap<*const checked::Block, Live>,
     pub retired: HashMap<*const checked::Stmt, Live>,
+    pub expressions: HashMap<*const checked::Expr, Live>,
     pub pinned: Live,
 }
 
 impl Plan {
+    fn expression_retirement(&mut self, value: &checked::Expr, retired: Live) {
+        if retired.is_empty() {
+            // Loop fixed points can make an earlier candidate live again.
+            self.expressions.remove(&(value as *const checked::Expr));
+        } else {
+            self.expressions.insert(value, retired);
+        }
+    }
+
+    fn field_local(value: &checked::Expr) -> Option<usize> {
+        match &value.kind {
+            checked::ExprKind::Local(id) => Some(*id),
+            checked::ExprKind::Field(value, _) => Self::field_local(value),
+            _ => None,
+        }
+    }
+
     pub fn new(
         body: &checked::Block,
         parameters: usize,
@@ -180,11 +198,24 @@ impl Plan {
     ) -> Live {
         match &value.kind {
             checked::ExprKind::Local(id) => {
+                let retire = future
+                    && !live.contains(id)
+                    && !matches!(value.ty, Type::Unit | Type::Int | Type::Bool | Type::Float);
+                self.expression_retirement(value, retire.then_some(*id).into_iter().collect());
                 live.insert(*id);
+            }
+            checked::ExprKind::Field(receiver, _) => {
+                // Native field projection can bypass intermediate Local/Field
+                // evaluation. Retire after the final loaded value is captured.
+                let retired = Self::field_local(receiver)
+                    .filter(|id| future && !live.contains(id))
+                    .into_iter()
+                    .collect();
+                self.expression_retirement(value, retired);
+                live = self.expression(receiver, live, targets, definitions, future, collections);
             }
             checked::ExprKind::Unary(_, value)
             | checked::ExprKind::Coerce(value)
-            | checked::ExprKind::Field(value, _)
             | checked::ExprKind::Closure {
                 environment: value, ..
             } => {
@@ -197,6 +228,13 @@ impl Plan {
                 let after = live.clone();
                 live = self.expression(right, live, targets, definitions, future, collections);
                 if matches!(operation, Binary::And | Binary::Or) {
+                    self.expression_retirement(
+                        value,
+                        live.difference(&after)
+                            .copied()
+                            .filter(|_| future)
+                            .collect(),
+                    );
                     live.extend(after);
                 }
                 let future = future || collections.expression(right);
@@ -251,6 +289,7 @@ impl Plan {
                 then_body,
                 else_body,
             } => {
+                let after = live.clone();
                 let yes = self.block(
                     then_body,
                     live.clone(),
@@ -265,6 +304,14 @@ impl Plan {
                     live
                 };
                 let branches: Live = yes.union(&no).copied().collect();
+                self.expression_retirement(
+                    value,
+                    branches
+                        .difference(&after)
+                        .copied()
+                        .filter(|_| future)
+                        .collect(),
+                );
                 let then_collects = future || collections.block(then_body);
                 self.entries.insert(
                     then_body,
