@@ -47,7 +47,9 @@ fn pattern_block(source Node, values List[Expr], body Expr) Expr {
 // was decomposed along this path, rebuild it from the still-live payloads.
 // This preserves one-shot Task transfer instead of reading a consumed parent.
 fn pattern_replace(plan PatternPlan, value Expr, local Int, replacement Expr, depth Int) Result[Expr, Failure] {
-    if plan.borrowed { return Result.Ok(value) }
+    if plan.borrowed {
+        return Result.Ok(value)
+    }
     discard pattern_step(plan, depth)?
     if value.kind == ExprKind.Local && value.index == local {
         return Result.Ok(replacement)
@@ -194,7 +196,13 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
     if get(first.patterns, column).variant == -3 {
         return literal_decision(plan, rows, values, column, depth + 1)
     }
-    let shape = get(plan.context.env.types, value.ty)
+    let base = base_type(plan.context.env, value.ty)
+    let shape = get(plan.context.env.types, base)
+    let receiver = if base == value.ty {
+        value
+    } else {
+        expression(ExprKind.Coerce, base, plan.source, "", -1, expressions(value), true)
+    }
     let product = shape.kind == TypeKind.Tuple || shape.kind == TypeKind.Record
     let count = if product {
         1
@@ -206,6 +214,7 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
     }
     let arms = new[Arm]()
     var falls = false
+    let reconstruct = !plan.borrowed && base == value.ty
     var variant = 0
     while variant < count {
         let types = if product {
@@ -223,26 +232,35 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
             let local = pattern_local(plan.context, plan.source, ty)
             push(fields, local)
             push(locals, local.index)
-            push(reconstructed, if product {
-                    expression(ExprKind.Field, ty, plan.source, "", field, expressions(local), true)
-                } else {
-                    local
-                })
+            if reconstruct {
+                push(reconstructed, if product {
+                        expression(ExprKind.Field, ty, plan.source, "", field, expressions(local), true)
+                    } else {
+                        local
+                    })
+            }
             if product {
-                let projected = expression(ExprKind.Field, ty, plan.source, "", field, expressions(value), true)
+                let projected = expression(ExprKind.Field, ty, plan.source, "", field, expressions(receiver), true)
                 push(initializers, pattern_let(plan.source, local.index, projected))
             }
             field = field + 1
         }
-        let rebuilt = if plan.borrowed { value } else { expression(if product {
-                ExprKind.Record
-            } else {
-                ExprKind.Variant
-            }, value.ty, plan.source, "", if product {
-                -1
-            } else {
-                variant
-            }, reconstructed, true) }
+        // Refinements exclude scoped resources and one-shot Tasks. Whole-row
+        // bindings can retain their original snapshot and nominal guarantee;
+        // only values with possible transfers need payload reconstruction.
+        let rebuilt = if reconstruct {
+            expression(if product {
+                    ExprKind.Record
+                } else {
+                    ExprKind.Variant
+                }, base, plan.source, "", if product {
+                    -1
+                } else {
+                    variant
+                }, reconstructed, true)
+        } else {
+            value
+        }
         let selected = pattern_rows(plan, rows, column, if product {
                 -2
             } else {
@@ -272,7 +290,7 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
             span = plan.source.span
             text = ""
             index = -1
-            children = expressions(value)
+            children = expressions(receiver)
             arms = arms
             falls = falls
         })

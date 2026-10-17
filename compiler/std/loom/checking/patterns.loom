@@ -86,7 +86,7 @@ fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, de
     if depth >= 64 {
         return Result.Err(error(context, node, "pattern nesting limit exceeded"))
     }
-    let shape = get(context.env.types, ty)
+    let shape = get(context.env.types, base_type(context.env, ty))
     if scalar_pattern(node) {
         return literal_pattern_scope(context, node, ty)
     }

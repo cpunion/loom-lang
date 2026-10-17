@@ -38,13 +38,15 @@ async fn delayed(value Priced) Priced {
 }
 
 async fn exercise() Result[Bool, ConstraintError] {
-    let pair = ordered(2, 3)
+    let pair = retained_tuple(ordered(2, 3))
     let lower, high = pair
     assert lower == 2 && high == upper(pair)
     let prepared = comptime {
-        Ordered((1, 2))
+        nested_tuple((Ordered((1, 2)), true))
     }
     assert prepared.0 == 1 && prepared.1 == 2
+    assert retained_tuple(Ordered((0, 0))).0 == 0
+    assert nested_tuple((Ordered((0, 0)), true)).1 == 0
     assert match checked((3, 2)) {
         Result.Ok(_) => false
         Result.Err(_) => true
@@ -58,7 +60,7 @@ async fn exercise() Result[Bool, ConstraintError] {
     let captured = fn() Priced {
         get(prices, 0)
     }
-    let pending = delayed(captured())
+    let pending = delayed(retained_price(captured()))
     let values = [1]
     let counted = Counted((1, values))
     let count, shared = counted

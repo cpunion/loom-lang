@@ -6,7 +6,8 @@ record RecordPatternField {
 // Match arms and ordinary bindings share nominal identity, visibility and field
 // completeness. Explicit fields stay in source order; omitted fields follow.
 fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordPatternField], Failure] {
-    let shape = get(context.env.types, ty)
+    let base = base_type(context.env, ty)
+    let shape = get(context.env.types, base)
     if shape.kind != TypeKind.Record {
         return Result.Err(error(context, node, "record pattern requires a record value"))
     }
@@ -16,7 +17,7 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
     } else {
         find_data(context.env, context.signature.symbol, node, node.value)?
     }
-    if target < 0 || target != shape.symbol || (chosen >= 0 && chosen != ty) {
+    if target < 0 || target != shape.symbol || (chosen >= 0 && chosen != base) {
         return Result.Err(error(context, node, "pattern belongs to a different nominal record"))
     }
     let declaration = symbol(context.env, shape.symbol)
@@ -25,7 +26,7 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
         return Result.Err(error(context, node, "cannot inspect a private record from another package"))
     }
     if get(context.env.inputs, 0).declaration_queries {
-        record_pattern_reference(context, node, ty, reference_path_segment(node.value), ty)
+        record_pattern_reference(context, node, base, reference_path_segment(node.value), base)
     }
     let fields = new[RecordPatternField]()
     let seen = new[Bool]()
@@ -59,7 +60,7 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
             }
             set(seen, field, true)
             if get(context.env.inputs, 0).declaration_queries {
-                record_pattern_reference(context, member, ty, 0, get(shape.fields, field).ty)
+                record_pattern_reference(context, member, base, 0, get(shape.fields, field).ty)
             }
             push(fields, RecordPatternField {
                     source = child(member, 0)
@@ -92,7 +93,7 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
 
 fn record_pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, depth Int, borrowed Bool) Result[PatternScope, Failure] {
     let fields = record_pattern_fields(context, node, ty)?
-    let shape = get(context.env.types, ty)
+    let shape = get(context.env.types, base_type(context.env, ty))
     let positions = new[Int]()
     let checked = new[CheckedPattern]()
     var current = context

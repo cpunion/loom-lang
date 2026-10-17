@@ -19,11 +19,24 @@ type LabeledItems = List[LiteralItem] where labeled_literal(self)
 
 type NamedLiteral = LiteralLabel where self.text == "ok"
 
+fn retained_literal(value NamedLiteral) NamedLiteral
+ensures result.text == value.text
+ensures result.pair == value.pair
+{
+    match value {
+        LiteralLabel {
+            text = "",
+            ..
+        } => value
+        whole => whole
+    }
+}
+
 fn literal_constraint_scope() Bool {
-    let label = NamedLiteral(LiteralLabel {
-            text = "ok"
-            pair = (1, true)
-        })
+    let label = retained_literal(NamedLiteral(LiteralLabel {
+                text = "ok"
+                pair = (1, true)
+            }))
     let items = LabeledItems([LiteralItem.Labeled(LiteralLabel {
                     text = "ok"
                     pair = (2, true)

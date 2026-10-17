@@ -1,0 +1,61 @@
+test fn refined_product_patterns_keep_nominal_whole_bindings() {
+    discard accepted_result("""
+        type Ordered = (Int, Int) where self.0 <= self.1
+        fn selected(value Ordered) Ordered
+        ensures result == value
+        {
+            match value {
+                (0, 0) => Ordered((0, 0))
+                whole => whole
+            }
+        }
+        fn nested(value (Ordered, Bool)) Ordered
+        ensures result == value.0
+        {
+            match value {
+                ((0, 0), true) => Ordered((0, 0))
+                (whole, _) => whole
+            }
+        }
+        record Pair {
+            lower Int
+            upper Int
+        }
+        type OrderedRecord = Pair where self.lower <= self.upper
+        fn record_value(value OrderedRecord) OrderedRecord
+        ensures result.lower == value.lower && result.upper == value.upper
+        {
+            match value {
+                Pair { lower = 0, upper = 0 } => OrderedRecord(Pair { lower = 0 upper = 0 })
+                whole => whole
+            }
+        }
+        """)
+}
+
+test fn refined_patterns_preserve_base_coverage_and_nominal_identity() {
+    rejects_result("""
+        type Flags = (Bool, Bool) where self.0
+        fn incomplete(value Flags) Int {
+            match value {
+                (true, _) => 1
+            }
+        }
+        """)
+    rejects_result("""
+        record Pair {
+            lower Int
+            upper Int
+        }
+        record Other {
+            lower Int
+            upper Int
+        }
+        type Ordered = Pair where self.lower <= self.upper
+        fn wrong(value Ordered) Int {
+            match value {
+                Other { .. } => 1
+            }
+        }
+        """)
+}

@@ -1608,6 +1608,9 @@ commas or newlines. Omission requires explicit `..` and cannot discard live Task
 or unadopted resources. Matching a scoped receiver borrows its payloads instead;
 omitted resources remain owned by the enclosing scope. Generic record arguments
 follow the matched type.
+Constrained records and tuples match through their base shape. Whole-value
+fallback bindings retain the constrained type, including after an earlier arm
+decomposes the value; matching does not rerun its constructor predicate.
 
 Use `pattern if condition => body` for a Boolean guard. Pattern bindings are
 visible in the guard and body. Only a matching pattern evaluates its guard;
