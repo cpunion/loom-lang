@@ -39,6 +39,7 @@ import std.process.Options
 import std.process.EnvChange
 import std.option.Option
 import std.loom.project.git_path
+import std.loom.project.is_windows_path
 import std.result.Result
 import std.text.concat
 import std.text.contains
