@@ -4911,3 +4911,6 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 bash scripts/bootstrap.sh --dev
 cargo test --locked --workspace
 ```
+
+To run a Rust integration test against a candidate compiler without replacing
+`target/loom`, set `LOOM_TEST_COMPILER` to its absolute executable path.
