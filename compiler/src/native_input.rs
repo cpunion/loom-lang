@@ -1181,6 +1181,9 @@ impl Converter<'_> {
                     Primitive::SocketSetNodelay | Primitive::SocketDatagramBroadcast => {
                         Some((&[Type::Int, Type::Int], Type::Int))
                     }
+                    Primitive::SocketBuffer => {
+                        Some((&[Type::Int, Type::Int, Type::Int], Type::Int))
+                    }
                     Primitive::SocketMembershipV4 => {
                         Some((&[Type::Int, Type::Text, Type::Text, Type::Int], Type::Int))
                     }
@@ -1606,6 +1609,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "socket_address" => P::SocketAddress,
         "socket_set_nodelay" => P::SocketSetNodelay,
         "socket_set_keepalive" => P::SocketSetKeepalive,
+        "socket_buffer" => P::SocketBuffer,
         "socket_shutdown_write" => P::SocketShutdownWrite,
         "socket_abort" => P::SocketAbort,
         "tls_client" => P::TlsClient,
@@ -1779,6 +1783,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Write
         | P::WriteBytes
         | P::SocketRead
+        | P::SocketBuffer
         | P::SocketSendDatagram
         | P::TlsRead
         | P::TlsReceive
@@ -2101,6 +2106,7 @@ mod tests {
             ("socket_receive_from", &[1, 3, 1, 3][..]),
             ("socket_send_to", &[1, 3, 1, 2][..]),
             ("socket_set_keepalive", &[1, 1, 1, 1, 1][..]),
+            ("socket_buffer", &[1, 1, 1][..]),
         ] {
             let operation = primitive(name).unwrap();
             let program = decode(&stream(name, params, 1)).unwrap();

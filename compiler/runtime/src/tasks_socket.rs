@@ -458,6 +458,44 @@ impl Sockets {
             SockRef::from(stream).set_tcp_keepalive(&options)
         })
     }
+
+    // direction: 0 receive, 1 send; size: -1 query, otherwise a positive
+    // signed OS integer. Keep the handle and every readiness lease unchanged.
+    fn buffer(&self, token: i64, direction: i64, size: i64) -> i64 {
+        if !matches!(direction, 0 | 1) || (size != -1 && !(1..=i64::from(i32::MAX)).contains(&size))
+        {
+            return -1;
+        }
+        let Some(socket) = self.get(token) else {
+            return -1;
+        };
+        let socket = match socket.as_ref() {
+            Socket::Listener(listener) => SockRef::from(listener),
+            Socket::Datagram(socket) => SockRef::from(socket),
+            Socket::Stream { stream, connection } if connection.get() == Connection::Connected => {
+                SockRef::from(stream)
+            }
+            _ => return -1,
+        };
+        if size == -1 {
+            let result = if direction == 0 {
+                socket.recv_buffer_size()
+            } else {
+                socket.send_buffer_size()
+            };
+            result
+                .ok()
+                .and_then(|size| i64::try_from(size).ok())
+                .unwrap_or(-1)
+        } else {
+            let result = if direction == 0 {
+                socket.set_recv_buffer_size(size as usize)
+            } else {
+                socket.set_send_buffer_size(size as usize)
+            };
+            result.map_or(-1, |()| 0)
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -627,6 +665,15 @@ pub(super) extern "C-unwind" fn loom_rt_socket_set_keepalive(
             .sockets()
             .keepalive(token, enabled, idle, interval, retries))
     })
+}
+
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_socket_buffer(
+    token: i64,
+    direction: i64,
+    size: i64,
+) -> i64 {
+    edit(|owner, _| Ok(owner.sockets().buffer(token, direction, size)))
 }
 
 #[unsafe(no_mangle)]
@@ -1012,6 +1059,36 @@ mod tests {
         let listener = sockets.listen("127.0.0.1:0");
         assert_eq!(sockets.datagram_broadcast(listener, 1), -1);
         assert!(sockets.close(listener));
+    }
+
+    #[test]
+    fn buffer_options_preserve_leases_and_validate_before_narrowing() {
+        let sockets = Sockets::default();
+        for token in [
+            sockets.bind_datagram("127.0.0.1:0"),
+            sockets.listen("127.0.0.1:0"),
+        ] {
+            assert!(token > 0);
+            let lease = sockets.get(token).unwrap();
+            let handle = lease.handle();
+            for direction in [0, 1] {
+                assert!(sockets.buffer(token, direction, -1) > 0);
+                assert_eq!(sockets.buffer(token, direction, 32768), 0);
+                let effective = sockets.buffer(token, direction, -1);
+                assert!(effective > 0);
+                for invalid in [-2, 0, i64::from(i32::MAX) + 1, i64::MAX] {
+                    assert_eq!(sockets.buffer(token, direction, invalid), -1);
+                    assert_eq!(sockets.buffer(token, direction, -1), effective);
+                }
+            }
+            assert_eq!(sockets.buffer(token, 2, -1), -1);
+            assert_eq!(sockets.get(token).unwrap().handle(), handle);
+            assert!(!sockets.close(token));
+            drop(lease);
+            assert!(sockets.close(token));
+            assert_eq!(sockets.buffer(token, 0, -1), -1);
+            assert_eq!(sockets.buffer(token, 1, 32768), -1);
+        }
     }
 
     #[test]
