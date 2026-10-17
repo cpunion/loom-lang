@@ -39,3 +39,14 @@ independently prove equality with the cell at the store, not a prior read.
 The public I/O-free checking library needs a host proof backend for obligations
 that exceed its local rules; the CLI uses its compile-time solver. Native
 executables do not link that solver or install a storage monitor.
+
+The [prefix package](prefix/main.loom) uses the shared sequence induction rules
+to build a reversed entry copy while appending to its source, including a buffer
+held in an inline record. Entry snapshots are logical, not runtime copies or
+freezes; destructive writes and unsynchronized worker interference still reject.
+
+```sh
+target/loom check compiler/examples/byte_constraints/prefix
+target/loom test compiler/examples/byte_constraints/prefix
+target/loom run compiler/examples/byte_constraints/prefix
+```

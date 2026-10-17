@@ -83,9 +83,15 @@ fn loop_prefix_leaves(proof Verification, candidates List[LoopCandidate], receiv
     }
     match initial {
         Value.List(identity) => {
-            if shape.kind != TypeKind.List || length(shape.arguments) != 1 {
+            if !proof_sequence_type(proof.program, receiver.ty) ||
+            (shape.kind == TypeKind.List && length(shape.arguments) != 1) {
                 return
             }
+            // Keep the physical read marker: byte-domain facts belong only
+            // to Bytes, even though both containers use the sequence algebra.
+            let bytes = shape.kind == TypeKind.Bytes
+            let read = if bytes { "bytes_get" } else { "list_get" }
+            let size_operation = if bytes { "bytes_len" } else { "list_len" }
             let extent = match list_state(identity, entry) {
                 Result.Ok(value) => value
                 Result.Err(_) => {
@@ -101,15 +107,15 @@ fn loop_prefix_leaves(proof Verification, candidates List[LoopCandidate], receiv
                     Value.EntryList(_, contents) => {
                         if contents == extent.contents {
                             let before = proof_expr(receiver, ExprKind.Local, receiver.ty, "", local, new[Expr]())
-                            let end = proof_expr(receiver, ExprKind.Intrinsic, 1, "list_len", -1, snapshot_child(receiver))
-                            let size = proof_expr(before, ExprKind.Intrinsic, 1, "list_len", -1, snapshot_child(before))
+                            let end = proof_expr(receiver, ExprKind.Intrinsic, 1, size_operation, -1, snapshot_child(receiver))
+                            let size = proof_expr(before, ExprKind.Intrinsic, 1, size_operation, -1, snapshot_child(before))
                             let limit = proof_expr(receiver, ExprKind.Binary, 2, "<=", -1, proof_children(end, size))
                             let bound = -1 - array_identity(proof)
                             let index = proof_expr(receiver, ExprKind.Intrinsic, 1, "proof_bound", bound, new[Expr]())
-                            let ty = get(shape.arguments, 0)
+                            let ty = if bytes { 1 } else { get(shape.arguments, 0) }
                             loop_prefix_columns(proof, candidates,
-                                proof_expr(receiver, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(receiver, index)),
-                                proof_expr(before, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(before, index)),
+                                proof_expr(receiver, ExprKind.Intrinsic, ty, read, -1, proof_children(receiver, index)),
+                                proof_expr(before, ExprKind.Intrinsic, ty, read, -1, proof_children(before, index)),
                                 proof_expr(receiver, ExprKind.Integer, 1, "0", -1, new[Expr]()),
                                 end, bound, limit, proof_bool(receiver, true), entry, depth - 1)
                             // The common prefix is bounded by either extent.
@@ -118,8 +124,8 @@ fn loop_prefix_leaves(proof Verification, candidates List[LoopCandidate], receiv
                             // entry and every-backedge proof, including writes.
                             let extended = proof_expr(receiver, ExprKind.Binary, 2, "<=", -1, proof_children(size, end))
                             loop_prefix_columns(proof, candidates,
-                                proof_expr(receiver, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(receiver, index)),
-                                proof_expr(before, ExprKind.Intrinsic, ty, "list_get", -1, proof_children(before, index)),
+                                proof_expr(receiver, ExprKind.Intrinsic, ty, read, -1, proof_children(receiver, index)),
+                                proof_expr(before, ExprKind.Intrinsic, ty, read, -1, proof_children(before, index)),
                                 proof_expr(receiver, ExprKind.Integer, 1, "0", -1, new[Expr]()),
                                 size, bound, extended, proof_bool(receiver, true), entry, depth - 1)
                             return

@@ -1,0 +1,99 @@
+import std.bytes.get
+import std.bytes.length
+import std.bytes.new
+import std.bytes.push
+import std.text.to_bytes
+
+fn prefix(first Bytes, second Bytes) Bool {
+    if length(first) < length(second) {
+        return false
+    }
+    var index = 0
+    while index < length(second) {
+        if get(first, index) != get(second, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn reversed(first Bytes, second Bytes) Bool {
+    if length(first) != length(second) {
+        return false
+    }
+    var index = 0
+    while index < length(first) {
+        if get(first, index) != get(second, length(second) - 1 - index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn append(target Bytes, source Bytes)
+ensures length(target) - old(length(target)) == old(length(source))
+ensures prefix(target, old(target))
+{
+    let count = length(source)
+    var index = 0
+    while index < count {
+        push(target, get(source, index))
+        index = index + 1
+    }
+}
+
+pub fn reverse_while_growing(values Bytes) Bytes
+ensures length(result) == old(length(values))
+ensures reversed(result, old(values))
+{
+    let output = new()
+    let count = length(values)
+    var index = 0
+    while index < count {
+        push(output, get(values, count - 1 - index))
+        push(values, 0)
+        index = index + 1
+    }
+    output
+}
+
+record Buffer {
+    bytes Bytes
+}
+
+fn reverse_frame(frame Buffer) Bytes
+ensures length(result) == old(length(frame.bytes))
+ensures reversed(result, old(frame.bytes))
+{
+    let output = new()
+    let count = length(frame.bytes)
+    var index = 0
+    while index < count {
+        push(output, get(frame.bytes, count - 1 - index))
+        push(frame.bytes, 0)
+        index = index + 1
+    }
+    output
+}
+
+fn main() {
+    let values = to_bytes("ab")
+    append(values, values)
+    assert length(values) == 4 && values[0] == 97 && values[3] == 98
+    let input = to_bytes("abc")
+    assert reversed(reverse_while_growing(input), to_bytes("abc"))
+    assert length(input) == 6 && input[0] == 97 && input[5] == 0
+    let frame = Buffer {
+        bytes = to_bytes("xy")
+    }
+    assert reversed(reverse_frame(frame), to_bytes("xy"))
+    assert length(frame.bytes) == 4 && frame.bytes[0] == 120 && frame.bytes[3] == 0
+    let binary = new()
+    push(binary, 0)
+    push(binary, 255)
+    let output = reverse_while_growing(binary)
+    assert length(output) == 2 && output[0] == 255 && output[1] == 0
+    assert length(reverse_while_growing(new())) == 0
+}

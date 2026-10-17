@@ -4,6 +4,100 @@ mod common;
 use common::success;
 
 #[test]
+fn byte_entry_prefixes_compose_through_growth_fields_and_cached_writes() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("main.loom");
+    let program = include_str!("../examples/byte_constraints/prefix/main.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::command(&["check", package.path().to_str().unwrap()])
+            .arg("--frontend-cache")
+            .arg(&cache)
+            .output()
+            .unwrap()
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace("get(values, count - 1 - index)", "get(values, index)"),
+        format!(
+            "{}\n{}",
+            program.replace(
+                "        push(values, 0)",
+                "        push(values, 0)\n        corrupt(values)"
+            ),
+            r#"
+fn corrupt(values Bytes) {
+    if length(values) > 0 {
+        values[0] = 0
+    }
+}
+"#
+        ),
+    ] {
+        assert_ne!(changed, program);
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(
+            !output.status.success(),
+            "invalid byte prefix proof: {changed}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved") || error.contains("contract"),
+            "unexpected failure: {error}"
+        );
+    }
+    let declarations = program.replace("fn main()", "fn exercise()");
+    fs::write(
+        &source,
+        format!(
+            "import std.task.worker.run\n{declarations}\n{}",
+            r#"
+async fn main() {
+    let input = to_bytes("abc")
+    let changing = run(fn() Int {
+        input[0] = 0
+        1
+    })
+    discard reverse_while_growing(input)
+    discard changing.await
+}
+"#
+        ),
+    )
+    .unwrap();
+    let output = check();
+    assert!(
+        !output.status.success(),
+        "worker interference reused a private prefix proof"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("interference-safe"),
+        "{output:?}"
+    );
+    fs::write(&source, program).unwrap();
+    success(&check());
+    let executable = common::executable(package.path(), "byte-prefixes");
+    let ir = package.path().join("byte-prefixes.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package.path().to_str().unwrap()])
+                .arg("--output")
+                .arg(&executable)
+                .arg("--emit-ir")
+                .arg(&ir)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&executable));
+        assert!(!fs::read_to_string(&ir).unwrap().contains("proof_"));
+    }
+}
+
+#[test]
 fn byte_constraints_preserve_shared_storage_through_helpers_faults_and_waits() {
     let package = "compiler/examples/byte_constraints";
     for mode in ["check", "test", "run"] {
