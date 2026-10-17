@@ -49,7 +49,13 @@ fn input_bytes_fixture(text Text) Bytes {
 }
 
 test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() {
-    let project = input("import std.build.input_file\nfn main() { discard input_file(\"message.txt\") }")
+    let project = input("""
+        import std.build.input_file
+        fn main() {
+            let message = input_file("message.txt")
+            discard message
+        }
+        """)
     push(project.modules, ModuleInstance {
             name = "std"
             source = "/std"
@@ -147,7 +153,7 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
     assert !is_current_with_inputs(analysis, project, false, inputs.files, inputs.options)
     // Independent queries replay the successful analysis, not the subsequently
     // modified inputs or a new filesystem read (the reader here always fails).
-    let site = query_offset(get(project.files, 0).text, "input_file(\"")
+    let site = query_offset(get(project.files, 0).text, "message\n")
     assert match inspect_independent(analysis.bindings, 0, site) {
         Option.None => true
         Option.Some(_) => false
