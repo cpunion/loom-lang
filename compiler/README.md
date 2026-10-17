@@ -4753,6 +4753,9 @@ declaration binding alone still provides only name candidates.
 The runtime uses single-threaded stop-the-world copying GC with bump-allocated
 pages for small objects and a large-object space. Small reachable allocations
 move, roots and typed fields are rewritten, then obsolete pages are freed.
+Fixed pages share anonymous OS mappings owned by the arena. Retiring an arena
+releases its mappings directly, rather than retaining them in the native
+allocator's free cache. No process-wide allocator or pressure-relief policy changes.
 Large allocations are traced in place to avoid
 copying whole backing buffers before growth; this is not a stable-address promise.
 Aliases and cycles retain their meaning; static Text literals do not move.

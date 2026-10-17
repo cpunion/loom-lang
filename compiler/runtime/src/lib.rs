@@ -27,6 +27,7 @@ mod frame_roots_tests;
 mod fs_ops;
 mod mutex;
 pub mod native;
+mod pages;
 mod parallel;
 mod process_io;
 mod shared_access;
@@ -212,6 +213,7 @@ struct Page {
 #[derive(Default)]
 struct Arena {
     pages: Vec<Page>,
+    mappings: Vec<pages::Mapping>,
     indices: AddressMap<usize>,
     used: usize,
     count: usize,
@@ -221,14 +223,17 @@ impl Arena {
     fn allocate(&mut self, layout: Layout) -> NonNull<u8> {
         let size = occupied(layout);
         if self.pages.is_empty() || self.used + size > PAGE_SIZE {
-            let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
-            // SAFETY: Page alignment supplies a constant-time page identity.
-            let page =
-                NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| fatal("out of memory"));
+            let page = self.pages.len() % pages::PAGES_PER_MAPPING;
+            if page == 0 {
+                self.mappings.push(pages::Mapping::new());
+            }
+            // SAFETY: Fixed pages subdivide one live, aligned mapping. All
+            // pages in an arena expire together after collection.
+            let pointer = unsafe { self.mappings.last().unwrap().pointer.add(page * PAGE_SIZE) };
             self.indices
-                .insert(page.as_ptr() as usize, self.pages.len());
+                .insert(pointer.as_ptr() as usize, self.pages.len());
             self.pages.push(Page {
-                pointer: page,
+                pointer,
                 bases: Box::new([0; PAGE_WORDS]),
             });
             self.used = 0;
@@ -238,7 +243,7 @@ impl Arena {
         let bit = offset / 16;
         page.bases[bit / usize::BITS as usize] |= 1 << (bit % usize::BITS as usize);
         // SAFETY: Header and payload own this aligned range until arena clear.
-        let pointer = unsafe { NonNull::new_unchecked(page.pointer.as_ptr().add(offset)) };
+        let pointer = unsafe { page.pointer.add(offset) };
         self.used += size;
         self.count += 1;
         pointer
@@ -267,20 +272,12 @@ impl Arena {
     }
 
     fn clear(&mut self) {
-        let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
-        for page in self.pages.drain(..) {
-            // SAFETY: All page slots are dead before the owning arena is cleared.
-            unsafe { dealloc(page.pointer.as_ptr(), layout) };
-        }
+        // Drop releases dead pages directly to the OS, not a malloc free cache.
+        self.pages.clear();
+        self.mappings.clear();
         self.indices.clear();
         self.used = 0;
         self.count = 0;
-    }
-}
-
-impl Drop for Arena {
-    fn drop(&mut self) {
-        self.clear();
     }
 }
 
@@ -1636,6 +1633,27 @@ unsafe fn path_canonical(path: *const u8, slots: *mut *mut u8) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_pages_share_mappings_and_retire_with_the_arena() {
+        let mut arena = Arena::default();
+        let layout = Layout::from_size_align(LARGE_OBJECT_THRESHOLD - 16, 16).unwrap();
+        let per_page = PAGE_SIZE / occupied(layout);
+        let first = arena.allocate(layout);
+        // SAFETY: This payload remains live until the arena is cleared.
+        unsafe { first.as_ptr().write(42) };
+        for _ in 0..pages::PAGES_PER_MAPPING * per_page {
+            arena.allocate(layout);
+        }
+        assert_eq!(arena.pages.len(), pages::PAGES_PER_MAPPING + 1);
+        assert_eq!(arena.mappings.len(), 2);
+        assert_eq!(arena.indices.len(), arena.pages.len());
+        // SAFETY: Growing metadata/mappings has not retired the first payload.
+        assert_eq!(unsafe { first.as_ptr().read() }, 42);
+        arena.clear();
+        assert!(arena.pages.is_empty() && arena.mappings.is_empty() && arena.indices.is_empty());
+        assert_eq!((arena.used, arena.count), (0, 0));
+    }
 
     fn live() -> usize {
         HEAP.with(|heap| heap.borrow().objects.len())
