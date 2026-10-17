@@ -434,7 +434,9 @@ each `Location.file` indexes the analysis files, with an identifier byte span.
 Local navigation follows checked local IDs, including shadowing. Calls use
 resolved targets; dynamic calls point only to an identifiable concept signature,
 never a guessed implementation. Comments, punctuation and unavailable semantic
-identity return no answer. Match bindings currently have hover types only.
+identity return no answer. Pattern queries retain checked nominal owners,
+explicit record fields and enum variants even after decision-tree lowering;
+payload/tuple locals use their checked binding IDs, not same-spelled declarations.
 
 The binding-only `inspect_independent` retains the complete bindings and starts a fresh checker
 session; it does not remove erroneous declarations or reuse a failed check's

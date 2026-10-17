@@ -1,0 +1,115 @@
+fn pattern_rename_case(name Text, path Text, edited Bool, captured Bool) Revision {
+    let helper = replace(if edited {
+            """
+            fn FUNCTION(value Int) Int {
+                let copied = value
+                copied
+            }
+            """
+        } else {
+            """
+            fn FUNCTION(value Int) Int {
+                value
+            }
+            """
+        }, "FUNCTION", name)
+    let entry = replace(replace("""
+            pub fn entry(value Choice) Int {
+                match value {
+                    Choice.Some(Pair { first = item, action = BINDING }) if item >= 0 => {
+                        let (copied, _) = (item, true)
+                        FUNCTION(copied)
+                    }
+                    _ => 0
+                }
+            }
+            """, "FUNCTION", name), "BINDING", if captured {
+            "balance"
+        } else {
+            "callback"
+        })
+    let source = concat("""
+        record Pair {
+            first Int
+            action fn(Int) Int
+        }
+        enum Choice {
+            Some(Pair)
+            Empty
+        }
+
+        """, entry)
+    let revision = renamed_case(name, path, helper, source)
+    set(revision.identities, 0, Identity {
+            key = key(helper)
+            ..get(revision.identities, 0)
+        })
+    set(revision.identities, 1, Identity {
+            key = key(entry)
+            ..get(revision.identities, 1)
+        })
+    push(revision.identities, Identity {
+            id = "pair-id"
+            path = "app.loom"
+            kind = NodeKind.Record
+            name = "Pair"
+            key = "-"
+        })
+    push(revision.identities, Identity {
+            id = "choice-id"
+            path = "app.loom"
+            kind = NodeKind.Enum
+            name = "Choice"
+            key = "-"
+        })
+    revision
+}
+
+test fn pattern_calls_compose_rename_move_and_body_edits_in_both_orders() {
+    let base = pattern_rename_case("amount", "value.loom", false, false)
+    let moved = pattern_rename_case("balance", "app.loom", false, false)
+    let edited = pattern_rename_case("amount", "value.loom", true, false)
+    let branches = [moved, edited]
+    var order = 0
+    while order < 2 {
+        let a = get(branches, order)
+        let b = get(branches, 1 - order)
+        let merged = match merge(base, a, b) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        assert contains(get(merged.files, 1).text, "balance(copied)")
+        assert contains(get(merged.files, 1).text, "let copied = value")
+        let context = rename_context(base)
+        assert match merge_with_context(base, a, b, context, context, "pkg") {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        assert match merge_packages(generic_package_case(base), generic_package_case(a),
+            generic_package_case(b), context, context) {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        order = order + 1
+    }
+}
+
+test fn pattern_bindings_cannot_capture_a_renamed_function_even_when_types_match() {
+    let base = pattern_rename_case("amount", "value.loom", false, false)
+    let moved = pattern_rename_case("balance", "app.loom", false, false)
+    let edited = pattern_rename_case("amount", "value.loom", true, true)
+    assert match merge(base, moved, edited) {
+        Result.Err(message) => contains(message, "binding") && !contains(message, "source reference form")
+        Result.Ok(_) => false
+    }
+}

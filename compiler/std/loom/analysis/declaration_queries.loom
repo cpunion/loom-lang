@@ -32,10 +32,35 @@ fn inspect_declaration_references(view CheckedQuery, report Inspection, target Q
         let same_kind = node.kind == target.node.kind ||
         (node.kind == NodeKind.Type && target.node.kind == NodeKind.Name)
         if reference.file == file && node.span.start == target.node.span.start && node.span.end >= target.node.span.end &&
-        same_kind && reference.segment == target.segment &&
-        get(view.bindings.symbols, reference.symbol).name == target.token.value {
-            symbol_location(view, report, reference.symbol)
-            if reference.label != "" {
+        same_kind && reference.segment == target.segment {
+            let owner = get(view.bindings.symbols, reference.symbol)
+            let member = if node.kind == NodeKind.Field {
+                NodeKind.Field
+            } else {
+                if node.kind == NodeKind.Pattern && target.segment + 1 == target.segments {
+                    NodeKind.Variant
+                } else {
+                    NodeKind.File
+                }
+            }
+            var matched = false
+            if member != NodeKind.File {
+                var child = 0
+                while child < length(owner.node.children) {
+                    let declaration_node = get(owner.node.children, child)
+                    if declaration_node.kind == member && declaration_node.value == target.token.value {
+                        declaration(view, report, owner.file, declaration_node)
+                        matched = true
+                    }
+                    child = child + 1
+                }
+            } else {
+                if owner.name == target.token.value {
+                    symbol_location(view, report, reference.symbol)
+                    matched = true
+                }
+            }
+            if matched && reference.label != "" {
                 add_type(report, reference.label)
             }
         }
@@ -86,7 +111,8 @@ fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset
             return Option.None
         }
     }
-    var possible = false
+    var possible = target.node.kind == NodeKind.Pattern || target.node.kind == NodeKind.RecordPattern ||
+    target.node.kind == NodeKind.Field
     index = 0
     while index < length(view.bindings.symbols) {
         let symbol = get(view.bindings.symbols, index)

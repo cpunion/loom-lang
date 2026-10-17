@@ -55,6 +55,31 @@ fn record_declaration_reference(env Environment, owner Int, node Node, selected 
         })
 }
 
+// Query-only evidence for source patterns survives decision-tree lowering.
+// The symbol is the checked nominal owner; the source node identifies its
+// field/variant member without adding provenance to executable expressions.
+fn record_pattern_reference(context Context, node Node, ty Int, segment Int, label Int) {
+    let env = context.env
+    if !get(env.inputs, 0).declaration_queries {
+        return
+    }
+    record_declaration_reference(env, context.signature.symbol, node,
+        get(env.types, ty).symbol, segment,
+        type_name(env.source, env.types, env.interfaces, label))
+}
+
+fn pattern_reference_segment(path Text) Int {
+    var segment = 0
+    var index = 0
+    while index < length(path) {
+        if std.text.byte(path, index) == 46 {
+            segment = segment + 1
+        }
+        index = index + 1
+    }
+    segment
+}
+
 // Callers test the switch before entering this allocating function/root frame.
 // Binding evidence needs no locals, effects, cleanup or other Context state.
 fn record_function_reference(env Environment, owner Int, node Node, selected Int, arguments List[Int]) Result[Bool, Failure] {
