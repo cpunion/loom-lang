@@ -211,7 +211,8 @@ test fn a_variant_pattern_is_not_a_same_spelled_local_declaration() {
         }
         """
     let analysis = accepted(input(text))
-    absent(analysis, query_offset(text, "Red =>"))
+    let variant = query_offset(text, "Red\n")
+    only_definition(inspection(analysis, text, "Red =>"), variant, variant + 3)
     let binding = query_offset(text, "Red =")
     only_definition(inspection(analysis, text, "Red + 0"), binding, binding + 3)
 }

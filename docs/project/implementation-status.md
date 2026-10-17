@@ -59,6 +59,10 @@ uses and external-consumer migrations remain conservative; dependency snapshots
 are not rewritten.
 Private declaration edits reject generated references and exported macro
 generators whose definition-context uses are not a complete editable source map.
+Query-only pattern evidence retains nested record fields and enum variants
+through decision-tree lowering. Semantic merge compares match guards/bodies and
+destructuring without treating the new pattern bindings as external references;
+missing or ambiguous checked definitions still reject.
 
 Resident workers reuse valid analyses while revalidating source and observed
 inputs. Query-only declaration headers support ordinary/generic and impl

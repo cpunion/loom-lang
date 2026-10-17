@@ -11,7 +11,9 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
         return Result.Err(error(context, node, "record pattern requires a record value"))
     }
     let chosen = meta_constructor_type(context, node, node.value)?
-    let target = if chosen >= 0 { get(context.env.types, chosen).symbol } else {
+    let target = if chosen >= 0 {
+        get(context.env.types, chosen).symbol
+    } else {
         find_data(context.env, context.signature.symbol, node, node.value)?
     }
     if target < 0 || target != shape.symbol || (chosen >= 0 && chosen != ty) {
@@ -21,6 +23,9 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
     let here = symbol(context.env, context.signature.symbol)
     if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
         return Result.Err(error(context, node, "cannot inspect a private record from another package"))
+    }
+    if get(context.env.inputs, 0).declaration_queries {
+        record_pattern_reference(context, node, ty, pattern_reference_segment(node.value), ty)
     }
     let fields = new[RecordPatternField]()
     let seen = new[Bool]()
@@ -53,6 +58,9 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
                 return Result.Err(error(context, member, "duplicate record field in pattern"))
             }
             set(seen, field, true)
+            if get(context.env.inputs, 0).declaration_queries {
+                record_pattern_reference(context, member, ty, 0, get(shape.fields, field).ty)
+            }
             push(fields, RecordPatternField {
                     source = child(member, 0)
                     index = field

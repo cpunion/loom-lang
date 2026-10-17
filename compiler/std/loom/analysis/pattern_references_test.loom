@@ -1,0 +1,96 @@
+fn pattern_reference_source() Text {
+    """
+    record Pair {
+        first Int
+        second Int
+    }
+    enum Choice {
+        Some(Pair)
+        Empty
+    }
+    fn helper(value Int) Int {
+        value
+    }
+    fn entry(value Choice) Int {
+        match value {
+            Choice.Some(Pair { first = amount, second = spare }) if spare > 0 => {
+                let (copied, _) = (amount, spare)
+                helper(copied)
+            }
+            _ => 0
+        }
+    }
+    """
+}
+
+test fn pattern_obligations_separate_bindings_from_nominal_and_field_references() {
+    let source = pattern_reference_source()
+    let obligations = source_obligations(source)
+    assert length(obligations.unknown) == 0
+    let uses = ["Some(Pair {", "Pair { first =", "first = amount", "second = spare", "spare >", "amount, spare", "spare)\n", "helper(copied)", "copied)\n"]
+    let declarations = ["amount, second", "spare })", "copied, _"]
+    var index = 0
+    while index < length(uses) {
+        assert reference_bound_offsets(obligations.offsets, query_offset(source, get(uses, index)))
+        index = index + 1
+    }
+    index = 0
+    while index < length(declarations) {
+        assert !reference_bound_offsets(obligations.offsets, query_offset(source, get(declarations, index)))
+        index = index + 1
+    }
+}
+
+fn reference_bound_offsets(offsets List[Int], offset Int) Bool {
+    var index = 0
+    while index < length(offsets) {
+        if get(offsets, index) == offset {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+test fn pattern_queries_keep_nominal_fields_and_shadowing_at_the_checked_source_site() {
+    let source = pattern_reference_source()
+    let analysis = accepted(input(source))
+    let fields = ["first = amount", "second = spare"]
+    let declarations = ["first Int", "second Int"]
+    var index = 0
+    while index < length(fields) {
+        let declared = query_offset(source, get(declarations, index))
+        only_definition(inspection(analysis, source, get(fields, index)), declared, declared + length(if index == 0 {
+                    "first"
+                } else {
+                    "second"
+                }))
+        index = index + 1
+    }
+    let copied = query_offset(source, "copied, _")
+    let found = match inspect_independent(analysis, 0, query_offset(source, "copied)\n")) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    only_definition(found, copied, copied + 6)
+    let obligations = source_obligations(source)
+    let functions = length(analysis.program.functions)
+    let symbols = length(analysis.bindings.symbols)
+    index = 0
+    while index < length(obligations.offsets) {
+        match inspect_independent(analysis, 0, get(obligations.offsets, index)) {
+            Option.Some(value) => {
+                assert length(value.definitions) == 1
+            }
+            Option.None => {
+                assert false
+            }
+        }
+        index = index + 1
+    }
+    assert length(analysis.program.functions) == functions
+    assert length(analysis.bindings.symbols) == symbols
+}

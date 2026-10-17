@@ -18,6 +18,10 @@ tests never become another package's private scope. Retained references must
 resolve to the same identified declaration and relative location, or the same
 pinned dependency location. Unselected module consumers are checked too: unchanged
 text can silently select another overload after an API edit.
+Match guards/bodies and destructuring use the compiler's source-reference roles:
+pattern names introduce locals, while nominal paths, variants and explicit fields
+require checked definition evidence. A same-typed callback bound by a pattern
+cannot silently capture a renamed function.
 
 The package/import graph stays fixed. Cross-package header/contract or deletion
 changes can combine with edits only in completely disconnected import components.

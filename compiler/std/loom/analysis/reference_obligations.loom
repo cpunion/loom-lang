@@ -53,19 +53,29 @@ fn reference_parameters(node Node, inherited List[Text]) List[Text] {
     parameters
 }
 
-fn reference_children(node Node, tokens List[Token], parameters List[Text], output ReferenceObligations) {
+fn reference_children(node Node, tokens List[Token], parameters List[Text], output ReferenceObligations, pattern Bool) {
     var index = 0
     while index < length(node.children) {
-        reference_nodes(get(node.children, index), node.kind, tokens, parameters, output)
+        let binding = if node.kind == NodeKind.Destructure || node.kind == NodeKind.Arm {
+            index == 0
+        } else {
+            pattern
+        }
+        reference_nodes(get(node.children, index), node.kind, tokens, parameters, output, binding)
         index = index + 1
     }
 }
 
-fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited List[Text], output ReferenceObligations) {
+fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited List[Text], output ReferenceObligations, pattern Bool) {
     let kind = node.kind
     if has(node, NodeKind.ExpansionId) || kind == NodeKind.ExpansionId ||
     (kind == NodeKind.Comptime && length(node.children) != 0) {
         push(output.unknown, node.span)
+        return
+    }
+    // Names inside patterns introduce locals. Their later uses are ordinary
+    // references, while nominal paths and field labels still resolve bindings.
+    if pattern && kind == NodeKind.Name {
         return
     }
     let parameters = if kind == NodeKind.Function || kind == NodeKind.Record ||
@@ -84,7 +94,7 @@ fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited Lis
                 // A parameter's bounds are uses even though its label is not.
                 var bound = 0
                 while bound < length(parameter.children) {
-                    reference_nodes(get(parameter.children, bound), NodeKind.Bounds, tokens, parameters, output)
+                    reference_nodes(get(parameter.children, bound), NodeKind.Bounds, tokens, parameters, output, false)
                     bound = bound + 1
                 }
             }
@@ -96,15 +106,16 @@ fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited Lis
     // has the same spelling. Ordinary type uses still resolve lexical binders.
     let named_type = kind == NodeKind.Type && (parent == NodeKind.Bounds ||
         (!builtin_type_name(node.value) && node.value != "type" && !reference_bound(parameters, node.value)))
-    let field_use = kind == NodeKind.Field && parent == NodeKind.Construct
-    if named_type || field_use || kind == NodeKind.Name || kind == NodeKind.Call ||
+    let field_use = kind == NodeKind.Field && (parent == NodeKind.Construct || parent == NodeKind.RecordPattern)
+    let pattern_use = kind == NodeKind.Pattern || kind == NodeKind.RecordPattern
+    if named_type || field_use || pattern_use || kind == NodeKind.Name || kind == NodeKind.Call ||
     kind == NodeKind.Construct || kind == NodeKind.Assign || kind == NodeKind.Select || kind == NodeKind.MethodCall {
         let from = if (kind == NodeKind.Select || kind == NodeKind.MethodCall) && length(node.children) > 0 {
             get(node.children, 0).span.end
         } else {
             node.span.start
         }
-        let until = if (named_type || field_use || kind == NodeKind.Name || kind == NodeKind.Call ||
+        let until = if (named_type || field_use || pattern_use || kind == NodeKind.Name || kind == NodeKind.Call ||
             kind == NodeKind.Construct || kind == NodeKind.Assign) && length(node.children) > 0 {
             get(node.children, 0).span.start
         } else {
@@ -145,11 +156,13 @@ fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited Lis
     kind != NodeKind.FunctionType && kind != NodeKind.TupleType && kind != NodeKind.Defer &&
     kind != NodeKind.Scoped && kind != NodeKind.Async && kind != NodeKind.Try &&
     kind != NodeKind.Old && kind != NodeKind.Spread && kind != NodeKind.Break &&
-    kind != NodeKind.Continue && kind != NodeKind.Comptime {
+    kind != NodeKind.Continue && kind != NodeKind.Comptime && kind != NodeKind.Match &&
+    kind != NodeKind.Arm && kind != NodeKind.Destructure && kind != NodeKind.Bindings &&
+    kind != NodeKind.Wildcard && kind != NodeKind.RestPattern {
         push(output.unknown, node.span)
         return
     }
-    reference_children(node, tokens, parameters, output)
+    reference_children(node, tokens, parameters, output, pattern)
 }
 
 // The AST and tokens must describe the same source snapshot. Positions follow
@@ -159,7 +172,7 @@ pub fn reference_obligations(tree Node, tokens List[Token]) ReferenceObligations
         offsets = new[Int]()
         unknown = new[Span]()
     }
-    reference_nodes(tree, NodeKind.File, tokens, new[Text](), output)
+    reference_nodes(tree, NodeKind.File, tokens, new[Text](), output, false)
     output
 }
 
