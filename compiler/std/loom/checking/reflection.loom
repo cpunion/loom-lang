@@ -18,6 +18,10 @@ fn reflection_intrinsic(env Environment, owner Int) Bool {
     }
     let item = symbol(env, owner)
     let file = get(env.source.files, item.file)
+    if item.name == "refinement_base" && has(item.node, NodeKind.Intrinsic) && file.trusted_std &&
+    package_label(env.source.modules, env.source.packages, file.package) == "std.meta" {
+        return true
+    }
     (item.name == "describe" || item.name == "from_fields") && has(item.node, NodeKind.Intrinsic) && file.trusted_std &&
     package_label(env.source.modules, env.source.packages, file.package) == "std.reflect"
 }

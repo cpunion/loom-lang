@@ -60,6 +60,7 @@ fn exercise() {
     function_signatures()
     selected_field_types()
     variant_types()
+    refined_type_values()
     let Number = comptime {
         choose(true, Int, Float)
     }

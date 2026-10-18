@@ -156,7 +156,8 @@ Type/value/function parameters, structural type construction, associated
 projections, hygienic expression macros and explicit declaration generation use
 ordinary typing and visibility. Declaration generation is not an implicit
 fixed-point expansion. Reflection exposes filtered schemas, not extra access
-or conformance evidence.
+or conformance evidence. `std.meta.refinement_base` exposes a visible base's
+compile-time identity without waiving visibility or constrained construction.
 `std.reflect.predicates.implies` queries the existing checked weakening rules;
 an optional source witness binds both endpoint types. Unproved queries return
 false, never migration or application-compatibility evidence.
@@ -265,6 +266,10 @@ These are bounded proved stories, not general mutable-graph or content induction
 Source `std` provides collections, text/numeric/byte operations, Option/Result,
 typed JSON, [storage descriptors/codecs](../../compiler/std/storage/README.md), reflection, filesystem/process APIs,
 iterators and async streams. JSON policy has no special runtime implementation.
+Typed JSON decoding now constructs visible refinements through their ordinary
+checked boundary, including nested fields and unpublished fresh Lists. Invalid
+predicates return `DecodeError.Rejected`; inaccessible/unsupported bases still
+reject rather than exposing hidden fields or guessing a representation.
 Storage record codecs use ordinary compile-time fields and explicit `ColumnValue`
 implementations, with frozen stable-ID mappings and checked refined constructors;
 they do not infer database migrations or discover erased runtime types.

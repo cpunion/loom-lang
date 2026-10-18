@@ -26,7 +26,7 @@ test fn typed_json_decodes_exact_nested_shapes_without_sample_values() {
     assert rendered(decoded_as[Value]("null")) == "null"
 }
 
-test fn typed_json_rejects_wrong_fields_numbers_and_implicit_constraints() {
+test fn typed_json_rejects_wrong_fields_numbers_and_failed_constraints() {
     match decode[Entry]("""
         {"name":"loom","values":[],"unknown":true}
         """) {
@@ -82,7 +82,7 @@ test fn typed_json_rejects_wrong_fields_numbers_and_implicit_constraints() {
         }
     }
     match decode[Positive]("0") {
-        Result.Err(DecodeError.UnsupportedType) => {
+        Result.Err(DecodeError.Rejected) => {
         }
         _ => {
             assert false

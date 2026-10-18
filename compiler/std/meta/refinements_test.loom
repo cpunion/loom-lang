@@ -1,0 +1,38 @@
+type PositiveMetadata = Int where self > 0
+
+type BoundedMetadata[T] = List[T] where length(self) <= 4
+
+record MetadataPayload {
+    count Int
+}
+
+type CheckedMetadataPayload = MetadataPayload where self.count >= 0
+
+test fn refinement_base_returns_exact_visible_identities_not_runtime_descriptors() {
+    assert comptime {
+        match refinement_base[PositiveMetadata]() {
+            Option.Some(base) => base == Int
+            Option.None => false
+        }
+    }
+    let Base = comptime {
+        match refinement_base[BoundedMetadata[(Int, Text)]]() {
+            Option.Some(base) => base
+            Option.None => Int
+        }
+    }
+    let values Base = [(1, "one"), (2, "two")]
+    assert values[1].1 == "two"
+    assert comptime {
+        match refinement_base[CheckedMetadataPayload]() {
+            Option.Some(base) => base == MetadataPayload
+            Option.None => false
+        }
+    }
+    assert comptime {
+        match refinement_base[fn(Int) Bool]() {
+            Option.None => true
+            Option.Some(_) => false
+        }
+    }
+}

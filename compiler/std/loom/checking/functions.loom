@@ -510,6 +510,9 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
                 discard predicate_model(env, current.symbol, current.result, item.node)?
                 runtime(1, new[Int](), current.result)
             }
+        } else if item.name == "refinement_base" {
+            discard refinement_base_model(env, current.symbol, current.result, item.node)?
+            runtime(1, new[Int](), current.result)
         } else if item.name == "from_fields" {
             if length(current.compile_time) != 0 {
                 return Result.Err(failure(env, current.symbol, item.node, "from_fields requires one runtime tuple argument"))

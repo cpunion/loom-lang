@@ -26,11 +26,18 @@ have exactly their declared length. Missing fields, extra fields and wrong
 value kinds reject. Int decoding checks the decimal spelling and range directly,
 without a Float round trip; `1.0` is not an Int spelling.
 
+Visible refinements decode through their visible supported base, then use normal
+checked construction. Failed predicates return `DecodeError.Rejected`, including
+nested constrained fields. Refined Lists are validated before their fresh header
+is published, without an extra copy. A proved unconditional predicate can omit
+its redundant check. Refinements do not consume another container-depth level.
+Underlying shape/number errors retain their original error kinds.
+
 Decoding does not guess defaults, null/enum representations or custom field
-mappings. Refined types return `DecodeError.UnsupportedType`, as do foreign
-private types and other unsupported kinds. Decode an unconstrained wire record,
-then use normal checked construction for constrained application types. This
-keeps invariant checks at their explicit boundaries, including nested fields.
+mappings. Foreign private types, inaccessible refinement bases and unsupported
+base kinds still return `DecodeError.UnsupportedType`. The compile-time
+`std.meta.refinement_base` query supplies identities, not construction permission
+or proof that a value satisfies its predicate.
 Malformed input returns `DecodeError.Syntax(ParseError)`.
 
 `from_value[T](value Value)` uses the same typed construction on an existing
