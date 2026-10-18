@@ -1,5 +1,6 @@
 import deployment.read_sqlite_rows
 import deployment.insert_sqlite_rows
+import deployment.SqliteRowError
 import std.int.parse
 import std.int.to_text
 import std.io.write_text
@@ -63,7 +64,9 @@ pub fn orders[T](args List[Text], make fn(Int, Int) Result[T, Text],
             return Result.Err("stored orders do not match this application")
         }
     }
-    discard inspect(args)?
+    if !inspect(args)? {
+        return Result.Err("application inspection rejected")
+    }
     if length(args) == 3 {
         return Result.Ok(length(before))
     }
@@ -75,8 +78,11 @@ pub fn orders[T](args List[Text], make fn(Int, Int) Result[T, Text],
     }
     let value = make(id, amount)?
     match insert_sqlite_rows(get(args, 1), get(args, 2), codec, [value]) {
-        Result.Err(_) => {
+        Result.Err(SqliteRowError.WriteOutcomeUnknown) => {
             return Result.Err("write not acknowledged; inspect the database before retrying")
+        }
+        Result.Err(_) => {
+            return Result.Err("order encoding failed")
         }
         Result.Ok(_) => {
         }
