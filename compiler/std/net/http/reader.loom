@@ -170,155 +170,55 @@ async fn fields[S Stream, E](input Reader[S, E], budget List[Int], trailers Bool
     Result.Ok(output)
 }
 
-async fn body_part[S Stream, E](input Reader[S, E], output Bytes, count Int) Result[Int, ReadError[E]] {
-    var remaining = count
-    while remaining > 0 {
-        if !available(input).await? {
-            return Result.Err(ReadError.Protocol(ProtocolError.Truncated))
-        }
-        let current = input.state.cursor[0]
-        let ready = length(current.chunk) - current.position
-        let copied = if ready < remaining {
-            ready
-        } else {
-            remaining
-        }
-        var index = 0
-        while index < copied {
-            push(output, get(current.chunk, current.position + index))
-            index = index + 1
-        }
-        input.state.cursor[0] = Cursor {
-            position = current.position + copied
-            ..current
-        }
-        remaining = remaining - copied
-    }
-    Result.Ok(count)
-}
-
-async fn body[S Stream, E](input Reader[S, E], headers List[Header], budget List[Int], request Bool) Result[(Bytes, List[Header]), ReadError[E]] {
-    let shape = protocol[Framing, E](framing(headers, input.state.limits.body_bytes))?
+async fn collected_body[S Stream, E](body Body[S, E]) Result[(Bytes, List[Header]), ReadError[E]] {
     let output = std.bytes.new()
-    let trailers = std.list.new[Header]()
-    if shape.chunked {
-        while true {
-            let size = protocol[Int, E](chunk_size(required_line(input, budget).await?, input.state.limits.body_bytes - length(output)))?
-            if size == 0 {
-                return Result.Ok((output, fields(input, budget, true).await?))
+    while true {
+        match body.next().await {
+            Option.None => {
+                return Result.Ok((output, protocol[List[Header], E](trailers(body))?))
             }
-            discard body_part(input, output, size).await?
-            if length(required_line(input, budget).await?) != 0 {
-                return Result.Err(ReadError.Protocol(ProtocolError.Syntax))
+            Option.Some(value) => {
+                append(output, value?)
             }
-        }
-    } else if shape.size >= 0 {
-        discard body_part(input, output, shape.size).await?
-    } else if !request {
-        while available(input).await? {
-            let current = input.state.cursor[0]
-            let count = length(current.chunk) - current.position
-            if count > input.state.limits.body_bytes - length(output) {
-                return Result.Err(ReadError.Protocol(ProtocolError.Limit))
-            }
-            discard body_part(input, output, count).await?
         }
     }
-    Result.Ok((output, trailers))
+    Result.Ok((output, std.list.new[Header]()))
 }
 
 pub async fn read_request[S Stream, E](input Reader[S, E]) Result[Option[Request], ReadError[E]] {
-    discard protocol[Bool, E](begin(input.state.cursor))?
-    var completed = false
-    defer {
-        if !completed {
-            retire(input.state.cursor)
+    scoped next = open_request(input, 16384).await?
+    match next {
+        Option.None => Result.Ok(Option.None)
+        Option.Some(value) => {
+            let contents = collected_body(value.body).await?
+            Result.Ok(Option.Some(Request {
+                        method = value.method
+                        target = value.target
+                        headers = value.headers
+                        body = contents.0
+                        trailers = contents.1
+                    }))
         }
-        input.state.cursor[0] = Cursor {
-            busy = false
-            ..input.state.cursor[0]
-        }
     }
-    let budget = [input.state.limits.metadata_bytes]
-    var first = line(input, budget).await?
-    while (match first {
-            Option.Some(value) => length(value) == 0
-            Option.None => false
-        }) {
-        first = line(input, budget).await?
-    }
-    let start = match first {
-        Option.None => {
-            completed = true
-            return Result.Ok(Option.None)
-        }
-        Option.Some(value) => protocol[(Text, Text), E](request_line(value))?
-    }
-    let headers = fields(input, budget, false).await?
-    var hosts = 0
-    var index = 0
-    while index < std.list.length(headers) {
-        if named(headers[index].name, "host") {
-            hosts = hosts + 1
-        }
-        index = index + 1
-    }
-    if hosts != 1 {
-        return Result.Err(ReadError.Protocol(ProtocolError.Framing))
-    }
-    let contents = body(input, headers, budget, true).await?
-    completed = true
-    Result.Ok(Option.Some(Request {
-                method = start.0
-                target = start.1
-                headers = headers
-                body = contents.0
-                trailers = contents.1
-            }))
 }
 
 // The caller supplies the corresponding request method, including HEAD/CONNECT.
 // Informational responses are returned individually, not silently skipped.
 pub async fn read_response[S Stream, E](input Reader[S, E], method Text) Result[Option[Response], ReadError[E]] {
-    discard protocol[Bool, E](begin(input.state.cursor))?
-    var completed = false
-    defer {
-        if !completed {
-            retire(input.state.cursor)
-        }
-        input.state.cursor[0] = Cursor {
-            busy = false
-            ..input.state.cursor[0]
-        }
-    }
-    let budget = [input.state.limits.metadata_bytes]
-    let start = match line(input, budget).await? {
-        Option.None => {
-            completed = true
-            return Result.Ok(Option.None)
-        }
-        Option.Some(value) => protocol[(Int, Bytes), E](status_line(value))?
-    }
-    let headers = fields(input, budget, false).await?
-    let contents = if no_body(method, start.0) {
-        (std.bytes.new(), std.list.new[Header]())
-    } else {
-        body(input, headers, budget, false).await?
-    }
-    if tunnel(method, start.0) {
-        input.state.cursor[0] = Cursor {
-            retired = true
-            ..input.state.cursor[0]
+    scoped next = open_response(input, method, 16384).await?
+    match next {
+        Option.None => Result.Ok(Option.None)
+        Option.Some(value) => {
+            let contents = collected_body(value.body).await?
+            Result.Ok(Option.Some(Response {
+                        status = value.status
+                        reason = value.reason
+                        headers = value.headers
+                        body = contents.0
+                        trailers = contents.1
+                    }))
         }
     }
-    completed = true
-    Result.Ok(Option.Some(Response {
-                status = start.0
-                reason = start.1
-                headers = headers
-                body = contents.0
-                trailers = contents.1
-            }))
 }
 
 // Retire HTTP parsing and transfer a copy of unread prefetched octets. The

@@ -1,0 +1,227 @@
+import std.resource.Dispose
+import std.resource.MustScope
+
+enum BodyPhase {
+    Fixed
+    Size
+    Data
+    Terminator
+    End
+    Done
+    Failed
+}
+
+record Progress {
+    phase BodyPhase
+    remaining Int
+    total Int
+    pulling Bool
+    trailers List[Header]
+}
+
+pub record Body[S Stream, E] {
+    state BodyState[S, E]
+}
+
+record BodyState[S Stream, E] {
+    input Reader[S, E]
+    maximum Int
+    budget List[Int]
+    progress List[Progress]
+}
+
+fn new_body[S Stream, E](input Reader[S, E], shape Framing, budget List[Int], maximum Int, request Bool) Body[S, E] {
+    let phase = if shape.chunked {
+        BodyPhase.Size
+    } else if shape.size < 0 && !request {
+        BodyPhase.End
+    } else if shape.size <= 0 {
+        BodyPhase.Done
+    } else {
+        BodyPhase.Fixed
+    }
+    if phase == BodyPhase.Done {
+        input.state.cursor[0] = Cursor {
+            busy = false
+            ..input.state.cursor[0]
+        }
+    }
+    Body[S, E] {
+        state = BodyState[S, E] {
+            input = input
+            maximum = maximum
+            budget = budget
+            progress = [Progress {
+                    phase = phase
+                    remaining = shape.size
+                    total = 0
+                    pulling = false
+                    trailers = std.list.new[Header]()
+                }]
+        }
+    }
+}
+
+fn body_done[S Stream, E](state BodyState[S, E], trailers List[Header]) {
+    state.progress[0] = Progress {
+        phase = BodyPhase.Done
+        trailers = trailers
+        ..state.progress[0]
+    }
+}
+
+fn body_failed[S Stream, E](state BodyState[S, E]) {
+    retire(state.input.state.cursor)
+    state.progress[0] = Progress {
+        phase = BodyPhase.Failed
+        pulling = false
+        trailers = std.list.new[Header]()
+        ..state.progress[0]
+    }
+}
+
+async fn body_next[S Stream, E](state BodyState[S, E]) Result[Option[Bytes], ReadError[E]] {
+    while true {
+        let current = state.progress[0]
+        if current.phase == BodyPhase.Size {
+            let next = required_line(state.input, state.budget).await?
+            let size = protocol[Int, E](chunk_size(next, state.input.state.limits.body_bytes - current.total))?
+            if size == 0 {
+                let trailers = fields(state.input, state.budget, true).await?
+                body_done(state, trailers)
+                return Result.Ok(Option.None)
+            }
+            state.progress[0] = Progress {
+                phase = BodyPhase.Data
+                remaining = size
+                ..current
+            }
+        } else if current.phase == BodyPhase.Terminator {
+            if length(required_line(state.input, state.budget).await?) != 0 {
+                return Result.Err(ReadError.Protocol(ProtocolError.Syntax))
+            }
+            state.progress[0] = Progress {
+                phase = BodyPhase.Size
+                ..current
+            }
+        } else if current.phase == BodyPhase.Done || current.phase == BodyPhase.Failed {
+            return Result.Ok(Option.None)
+        } else {
+            if !available(state.input).await? {
+                if current.phase != BodyPhase.End {
+                    return Result.Err(ReadError.Protocol(ProtocolError.Truncated))
+                }
+                body_done(state, std.list.new[Header]())
+                return Result.Ok(Option.None)
+            }
+            let input = state.input.state.cursor[0]
+            var count = length(input.chunk) - input.position
+            if count > state.maximum {
+                count = state.maximum
+            }
+            if current.phase != BodyPhase.End && count > current.remaining {
+                count = current.remaining
+            }
+            if count > state.input.state.limits.body_bytes - current.total {
+                return Result.Err(ReadError.Protocol(ProtocolError.Limit))
+            }
+            let output = portion(input.chunk, input.position, input.position + count)
+            state.input.state.cursor[0] = Cursor {
+                position = input.position + count
+                ..input
+            }
+            let remaining = if current.phase == BodyPhase.End {
+                -1
+            } else {
+                current.remaining - count
+            }
+            state.progress[0] = Progress {
+                remaining = remaining
+                total = current.total + count
+                ..current
+            }
+            if remaining == 0 {
+                if current.phase == BodyPhase.Fixed {
+                    body_done(state, std.list.new[Header]())
+                } else {
+                    state.progress[0] = Progress {
+                        phase = BodyPhase.Terminator
+                        ..state.progress[0]
+                    }
+                }
+            }
+            return Result.Ok(Option.Some(output))
+        }
+    }
+    Result.Ok(Option.None)
+}
+
+impl[S Stream, E] Stream for Body[S, E] {
+    type Item = Result[Bytes, ReadError[E]]
+
+    async fn next(self Body[S, E]) Option[Result[Bytes, ReadError[E]]] {
+        let current = self.state.progress[0]
+        if current.pulling {
+            return Option.Some(Result.Err(ReadError.Protocol(ProtocolError.Busy)))
+        }
+        if current.phase == BodyPhase.Done || current.phase == BodyPhase.Failed {
+            return Option.None
+        }
+        self.state.progress[0] = Progress {
+            pulling = true
+            ..current
+        }
+        var success = false
+        defer {
+            if !success {
+                body_failed(self.state)
+            }
+            self.state.progress[0] = Progress {
+                pulling = false
+                ..self.state.progress[0]
+            }
+        }
+        match body_next(self.state).await {
+            Result.Ok(value) => {
+                // Keep the lease through the child await. Cancellation there
+                // must not retire a newer message that already reused input.
+                if self.state.progress[0].phase == BodyPhase.Done {
+                    self.state.input.state.cursor[0] = Cursor {
+                        busy = false
+                        ..self.state.input.state.cursor[0]
+                    }
+                }
+                success = true
+                match value {
+                    Option.Some(bytes) => Option.Some(Result.Ok(bytes))
+                    Option.None => Option.None
+                }
+            }
+            Result.Err(error) => Option.Some(Result.Err(error))
+        }
+    }
+}
+
+// Available only after successful completion; trailers never affect framing.
+pub fn trailers[S Stream, E](body Body[S, E]) Result[List[Header], ProtocolError] {
+    let current = body.state.progress[0]
+    if current.phase == BodyPhase.Done {
+        return Result.Ok(current.trailers)
+    }
+    Result.Err(if current.phase == BodyPhase.Failed {
+            ProtocolError.Closed
+        } else {
+            ProtocolError.Busy
+        })
+}
+
+impl[S Stream, E] MustScope for Body[S, E] {
+}
+
+impl[S Stream, E] Dispose for Body[S, E] {
+    fn dispose(self Body[S, E]) {
+        if self.state.progress[0].phase != BodyPhase.Done && self.state.progress[0].phase != BodyPhase.Failed {
+            body_failed(self.state)
+        }
+    }
+}

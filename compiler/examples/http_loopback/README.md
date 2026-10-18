@@ -13,6 +13,9 @@ HEAD metadata without a body, and echoes the POST's binary payload and trailers.
 Small input chunks split protocol lines and payloads across socket reads.
 Both responses finish while the connection remains open; EOF is not mistaken
 for the boundary of a length-delimited or chunked message.
+The client scopes the POST response, consumes at most two body bytes per pull,
+and accumulates a count/checksum without collecting the response body. Trailers
+become available only after the final chunk is consumed.
 
 The listener is scoped. Both manually managed socket identities close through
 lexical defer after the server Task drains. No external service, port number,
