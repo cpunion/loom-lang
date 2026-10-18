@@ -13,6 +13,7 @@ enum LoopCandidate {
     Guard(Expr)
     Header(Int, List[Int], Int)
     Unpublished(Int, List[Int])
+    Born(Int, List[Int], Int)
     Unreachable(Int, List[Int], Int)
     EntryExtent(Int, List[Int], Text, Linear)
     Element(Int, Linear, Text, Value)
@@ -231,6 +232,10 @@ fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] 
         LoopCandidate.Unpublished(local, path) => match loop_local_value(get(state.locals, local), path)? {
             Value.List(identity) => Result.Ok(Predicate.Constant(list_state(identity, state)?.private_storage))
             _ => Result.Err("loop storage invariant needs a tracked sequence")
+        }
+        LoopCandidate.Born(local, path, floor) => match loop_local_value(get(state.locals, local), path)? {
+            Value.List(identity) => Result.Ok(Predicate.Constant(list_state(identity, state)?.birth_floor >= floor))
+            _ => Result.Err("loop allocation invariant needs a tracked sequence")
         }
         LoopCandidate.Unreachable(local, path, identity) => Result.Ok(Predicate.Constant(
                 storage_frame(loop_local_value(get(state.locals, local), path)?, list_state(identity, state)?, state)))
@@ -598,9 +603,26 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             index = index + 1
         }
         var survivors = new[LoopCandidate]()
+        var birth_changed = false
         index = 0
         while index < length(candidates) {
             let candidate = get(candidates, index)
+            match candidate {
+                LoopCandidate.Born(local, path, floor) => {
+                    let bound = match loop_birth_floor(local, path, floor, backedges) {
+                        Result.Ok(value) => value
+                        Result.Err(_) => -1
+                    }
+                    if bound >= 0 {
+                        push(survivors, LoopCandidate.Born(local, path, bound))
+                        birth_changed = birth_changed || bound != floor
+                    }
+                    index = index + 1
+                    continue
+                }
+                _ => {
+                }
+            }
             var preserved = true
             var edge = 0
             while edge < length(backedges) && preserved {
@@ -615,7 +637,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
         }
         let published = loop_publications(observed, head, backedges)
         let graph_losses = loop_graph_losses(proof, observed, head, backedges)?
-        if length(survivors) == length(candidates) && length(published) == 0 && length(graph_losses) == 0 {
+        if !birth_changed && length(survivors) == length(candidates) && length(published) == 0 && length(graph_losses) == 0 {
             if proof.capture_returns {
                 discard append(proof.returns, iteration.returns)?
             }
@@ -650,7 +672,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
         } else {
             loop_header_count(survivors)
         }
-        let changed_headers = headers != remaining_headers || length(graph_losses) != 0
+        let changed_headers = birth_changed || headers != remaining_headers || length(graph_losses) != 0
         headers = remaining_headers
         candidates = survivors
         if changed_headers {

@@ -57,3 +57,43 @@ test fn opaque_frames_require_real_unpublished_allocations() {
         Result.Err(_) => false
     }
 }
+
+test fn allocation_epochs_do_not_turn_sampled_headers_into_distinct_allocations() {
+    var state = with_extent(10, constant(integer(1)), true, State {
+            locals = [Value.List(20)]
+            facts = []
+            extents = []
+            observations = []
+        })
+    state = list_bounds(Value.Record([Value.List(5), Value.List(20), Value.List(21)]), state)
+    state = framed_completion_storage(Value.Record([Value.List(20), Value.List(21)]),
+        storage_birth(20, 10, storage_birth(21, 10, state)))
+    let original = get(state.extents, 0)
+    let sampled = get(state.extents, 2)
+    let sibling = get(state.extents, 3)
+    assert sampled.birth_floor == 10 && !sampled.allocated
+    assert extent_overlap(original, sampled) && extent_overlap(sampled, sibling)
+    assert !extent_overlap(get(state.extents, 1), sampled)
+    assert opaque_frame(Value.Opaque(10, []), sampled)
+    assert !opaque_frame(Value.Opaque(11, []), sampled)
+    assert !opaque_frame(Value.Opaque(10, []), private_extent(sampled, false))
+    let proof = verification(fixture(literal("0"), [], literal("true")), empty_proof_program())
+    let candidate = LoopCandidate.Born(0, [], 10)
+    assert loop_candidate_preserved(proof, candidate, state)
+    assert loop_header_count([candidate]) == 1
+    assert !loop_candidate_preserved(proof, candidate, assigned(state, 0, Value.List(5)))
+    assert match loop_birth_floor(0, [], 12, [Outcome {
+                state = assigned(state, 0, Value.List(10))
+                value = Value.Empty
+            }]) {
+        Result.Ok(floor) => floor == 10
+        Result.Err(_) => false
+    }
+    assert match loop_birth_floor(0, [], 10, [Outcome {
+                state = assigned(state, 0, Value.List(5))
+                value = Value.Empty
+            }]) {
+        Result.Ok(floor) => floor == -1
+        Result.Err(_) => false
+    }
+}

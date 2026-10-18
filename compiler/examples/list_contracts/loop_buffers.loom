@@ -44,6 +44,22 @@ ensures length(result) == 1
     current
 }
 
+fn observed_buffers[T](first T, second T, turns Int, observe fn(Int)) List[T]
+ensures length(result) == 2
+{
+    var current = [first, first]
+    var other = [second, second]
+    var turn = 0
+    while turn < turns {
+        observe(turn)
+        let previous = current
+        current = other
+        other = previous
+        turn = turn + 1
+    }
+    current
+}
+
 async fn exercise_loop_buffers() {
     let shared = [9]
     var turns = 0
@@ -73,6 +89,25 @@ async fn exercise_loop_buffers() {
     assert current[0] == 1 && length(current) == 1
     assert length(previous[0]) == 2 && length(previous[2]) == 3
     assert length(shared) == 1 && shared[0] == 9
+    let trace = new[Int]()
+    let notes = [0]
+    let first = TransformEntry {
+        label = "first"
+        notes = notes
+    }
+    let second = TransformEntry {
+        label = "second"
+        notes = notes
+    }
+    let observed = GeneratedPair(observed_buffers(first, second, 3, fn(turn Int) {
+                push(trace, turn)
+                push(notes, turn)
+            }))
+    sleep_ms(1).await
+    assert length(observed) == 2 && observed[0].label == "second"
+    assert length(trace) == 3 && trace[2] == 2
+    observed[0].notes[0] = 7
+    assert notes[0] == 7 && length(notes) == 4
 }
 
 test async fn rebound_private_buffers_publish_checked_shapes_after_real_effects() {

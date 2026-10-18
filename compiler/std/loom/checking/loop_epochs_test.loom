@@ -1,0 +1,121 @@
+test fn callback_frames_follow_allocation_epochs_through_private_buffer_swaps() {
+    list_constraint_accept("""
+        import std.list.length
+        type Pair[T] = List[T] where length(self) == 2
+        fn rotated[T](first T, second T, turns Int, effect fn(Int)) List[T]
+        ensures length(result) == 2
+        {
+            var current = [first, first]
+            var other = [second, second]
+            var turn = 0
+            while turn < turns {
+                effect(turn)
+                let previous = current
+                current = other
+                other = previous
+                turn = turn + 1
+            }
+            current
+        }
+        fn constrained[T](first T, second T, turns Int, effect fn(Int)) Pair[T] {
+            Pair(rotated(first, second, turns, effect))
+        }
+        """)
+    byte_constraint_accept("""
+        import std.bytes.new
+        import std.bytes.length
+        import std.bytes.push
+        type Single = Bytes where length(self) == 1
+        fn rotated(turns Int, effect fn(Int)) Bytes
+        ensures length(result) == 1
+        {
+            var current = new()
+            push(current, 1)
+            var other = new()
+            push(other, 2)
+            var turn = 0
+            while turn < turns {
+                effect(turn)
+                let previous = current
+                current = other
+                other = previous
+                turn = turn + 1
+            }
+            current
+        }
+        fn constrained(turns Int, effect fn(Int)) Single {
+            Single(rotated(turns, effect))
+        }
+        """)
+}
+
+test fn allocation_epoch_candidates_drop_earlier_aliases_and_published_frames() {
+    let cases = ["""
+        import std.list.length
+        import std.list.push
+        fn invalid(turns Int) Int
+        ensures result == 1
+        {
+            let older = [1]
+            let effect = fn() {
+                push(older, 9)
+            }
+            var current = [2]
+            var turn = 0
+            while turn < turns {
+                effect()
+                current = older
+                turn = turn + 1
+            }
+            length(current)
+        }
+        """, """
+        import std.list.length
+        fn invalid(turns Int, effect fn(List[Int])) Int
+        requires turns > 0
+        ensures result == 1
+        {
+            var current = [1]
+            var other = [2]
+            var turn = 0
+            while turn < turns {
+                effect(current)
+                let previous = current
+                current = other
+                other = previous
+                turn = turn + 1
+            }
+            length(current)
+        }
+        """, """
+        import std.list.length
+        import std.list.push
+        fn invalid(turns Int) Int
+        requires turns > 0
+        ensures result == 1
+        {
+            let original = [1]
+            var first = original
+            var second = [2]
+            var third = [3]
+            var turn = 0
+            while turn < turns {
+                let previous = first
+                first = second
+                second = third
+                third = previous
+                turn = turn + 1
+            }
+            push(second, 9)
+            length(original)
+        }
+        """]
+    var index = 0
+    while index < length(cases) {
+        assert match checked(list_length_files(get(cases, index))) {
+            Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}

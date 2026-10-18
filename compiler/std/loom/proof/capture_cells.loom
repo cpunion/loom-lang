@@ -79,6 +79,7 @@ fn fixed_capture_cell(identity Int, state State) State {
                     identity = identity
                     size = constant(integer(1))
                     allocated = extent.allocated
+                    birth_floor = extent.birth_floor
                     private_storage = extent.private_storage
                     read_only = extent.read_only
                     fixed_extent = true

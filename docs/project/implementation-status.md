@@ -234,6 +234,9 @@ supported theories and boundaries. The central rules are:
   Loop-carried headers retain unpublished provenance only after entry/all-backedge
   induction, including replacement after publishing an old buffer. This supplies
   neither a new allocation identity nor separation from other private headers.
+  Allocation-epoch lower bounds are separate inductive facts: they can frame
+  those headers across older callbacks without mistaking sampled IDs for new
+  allocations. Publication still invalidates the corresponding private frames.
   General nested-graph publication and content preservation remain conservative.
 
 Representative native trials include
