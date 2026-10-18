@@ -1,4 +1,6 @@
 import std.float.is_finite
+import std.bytes.get
+import std.bytes.length
 
 fn float_cell(encoded Text) Float {
     match row_value(encoded) {

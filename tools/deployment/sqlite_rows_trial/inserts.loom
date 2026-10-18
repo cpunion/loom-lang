@@ -1,0 +1,133 @@
+import deployment.insert_sqlite_rows
+import std.bytes.new
+import std.bytes.push
+import std.list.new
+import std.list.push
+import std.storage.RowCodec
+import std.storage.prepare_codec
+import std.storage.encode_prepared_row
+import std.storage.decode_prepared_row
+import std.fs.entry_kind
+import std.fs.FsError
+import std.text.concat
+
+fn entry(id Int, rate Float, payload Bytes) Entry {
+    Entry {
+        id = id
+        body = "'\"; DROP TABLE anything;--\n|\0中"
+        amount = Amount(12)
+        enabled = true
+        note = Option.Some("\n\0")
+        payload = payload
+        rate = rate
+    }
+}
+
+fn check_inserts(tool Text, database Text, codec PreparedRowCodec[Entry]) {
+    sql(tool, database, "CREATE UNIQUE INDEX \"unique row id\" ON \"items\"\"archive\"(\"row id\");")
+    let payload = std.bytes.new()
+    std.bytes.push(payload, 0)
+    std.bytes.push(payload, 255)
+    let missing = concat(database, ".missing")
+    assert match entry_kind(missing) {
+        Result.Err(FsError.NotFound) => true
+        _ => false
+    }
+    assert match insert_sqlite_rows(tool, missing, codec, [entry(0, 1.5, payload)]) {
+        Result.Err(SqliteRowError.WriteOutcomeUnknown) => true
+        _ => false
+    }
+    assert match entry_kind(missing) {
+        Result.Err(FsError.NotFound) => true
+        _ => false
+    }
+    let rates = [-0.0, 1.7976931348623157e308, 5e-324, -1.0 / 0.0, 1.0 / 0.0]
+    let values = std.list.new[Entry]()
+    var index = 0
+    while index < std.list.length(rates) {
+        std.list.push(values, entry(index, std.list.get(rates, index), payload))
+        index = index + 1
+    }
+    assert match insert_sqlite_rows(tool, database, codec, values) {
+        Result.Ok(true) => true
+        _ => false
+    }
+    // SQLite storage affinity may canonicalize zero signs; the wire codec does
+    // not. Typed row validation is not proof of database representation equality.
+    let actual = read(tool, database, codec)
+    assert std.list.length(actual) == std.list.length(values)
+    index = 0
+    while index < std.list.length(actual) {
+        let current = std.list.get(actual, index)
+        assert current.id >= 0 && current.id < std.list.length(values)
+        let expected = std.list.get(values, current.id)
+        assert current.body == expected.body && current.rate == expected.rate && current.amount == expected.amount
+        assert current.enabled && std.bytes.length(current.payload) == 2 && std.bytes.get(current.payload, 1) == 255
+        assert match current.note {
+            Option.Some("\n\0") => true
+            _ => false
+        }
+        index = index + 1
+    }
+    // Every value is encoded before SQLite starts: a late NaN or codec error
+    // cannot leave an earlier row inserted.
+    assert match insert_sqlite_rows(tool, database, codec, [entry(20, 1.5, payload), entry(21, 0.0 / 0.0, payload)]) {
+        Result.Err(SqliteRowError.Encoding) => true
+        _ => false
+    }
+    let custom = match prepare_codec(RowCodec[Entry] {
+            table = codec_table(codec)
+            encode_value = fn(value Entry) Result[List[Value], CodecError] {
+                if value.id == 21 {
+                    Result.Err(CodecError.Rejected)
+                } else {
+                    encode_prepared_row(codec, value)
+                }
+            }
+            decode_value = fn(row List[Value]) Result[Entry, CodecError] {
+                decode_prepared_row(codec, row)
+            }
+        }) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match insert_sqlite_rows(tool, database, custom, [entry(20, 1.5, payload), entry(21, 1.5, payload)]) {
+        Result.Err(SqliteRowError.Encode(1, CodecError.Rejected)) => true
+        _ => false
+    }
+    // A real SQLite constraint failure rolls back the whole INSERT, not just
+    // the duplicate row. INSERT OR ABORT overrides a column conflict policy.
+    assert match insert_sqlite_rows(tool, database, codec, [entry(20, 1.5, payload), entry(0, 1.5, payload)]) {
+        Result.Err(SqliteRowError.WriteOutcomeUnknown) => true
+        _ => false
+    }
+    assert std.list.length(read(tool, database, codec)) == 5
+    assert match insert_sqlite_rows(tool, database, codec, std.list.new[Entry]()) {
+        Result.Ok(true) => true
+        _ => false
+    }
+    // Reuse the existing real-commit/failed-acknowledgement fixture. A returned
+    // error must not imply rollback or trigger an automatic duplicate write.
+    // Remove the fixture uniqueness rule so an accidental retry would create
+    // an observable second row instead of hiding behind a duplicate-key error.
+    sql(tool, database, "DROP INDEX \"unique row id\";")
+    let lost_ack = ".github/scripts/sqlite-lose-ack.mjs"
+    assert match insert_sqlite_rows(lost_ack, database, codec, [entry(99, 1.5, payload)]) {
+        Result.Err(SqliteRowError.WriteOutcomeUnknown) => true
+        _ => false
+    }
+    let after = read(tool, database, codec)
+    assert std.list.length(after) == 6
+    var found = 0
+    index = 0
+    while index < std.list.length(after) {
+        if std.list.get(after, index).id == 99 {
+            found = found + 1
+        }
+        index = index + 1
+    }
+    assert found == 1
+}

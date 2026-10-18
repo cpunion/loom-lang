@@ -1,0 +1,82 @@
+import std.encoding.binary64.encode_be
+import std.encoding.hex.encode
+import std.int.to_text
+import std.storage.encode_prepared_row
+import std.text.to_bytes
+
+fn row_literal(value Value) Result[Text, SqliteRowError] {
+    match value {
+        Value.Null => Result.Ok("NULL")
+        Value.Int(number) => Result.Ok(to_text(number))
+        Value.Float(number) => {
+            // SQLite silently maps NaN to NULL. Reject instead of losing a
+            // logical Float value, even if the physical column is nullable.
+            if is_nan(number) {
+                Result.Err(SqliteRowError.Encoding)
+            } else {
+                Result.Ok(concat("ieee754_from_blob(x'", concat(encode(encode_be(number)), "')")))
+            }
+        }
+        Value.Text(text) => Result.Ok(concat("CAST(x'", concat(encode(to_bytes(text)), "' AS TEXT)")))
+        Value.Bytes(bytes) => Result.Ok(concat("x'", concat(encode(bytes), "'")))
+    }
+}
+
+// Encode the entire batch before starting SQLite. Fragments join once rather
+// than copying the growing SQL string for every row or cell.
+fn insert_query[T](codec PreparedRowCodec[T], values List[T]) Result[Text, SqliteRowError] {
+    let table = codec_table(codec)
+    let fragments = std.list.new[Text]()
+    std.list.push(fragments, "BEGIN IMMEDIATE;\nINSERT OR ABORT INTO main.")
+    std.list.push(fragments, row_identifier(table.physical_name)?)
+    std.list.push(fragments, "(")
+    var column = 0
+    while column < std.list.length(table.columns) {
+        if column != 0 {
+            std.list.push(fragments, ",")
+        }
+        std.list.push(fragments, row_identifier(std.list.get(table.columns, column).physical_name)?)
+        column = column + 1
+    }
+    std.list.push(fragments, ") VALUES ")
+    var row = 0
+    while row < std.list.length(values) {
+        let encoded = match encode_prepared_row(codec, std.list.get(values, row)) {
+            Result.Ok(value) => value
+            Result.Err(error) => {
+                return Result.Err(SqliteRowError.Encode(row, error))
+            }
+        }
+        if row != 0 {
+            std.list.push(fragments, ",")
+        }
+        std.list.push(fragments, "(")
+        column = 0
+        while column < std.list.length(encoded) {
+            if column != 0 {
+                std.list.push(fragments, ",")
+            }
+            std.list.push(fragments, row_literal(std.list.get(encoded, column))?)
+            column = column + 1
+        }
+        std.list.push(fragments, ")")
+        row = row + 1
+    }
+    std.list.push(fragments, ";\nCOMMIT;\n")
+    Result.Ok(join(fragments, ""))
+}
+
+// One transaction against an existing database, never an automatic retry.
+// SQLite constraints/triggers retain their ordinary semantics. Success is a
+// command acknowledgement, not proof of row equality or deployment completion;
+// a process failure can leave a committed transaction with unknown outcome.
+pub fn insert_sqlite_rows[T](tool Text, database Text, codec PreparedRowCodec[T], values List[T]) Result[Bool, SqliteRowError] {
+    if std.list.length(values) == 0 {
+        return Result.Ok(true)
+    }
+    let query = insert_query(codec, values)?
+    match execute_existing(tool, database, query) {
+        Result.Ok(_) => Result.Ok(true)
+        Result.Err(_) => Result.Err(SqliteRowError.WriteOutcomeUnknown)
+    }
+}

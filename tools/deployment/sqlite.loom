@@ -21,7 +21,7 @@ fn bytes(value Text) Bytes {
 
 // The SQLite executable is an explicit deployment-tool dependency, not a
 // language runtime intrinsic. Child arguments are literal; no shell is used.
-fn invoke(tool Text, database Text, sql Text, read_only Bool) Result[Bytes, Text] {
+fn invoke(tool Text, database Text, sql Text, read_only Bool, require_existing Bool) Result[Bytes, Text] {
     if tool == "" || database == "" {
         return Result.Err("SQLite tool and database path are required")
     }
@@ -41,6 +41,9 @@ fn invoke(tool Text, database Text, sql Text, read_only Bool) Result[Bytes, Text
     std.list.push(args, "-noheader")
     std.list.push(args, "-separator")
     std.list.push(args, "\t")
+    if require_existing {
+        std.list.push(args, "-ifexists")
+    }
     if read_only {
         std.list.push(args, "-readonly")
     }
@@ -65,11 +68,15 @@ fn invoke(tool Text, database Text, sql Text, read_only Bool) Result[Bytes, Text
 // stdin (dot commands can reopen a writable database), so this is not public.
 // Diagnostics never echo SQL, database contents, paths, or SQLite stderr.
 fn inspect(tool Text, database Text, sql Text) Result[Bytes, Text] {
-    invoke(tool, database, sql, true)
+    invoke(tool, database, sql, true, true)
 }
 
 // Internal SQL transport. Only generated statements with validated identifiers
 // may cross this boundary; completion requires a separate checked transaction.
 fn execute(tool Text, database Text, sql Text) Result[Bytes, Text] {
-    invoke(tool, database, sql, false)
+    invoke(tool, database, sql, false, false)
+}
+
+fn execute_existing(tool Text, database Text, sql Text) Result[Bytes, Text] {
+    invoke(tool, database, sql, false, true)
 }

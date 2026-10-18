@@ -27,3 +27,26 @@ All rows are loaded into memory, without an ordering promise. Codec callbacks
 retain their ordinary effects. Successful reads are not schema compatibility
 evidence, proof of application writer behavior, or authorization to migrate;
 general migration execution and recovery remain separate work.
+
+## Batch insertion
+
+`insert_sqlite_rows[T](tool, database, codec, values)` returns
+`Result[Bool, SqliteRowError]`. It validates/encodes every row before invoking
+SQLite, then executes one `INSERT OR ABORT` in one transaction against an
+existing database. Empty input is a successful no-op without starting SQLite.
+Codec failures report `Encode(row, error)`; NaN returns `Encoding` instead of
+silently becoming SQL NULL. Strings and blobs use hexadecimal literals; Float
+uses the source [binary64 codec](../../../compiler/std/encoding/binary64/README.md).
+SQL fragments are joined once, without repeatedly copying a growing batch.
+
+Encoding validates outgoing cells, not the stored result: SQLite affinity,
+constraints and triggers retain their semantics. In particular, SQLite storage
+may canonicalize zero signs. Codec callbacks keep their ordinary effects.
+An execution failure returns `WriteOutcomeUnknown`, even when a particular SQL
+error would roll back: the process may instead have committed and lost its
+acknowledgement. Inspect authoritative state; the API never retries automatically.
+Success acknowledges the SQL command, not a deployment or compatibility proof.
+
+The trial also tests real batch insertion, constraint rollback, pre-execution
+codec/NaN rejection, and a real commit with lost acknowledgement. The latter
+reuses the existing Node.js fault-injection fixture from the migration trial.
