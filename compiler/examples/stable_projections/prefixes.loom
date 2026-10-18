@@ -1,0 +1,42 @@
+import std.list.length
+import std.list.push
+import std.time.sleep_ms
+import std.result.Result
+import std.result.ConstraintError
+
+type Prefix = List[Int] where length(self) > 0 && self[0] == 7
+
+record PrefixDraft {
+    values Prefix
+    number Int
+}
+
+type PrefixSnapshot = PrefixDraft where self.number == self.values[0]
+
+fn prefix_snapshot(values Prefix, number Int) Result[PrefixSnapshot, ConstraintError] {
+    PrefixSnapshot(PrefixDraft {
+            values = values
+            number = number
+        })
+}
+
+async fn retained_prefix(value PrefixSnapshot) Int
+ensures result == value.values[0]
+{
+    sleep_ms(1).await
+    value.number
+}
+
+async fn appendable_projection() {
+    let values = Prefix([7])
+    let snapshot = match prefix_snapshot(values, 7) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let pending = retained_prefix(snapshot)
+    push(values, 9)
+    assert pending.await == 7 && length(snapshot.values) == 2
+}

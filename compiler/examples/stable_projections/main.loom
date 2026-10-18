@@ -1,0 +1,84 @@
+import std.list.length
+import std.result.Result
+import std.result.ConstraintError
+import std.time.sleep_ms
+import std.task.worker.run
+
+record Cell {
+    key Int
+    quantity Int
+}
+
+type Table = List[Cell] where length(self) == 1 && self[0].key == 7
+
+record Draft {
+    table Table
+    key Int
+}
+
+fn table_key(table List[Cell]) Int {
+    table[0].key
+}
+
+type Snapshot = Draft where self.key == table_key(self.table)
+
+fn snapshot(table Table, key Int) Result[Snapshot, ConstraintError] {
+    Snapshot(Draft {
+            table = table
+            key = key
+        })
+}
+
+fn observed(value Snapshot) Int
+ensures result == table_key(value.table)
+{
+    value.key
+}
+
+async fn retained(value Snapshot) Int
+ensures result == table_key(value.table)
+{
+    sleep_ms(1).await
+    value.key
+}
+
+fn replace_quantity(table Table, quantity Int) {
+    table[0] = Cell {
+        key = 7
+        quantity = quantity
+    }
+}
+
+async fn exercise() {
+    appendable_projection().await
+    let table = Table([Cell {
+                key = 7
+                quantity = 1
+            }])
+    let value = match snapshot(table, 7) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let alias = table
+    replace_quantity(alias, 2)
+    assert observed(value) == 7 && table[0].quantity == 2
+    let pending = retained(value)
+    replace_quantity(alias, 3)
+    assert pending.await == 7 && table[0].quantity == 3
+    let worker = run(fn() Int {
+            observed(value)
+        })
+    replace_quantity(alias, 4)
+    assert worker.await == 7 && table[0].quantity == 4
+}
+
+test async fn stable_columns_survive_legal_changes_to_other_columns() {
+    exercise().await
+}
+
+async fn main() {
+    exercise().await
+}

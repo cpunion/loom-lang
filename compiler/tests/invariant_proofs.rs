@@ -3,26 +3,30 @@ mod common;
 use common::success;
 
 #[test]
-fn unique_contents_compose_without_freezing_unobserved_siblings() {
-    let package = "compiler/examples/constant_contents";
-    success(&common::loom(&["check", package]));
+fn stable_observations_compose_without_freezing_unobserved_contents() {
     let directory = tempfile::tempdir().unwrap();
-    for level in ["0", "2"] {
-        for mode in ["test", "build"] {
-            let artifact = common::executable(directory.path(), mode);
-            let mut command = common::command(&[mode, package]);
-            if mode == "test" {
-                command.arg("--no-run");
+    for package in [
+        "compiler/examples/constant_contents",
+        "compiler/examples/stable_projections",
+    ] {
+        success(&common::loom(&["check", package]));
+        for level in ["0", "2"] {
+            for mode in ["test", "build"] {
+                let artifact = common::executable(directory.path(), mode);
+                let mut command = common::command(&[mode, package]);
+                if mode == "test" {
+                    command.arg("--no-run");
+                }
+                success(
+                    &command
+                        .arg("--output")
+                        .arg(&artifact)
+                        .env("LOOM_OPT_LEVEL", level)
+                        .output()
+                        .unwrap(),
+                );
+                success(&common::run_tasks(&artifact));
             }
-            success(
-                &command
-                    .arg("--output")
-                    .arg(&artifact)
-                    .env("LOOM_OPT_LEVEL", level)
-                    .output()
-                    .unwrap(),
-            );
-            success(&common::run_tasks(&artifact));
         }
     }
 
@@ -45,6 +49,31 @@ type Invalid = Snapshot where self.number == 1.0 / self.values[0]
     let rejected = common::loom(&["check", directory.path().to_str().unwrap()]);
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("shared mutable contents"));
+
+    fs::write(
+        &main,
+        r#"
+import std.time.sleep_ms
+type Never = List[Int] where false
+enum Choice {
+    Impossible(Never)
+    Valid
+}
+async fn wrong(value Choice) Int
+ensures result == 7
+{
+    sleep_ms(1).await
+    0
+}
+async fn main() {
+    assert wrong(Choice.Valid).await == 0
+}
+"#,
+    )
+    .unwrap();
+    let inactive = common::loom(&["check", directory.path().to_str().unwrap()]);
+    assert!(!inactive.status.success());
+    assert!(String::from_utf8_lossy(&inactive.stderr).contains("postcondition"));
 }
 
 #[test]

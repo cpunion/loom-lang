@@ -2565,8 +2565,9 @@ does not imply that every value of that child type has the same length. Ordinary
 pure wrappers may read that extent, while element reads, writes, escaping aliases
 and suspension cannot gain permission from the header-only footprint. Unobserved
 shared siblings remain mutable. The compiler retains this policy dependency;
-later validation cannot silently grant resizing. Growing or unrestricted children
-and unknown observations still reject. See the
+later validation cannot silently grant resizing. An unchanged-extent guarantee
+is not inferred for growing or unrestricted children. Unknown observations
+still reject. See the
 [stable extent example](examples/record_refinement/extents.loom).
 
 Contents can also be observed when the compiler proves that any two valid child
@@ -2579,6 +2580,16 @@ the complete predicate, while unobserved siblings remain mutable. This guarantee
 survives real suspension and workers without copying, ownership syntax or runtime
 metadata. Unknown proofs and arbitrary mutable nested graphs still reject. See
 the [stable content example](examples/constant_contents).
+
+Whole-content uniqueness is sufficient, not necessary. A child predicate may
+fix an observed column while other columns remain mutable. The compiler can
+prove the actual parent predicate again after arbitrary legal shared changes,
+including its evaluation safety. Input type facts describe one logical entry
+heap; later reads still use independent versions, not cached scalar values.
+Every store independently preserves the complete child predicate. A store
+preservation proof cannot assume the predicate it is trying to preserve.
+See [stable projections](examples/stable_projections) for native alias updates,
+real suspension and workers without a whole-buffer read-only guarantee.
 
 Scoped resources and one-shot Tasks cannot be wrapped in a refinement.
 Its constructor checks an unknown value once and returns `Result`; copying the

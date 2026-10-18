@@ -213,6 +213,20 @@ fn validate_refinement(env Environment, ty Int, checking Option[List[Int]]) Resu
                     reads = invariant_observation(env, program, value, length(stage.locals), root, Option.Some(stable))
                 }
             }
+            if !get(reads.valid, 0) {
+                match std.loom.eval.validate(program, value) {
+                    Result.Ok(_) => {
+                        if invariant_stable(env, program, base, value, active) {
+                            set(reads.valid, 0, true)
+                            // A predicate-level proof supplies no blanket write
+                            // policy for a sequence root. Check every store.
+                            set(reads.element_reads, 0, true)
+                        }
+                    }
+                    Result.Err(_) => {
+                    }
+                }
+            }
         }
         if !get(reads.valid, 0) {
             return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
