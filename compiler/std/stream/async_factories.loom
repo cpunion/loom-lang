@@ -1,0 +1,66 @@
+import std.resource.Dispose
+import std.resource.MustScope
+
+// Await a fresh producer before constructing the owned adapter. Acquisition
+// remains an ordinary child Task, including fault and cancellation cleanup.
+pub async fn from_iter[A, I Iterator + Dispose + MustScope](create fn(A) Task[I], input A) FromIterator[I] {
+    FromIterator {
+        source = create(input).await
+    }
+}
+
+pub async fn from_iter[A, I Iterator + Dispose + MustScope, E](create fn(A) Task[Result[I, E]], input A) Result[FromIterator[I], E] {
+    Result.Ok(FromIterator {
+            source = create(input).await?
+        })
+}
+
+pub async fn map[A, S Stream + Dispose + MustScope, T](create fn(A) Task[S], input A, transform fn(S.Item) Task[T]) Mapped[S, T] {
+    Mapped {
+        source = create(input).await
+        transform = transform
+    }
+}
+
+pub async fn map[A, S Stream + Dispose + MustScope, T, E](create fn(A) Task[Result[S, E]], input A, transform fn(S.Item) Task[T]) Result[Mapped[S, T], E] {
+    Result.Ok(Mapped {
+            source = create(input).await?
+            transform = transform
+        })
+}
+
+pub async fn filter[A, S Stream + Dispose + MustScope](create fn(A) Task[S], input A, predicate fn(S.Item) Task[Bool]) Filtered[S] {
+    Filtered {
+        source = create(input).await
+        predicate = predicate
+    }
+}
+
+pub async fn filter[A, S Stream + Dispose + MustScope, E](create fn(A) Task[Result[S, E]], input A, predicate fn(S.Item) Task[Bool]) Result[Filtered[S], E] {
+    Result.Ok(Filtered {
+            source = create(input).await?
+            predicate = predicate
+        })
+}
+
+pub async fn take[A, S Stream + Dispose + MustScope](create fn(A) Task[S], input A, count Int) Limited[S]
+requires count >= 0
+{
+    Limited {
+        state = LimitState[S] {
+            source = create(input).await
+            remaining = [count]
+        }
+    }
+}
+
+pub async fn take[A, S Stream + Dispose + MustScope, E](create fn(A) Task[Result[S, E]], input A, count Int) Result[Limited[S], E]
+requires count >= 0
+{
+    Result.Ok(Limited {
+            state = LimitState[S] {
+                source = create(input).await?
+                remaining = [count]
+            }
+        })
+}

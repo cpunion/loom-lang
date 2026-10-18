@@ -184,17 +184,18 @@ fn half_close_preserves_pending_reads_and_address_queries_under_moving_gc() {
 #[test]
 fn source_cannot_extract_native_token_from_public_wrapper() {
     let directory = tempfile::tempdir().unwrap();
-    std::fs::write(
-        directory.path().join("main.loom"),
+    for source in [
         "import std.net.tcp.Listener\nfn token(listener Listener) Int { listener.state.token }\nfn main() {}\n",
-    )
-    .unwrap();
-    let output = common::loom(&["check", directory.path().to_str().unwrap()]);
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("cannot inspect a private type from another package"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+        "import std.net.tcp.Connection\nfn token(connection Connection) Int { connection.state.socket.state.token }\nfn main() {}\n",
+    ] {
+        std::fs::write(directory.path().join("main.loom"), source).unwrap();
+        let output = common::loom(&["check", directory.path().to_str().unwrap()]);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("cannot inspect a private type from another package"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

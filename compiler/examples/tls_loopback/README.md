@@ -26,6 +26,11 @@ close both directions on close-notify, so applications must not assume that a
 response can follow their TLS 1.2 write shutdown. No external server, persistent
 private key or verifier bypass is needed.
 
+Acquisition tests also cancel numeric/hostname connects and accepts before
+handshake registration. Peer EOF (or reset), bounded by a deadline, checks that
+an acquired but unclaimed TCP result closes; waiting for ClientHello first would
+miss that window. The `cancel-accept` mode exercises this server-side boundary.
+
 To run manually, provide a CA PEM, a matching server chain/key for `localhost`,
 and a payload file larger than 64 KiB:
 

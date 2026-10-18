@@ -87,6 +87,34 @@ requires maximum >= 0
         })
 }
 
+pub async fn lines[A, S Stream + Dispose + MustScope, E](create fn(A) Task[S], input A,
+    bytes fn(S.Item) Result[Bytes, E], maximum Int) Lines[S, E]
+requires maximum >= 0
+{
+    Lines[S, E] {
+        state = State[S, E] {
+            source = create(input).await
+            bytes = bytes
+            maximum = maximum
+            cursor = cursor()
+        }
+    }
+}
+
+pub async fn lines[A, S Stream + Dispose + MustScope, E, F](create fn(A) Task[Result[S, F]], input A,
+    bytes fn(S.Item) Result[Bytes, E], maximum Int) Result[Lines[S, E], F]
+requires maximum >= 0
+{
+    Result.Ok(Lines[S, E] {
+            state = State[S, E] {
+                source = create(input).await?
+                bytes = bytes
+                maximum = maximum
+                cursor = cursor()
+            }
+        })
+}
+
 fn retire(state List[Cursor]) {
     state[0] = Cursor {
         chunk = new()

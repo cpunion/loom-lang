@@ -1,0 +1,142 @@
+async fn acquire_counter(events List[Int]) OwnedCounter {
+    sleep_ms(1).await
+    create_counter(events)
+}
+
+async fn acquire_iterator(events List[Int]) FromIterator[OwnedCounter] {
+    from_iter(acquire_counter, events).await
+}
+
+async fn acquire_selected(events List[Int]) Filtered[FromIterator[OwnedCounter]] {
+    filter(acquire_iterator, events, even).await
+}
+
+async fn acquire_rendered(events List[Int]) Mapped[Filtered[FromIterator[OwnedCounter]], Text] {
+    map(acquire_selected, events, rendered).await
+}
+
+test async fn async_factories_compose_without_pulling_and_dispose_once() {
+    let events = new[Int]()
+    {
+        scoped source = take(acquire_rendered, events, 2).await
+        assert length(events) == 1 && events[0] == -1
+        let values = collect(source).await
+        assert length(values) == 2 && values[0] == "0" && values[1] == "2"
+    }
+    assert length(events) == 5 && events[1] == 0 && events[2] == 1 &&
+    events[3] == 2 && events[4] == 99
+    let empty = new[Int]()
+    {
+        scoped source = take(acquire_rendered, empty, 0).await
+        assert length(collect(source).await) == 0
+    }
+    assert length(empty) == 2 && empty[0] == -1 && empty[1] == 99
+}
+
+async fn open_async_counter(events List[Int]) Result[OwnedCounter, Text] {
+    Result.Ok(acquire_counter(events).await)
+}
+
+async fn open_async_iterator(events List[Int]) Result[FromIterator[OwnedCounter], Text] {
+    from_iter(open_async_counter, events).await
+}
+
+async fn open_async_selected(events List[Int]) Result[Filtered[FromIterator[OwnedCounter]], Text] {
+    filter(open_async_iterator, events, even).await
+}
+
+async fn open_async_rendered(events List[Int]) Result[Mapped[Filtered[FromIterator[OwnedCounter]], Text], Text] {
+    map(open_async_selected, events, rendered).await
+}
+
+async fn async_pipeline(events List[Int]) Result[List[Text], Text] {
+    scoped source = take(open_async_rendered, events, 2).await?
+    Result.Ok(collect(source).await)
+}
+
+test async fn fallible_async_factories_transfer_nested_owners() {
+    let events = new[Int]()
+    assert match async_pipeline(events).await {
+        Result.Ok(values) => length(values) == 2 && values[0] == "0" && values[1] == "2"
+        Result.Err(_) => false
+    }
+    assert length(events) == 5 && events[4] == 99
+}
+
+async fn fail_async_counter(events List[Int]) Result[OwnedCounter, Text] {
+    sleep_ms(1).await
+    failed_counter(events)
+}
+
+async fn failed_async_pipeline(events List[Int]) Result[List[Int], Text] {
+    scoped source = take(fail_async_counter, events, 2).await?
+    Result.Ok(collect(source).await)
+}
+
+test async fn async_factory_error_creates_no_owner() {
+    let events = new[Int]()
+    assert match failed_async_pipeline(events).await {
+        Result.Err(error) => error == "cannot open"
+        Result.Ok(_) => false
+    }
+    assert length(events) == 1 && events[0] == -2
+}
+
+async fn slow_acquire(events List[Int]) OwnedCounter {
+    defer {
+        push(events, -3)
+    }
+    push(events, -2)
+    sleep_ms(10000).await
+    create_counter(events)
+}
+
+async fn slow_acquisition(events List[Int]) {
+    defer {
+        push(events, -4)
+    }
+    scoped source = take(slow_acquire, events, 1).await
+    discard collect(source).await
+}
+
+test async fn cancelling_acquisition_drains_the_factory_before_consumer_cleanup() {
+    let events = new[Int]()
+    let pending = slow_acquisition(events)
+    while length(events) == 0 {
+        sleep_ms(1).await
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert length(events) == 3 && events[0] == -2 && events[1] == -3 && events[2] == -4
+}
+
+async fn acquire_waiting(events List[Text]) OwnedWaiting {
+    sleep_ms(1).await
+    OwnedWaiting {
+        events = events
+    }
+}
+
+async fn wait_async_pipeline(events List[Text]) {
+    defer {
+        push(events, "consumer cleaned")
+    }
+    scoped source = take(acquire_waiting, events, 1).await
+    discard collect(source).await
+}
+
+test async fn acquired_owner_waits_for_cancelled_pull_cleanup() {
+    let events = new[Text]()
+    let pending = wait_async_pipeline(events)
+    while length(events) == 0 {
+        sleep_ms(1).await
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert length(events) == 4 && events[0] == "pull started" && events[1] == "pull cleaned" &&
+    events[2] == "owner closed" && events[3] == "consumer cleaned"
+}

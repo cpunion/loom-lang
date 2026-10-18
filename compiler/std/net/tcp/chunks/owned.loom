@@ -1,0 +1,64 @@
+import std.net.tcp.Connection
+import std.net.tcp.Listener
+import std.net.tcp.open
+import std.net.tcp.accept_owned
+import std.resource.Dispose
+import std.resource.MustScope
+
+pub record OwnedChunks {
+    source Connection
+    limit Int
+    ended List[Bool]
+}
+
+pub async fn open(address Text, limit Int) Result[OwnedChunks, TcpError]
+requires limit > 0
+{
+    Result.Ok(OwnedChunks {
+            source = std.net.tcp.open(address).await?
+            limit = limit
+            ended = [false]
+        })
+}
+
+pub async fn accept(listener Listener, limit Int) Result[OwnedChunks, TcpError]
+requires limit > 0
+{
+    Result.Ok(OwnedChunks {
+            source = accept_owned(listener).await?
+            limit = limit
+            ended = [false]
+        })
+}
+
+impl Stream for OwnedChunks {
+    type Item = Result[Bytes, TcpError]
+
+    async fn next(self OwnedChunks) Option[Result[Bytes, TcpError]] {
+        if self.ended[0] {
+            return Option.None
+        }
+        let buffer = new()
+        match std.net.tcp.read(self.source, buffer, self.limit).await {
+            Result.Ok(count) => {
+                if count == 0 {
+                    self.ended[0] = true
+                    return Option.None
+                }
+                Option.Some(Result.Ok(buffer))
+            }
+            Result.Err(error) => {
+                self.ended[0] = true
+                Option.Some(Result.Err(error))
+            }
+        }
+    }
+}
+
+impl MustScope for OwnedChunks {
+}
+
+impl Dispose for OwnedChunks {
+    fn dispose(self OwnedChunks) {
+    }
+}

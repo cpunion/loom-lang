@@ -1,0 +1,67 @@
+import std.stream.take
+
+async fn accepted_chunks_fixture() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let client = connect(local_address(listener)?).await?
+    defer {
+        discard close_stream(client)
+    }
+    {
+        scoped source = accept(listener, 2).await?
+        discard write_bytes(client, to_bytes("abcde")).await?
+        discard shutdown_write(client)?
+        let values = collect(source).await
+        var text = ""
+        var index = 0
+        while index < std.list.length(values) {
+            let bytes = values[index]?
+            assert length(bytes) > 0 && length(bytes) <= 2
+            text = concat(text, to_text(bytes))
+            index = index + 1
+        }
+        assert text == "abcde"
+    }
+    Result.Ok(std.net.tcp.read(client, new(), 1).await? == 0)
+}
+
+test async fn accepted_owned_chunks_keep_buffers_and_close_at_scope_exit() {
+    assert match accepted_chunks_fixture().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+async fn open_short(address Text) Result[OwnedChunks, TcpError] {
+    std.net.tcp.chunks.open(address, 2).await
+}
+
+async fn consume_nothing(address Text) Result[Bool, TcpError] {
+    scoped source = take(open_short, address, 0).await?
+    Result.Ok(std.list.length(collect(source).await) == 0)
+}
+
+async fn zero_limit_fixture() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let pending = consume_nothing(local_address(listener)?)
+    let server = std.net.tcp.accept(listener).await
+    // Consume the Task even if accepting failed.
+    let empty = pending.await?
+    let connection = server?
+    defer {
+        discard close_stream(connection)
+    }
+    Result.Ok(empty && std.net.tcp.read(connection, new(), 1).await? == 0)
+}
+
+test async fn a_zero_limit_still_acquires_and_closes_without_reading() {
+    assert match zero_limit_fixture().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}

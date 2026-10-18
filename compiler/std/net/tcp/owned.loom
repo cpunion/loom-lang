@@ -1,0 +1,155 @@
+import std.resource.Dispose
+import std.resource.MustScope
+
+// Unlike a copyable socket token, this result carries its cleanup through Tasks.
+pub record Connection {
+    state ConnectionState
+}
+
+record ConnectionState {
+    socket Stream
+    closed List[Bool]
+}
+
+fn owned_connection(token Int) Connection {
+    Connection {
+        state = ConnectionState {
+            socket = Stream {
+                state = State {
+                    token = token
+                }
+            }
+            closed = [false]
+        }
+    }
+}
+
+// Construct the owner in the acquisition Task itself. Wrapping connect().await
+// in another Task could abandon an unclaimed, non-resource socket result.
+pub async fn open(address Text) Result[Connection, TcpError] {
+    let token = socket_connect(address)
+    if token < 0 {
+        return Result.Err(TcpError.Connect)
+    }
+    var transferred = false
+    defer {
+        if !transferred {
+            discard socket_close(token)
+        }
+    }
+    if !connected(token).await {
+        return Result.Err(TcpError.Connect)
+    }
+    transferred = true
+    Result.Ok(owned_connection(token))
+}
+
+pub fn open(host Text, port Int) Task[Result[Connection, TcpError]] {
+    open(host, port, connect_options())
+}
+
+pub async fn open(host Text, port Int, options ConnectOptions) Result[Connection, TcpError] {
+    let duration = options.timeout_ns
+    if !valid_options(options) || duration < 0 {
+        return Result.Err(TcpError.Option)
+    }
+    // The parent owns every attempt before any child can complete. The child
+    // returns an index, not an unclaimed copyable socket.
+    let opened = new[Stream]()
+    var retained = -1
+    defer {
+        close_dialed(opened, retained)
+    }
+    let index = dial_outcome(after_ns(dial_host(host, port, options, opened), duration).await)?
+    retained = index
+    Result.Ok(owned_connection(get(opened, index).state.token))
+}
+
+pub async fn accept_owned(listener Listener) Result[Connection, TcpError] {
+    while true {
+        let token = socket_accept(listener.state.token)
+        if token >= 0 {
+            return Result.Ok(owned_connection(token))
+        }
+        if token != -2 {
+            return Result.Err(TcpError.Accept)
+        }
+        socket_wait(listener.state.token, 1).await
+    }
+}
+
+pub fn close(connection Connection) Result[Int, TcpError] {
+    if connection.state.closed[0] {
+        return Result.Ok(0)
+    }
+    let status = close_stream(connection.state.socket)
+    match status {
+        Result.Ok(_) => {
+            connection.state.closed[0] = true
+        }
+        Result.Err(_) => {
+        }
+    }
+    status
+}
+
+// Explicitly hand responsibility back to a manually managed protocol. The
+// caller must close the returned identity; this owner becomes inactive.
+pub fn detach(connection Connection) Result[Stream, TcpError] {
+    if connection.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    connection.state.closed[0] = true
+    Result.Ok(connection.state.socket)
+}
+
+pub async fn read(connection Connection, output Bytes, limit Int) Result[Int, TcpError] {
+    if connection.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    read(connection.state.socket, output, limit).await
+}
+
+pub async fn write_bytes(connection Connection, input Bytes) Result[Int, TcpError] {
+    if connection.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    write_bytes(connection.state.socket, input).await
+}
+
+pub fn shutdown_write(connection Connection) Result[Int, TcpError] {
+    if connection.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    shutdown_write(connection.state.socket)
+}
+
+pub fn local_address(connection Connection) Result[Text, TcpError] {
+    if connection.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    local_address(connection.state.socket)
+}
+
+pub fn peer_address(connection Connection) Result[Text, TcpError] {
+    if connection.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    peer_address(connection.state.socket)
+}
+
+pub fn set_nodelay(connection Connection, enabled Bool) Result[Int, TcpError] {
+    if connection.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    set_nodelay(connection.state.socket, enabled)
+}
+
+impl MustScope for Connection {
+}
+
+impl Dispose for Connection {
+    fn dispose(self Connection) {
+        discard close(self)
+    }
+}

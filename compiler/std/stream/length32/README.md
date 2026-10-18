@@ -28,6 +28,9 @@ A borrowed producer is not closed and no protocol resynchronization is guessed.
 
 `frames(create, input, bytes, maximum)` accepts fresh
 `Stream + Dispose + MustScope` factories, directly or through `Result`.
+Async factories returning `Task[S]` or `Task[Result[S, E]]` use the same call
+followed by `.await` or `.await?`. Acquisition does not pull; cancellation drains
+the in-flight factory before consumer cleanup.
 Use `scoped`; owned sources dispose once after pending pulls drain, including on
 early exit and cancellation. An existing scoped source cannot be copied into a
 returned adapter. Invalid limits fail before factory execution.

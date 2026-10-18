@@ -231,6 +231,46 @@ fn open(configuration Configuration) Result[OwnedInput, Text] {
     Result.Ok(create(configuration))
 }
 
+async fn acquire(configuration Configuration) OwnedInput {
+    sleep_ms(1).await
+    create(configuration)
+}
+
+async fn open_async(configuration Configuration) Result[OwnedInput, Text] {
+    Result.Ok(acquire(configuration).await)
+}
+
+async fn acquired(configuration Configuration) Result[Bool, Text] {
+    scoped reader = frames(open_async, configuration, raw, 32).await?
+    assert std.list.length(configuration.events) == 1
+    Result.Ok(match reader.next().await {
+            Option.Some(Result.Ok(value)) => std.bytes.to_text(value) == "owned"
+            _ => false
+        })
+}
+
+test async fn async_frame_factories_acquire_without_pulling_and_close_once() {
+    let events List[Int] = []
+    assert match acquired(Configuration {
+            events = events
+            milliseconds = 0
+        }).await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+    assert std.list.length(events) == 4 && events[0] == 0 && events[3] == 9
+    let direct List[Int] = []
+    {
+        scoped reader = frames(acquire, Configuration {
+                events = direct
+                milliseconds = 0
+            }, raw, 32).await
+        assert std.list.length(direct) == 1
+        discard reader.next().await
+    }
+    assert std.list.length(direct) == 4 && direct[3] == 9
+}
+
 async fn owned(configuration Configuration) Result[Bool, Text] {
     scoped reader = frames(open, configuration, raw, 32)?
     Result.Ok(match reader.next().await {
