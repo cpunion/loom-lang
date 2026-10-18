@@ -89,6 +89,11 @@ fn proof_operation(value Expr) ProofOperation {
         return unsupported_operation()
     }
     let arity = length(value.children)
+    if type_guard_expression(value) {
+        // A total but fresh abstract choice is not an immutable scalar term.
+        // Mark it unstable so structural equality cannot correlate evaluations.
+        return operation_shape(0, OperandFlow.Eager, true, true)
+    }
     if value.kind == ExprKind.Intrinsic {
         return intrinsic_operation(value.text, value.ty, arity)
     }

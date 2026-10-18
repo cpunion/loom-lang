@@ -27,6 +27,12 @@ fn implication_base(context Context, node Node, ty Int) Result[Int, Failure] {
 
 fn predicate_implication(context Context, node Node, from Int, to Int) Result[Expr, Failure] {
     if !concrete(context.env, from) || !concrete(context.env, to) {
+        if abstract_context(context) {
+            // A total type query is an arbitrary Bool in an abstract proof,
+            // not evidence of either relation. Each proof evaluation is fresh,
+            // just like an unresolved type guard; native instances re-query.
+            return Result.Ok(expression(ExprKind.Deferred, 2, node, "$typeguard", -1, new[Expr](), true))
+        }
         return deferred(context, node, 2)
     }
     let source = implication_base(context, node, from)?

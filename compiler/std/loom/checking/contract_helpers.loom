@@ -30,11 +30,11 @@ fn contract_call(node Node) Bool {
     false
 }
 
-fn contract_helpers(node Node) Bool {
+fn postcondition_helpers(node Node) Bool {
     var index = 0
     while index < length(node.children) {
         let member = child(node, index)
-        if (member.kind == NodeKind.Requires || member.kind == NodeKind.Ensures) && contract_call(member) {
+        if member.kind == NodeKind.Ensures && contract_call(member) {
             return true
         }
         index = index + 1
@@ -115,6 +115,17 @@ fn proof_body_calls(value Expr) Bool {
                 return true
             }
             item = item + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn contract_calls(conditions List[Expr]) Bool {
+    var index = 0
+    while index < length(conditions) {
+        if proof_body_calls(get(conditions, index)) || contains_deferred(get(conditions, index)) {
+            return true
         }
         index = index + 1
     }
@@ -232,7 +243,11 @@ fn checked_contracts(context Context, id Int, source Function) Result[Function, 
     }
     let family_proved = has_ensures && completed_pack_contract(context.env, id)
     let body_calls = has_ensures && !family_proved && proof_body_calls(function.body)
-    let call_free = !contract_helpers(node) && !inherited_method_helpers(context.env, context.signature.symbol) && !body_calls
+    // A completed type-only query is already a Bool, not a helper call. Pending
+    // computations and actual calls still validate their private proof closure;
+    // native instances recheck their requirements with concrete arguments.
+    let call_free = !contract_calls(function.preconditions) && (!has_ensures ||
+        (!postcondition_helpers(node) && !inherited_postcondition_helpers(context.env, context.signature.symbol) && !body_calls))
     let conditions = if call_free && has_ensures {
         add_contracts(contracts(context, node, NodeKind.Ensures)?, inherited_contracts(context, NodeKind.Ensures)?)
     } else {
