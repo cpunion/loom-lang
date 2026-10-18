@@ -316,9 +316,12 @@ Other framing and general borrow-retaining adapters remain open.
 The source-written [HTTP/1.1 message codec](../../compiler/std/net/http/README.md)
 adds bounded request/response framing over ordinary Streams, including chunked
 data, separate trailers, method-dependent response boundaries and explicit
-buffered protocol handoff. A real TCP application exercises a persistent binary
-request/response pipeline. It is not a complete HTTP client/server: routing,
-authority validation, connection policy and streaming bodies remain library work.
+buffered protocol handoff. Scoped incoming bodies stream bounded fresh chunks
+with backpressure and keep their message lease until completion; partial exit
+or cancellation retires the reader without draining the transport. Buffered
+reads collect that same stream. A real TCP application exercises a persistent
+binary pipeline without collecting its response. It is not a complete HTTP
+client/server: routing, authority validation and connection policy remain library work.
 
 Stop-the-world copying GC preserves precise roots, sharing and cycles.
 Nonallocating functions stay root-free; liveness retires dead locals at checked

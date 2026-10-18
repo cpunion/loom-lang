@@ -5,6 +5,8 @@ import std.net.http.reader
 import std.net.http.limits
 import std.net.http.read_request
 import std.net.http.read_response
+import std.net.http.open_response
+import std.net.http.trailers
 import std.net.http.encode_request
 import std.net.http.encode_response
 import std.net.tcp.Stream
@@ -16,6 +18,7 @@ import std.net.tcp.accept
 import std.net.tcp.close_stream
 import std.net.tcp.write_bytes
 import std.net.tcp.chunks.read
+import std.stream.Stream
 import std.text.to_bytes
 import std.bytes.new
 import std.bytes.push
@@ -38,7 +41,7 @@ fn field(name Text, value Text) Header {
     }
 }
 
-async fn serve(connection Stream) Bool {
+async fn serve(connection std.net.tcp.Stream) Bool {
     let input = reader(read(connection, 3), packet, limits())
     assert match read_request(input).await {
         Result.Ok(Option.Some(value)) => value.method == "HEAD" && value.target == "/metadata"
@@ -142,11 +145,41 @@ async fn exercise() Result[Bool, TcpError] {
         Result.Ok(Option.Some(value)) => value.status == 200 && length(value.body) == 0
         _ => false
     }
-    assert match read_response(input, "POST").await {
-        Result.Ok(Option.Some(value)) => value.status == 200 && length(value.body) == 7 &&
-        get(value.body, 0) == 104 && get(value.body, 5) == 0 && get(value.body, 6) == 255 &&
-        std.list.length(value.trailers) == 1 && value.trailers[0].name == "X-Result"
-        _ => false
+    scoped response = open_response(input, "POST", 2).await
+    match response {
+        Result.Ok(Option.Some(value)) => {
+            assert value.status == 200
+            var count = 0
+            var checksum = 0
+            while true {
+                match value.body.next().await {
+                    Option.None => {
+                        break
+                    }
+                    Option.Some(Result.Ok(chunk)) => {
+                        assert length(chunk) > 0 && length(chunk) <= 2
+                        var index = 0
+                        while index < length(chunk) {
+                            checksum = checksum + get(chunk, index)
+                            count = count + 1
+                            index = index + 1
+                        }
+                    }
+                    _ => {
+                        assert false
+                        break
+                    }
+                }
+            }
+            assert count == 7 && checksum == 787
+            assert match trailers(value.body) {
+                Result.Ok(fields) => std.list.length(fields) == 1 && fields[0].name == "X-Result"
+                _ => false
+            }
+        }
+        _ => {
+            assert false
+        }
     }
     // Neither reader needs EOF: the connection remains open through both replies.
     Result.Ok(serving.await)

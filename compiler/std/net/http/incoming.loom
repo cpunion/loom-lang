@@ -1,0 +1,126 @@
+pub record IncomingRequest[S Stream, E] {
+    method Text
+    target Text
+    headers List[Header]
+    body Body[S, E]
+}
+
+pub record IncomingResponse[S Stream, E] {
+    status Int
+    reason Bytes
+    headers List[Header]
+    body Body[S, E]
+}
+
+pub async fn open_request[S Stream, E](input Reader[S, E], chunk_bytes Int) Result[Option[IncomingRequest[S, E]], ReadError[E]]
+requires chunk_bytes > 0
+{
+    discard protocol[Bool, E](begin(input.state.cursor))?
+    var transferred = false
+    defer {
+        if !transferred {
+            retire(input.state.cursor)
+        }
+    }
+    let budget = [input.state.limits.metadata_bytes]
+    var first = line(input, budget).await?
+    while (match first {
+            Option.Some(value) => length(value) == 0
+            Option.None => false
+        }) {
+        first = line(input, budget).await?
+    }
+    let start = match first {
+        Option.None => {
+            input.state.cursor[0] = Cursor {
+                busy = false
+                ..input.state.cursor[0]
+            }
+            transferred = true
+            return Result.Ok(Option.None)
+        }
+        Option.Some(value) => protocol[(Text, Text), E](request_line(value))?
+    }
+    let headers = fields(input, budget, false).await?
+    var hosts = 0
+    var index = 0
+    while index < std.list.length(headers) {
+        if named(headers[index].name, "host") {
+            hosts = hosts + 1
+        }
+        index = index + 1
+    }
+    if hosts != 1 {
+        return Result.Err(ReadError.Protocol(ProtocolError.Framing))
+    }
+    let shape = protocol[Framing, E](framing(headers, input.state.limits.body_bytes))?
+    transferred = true
+    Result.Ok(Option.Some(IncomingRequest[S, E] {
+                method = start.0
+                target = start.1
+                headers = headers
+                body = new_body(input, shape, budget, chunk_bytes, true)
+            }))
+}
+
+pub async fn open_response[S Stream, E](input Reader[S, E], method Text, chunk_bytes Int) Result[Option[IncomingResponse[S, E]], ReadError[E]]
+requires chunk_bytes > 0
+{
+    discard protocol[Bool, E](begin(input.state.cursor))?
+    var transferred = false
+    defer {
+        if !transferred {
+            retire(input.state.cursor)
+        }
+    }
+    let budget = [input.state.limits.metadata_bytes]
+    let start = match line(input, budget).await? {
+        Option.None => {
+            input.state.cursor[0] = Cursor {
+                busy = false
+                ..input.state.cursor[0]
+            }
+            transferred = true
+            return Result.Ok(Option.None)
+        }
+        Option.Some(value) => protocol[(Int, Bytes), E](status_line(value))?
+    }
+    let headers = fields(input, budget, false).await?
+    let shape = if no_body(method, start.0) {
+        Framing {
+            size = 0
+            chunked = false
+        }
+    } else {
+        protocol[Framing, E](framing(headers, input.state.limits.body_bytes))?
+    }
+    if tunnel(method, start.0) {
+        input.state.cursor[0] = Cursor {
+            retired = true
+            ..input.state.cursor[0]
+        }
+    }
+    transferred = true
+    Result.Ok(Option.Some(IncomingResponse[S, E] {
+                status = start.0
+                reason = start.1
+                headers = headers
+                body = new_body(input, shape, budget, chunk_bytes, false)
+            }))
+}
+
+impl[S Stream, E] MustScope for IncomingRequest[S, E] {
+}
+
+impl[S Stream, E] Dispose for IncomingRequest[S, E] {
+    fn dispose(self IncomingRequest[S, E]) {
+    }
+}
+
+impl[S Stream, E] MustScope for IncomingResponse[S, E] {
+}
+
+impl[S Stream, E] Dispose for IncomingResponse[S, E] {
+    fn dispose(self IncomingResponse[S, E]) {
+    }
+}

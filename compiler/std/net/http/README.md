@@ -58,8 +58,9 @@ until their final response, rather than treating unsolicited bytes as responses.
 The codec neither retries requests nor interprets application status codes.
 
 Copies share one cursor, including any unread suffix already in a producer chunk.
-Only one read may be active: a concurrent owner-thread read reports Busy without
-disturbing the first. This is not a cross-worker synchronization primitive.
+Only one message may own the cursor: a concurrent owner-thread read reports Busy
+until that message's body completes, without disturbing it. This is not a
+cross-worker synchronization primitive.
 Parsing scans buffered bytes synchronously, with Tasks per line/chunk rather than
 per octet. The producer is pulled only when buffered input is exhausted.
 As with other returned adapters, an existing scoped producer cannot be captured
@@ -71,11 +72,47 @@ stop. `take_buffered(input)` retires the reader and transfers a copy of its unre
 octets; continue with those octets followed by the original producer. The codec
 does not implement the new protocol or own that producer.
 
+## Streaming bodies
+
+`open_request(input, chunk_bytes)` and
+`open_response(input, method, chunk_bytes)` stop after the headers and return
+`Result[Option[IncomingRequest/IncomingResponse], ReadError[E]]`.
+The incoming message and its `Body` implement MustScope: scope the result,
+including when it is still wrapped in Result/Option. For example:
+
+```loom
+scoped incoming = open_response(input, "GET", 16384).await
+```
+
+The [TCP example](../../../examples/http_loopback/main.loom) shows the complete
+match and consumption loop. `body.next().await` yields
+`Option[Result[Bytes, ReadError[E]]]`. Each successful chunk is nonempty, fresh
+and no larger than the positive `chunk_bytes` limit. Opening a message does not
+pull its body; later pulls do not prefetch a suffix for the next pull.
+The total body quota still applies across all chunks.
+
+The body holds the reader's message lease. Reading another message or taking its
+buffered suffix reports Busy until the current body completes. Fixed-length
+bodies complete with their last data chunk; chunked bodies must also consume
+the final chunk and trailers. `trailers(body)` is available only after successful
+completion. A zero/bodyless message is complete at its headers.
+
+Early scope exit retires the reader without draining an unwanted network body.
+Errors, faults and cancellation drain pending child pulls and retire it too;
+already delivered chunks are not rolled back. Cancelling a completed header
+Task still cleans up any unclaimed body. A completed body's later cleanup does
+not retire a reader already reused by another message. The body owns this parse
+lease, not the transport; caller-managed transport cleanup remains necessary.
+
+The buffered `read_request`/`read_response` functions collect this same body
+stream rather than maintaining a second framing implementation. Streamed
+requests and responses need no language/runtime extension or ownership syntax.
+
 ## Limits and failure policy
 
 `Limits` sets `line_bytes`, `metadata_bytes` and `body_bytes`, all nonnegative.
 `limits()` chooses 8 KiB per line, 64 KiB total framing metadata and an 8 MiB
-buffered body. Line limits exclude CRLF; metadata includes start lines, headers,
+decoded body. Line limits exclude CRLF; metadata includes start lines, headers,
 chunk framing/extensions, trailers and their CRLFs. Integer parsing checks the
 remaining body quota before arithmetic or allocation. These bound decoded
 messages, not producer-owned chunk allocations; choose bounded input chunks too.
@@ -97,7 +134,7 @@ Task policy, not a hidden codec timeout.
 
 This is a message codec, not a complete client/server or proxy. HTTP/1.0, HTTP/2,
 URL/authority and field-specific validation, routing, redirects, cookies, content
-decompression, connection pools and streaming body delivery are not supplied.
+decompression and connection pools are not supplied.
 Applications must validate Host/target semantics for their routing policy and
 handle trailer-specific rules. TCP/TLS acquisition and trust remain separate;
 this package does not weaken TLS verification or silently send credentials over

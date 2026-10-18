@@ -1,0 +1,219 @@
+record ObservedInput {
+    chunks List[Bytes]
+    position List[Int]
+}
+
+fn observed(chunks List[Bytes]) ObservedInput {
+    ObservedInput {
+        chunks = chunks
+        position = [0]
+    }
+}
+
+impl Stream for ObservedInput {
+    type Item = Bytes
+
+    async fn next(self ObservedInput) Option[Bytes] {
+        let index = self.position[0]
+        if index == std.list.length(self.chunks) {
+            return Option.None
+        }
+        self.position[0] = index + 1
+        Option.Some(self.chunks[index])
+    }
+}
+
+async fn piece[S Stream, E](body Body[S, E]) Text {
+    match body.next().await {
+        Option.Some(Result.Ok(value)) => to_text(value)
+        _ => "<end>"
+    }
+}
+
+test async fn streamed_http_bodies_bound_chunks_hold_the_message_lease_and_do_not_prefetch() {
+    let source = observed([
+            to_bytes("HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc"),
+            to_bytes("defHTTP/1.1 204 Done\r\n\r\n")
+        ])
+    let input = reader(source, raw, limits())
+    {
+        scoped message = open_response(input, "GET", 2).await
+        match message {
+            Result.Ok(Option.Some(value)) => {
+                assert value.status == 200 && source.position[0] == 1
+                assert piece(value.body).await == "ab" && source.position[0] == 1
+                assert match trailers(value.body) {
+                    Result.Err(ProtocolError.Busy) => true
+                    _ => false
+                }
+                assert match read_response(input, "GET").await {
+                    Result.Err(ReadError.Protocol(ProtocolError.Busy)) => true
+                    _ => false
+                }
+                assert piece(value.body).await == "c" && source.position[0] == 1
+                assert piece(value.body).await == "de" && source.position[0] == 2
+                assert piece(value.body).await == "f"
+                assert piece(value.body).await == "<end>"
+                assert match trailers(value.body) {
+                    Result.Ok(value) => std.list.length(value) == 0
+                    _ => false
+                }
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert match read_response(input, "GET").await {
+        Result.Ok(Option.Some(value)) => value.status == 204
+        _ => false
+    }
+}
+
+test async fn streamed_http_chunked_bodies_publish_trailers_only_after_completion() {
+    let wire = message("""
+        HTTP/1.1 200 OK
+        Transfer-Encoding: chunked
+
+        3;tag=one
+        abc
+        0
+        X-Check: done
+
+
+        """)
+    let input = reader(from_iter(from_list(fragments(wire, 2))), raw, limits())
+    scoped response = open_response(input, "GET", 1).await
+    match response {
+        Result.Ok(Option.Some(value)) => {
+            assert piece(value.body).await == "a"
+            assert piece(value.body).await == "b"
+            assert piece(value.body).await == "c"
+            assert match trailers(value.body) {
+                Result.Err(ProtocolError.Busy) => true
+                _ => false
+            }
+            assert piece(value.body).await == "<end>"
+            assert match trailers(value.body) {
+                Result.Ok(fields) => std.list.length(fields) == 1 && fields[0].name == "X-Check" &&
+                to_text(fields[0].value) == "done"
+                _ => false
+            }
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+test async fn leaving_a_partial_http_body_retires_without_draining_the_producer() {
+    let source = observed([
+            to_bytes("HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc"),
+            to_bytes("unread")
+        ])
+    let input = reader(source, raw, limits())
+    {
+        scoped response = open_response(input, "GET", 1).await
+        match response {
+            Result.Ok(Option.Some(value)) => {
+                assert piece(value.body).await == "a"
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert source.position[0] == 1
+    assert match read_response(input, "GET").await {
+        Result.Err(ReadError.Protocol(ProtocolError.Closed)) => true
+        _ => false
+    }
+    assert match source.next().await {
+        Option.Some(value) => to_text(value) == "unread"
+        _ => false
+    }
+}
+
+record WaitingBody {
+    events List[Int]
+}
+
+impl Stream for WaitingBody {
+    type Item = Bytes
+
+    async fn next(self WaitingBody) Option[Bytes] {
+        if std.list.length(self.events) == 0 {
+            std.list.push(self.events, 1)
+            return Option.Some(to_bytes("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n"))
+        }
+        std.list.push(self.events, 2)
+        defer {
+            std.list.push(self.events, 3)
+        }
+        sleep_ms(10000).await
+        Option.None
+    }
+}
+
+async fn consume_pending_body(input Reader[WaitingBody, Text]) {
+    scoped response = open_response(input, "GET", 1).await
+    match response {
+        Result.Ok(Option.Some(value)) => {
+            discard value.body.next().await
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+async fn completed_header[S Stream, E](input Reader[S, E], finished List[Bool]) Result[Option[IncomingResponse[S, E]], ReadError[E]] {
+    defer {
+        // No suspension follows this signal: the parent can observe it only
+        // after this activation has returned its unclaimed resource result.
+        finished[0] = true
+    }
+    open_response(input, "GET", 1).await
+}
+
+test async fn cancellation_drains_body_pulls_and_disposes_completed_unclaimed_messages() {
+    let events = std.list.new[Int]()
+    let input = reader(WaitingBody {
+            events = events
+        }, raw, limits())
+    let pending = consume_pending_body(input)
+    while std.list.length(events) < 2 {
+        sleep_ms(0).await
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert std.list.length(events) == 3 && events[2] == 3
+    assert match read_response(input, "GET").await {
+        Result.Err(ReadError.Protocol(ProtocolError.Closed)) => true
+        _ => false
+    }
+
+    let ready = reader(from_iter(from_list([to_bytes("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx")])), raw, limits())
+    let finished = [false]
+    let header_task = completed_header(ready, finished)
+    while !finished[0] {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = cancel(header_task)
+        assert match selected {
+            Outcome.Completed(Result.Ok(Option.Some(value))) => value.status == 200
+            _ => false
+        }
+        assert match read_response(ready, "GET").await {
+            Result.Err(ReadError.Protocol(ProtocolError.Busy)) => true
+            _ => false
+        }
+    }
+    assert match read_response(ready, "GET").await {
+        Result.Err(ReadError.Protocol(ProtocolError.Closed)) => true
+        _ => false
+    }
+}
