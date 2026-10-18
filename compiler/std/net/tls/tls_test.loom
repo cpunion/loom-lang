@@ -15,6 +15,11 @@ test async fn configuration_errors_do_not_open_a_transport() {
         Result.Err(error) => error == TlsError.Configuration
         Result.Ok(_) => false
     }
+    scoped owned = open("127.0.0.1:0", "localhost", options).await
+    assert match owned {
+        Result.Err(error) => error == TlsError.Configuration
+        Result.Ok(_) => false
+    }
     assert tls_server(std.bytes.new(), std.bytes.new(), std.bytes.new(), 0, ["loom"]) < 0
     assert tls_client("localhost", std.bytes.new(), 1, std.bytes.new(), std.bytes.new(), [""]) < 0
     let empty_identity = ClientOptions {

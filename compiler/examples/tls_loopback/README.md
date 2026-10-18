@@ -30,6 +30,11 @@ Acquisition tests also cancel numeric/hostname connects and accepts before
 handshake registration. Peer EOF (or reset), bounded by a deadline, checks that
 an acquired but unclaimed TCP result closes; waiting for ClientHello first would
 miss that window. The `cancel-accept` mode exercises this server-side boundary.
+`owned` uses scoped TLS connections, while `owned-detach` explicitly hands them
+to manually managed streams before retaining full-duplex Tasks. The
+`unclaimed-client` and `unclaimed-server` modes wait for a final completion
+notification, then dispose an unclaimed successful resource result and verify
+peer EOF/reset. A timer delay alone is not treated as completion evidence.
 
 To run manually, provide a CA PEM, a matching server chain/key for `localhost`,
 and a payload file larger than 64 KiB:
@@ -55,7 +60,7 @@ application permissions remain library/application policy.
 
 Do not commit private keys. `Trust.Builtin` uses compiled Mozilla roots, not the
 OS trust store; `Trust.Certificates(bytes)` explicitly supplies custom roots.
-One reader and one writer may run together across connection aliases; overlapping
+One reader and one writer may run together across manual Stream aliases; overlapping
 reads or overlapping writes return `Busy`. Cancellation drains that operation,
 retires the connection and wakes the other direction to fail. Revocation and
 resumption configuration are not exposed.

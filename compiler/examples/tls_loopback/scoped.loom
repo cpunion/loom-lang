@@ -1,0 +1,128 @@
+import std.net.tls.Connection
+import std.net.tls.open
+import std.net.tls.accept_owned
+import std.net.tls.detach
+import std.net.tls.local_address
+import std.net.tcp.local_port
+import std.time.sleep_ms
+import std.list.set
+import std.text.length
+
+async fn serve_owned(listener ListenerHandle, options ServerOptions, payload Bytes, handoff Bool) Result[Int, TlsError] {
+    scoped connection = std.net.tls.accept_owned(listener, options).await?
+    if handoff {
+        let stream = std.net.tls.detach(connection)?
+        defer {
+            discard close(stream)
+        }
+        assert close(connection)? == 0
+        return exchange(stream, payload).await
+    }
+    assert match protocol(connection)? {
+        Option.Some(value) => value == "loom-echo"
+        Option.None => false
+    }
+    let request = new()
+    while read(connection, request, 16384).await? > 0 {
+    }
+    let count = write_bytes(connection, request).await?
+    discard shutdown_write(connection).await?
+    Result.Ok(count)
+}
+
+async fn request_owned(address Text, options ClientOptions, payload Bytes, handoff Bool) Result[Int, TlsError] {
+    scoped connection = std.net.tls.open(address, "localhost", options).await?
+    if handoff {
+        let stream = std.net.tls.detach(connection)?
+        defer {
+            discard close(stream)
+        }
+        assert close(connection)? == 0
+        return exchange(stream, payload).await
+    }
+    assert peer_address(connection)? == address && std.text.length(std.net.tls.local_address(connection)?) > 0
+    assert match peer_certificate(connection)? {
+        Option.Some(value) => length(value) > 0
+        Option.None => false
+    }
+    assert write_bytes(connection, payload).await? == length(payload)
+    discard shutdown_write(connection).await?
+    let response = new()
+    while read(connection, response, 16384).await? > 0 {
+    }
+    assert length(response) == length(payload)
+    var index = 0
+    while index < length(payload) {
+        assert get(response, index) == get(payload, index)
+        index = index + 1
+    }
+    assert close(connection)? == 0 && close(connection)? == 0
+    assert match protocol(connection) {
+        Result.Err(error) => error == TlsError.Closed
+        _ => false
+    }
+    Result.Ok(length(response))
+}
+
+async fn completed_open(port Int, options ClientOptions, finished List[Bool]) Result[std.net.tls.Connection, TlsError] {
+    defer {
+        std.list.set(finished, 0, true)
+    }
+    std.net.tls.open("localhost", port, options).await
+}
+
+async fn completed_accept(listener ListenerHandle, options ServerOptions, finished List[Bool]) Result[std.net.tls.Connection, TlsError] {
+    defer {
+        std.list.set(finished, 0, true)
+    }
+    std.net.tls.accept_owned(listener, options).await
+}
+
+async fn unclaimed_connection(server_side Bool, listener ListenerHandle, address Text,
+    client_options ClientOptions, server_options ServerOptions) Result[Int, TlsError] {
+    let port = match std.net.tcp.local_port(listener) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(TlsError.Transport)
+        }
+    }
+    let finished = [false]
+    let pending = if server_side {
+        completed_accept(listener, server_options, finished)
+    } else {
+        completed_open(port, client_options, finished)
+    }
+    let acquired = if server_side {
+        connect(address, "localhost", client_options).await
+    } else {
+        accept(listener, server_options).await
+    }
+    let peer = match acquired {
+        Result.Ok(value) => value
+        Result.Err(error) => {
+            scoped abandoned = cancel(pending)
+            return Result.Err(error)
+        }
+    }
+    defer {
+        discard close(peer)
+    }
+    // The marker is written at final exit, with no intervening suspension.
+    // A timer delay alone would not prove that the owned result is terminal.
+    while !finished[0] {
+        sleep_ms(0).await
+    }
+    {
+        scoped abandoned = cancel(pending)
+        assert match abandoned {
+            Outcome.Completed(Result.Ok(_)) => true
+            _ => false
+        }
+    }
+    assert match after_ns(read(peer, new(), 1), 1000000000).await {
+        Outcome.Completed(Result.Err(_)) => true
+        Outcome.Completed(Result.Ok(count)) => count == 0
+        _ => false
+    }
+    Result.Ok(0)
+}

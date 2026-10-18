@@ -1,0 +1,141 @@
+import std.resource.MustScope
+import std.resource.Dispose
+
+pub record Connection {
+    state ConnectionState
+}
+
+record ConnectionState {
+    stream std.net.tls.Stream
+    closed List[Bool]
+}
+
+// Called inside the acquisition Task, before it publishes its final result.
+// The Task's typed cleanup then owns even a completed, unclaimed connection.
+fn owned_connection(stream std.net.tls.Stream) std.net.tls.Connection {
+    std.net.tls.Connection {
+        state = ConnectionState {
+            stream = stream
+            closed = [false]
+        }
+    }
+}
+
+pub fn open(host Text, port Int) Task[Result[std.net.tls.Connection, TlsError]] {
+    open(host, port, default_client())
+}
+
+pub fn open(host Text, port Int, options ClientOptions) Task[Result[std.net.tls.Connection, TlsError]] {
+    connect_host[std.net.tls.Connection](host, port, options, owned_connection)
+}
+
+pub fn open(address Text, name Text, options ClientOptions) Task[Result[std.net.tls.Connection, TlsError]] {
+    connect_address[std.net.tls.Connection](address, name, options, owned_connection)
+}
+
+pub fn accept_owned(listener Listener, options ServerOptions) Task[Result[std.net.tls.Connection, TlsError]] {
+    accept_transport[Listener, std.net.tls.Connection](listener, options, std.net.tcp.accept_owned, owned_connection)
+}
+
+pub fn accept_owned(listener ListenerHandle, options ServerOptions) Task[Result[std.net.tls.Connection, TlsError]] {
+    accept_transport[ListenerHandle, std.net.tls.Connection](listener, options, std.net.tcp.accept_owned, owned_connection)
+}
+
+fn close_connection_state(state ConnectionState) Result[Int, TlsError] {
+    if state.closed[0] {
+        return Result.Ok(0)
+    }
+    let outcome = close(state.stream)
+    match outcome {
+        Result.Ok(_) => {
+            state.closed[0] = true
+        }
+        Result.Err(error) => {
+            // Failed/cancelled I/O may already have retired the transport.
+            if error == TlsError.Closed {
+                state.closed[0] = true
+                return Result.Ok(0)
+            }
+        }
+    }
+    outcome
+}
+
+pub fn close(connection std.net.tls.Connection) Result[Int, TlsError] {
+    close_connection_state(connection.state)
+}
+
+// Explicitly leave scoped ownership for a manually managed/full-duplex stream.
+pub fn detach(connection std.net.tls.Connection) Result[std.net.tls.Stream, TlsError] {
+    if connection.state.closed[0] {
+        return Result.Err(TlsError.Closed)
+    }
+    connection.state.closed[0] = true
+    Result.Ok(connection.state.stream)
+}
+
+pub async fn read(connection std.net.tls.Connection, output Bytes, limit Int) Result[Int, TlsError] {
+    if connection.state.closed[0] {
+        return Result.Err(TlsError.Closed)
+    }
+    read(connection.state.stream, output, limit).await
+}
+
+pub async fn write_bytes(connection std.net.tls.Connection, input Bytes) Result[Int, TlsError] {
+    if connection.state.closed[0] {
+        return Result.Err(TlsError.Closed)
+    }
+    write_bytes(connection.state.stream, input).await
+}
+
+pub async fn shutdown_write(connection std.net.tls.Connection) Result[Int, TlsError] {
+    if connection.state.closed[0] {
+        return Result.Err(TlsError.Closed)
+    }
+    shutdown_write(connection.state.stream).await
+}
+
+pub fn local_address(connection std.net.tls.Connection) Result[Text, TlsError] {
+    if connection.state.closed[0] {
+        return Result.Err(TlsError.Closed)
+    }
+    local_address(connection.state.stream)
+}
+
+pub fn peer_address(connection std.net.tls.Connection) Result[Text, TlsError] {
+    if connection.state.closed[0] {
+        return Result.Err(TlsError.Closed)
+    }
+    peer_address(connection.state.stream)
+}
+
+pub fn protocol(connection std.net.tls.Connection) Result[Option[Text], TlsError] {
+    if connection.state.closed[0] {
+        return Result.Err(TlsError.Closed)
+    }
+    protocol(connection.state.stream)
+}
+
+pub fn peer_certificate(connection std.net.tls.Connection) Result[Option[Bytes], TlsError] {
+    if connection.state.closed[0] {
+        return Result.Err(TlsError.Closed)
+    }
+    peer_certificate(connection.state.stream)
+}
+
+impl MustScope for std.net.tls.Connection {
+}
+
+impl Dispose for std.net.tls.Connection {
+    fn dispose(self std.net.tls.Connection) {
+    }
+}
+
+impl MustScope for ConnectionState {
+}
+
+impl Dispose for ConnectionState {
+    fn dispose(self ConnectionState) {
+        discard close_connection_state(self)
+    }
+}
