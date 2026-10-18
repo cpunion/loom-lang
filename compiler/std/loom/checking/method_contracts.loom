@@ -16,9 +16,9 @@ fn inherited_method_contract(env Environment, owner Int, kind NodeKind) Bool {
     declaration >= 0 && declaration != owner && has(symbol(env, declaration).node, kind)
 }
 
-fn inherited_method_helpers(env Environment, owner Int) Bool {
+fn inherited_postcondition_helpers(env Environment, owner Int) Bool {
     let declaration = method_declaration(env, owner)
-    declaration >= 0 && declaration != owner && contract_helpers(symbol(env, declaration).node)
+    declaration >= 0 && declaration != owner && postcondition_helpers(symbol(env, declaration).node)
 }
 
 // Contract parameter names belong to the concept, not to the implementation.

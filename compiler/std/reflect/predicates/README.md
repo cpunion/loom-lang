@@ -50,6 +50,9 @@ True is a checked weakening proof. False means **unproved**, including unsupport
 reasoning; it is not evidence of incompatibility. Numeric conversions, dyn
 boxing, database schemas and application writers are not covered by this query.
 Use it in `comptime if` to select a checked path or require an explicit migration.
+Ordinary generic `requires` clauses may also use the query or a pure wrapper.
+Abstract proofs treat unresolved queries as independent Boolean choices, not
+implication axioms; concrete instances still compute and check the real result.
 
 `weakening[From, To]()` returns `Option[Weakening[From, To]]` carrying that proof.
 Its private state binds both endpoint types: fields alone cannot mint an
