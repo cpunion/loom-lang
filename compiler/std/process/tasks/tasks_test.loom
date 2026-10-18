@@ -24,3 +24,26 @@ test async fn capture_errors_preserve_the_synchronous_contract() {
         Result.Ok(_) => false
     }
 }
+
+test async fn bounded_capture_rejects_invalid_inputs_without_output() {
+    assert match capture(new[Text](), -1).await {
+        Result.Err(error) => error == SpawnError.InvalidOptions
+        _ => false
+    }
+    assert match capture(new[Text](), 0).await {
+        Result.Err(error) => error == SpawnError.EmptyArguments
+        _ => false
+    }
+    assert match capture(["invalid\0executable"], 10).await {
+        Result.Err(error) => error == SpawnError.Failed
+        _ => false
+    }
+    assert match capture(new[Text](), Options {
+            directory = Option.Some("")
+            clear_environment = false
+            environment = new[EnvChange]()
+        }, 10).await {
+        Result.Err(error) => error == SpawnError.InvalidOptions
+        _ => false
+    }
+}

@@ -406,8 +406,11 @@ implementation. Workers return owned native output, and the owner copies both
 streams into rooted Bytes. Queued cancellation drops the job; running
 cancellation waits for capture and reaping, with no process-tree termination.
 Extra pipe threads are bounded by active capture jobs, not the pool's four-thread
-limit. Output is buffered without a size limit; streaming and hard process
-timeouts are not implemented.
+limit. Optional per-stream byte limits return `LimitedOutput`, retaining the
+ordinary `Output` plus independent truncation flags. Reaching a limit discards
+the suffix while continuing to drain; it does not kill the child. Zero discards
+all output and negative limits are invalid options. Calls without a limit still
+buffer all output; streaming and hard process timeouts are not implemented.
 
 Private async intrinsics must be awaited directly: Loom lowers them to suspension
 of the caller's frame, not separately queued Tasks. Public async function calls

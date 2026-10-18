@@ -10,10 +10,23 @@ import std.list.push
 import std.list.length
 import std.list.get
 import std.bytes.new
+import std.bytes.get
 import std.text.contains
 import std.text.concat
 
-async intrinsic fn async_process_capture(arguments List[Text], input Bytes, directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int
+async intrinsic fn async_process_capture(arguments List[Text], input Bytes, directory Text, clear Int, changes List[Text], limit Int, stdout Bytes, stderr Bytes, truncated Bytes) Int
+
+pub record LimitedOutput {
+    output Output
+    stdout_truncated Bool
+    stderr_truncated Bool
+}
+
+record PreparedOptions {
+    directory Text
+    clear Int
+    changes List[Text]
+}
 
 // Same binary capture contract as std.process, using the bounded native I/O
 // pool. Inputs are snapshotted when the Task first reaches its native wait.
@@ -27,14 +40,18 @@ pub fn capture(arguments List[Text], options Options) Task[Result[Output, SpawnE
 }
 
 pub fn capture_input(arguments List[Text], input Bytes) Task[Result[Output, SpawnError]] {
-    capture_input(arguments, input, Options {
-            directory = Option.None
-            clear_environment = false
-            environment = new[EnvChange]()
-        })
+    capture_input(arguments, input, default_options())
 }
 
-pub async fn capture_input(arguments List[Text], input Bytes, options Options) Result[Output, SpawnError] {
+fn default_options() Options {
+    Options {
+        directory = Option.None
+        clear_environment = false
+        environment = new[EnvChange]()
+    }
+}
+
+fn prepare_options(options Options) Result[PreparedOptions, SpawnError] {
     let directory = match options.directory {
         Option.None => ""
         Option.Some(value) => {
@@ -64,14 +81,18 @@ pub async fn capture_input(arguments List[Text], input Bytes, options Options) R
         push(changes, entry)
         index = index + 1
     }
-    let stdout = std.bytes.new()
-    let stderr = std.bytes.new()
-    let clear = if options.clear_environment {
-        1
-    } else {
-        0
-    }
-    let code = async_process_capture(arguments, input, directory, clear, changes, stdout, stderr).await
+    Result.Ok(PreparedOptions {
+            directory = directory
+            clear = if options.clear_environment {
+                1
+            } else {
+                0
+            }
+            changes = changes
+        })
+}
+
+fn captured_output(code Int, stdout Bytes, stderr Bytes) Result[Output, SpawnError] {
     if code == -2 {
         return Result.Err(SpawnError.EmptyArguments)
     }
@@ -90,6 +111,48 @@ pub async fn capture_input(arguments List[Text], input Bytes, options Options) R
             status = status
             stdout = stdout
             stderr = stderr
+        })
+}
+
+pub async fn capture_input(arguments List[Text], input Bytes, options Options) Result[Output, SpawnError] {
+    let prepared = prepare_options(options)?
+    let stdout = std.bytes.new()
+    let stderr = std.bytes.new()
+    let truncated = std.bytes.new()
+    let code = async_process_capture(arguments, input, prepared.directory, prepared.clear,
+        prepared.changes, -1, stdout, stderr, truncated).await
+    captured_output(code, stdout, stderr)
+}
+
+// Retain at most limit bytes from each stream, then drain and discard its
+// suffix. Zero discards all output; negative limits are invalid options.
+// Truncation is explicit and does not kill the child or impose a time limit.
+pub fn capture(arguments List[Text], limit Int) Task[Result[LimitedOutput, SpawnError]] {
+    capture_input(arguments, std.bytes.new(), default_options(), limit)
+}
+
+pub fn capture(arguments List[Text], options Options, limit Int) Task[Result[LimitedOutput, SpawnError]] {
+    capture_input(arguments, std.bytes.new(), options, limit)
+}
+
+pub fn capture_input(arguments List[Text], input Bytes, limit Int) Task[Result[LimitedOutput, SpawnError]] {
+    capture_input(arguments, input, default_options(), limit)
+}
+
+pub async fn capture_input(arguments List[Text], input Bytes, options Options, limit Int) Result[LimitedOutput, SpawnError] {
+    if limit < 0 {
+        return Result.Err(SpawnError.InvalidOptions)
+    }
+    let prepared = prepare_options(options)?
+    let stdout = std.bytes.new()
+    let stderr = std.bytes.new()
+    let truncated = std.bytes.new()
+    let code = async_process_capture(arguments, input, prepared.directory, prepared.clear,
+        prepared.changes, limit, stdout, stderr, truncated).await
+    Result.Ok(LimitedOutput {
+            output = captured_output(code, stdout, stderr)?
+            stdout_truncated = std.bytes.get(truncated, 0) != 0
+            stderr_truncated = std.bytes.get(truncated, 1) != 0
         })
 }
 

@@ -254,3 +254,166 @@ fn main() {{
     success(&output);
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
 }
+
+#[test]
+fn bounded_async_capture_drains_both_pipes_and_reports_independent_truncation() {
+    let directory = tempfile::tempdir().unwrap();
+    let child_package = directory.path().join("child");
+    let parent_package = directory.path().join("parent");
+    fs::create_dir(&child_package).unwrap();
+    fs::create_dir(&parent_package).unwrap();
+    fs::write(
+        child_package.join("main.loom"),
+        r#"
+import std.io.read_bytes
+import std.io.write_bytes
+import std.io.write_error
+import std.io.write_text
+import std.bytes.new
+import std.bytes.length
+import std.process.exit_code
+import std.result.Result
+
+fn main() {
+    let input = match read_bytes() {
+        Result.Ok(bytes) => bytes
+        Result.Err(_) => {
+            assert false
+            std.bytes.new()
+        }
+    }
+    if length(input) == 0 {
+        discard write_error("error")
+        discard write_text("ok")
+    } else {
+        discard write_error(input)
+        discard write_bytes(input)
+    }
+    exit_code(7)
+}
+"#,
+    )
+    .unwrap();
+    let child = common::executable(directory.path(), "bounded capture child");
+    success(&loom(&[
+        "build",
+        child_package.to_str().unwrap(),
+        "--output",
+        child.to_str().unwrap(),
+    ]));
+    let payload = directory.path().join("payload.bin");
+    fs::write(
+        &payload,
+        (0..PAYLOAD_BYTES)
+            .map(|index| index as u8)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    fs::write(
+        parent_package.join("main.loom"),
+        format!(
+            r#"
+import std.process.tasks.capture
+import std.process.tasks.capture_input
+import std.process.tasks.LimitedOutput
+import std.process.ExitStatus
+import std.process.SpawnError
+import std.process.Options
+import std.process.EnvChange
+import std.file.read_bytes
+import std.list.new
+import std.bytes.new
+import std.bytes.get
+import std.bytes.length
+import std.bytes.to_text
+import std.option.Option
+import std.result.Result
+
+fn status(value LimitedOutput) {{
+    assert match value.output.status {{
+        ExitStatus.Exited(code) => code == 7
+        _ => false
+    }}
+}}
+
+async fn verify() Result[Int, SpawnError] {{
+    let args = [{child:?}]
+    let input = match read_bytes({payload:?}) {{
+        Result.Ok(bytes) => bytes
+        Result.Err(_) => {{
+            assert false
+            std.bytes.new()
+        }}
+    }}
+    let limits = [0, 17, {payload_bytes}, {payload_bytes} + 1]
+    var case_index = 0
+    while case_index < 4 {{
+        let limit = limits[case_index]
+        let found = capture_input(args, input, limit).await?
+        status(found)
+        let count = if limit < {payload_bytes} {{ limit }} else {{ {payload_bytes} }}
+        assert length(found.output.stdout) == count
+        assert length(found.output.stderr) == count
+        assert found.stdout_truncated == (limit < {payload_bytes})
+        assert found.stderr_truncated == (limit < {payload_bytes})
+        var index = 0
+        while index < count {{
+            assert get(found.output.stdout, index) == index % 256
+            assert get(found.output.stderr, index) == index % 256
+            index = index + 1
+        }}
+        case_index = case_index + 1
+    }}
+    assert length(input) == {payload_bytes} && get(input, 255) == 255
+    let small = capture(args, 2).await?
+    status(small)
+    assert to_text(small.output.stdout) == "ok" && !small.stdout_truncated
+    assert to_text(small.output.stderr) == "er" && small.stderr_truncated
+    let options = Options {{
+        directory = Option.None
+        clear_environment = false
+        environment = std.list.new[EnvChange]()
+    }}
+    let empty = capture(args, options, 0).await?
+    status(empty)
+    assert length(empty.output.stdout) == 0 && empty.stdout_truncated
+    assert length(empty.output.stderr) == 0 && empty.stderr_truncated
+    let configured = capture_input(args, input, options, 17).await?
+    status(configured)
+    assert length(configured.output.stdout) == 17 && configured.stdout_truncated
+    assert length(configured.output.stderr) == 17 && configured.stderr_truncated
+    Result.Ok(0)
+}}
+
+async fn main() {{
+    assert match verify().await {{
+        Result.Ok(code) => code == 0
+        _ => false
+    }}
+}}
+"#,
+            child = child.to_str().unwrap(),
+            payload = payload.to_str().unwrap(),
+            payload_bytes = PAYLOAD_BYTES,
+        ),
+    )
+    .unwrap();
+    let parent = common::executable(directory.path(), "bounded capture parent");
+    let ir = directory.path().join("bounded-capture.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", parent_package.to_str().unwrap()])
+                .arg("--output")
+                .arg(&parent)
+                .arg("--emit-ir")
+                .arg(&ir)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        let ir = fs::read_to_string(&ir).unwrap();
+        assert!(ir.contains("loom_rt_task_wait_process_capture"));
+        assert!(ir.contains("loom_rt_task_process_capture_result"));
+        success(&common::run_tasks(&parent));
+    }
+}

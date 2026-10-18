@@ -332,14 +332,20 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "process_capture_configured" || name == "process_capture_input_configured" || name == "async_process_capture" {
         let list = intern(env, TypeKind.List, -1, ints(3))
         let params = ints(list)
-        if name == "process_capture_input_configured" || name == "async_process_capture" {
+        if name != "process_capture_configured" {
             push(params, 4)
         }
         push(params, 3)
         push(params, 1)
         push(params, list)
+        if name == "async_process_capture" {
+            push(params, 1)
+        }
         push(params, 4)
         push(params, 4)
+        if name == "async_process_capture" {
+            push(params, 4)
+        }
         return runtime(0, params, 1)
     }
     if name == "env_get" {

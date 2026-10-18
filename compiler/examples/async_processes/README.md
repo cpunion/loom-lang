@@ -1,7 +1,8 @@
 # Asynchronous process capture
 
 Run an executable with literal arguments, capture its binary output, and forward
-its status. No shell is involved. From the repository root:
+its status. This example retains at most 64 KiB per stream; truncation prints a
+diagnostic and exits with status 1. No shell is involved. From the repository root:
 
 ```sh
 target/loom check compiler/examples/async_processes
@@ -19,7 +20,15 @@ can run while the child and its pipes are active.
 The existing native I/O pool limits concurrent jobs to four per owner. Each
 active capture also uses pipe-drain threads; the total native thread count is
 not four. Completed output is copied into GC-rooted buffers on the owner thread.
-Output is buffered without a size limit, not streamed.
+The limit overloads `capture(arguments[, options], limit)` and
+`capture_input(arguments, input[, options], limit)` return `LimitedOutput`.
+Its `output` contains the ordinary exit status and byte prefixes;
+`stdout_truncated` / `stderr_truncated` distinguish exact fits from discarded
+suffixes. A zero limit discards all output, and negative limits return
+`SpawnError.InvalidOptions`. Both pipes continue draining to EOF after reaching
+the limit. The limit bounds retained output, not input or the child's memory;
+it does not terminate a noisy child. Calls without a limit retain all output.
+Neither form streams output to consumers.
 
 Cancellation drops queued work, but drains a running capture and reaps the
 direct child before returning. It does not terminate a process tree. A hung
@@ -29,3 +38,9 @@ child or descendant retaining a pipe can therefore delay cancellation;
 The native test checks O0/O2 and moving GC, full-duplex binary pipes, input and
 argument snapshots, child-local options, and cancellation. Its child requires
 an acknowledgement from another Task, so synchronous capture cannot pass.
+The process-input test also checks zero/exact/oversized bounds, independent
+truncation and binary output exceeding pipe capacity:
+
+```sh
+cargo test -p loom-native --test process_input
+```

@@ -161,7 +161,8 @@ async fn main() {
     std.list.set(args, 0, arguments[1])
     std.list.set(changes, 3, EnvChange.Set("LOOM_ASYNC_CAPTURE_VALUE", "last=雪"))
     std.list.set(changes, 5, EnvChange.Set("LOOM_ASYNC_CAPTURE_MODE", "cancel"))
-    let retiring = capture(args, options)
+    // A zero output bound discards bytes, not the child or its pending work.
+    let retiring = capture(args, options, 0)
     ready(concat(directory, "/cancel-ready")).await
     match cancel(retiring) {
         Outcome.Cancelled => {}

@@ -624,6 +624,7 @@ impl Converter<'_> {
                     || arguments[2].ty != Type::Text
                     || arguments[3].ty != Type::Int
                     || !texts(arguments[4].ty)
+                    || arguments[5].ty != Type::Int
                     || result != Type::Bool
                 {
                     return Err("checked process wait signature mismatch".into());
@@ -1769,7 +1770,6 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitFileRead
         | P::TaskWaitWorker
         | P::TaskWaitResolve
-        | P::TaskProcessCaptureResult
         | P::TaskWaitFileOpen
         | P::TaskWaitSocket
         | P::TaskWaitTls
@@ -1790,6 +1790,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitFileWrite
         | P::TaskWaitFileWriteBytes
         | P::TaskCreate
+        | P::TaskProcessCaptureResult
         | P::CleanupEach => 3,
         P::ListRetainRange | P::SocketWriteBytes | P::SocketReceiveFrom | P::SocketSendTo => 4,
         P::TlsWrite => 4,
@@ -1797,8 +1798,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         P::SocketMulticastV4 | P::SocketMulticastV6 => 4,
         P::TlsClient => 6,
         P::TlsServer => 5,
-        P::TaskWaitProcessCapture => 5,
-        P::ProcessCaptureConfigured => 6,
+        P::ProcessCaptureConfigured | P::TaskWaitProcessCapture => 6,
         P::ProcessCaptureInputConfigured => 7,
         P::SocketSetKeepalive => 5,
     }
@@ -2072,7 +2072,7 @@ mod tests {
                     .collect::<String>()
             );
             format!(
-                "loom-checked-1\n6\n0\n-1\n1\n-1\n3\n-1\n4\n-1\n6\n-1\n2\n6\n-1\n1\n1\n0\n0\n0\n{params}{result}\n{params}0\n{body}-1\n0\n1\n0\n"
+                "loom-checked-1\n7\n0\n-1\n1\n-1\n3\n-1\n4\n-1\n6\n-1\n2\n6\n-1\n1\n2\n-1\n1\n0\n0\n0\n{params}{result}\n{params}0\n{body}-1\n0\n1\n0\n"
             )
         };
         for (name, params) in [
@@ -2082,6 +2082,8 @@ mod tests {
                 &[4, 3, 2, 1, 4, 3, 3][..],
             ),
             ("env_get", &[2, 3][..]),
+            ("task_wait_process_capture", &[4, 3, 2, 1, 4, 1][..]),
+            ("task_process_capture_result", &[3, 3, 3][..]),
             ("tls_client", &[2, 3, 1, 3, 3, 4][..]),
             ("tls_server", &[3, 3, 3, 1, 4][..]),
             ("tls_peer_certificate", &[1, 3][..]),
@@ -2109,7 +2111,12 @@ mod tests {
             ("socket_buffer", &[1, 1, 1][..]),
         ] {
             let operation = primitive(name).unwrap();
-            let program = decode(&stream(name, params, 1)).unwrap();
+            let result = if operation == Primitive::TaskWaitProcessCapture {
+                6
+            } else {
+                1
+            };
+            let program = decode(&stream(name, params, result)).unwrap();
             assert!(matches!(
                 program.functions[0].body.tail.as_ref().unwrap().kind,
                 c::ExprKind::Primitive(actual, _) if actual == operation
@@ -2121,19 +2128,19 @@ mod tests {
                     3 => 2,
                     _ => 3,
                 };
+                let error = decode(&stream(name, &invalid, result)).unwrap_err();
                 assert!(
-                    decode(&stream(name, &invalid, 1))
-                        .unwrap_err()
-                        .contains("type mismatch")
+                    error.contains("mismatch"),
+                    "{name} parameter {index}: {error}"
                 );
             }
             assert!(
                 decode(&stream(name, params, 0))
                     .unwrap_err()
-                    .contains("type mismatch")
+                    .contains("mismatch")
             );
             assert!(
-                decode(&stream(name, &params[..params.len() - 1], 1))
+                decode(&stream(name, &params[..params.len() - 1], result))
                     .unwrap_err()
                     .contains("arity mismatch")
             );

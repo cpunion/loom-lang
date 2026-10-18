@@ -243,14 +243,23 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_wait_process_capture(
     directory: *const u8,
     clear: i64,
     changes: *const u8,
+    limit: i64,
 ) -> i32 {
     worker_wait(|| {
+        // -1 is the private unlimited mode; public bounded calls reject it.
+        let valid = limit >= -1;
+        let limit = usize::try_from(limit).ok();
         // SAFETY: Snapshot every managed input once, before submission. Workers
         // own only Command and Rust bytes, never pointers into the moving heap.
         unsafe {
             Operation::Capture(
-                crate::configured_process(arguments, directory, clear, changes).map(Box::new),
+                if valid {
+                    crate::configured_process(arguments, directory, clear, changes).map(Box::new)
+                } else {
+                    Err(-4)
+                },
                 crate::buffer_bytes(input).to_vec(),
+                limit,
             )
         }
     })
@@ -260,12 +269,38 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_wait_process_capture(
 pub(super) unsafe extern "C-unwind" fn loom_rt_task_process_capture_result(
     stdout: *mut u8,
     stderr: *mut u8,
+    truncated: *mut u8,
 ) -> i64 {
-    let Outcome::Process(output) = completed() else {
+    let Outcome::Process(output, limit) = completed() else {
         fatal("unexpected native process result");
     };
-    // SAFETY: Shared extraction roots both outputs across every allocation.
-    unsafe { crate::process_output(output, stdout, stderr) }
+    let mut output = match output {
+        Ok(output) => output,
+        Err(status) => return status,
+    };
+    let mut flags = [0; 2];
+    if let Some(limit) = limit {
+        flags = [
+            u8::from(output.stdout.len() > limit),
+            u8::from(output.stderr.len() > limit),
+        ];
+        output.stdout.truncate(limit);
+        output.stderr.truncate(limit);
+    }
+    crate::rooted([stdout, stderr, truncated], |slots| {
+        // SAFETY: All three output headers remain rooted across allocations;
+        // process_output reloads its two headers through its own nested roots.
+        unsafe {
+            let buffer = super::super::reserve(*slots.add(2), flags.len(), 1);
+            ptr::copy_nonoverlapping(
+                flags.as_ptr(),
+                (*buffer).data.add((*buffer).len),
+                flags.len(),
+            );
+            (*buffer).len += flags.len();
+            crate::process_output(Ok(output), *slots, *slots.add(1))
+        }
+    })
 }
 
 #[cfg(test)]

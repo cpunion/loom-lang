@@ -16,7 +16,11 @@ pub(super) enum Operation {
     Read(File, usize),
     Write(File, Vec<u8>),
     Resolve(String, u16),
-    Capture(Result<Box<std::process::Command>, i64>, Vec<u8>),
+    Capture(
+        Result<Box<std::process::Command>, i64>,
+        Vec<u8>,
+        Option<usize>,
+    ),
     Failed,
     #[cfg(test)]
     Test(Box<dyn FnOnce() -> Outcome + Send>),
@@ -25,7 +29,7 @@ pub(super) enum Operation {
 pub(super) enum Outcome {
     Bytes(i64, Vec<u8>),
     File(Option<File>),
-    Process(Result<std::process::Output, i64>),
+    Process(Result<std::process::Output, i64>, Option<usize>),
 }
 
 impl Outcome {
@@ -56,9 +60,15 @@ impl Operation {
                 };
                 return Outcome::File(file.ok());
             }
-            Self::Capture(command, input) => {
+            Self::Capture(command, input, limit) => {
                 return Outcome::Process(
-                    command.and_then(|command| super::capture_process(*command, input)),
+                    command.and_then(|command| match limit {
+                        None => super::capture_process(*command, input),
+                        Some(limit) => super::capture_process_result(
+                            super::process_io::capture_bounded(*command, input, limit),
+                        ),
+                    }),
+                    limit,
                 );
             }
             Self::Close(file) => close_file(file),

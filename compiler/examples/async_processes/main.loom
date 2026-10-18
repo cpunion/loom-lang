@@ -22,10 +22,16 @@ async fn main() {
         push(command, values[index])
         index = index + 1
     }
-    match capture(command).await {
-        Result.Ok(output) => {
+    match capture(command, 65536).await {
+        Result.Ok(captured) => {
+            let output = captured.output
             discard write_bytes(output.stdout)
             discard write_error(output.stderr)
+            if captured.stdout_truncated || captured.stderr_truncated {
+                discard write_error("child output truncated at 65536 bytes per stream\n")
+                exit_code(1)
+                return
+            }
             match output.status {
                 ExitStatus.Exited(code) => {
                     exit_code(if code <= 255 {
