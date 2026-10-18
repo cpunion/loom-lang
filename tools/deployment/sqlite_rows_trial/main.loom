@@ -1,0 +1,193 @@
+import deployment.read_sqlite_rows
+import deployment.SqliteRowError
+import std.bytes.get
+import std.bytes.length
+import std.list.get
+import std.list.length
+import std.list.set
+import std.option.Option
+import std.process.arguments
+import std.process.run_input
+import std.result.Result
+import std.storage.Column
+import std.storage.Table
+import std.storage.Value
+import std.storage.ValueKind
+import std.storage.ColumnValue
+import std.storage.CodecError
+import std.storage.PreparedRowCodec
+import std.storage.record_codec
+import std.storage.codec_table
+
+pub type Amount = Int where self >= 0
+
+impl ColumnValue for Amount {
+    fn column_kind() ValueKind {
+        ValueKind.Int
+    }
+
+    fn to_column(self Amount) Result[Value, CodecError] {
+        Result.Ok(Value.Int(self))
+    }
+
+    fn from_column(value Value) Result[Amount, CodecError] {
+        match value {
+            Value.Int(number) => match Amount(number) {
+                Result.Ok(checked) => Result.Ok(checked)
+                Result.Err(_) => Result.Err(CodecError.Rejected)
+            }
+            _ => Result.Err(CodecError.Rejected)
+        }
+    }
+}
+
+pub record Entry {
+    id Int
+    body Text
+    amount Amount
+    enabled Bool
+    note Option[Text]
+    payload Bytes
+    rate Float
+}
+
+fn column(id Text, name Text, kind ValueKind, nullable Bool) Column {
+    Column {
+        id = id
+        physical_name = name
+        kind = kind
+        nullable = nullable
+    }
+}
+
+fn mapping(body_column Text) Table {
+    Table {
+        id = "entries"
+        physical_name = "items\"archive"
+        columns = [
+            column("body", body_column, ValueKind.Text, false),
+            column("amount", "cents", ValueKind.Int, false),
+            column("entry-id", "row id", ValueKind.Int, false),
+            column("note", "note", ValueKind.Text, true),
+            column("enabled", "enabled", ValueKind.Int, false),
+            column("payload", "payload", ValueKind.Bytes, false),
+            column("rate", "rate", ValueKind.Float, false)
+        ]
+    }
+}
+
+fn prepare(table Table) PreparedRowCodec[Entry] {
+    match record_codec[Entry](table, [("id", "entry-id")]) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            prepare(table)
+        }
+    }
+}
+
+fn sql(tool Text, database Text, query Text) {
+    assert match run_input([tool, "-batch", "-bail", "--", database], query) {
+        Result.Ok(0) => true
+        _ => false
+    }
+}
+
+fn read(tool Text, database Text, codec PreparedRowCodec[Entry]) List[Entry] {
+    match read_sqlite_rows(tool, database, codec) {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            assert false
+            []
+        }
+    }
+}
+
+fn main() {
+    let args = arguments()
+    assert std.list.length(args) == 3
+    let tool = std.list.get(args, 1)
+    let database = std.list.get(args, 2)
+    // The caller supplies a fresh, disposable database. CREATE (without IF NOT
+    // EXISTS) refuses accidental reuse; no existing application tables are dropped.
+    sql(tool, database, """
+        CREATE TABLE "items""archive" (
+            "row id" INTEGER, "message|line" TEXT, cents,
+            enabled INTEGER, note TEXT, payload BLOB, rate REAL
+        );
+        INSERT INTO "items""archive" VALUES
+            (-9223372036854775808, CAST(x'610A7C00E4B8AD' AS TEXT), 0, 1, NULL,
+             x'', ieee754_from_blob(x'0000000000000001')),
+            (9223372036854775807, '', 125, 0, 'line
+        two', x'00FF7C0A', 1.5);
+        """)
+    let table = mapping("message|line")
+    let codec = prepare(table)
+    // Driver metadata and the caller's original descriptor are independent of
+    // the prepared query and decoder's frozen mapping.
+    let description = codec_table(codec)
+    set(description.columns, 0, column("body", "not_a_column", ValueKind.Text, false))
+    set(table.columns, 0, column("body", "also_missing", ValueKind.Text, false))
+    let values = read(tool, database, codec)
+    assert std.list.length(values) == 2
+    var seen_min = false
+    var seen_max = false
+    var index = 0
+    while index < std.list.length(values) {
+        let value = std.list.get(values, index)
+        if value.id == -9223372036854775808 {
+            assert !seen_min
+            seen_min = true
+            assert value.body == "a\n|\0中" && value.amount == 0 && value.enabled
+            assert std.bytes.length(value.payload) == 0 && value.rate == 5e-324
+            assert match value.note {
+                Option.None => true
+                _ => false
+            }
+        } else {
+            assert !seen_max
+            seen_max = true
+            assert value.id == 9223372036854775807 && value.body == "" && value.amount == 125 && !value.enabled
+            assert std.bytes.length(value.payload) == 4 && std.bytes.get(value.payload, 1) == 255
+            assert value.rate == 1.5
+            assert match value.note {
+                Option.Some("line\ntwo") => true
+                _ => false
+            }
+        }
+        index = index + 1
+    }
+    assert seen_min && seen_max
+    assert match read_sqlite_rows(tool, database, prepare(mapping("missing_text_column"))) {
+        Result.Err(SqliteRowError.Query) => true
+        _ => false
+    }
+    // A physical integer is not automatically a valid Amount or Bool.
+    sql(tool, database, "UPDATE \"items\"\"archive\" SET cents=-1;")
+    assert match read_sqlite_rows(tool, database, codec) {
+        Result.Err(SqliteRowError.Decode(_, CodecError.Rejected)) => true
+        _ => false
+    }
+    sql(tool, database, "UPDATE \"items\"\"archive\" SET cents=1, enabled=2;")
+    assert match read_sqlite_rows(tool, database, codec) {
+        Result.Err(SqliteRowError.Decode(_, CodecError.Rejected)) => true
+        _ => false
+    }
+    sql(tool, database, "UPDATE \"items\"\"archive\" SET enabled=1, cents='not an integer';")
+    assert match read_sqlite_rows(tool, database, codec) {
+        Result.Err(SqliteRowError.Decode(_, CodecError.WrongKind(1))) => true
+        _ => false
+    }
+    sql(tool, database, "UPDATE \"items\"\"archive\" SET cents=1, \"message|line\"=NULL;")
+    assert match read_sqlite_rows(tool, database, codec) {
+        Result.Err(SqliteRowError.Decode(_, CodecError.NullNotAllowed(0))) => true
+        _ => false
+    }
+    sql(tool, database, "UPDATE \"items\"\"archive\" SET \"message|line\"=CAST(x'FF' AS TEXT);")
+    assert match read_sqlite_rows(tool, database, codec) {
+        Result.Err(SqliteRowError.Encoding) => true
+        _ => false
+    }
+    sql(tool, database, "DELETE FROM \"items\"\"archive\";")
+    assert std.list.length(read(tool, database, codec)) == 0
+}

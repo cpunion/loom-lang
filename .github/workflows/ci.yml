@@ -75,6 +75,7 @@ jobs:
           LOOM_OPT_LEVEL=0 target/loom test tools/semantic_change_trial
           LOOM_OPT_LEVEL=0 target/loom test tools/deployment
           migration_dir="$(mktemp -d "$RUNNER_TEMP/loom-migration.XXXXXX")"
+          target/loom run tools/deployment/sqlite_rows_trial -- /usr/bin/sqlite3 "$migration_dir/typed-rows.sqlite"
           target/loom run tools/deployment/sqlite_trial -- "$migration_dir/planning.sqlite"
           target/loom build tools/deployment/fixture_v1 --output "$migration_dir/v1" --receipt "$migration_dir/v1.receipt"
           target/loom build tools/deployment/fixture_v2 --output "$migration_dir/v2" --receipt "$migration_dir/v2.receipt"

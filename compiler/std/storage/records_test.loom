@@ -82,6 +82,10 @@ test fn record_codec_freezes_mapping_and_rejects_ambiguous_schemas() {
             return
         }
     }
+    let description = codec_table(codec)
+    assert description.id == "orders" && get(description.columns, 1).id == "order-id"
+    set(description.columns, 1, column("changed", "changed", ValueKind.Bytes, false))
+    assert get(codec_table(codec).columns, 1).id == "order-id"
     set(aliases, 0, ("id", "amount"))
     set(table.columns, 1, column("wrong", "wrong", ValueKind.Text, true))
     assert match decode_prepared_row(codec, [Value.Null, Value.Int(7), Value.Int(1), Value.Int(1)]) {

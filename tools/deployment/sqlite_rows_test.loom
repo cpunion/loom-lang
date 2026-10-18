@@ -1,0 +1,85 @@
+import std.float.is_finite
+
+fn float_cell(encoded Text) Float {
+    match row_value(encoded) {
+        Result.Ok(Value.Float(value)) => value
+        _ => {
+            assert false
+            0.0
+        }
+    }
+}
+
+test fn sqlite_cells_preserve_integer_text_and_blob_boundaries() {
+    assert match row_value("i2D39323233333732303336383534373735383038") {
+        Result.Ok(Value.Int(-9223372036854775808)) => true
+        _ => false
+    }
+    assert match row_value("i39323233333732303336383534373735383037") {
+        Result.Ok(Value.Int(9223372036854775807)) => true
+        _ => false
+    }
+    assert match row_value("t610A7C00E4B8AD") {
+        Result.Ok(Value.Text(value)) => value == "a\n|\0中"
+        _ => false
+    }
+    assert match row_value("t") {
+        Result.Ok(Value.Text("")) => true
+        _ => false
+    }
+    assert match row_value("b00ff7C") {
+        Result.Ok(Value.Bytes(value)) => std.bytes.length(value) == 3 &&
+        std.bytes.get(value, 0) == 0 && std.bytes.get(value, 1) == 255 && std.bytes.get(value, 2) == 124
+        _ => false
+    }
+    assert match row_value("n") {
+        Result.Ok(Value.Null) => true
+        _ => false
+    }
+    let invalid = ["", "x", "n00", "i", "i39323233333732303336383534373735383038", "b0", "bGG", "tFF", "tC080"]
+    var index = 0
+    while index < std.list.length(invalid) {
+        assert match row_value(std.list.get(invalid, index)) {
+            Result.Err(SqliteRowError.Encoding) => true
+            _ => false
+        }
+        index = index + 1
+    }
+}
+
+test fn sqlite_binary64_cells_preserve_extremes_and_zero_sign() {
+    assert float_cell("f3FF8000000000000") == 1.5
+    assert float_cell("fBFF8000000000000") == -1.5
+    assert float_cell("f0000000000000001") == 5e-324
+    assert float_cell("f0010000000000000") == 2.2250738585072014e-308
+    assert float_cell("f000FFFFFFFFFFFFF") == 2.225073858507201e-308
+    let largest = float_cell("f7FEFFFFFFFFFFFFF")
+    assert is_finite(largest) && largest == 1.7976931348623157e308
+    assert float_cell("f7FF0000000000000") == 1.0 / 0.0
+    assert float_cell("fFFF0000000000000") == -1.0 / 0.0
+    assert 1.0 / float_cell("f0000000000000000") == 1.0 / 0.0
+    assert 1.0 / float_cell("f8000000000000000") == -1.0 / 0.0
+    assert match row_value("f7FF8000000000001") {
+        Result.Err(SqliteRowError.Encoding) => true
+        _ => false
+    }
+    assert match row_value("f0000") {
+        Result.Err(SqliteRowError.Encoding) => true
+        _ => false
+    }
+}
+
+test fn sqlite_identifiers_are_single_quoted_identifiers_not_sql_fragments() {
+    assert match row_identifier("a\"; DROP TABLE orders;--\n") {
+        Result.Ok(value) => value == "\"a\"\"; DROP TABLE orders;--\n\""
+        _ => false
+    }
+    assert match row_identifier("") {
+        Result.Err(SqliteRowError.Mapping) => true
+        _ => false
+    }
+    assert match row_identifier("a\0b") {
+        Result.Err(SqliteRowError.Mapping) => true
+        _ => false
+    }
+}

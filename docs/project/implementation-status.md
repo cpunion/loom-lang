@@ -426,6 +426,9 @@ fresh upgrade.
 Operators still supply storage mappings. Hotfix proof is unknown and cannot
 authorize execution. General migration packages, compatibility/mapping proof,
 online coexistence and generalized recovery remain goals.
+The [typed row trial](../../tools/deployment/sqlite_rows_trial/README.md) connects
+source-derived codecs to a read-only SQLite snapshot, including checked refined
+fields and binary/text boundaries. It does not establish those missing proofs.
 
 CI verifies relocatable development archives on macOS/Linux/Windows.
 The [draft-release workflow](../../distribution/README.md) promotes successful

@@ -1,5 +1,6 @@
 import std.bytes.new
 import std.bytes.push
+import std.build.target
 import std.list.new
 import std.list.push
 import std.process.capture_input
@@ -26,6 +27,14 @@ fn invoke(tool Text, database Text, sql Text, read_only Bool) Result[Bytes, Text
     }
     let args = std.list.new[Text]()
     std.list.push(args, tool)
+    // Explicitly replace the user's startup file: output settings and arbitrary
+    // .sqliterc commands must not participate in deployment queries.
+    std.list.push(args, "-init")
+    comptime if target("os") == "windows" {
+        std.list.push(args, "NUL")
+    } else {
+        std.list.push(args, "/dev/null")
+    }
     std.list.push(args, "-batch")
     std.list.push(args, "-bail")
     std.list.push(args, "-list")
