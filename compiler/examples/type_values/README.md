@@ -38,6 +38,12 @@ can iterate those tuples directly. This inspects a visible enum **type**, not
 the selected variant of an enum value; no constructor is executed. The same
 visibility and checked-construction rules apply. See [variants.loom](variants.loom).
 
+`std.meta.refinement_base[T]()` returns `Option[type]` for a visible refinement's
+non-refined base. It returns `None` for non-refined types or inaccessible nominal
+definitions; abstract queries remain deferred until selection is known. The
+result is only compile-time identity: it grants neither construction permission
+nor predicate evidence. See [refinements.loom](refinements.loom).
+
 `std.meta.tuple(elements)` and `std.meta.function(parameters, output)` build
 ordinary tuple/function types from computed `List[type]` inputs. The optional
 output is `None` for no result. Loops may select the elements; the result has

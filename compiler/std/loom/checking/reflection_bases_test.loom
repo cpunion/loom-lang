@@ -1,0 +1,193 @@
+import std.build.input_file
+
+fn reflected_base_source(text Text) Result[std.loom.typed.Program, Failure] {
+    let files = source_files(concat("""
+        import std.meta.refinement_base
+        import std.option.Option
+
+        """, text))
+    push(files, source_file("std.meta", input_file("../../meta/refinements.loom"), true))
+    push(files, source_file("std.option", input_file("../../option/option.loom"), true))
+    checked(files)
+}
+
+test fn refinement_base_uses_compile_time_identity_without_waiving_construction() {
+    assert match reflected_base_source("""
+        type Positive = Int where self > 0
+        record Pair {
+            count Int
+        }
+        type Valid = Pair where self.count > 0
+        fn selected[T]() type {
+            match refinement_base[T]() {
+                Option.Some(base) => base
+                Option.None => T
+            }
+        }
+        pub fn has_int_base[T](value T) Bool {
+            discard value
+            comptime {
+                match refinement_base[T]() {
+                    Option.Some(base) => base == Int
+                    Option.None => false
+                }
+            }
+        }
+        fn main() {
+            let Base = comptime { selected[Positive]() }
+            let raw Base = 0
+            assert raw == 0 && has_int_base(Positive(7)) && !has_int_base(true)
+            assert comptime { selected[Valid]() == Pair }
+            assert comptime {
+                match refinement_base[Int]() {
+                    Option.None => true
+                    Option.Some(_) => false
+                }
+            }
+        }
+        """) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard std.io.write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let invalid = ["""
+        type Positive = Int where self > 0
+        fn main() {
+            let Base = comptime {
+                match refinement_base[Positive]() {
+                    Option.Some(base) => base
+                    Option.None => Int
+                }
+            }
+            let raw Base = 0
+            let value Positive = raw
+            discard value
+        }
+        """, """
+        type Positive = Int where self > 0
+        fn main() {
+            let query = refinement_base[Positive]()
+            discard query
+        }
+        """, """
+        fn main() {
+            let query = refinement_base[Int]()
+            discard query
+        }
+        """]
+    var index = 0
+    while index < length(invalid) {
+        assert match reflected_base_source(get(invalid, index)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn refinement_base_rechecks_visibility_after_definition_cache_restoration() {
+    let app = """
+        import std.meta.refinement_base
+        import std.option.Option
+        import hidden.Visible
+
+        pub fn available() Bool ensures result {
+            comptime {
+                match refinement_base[Visible]() {
+                    Option.Some(_) => true
+                    Option.None => false
+                }
+            }
+        }
+        fn unchanged() Int {
+            7
+        }
+        """
+    let provider = """
+        pub record Payload {
+            count Int
+        }
+        pub type Visible = Payload where self.count >= 0
+        """
+    let files = source_files(app)
+    push(files, source_file("std.meta", input_file("../../meta/refinements.loom"), true))
+    push(files, source_file("std.option", input_file("../../option/option.loom"), true))
+    push(files, source_file("hidden", provider, false))
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    set(files, 0, source_file("app", concat(app, "\nfn unrelated() {}\n"), false))
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    set(files, 3, source_file("hidden", std.text.join(std.text.split(provider, "pub record"), "record"), false))
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader),
+        restored_definition_cache(initial)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition")
+        Result.Ok(_) => false
+    }
+}
+
+test fn refinement_base_preserves_visibility_and_validates_the_meta_option_model() {
+    let files = source_files("""
+        import std.meta.refinement_base
+        import std.option.Option
+        import hidden.secret
+        import hidden.Published
+        import hidden.Visible
+
+        fn main() {
+            let Hidden = comptime { secret() }
+            assert comptime {
+                match refinement_base[Hidden]() {
+                    Option.None => true
+                    Option.Some(_) => false
+                }
+            }
+            assert comptime {
+                match refinement_base[Published]() {
+                    Option.None => true
+                    Option.Some(_) => false
+                }
+            }
+            assert comptime {
+                match refinement_base[Visible]() {
+                    Option.Some(base) => base == Int
+                    Option.None => false
+                }
+            }
+        }
+        """)
+    push(files, source_file("std.meta", input_file("../../meta/refinements.loom"), true))
+    push(files, source_file("std.option", input_file("../../option/option.loom"), true))
+    push(files, source_file("hidden", """
+        type Secret = Int where self > 0
+        record Payload {
+            count Int
+        }
+        pub type Published = Payload where self.count > 0
+        pub type Visible = Int where self > 0
+        pub fn secret() type {
+            Secret
+        }
+        """, false))
+    assert match checked(files) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard std.io.write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    set(files, 1, source_file("std.meta", "pub intrinsic fn refinement_base[T]() Int\n", true))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "refinement_base requires std.option.Option[type]"
+        Result.Ok(_) => false
+    }
+}

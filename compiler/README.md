@@ -4061,6 +4061,12 @@ Nominal identity, visibility, bounds and construction checks are unchanged.
 Type-bearing data cannot escape into runtime locals, parameters or results;
 source-public type-producing functions have no native export.
 
+`std.meta.refinement_base[T]()` queries a visible refinement's non-refined base
+as `Option[type]`. Non-refined or inaccessible nominal definitions return `None`;
+abstract queries defer until concrete selection. The query never constructs a
+sample value or proves its predicate. Ordinary constructor and visibility checks
+still apply; see [refinements.loom](examples/type_values/refinements.loom).
+
 Type construction follows explicit staging: `std.meta.list(comptime element type)`
 requires its argument to be known at that call. A type-valued evaluator local is
 not an implicit generic parameter. Declaration signatures still use `[T]`, not

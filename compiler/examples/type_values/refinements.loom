@@ -1,0 +1,36 @@
+import std.meta.refinement_base
+import std.result.Result
+import std.result.ConstraintError
+
+type NonnegativeMetadata = Int where self >= 0
+
+fn transparent_base[T]() type {
+    match refinement_base[T]() {
+        Option.Some(base) => base
+        Option.None => T
+    }
+}
+
+fn checked_metadata(value Int) Result[NonnegativeMetadata, ConstraintError] {
+    NonnegativeMetadata(value)
+}
+
+fn refined_type_values() {
+    let Base = comptime {
+        transparent_base[NonnegativeMetadata]()
+    }
+    let raw Base = -1
+    assert raw == -1
+    // Knowing the base type does not waive the ordinary predicate check.
+    match checked_metadata(raw) {
+        Result.Err(_) => {
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+}
+
+test fn refinement_metadata_does_not_grant_construction_evidence() {
+    refined_type_values()
+}

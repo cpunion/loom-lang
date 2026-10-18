@@ -1,6 +1,8 @@
 import std.reflect.from_fields
 import std.int.parse
 import std.float.parse
+import std.meta.refinement_base
+import std.reflect.predicates.implies
 
 pub enum DecodeError {
     Syntax(ParseError)
@@ -10,6 +12,7 @@ pub enum DecodeError {
     MissingField(Text)
     UnsupportedType
     DepthExceeded
+    Rejected
 }
 
 fn object_field(fields List[(Text, Value)], name Text) Result[Value, DecodeError] {
@@ -37,27 +40,83 @@ fn decode_number(raw Text) Result[Text, DecodeError] {
     Result.Err(DecodeError.InvalidNumber)
 }
 
-fn decode_items[T](value Value, depth Int) Result[List[T], DecodeError] {
-    if depth >= 64 {
-        return Result.Err(DecodeError.DepthExceeded)
-    }
-    match value {
-        Value.Array(items) => {
-            let output = std.list.new[T]()
-            var index = 0
-            while index < std.list.length(items) {
-                std.list.push(output, decode_value[T](get(items, index), depth + 1)?)
-                index = index + 1
-            }
-            Result.Ok(output)
+concept JsonListShape {
+    type Element
+}
+
+impl[Item] JsonListShape for List[Item] {
+    type Element = Item
+}
+
+fn decoding_base[T]() Bool {
+    let kind = describe[T]().types[0].kind
+    T == Value || kind == Kind.Bool || kind == Kind.Int || kind == Kind.Float ||
+    kind == Kind.Text || kind == Kind.Tuple || kind == Kind.Record
+}
+
+// Construct a refined List before publishing its fresh header. Returning a raw
+// List through another helper first would lose that unpublished-storage fact.
+fn decode_items[Shape JsonListShape, Output](value Value, depth Int) Result[Output, DecodeError] {
+    comptime if Shape == List[Shape.Element] {
+        if depth >= 64 {
+            return Result.Err(DecodeError.DepthExceeded)
         }
-        _ => Result.Err(DecodeError.TypeMismatch)
+        return match value {
+            Value.Array(items) => {
+                let output = std.list.new[Shape.Element]()
+                var index = 0
+                while index < std.list.length(items) {
+                    std.list.push(output, decode_value[Shape.Element](get(items, index), depth + 1)?)
+                    index = index + 1
+                }
+                comptime if Output == Shape {
+                    Result.Ok(output)
+                } else {
+                    comptime if implies[Shape, Output]() {
+                        Result.Ok(Output(output))
+                    } else {
+                        match Output(output) {
+                            Result.Ok(accepted) => Result.Ok(accepted)
+                            Result.Err(_) => Result.Err(DecodeError.Rejected)
+                        }
+                    }
+                }
+            }
+            _ => Result.Err(DecodeError.TypeMismatch)
+        }
     }
+    Result.Err(DecodeError.UnsupportedType)
 }
 
 fn decode_value[T](value Value, depth Int) Result[T, DecodeError] {
     comptime if T == Value {
         return Result.Ok(value)
+    }
+    comptime if describe[T]().types[0].kind == Kind.Refined {
+        let Base = comptime {
+            match refinement_base[T]() {
+                Option.Some(base) => base
+                Option.None => T
+            }
+        }
+        comptime if Base != T {
+            comptime if Base implements JsonListShape {
+                return decode_items[Base, T](value, depth)
+            } else {
+                comptime if decoding_base[Base]() {
+                    let decoded = decode_value[Base](value, depth)?
+                    comptime if implies[Base, T]() {
+                        return Result.Ok(T(decoded))
+                    } else {
+                        return match T(decoded) {
+                            Result.Ok(accepted) => Result.Ok(accepted)
+                            Result.Err(_) => Result.Err(DecodeError.Rejected)
+                        }
+                    }
+                }
+            }
+        }
+        return Result.Err(DecodeError.UnsupportedType)
     }
     comptime if T == Bool {
         return match value {
@@ -94,8 +153,8 @@ fn decode_value[T](value Value, depth Int) Result[T, DecodeError] {
             _ => Result.Err(DecodeError.TypeMismatch)
         }
     }
-    comptime if describe[T]().types[0].kind == Kind.List {
-        return decode_items(value, depth)
+    comptime if T implements JsonListShape {
+        return decode_items[T, T](value, depth)
     }
     comptime if describe[T]().types[0].kind == Kind.Tuple {
         if depth >= 64 {
@@ -147,7 +206,7 @@ pub fn from_value[T](value Value) Result[T, DecodeError] {
     decode_value[T](value, 0)
 }
 
-// Exact visible shapes: no implicit enum, refinement, null or extra-field policy.
+// Exact visible shapes with checked refinements; no implicit enum/null policy.
 // Parse first so duplicate keys, number syntax and nesting have one definition.
 pub fn decode[T](input Text) Result[T, DecodeError] {
     let value = match std.json.parse(input) {

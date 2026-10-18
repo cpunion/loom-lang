@@ -1,0 +1,42 @@
+fn refinement_base_model(env Environment, owner Int, output Int, node Node) Result[Bool, Failure] {
+    let failed = failure(env, owner, node, "refinement_base requires std.option.Option[type]")
+    let shape = get(env.types, output)
+    let meta = meta_type(env)
+    if shape.kind != TypeKind.Enum || !same(shape.arguments, ints(meta)) || length(shape.variants) != 2 {
+        return Result.Err(failed)
+    }
+    let option = symbol(env, shape.symbol)
+    let file = get(env.source.files, option.file)
+    let some = get(shape.variants, 0)
+    let none = get(shape.variants, 1)
+    if option.name != "Option" || !file.trusted_std ||
+    package_label(env.source.modules, env.source.packages, file.package) != "std.option" ||
+    some.name != "Some" || !same(some.fields, ints(meta)) || none.name != "None" || length(none.fields) != 0 {
+        return Result.Err(failed)
+    }
+    Result.Ok(true)
+}
+
+fn reflected_base(context Context, node Node, ty Int, output Int) Result[Expr, Failure] {
+    if !concrete(context.env, ty) {
+        return deferred(context, node, output)
+    }
+    var base = ty
+    var shape = get(context.env.types, base)
+    if shape.kind != TypeKind.Refined {
+        return Result.Ok(expression(ExprKind.Variant, output, node, "", 1, new[Expr](), true))
+    }
+    while shape.kind == TypeKind.Refined {
+        if !reflection_visible(context, shape.symbol) {
+            return Result.Ok(expression(ExprKind.Variant, output, node, "", 1, new[Expr](), true))
+        }
+        base = base_type(context.env, base)
+        shape = get(context.env.types, base)
+    }
+    if (shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum) &&
+    !reflection_visible(context, shape.symbol) {
+        return Result.Ok(expression(ExprKind.Variant, output, node, "", 1, new[Expr](), true))
+    }
+    Result.Ok(expression(ExprKind.Variant, output, node, "", 0,
+            expressions(meta_literal(context, node, base)?), true))
+}

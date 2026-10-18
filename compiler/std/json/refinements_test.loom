@@ -1,0 +1,76 @@
+import std.bytes.length
+
+type JsonBoundedValues = List[Positive] where std.list.length(self) <= 3
+
+record JsonRange {
+    lower Int
+    upper Int
+}
+
+type JsonOrderedRange = JsonRange where self.lower <= self.upper
+
+type JsonNonemptyPair = (Positive, Text) where self.1 != ""
+
+type JsonAnyInt = Int where true
+
+type JsonAnyList = List[Int] where true
+
+type JsonUnsupportedBytes = Bytes where std.bytes.length(self) <= 8
+
+test fn typed_json_checks_refined_scalars_containers_records_and_tuples() {
+    assert decoded_as[Positive]("7") == 7
+    assert decoded_as[Price]("1.25") == 1.25
+    assert decoded_as[JsonAnyInt]("-1") == -1
+    assert decoded_as[JsonAnyList]("[1,2]")[1] == 2
+    let values = decoded_as[JsonBoundedValues]("[1,2,3]")
+    assert values[0] == 1 && std.list.length(values) == 3
+    let range = decoded_as[JsonOrderedRange]("""
+        {"lower":1,"upper":3}
+        """)
+    assert range.lower == 1 && range.upper == 3
+    let pair = decoded_as[JsonNonemptyPair]("""
+        [7,"seven"]
+        """)
+    assert pair.0 == 7 && pair.1 == "seven"
+    let fields = Value.Object([("lower", Value.Number("2")), ("upper", Value.Number("4"))])
+    assert match from_value[JsonOrderedRange](fields) {
+        Result.Ok(value) => value.lower == 2 && value.upper == 4
+        Result.Err(_) => false
+    }
+}
+
+fn rejected_json_refinement[T](text Text) Bool {
+    match decode[T](text) {
+        Result.Err(DecodeError.Rejected) => true
+        _ => false
+    }
+}
+
+test fn typed_json_retains_constructor_rejection_and_underlying_shape_errors() {
+    assert rejected_json_refinement[Positive]("0")
+    assert rejected_json_refinement[Price]("-1.25")
+    assert rejected_json_refinement[JsonBoundedValues]("[1,2,3,4]")
+    assert rejected_json_refinement[JsonBoundedValues]("[1,0]")
+    assert rejected_json_refinement[JsonOrderedRange]("""
+        {"lower":3,"upper":1}
+        """)
+    assert rejected_json_refinement[JsonNonemptyPair]("""
+        [7,""]
+        """)
+    assert match decode[Positive]("1.5") {
+        Result.Err(DecodeError.InvalidNumber) => true
+        _ => false
+    }
+    assert match decode[JsonOrderedRange]("[1,2]") {
+        Result.Err(DecodeError.TypeMismatch) => true
+        _ => false
+    }
+    assert match decode[JsonNonemptyPair]("[7]") {
+        Result.Err(DecodeError.FieldCount) => true
+        _ => false
+    }
+    assert match decode[JsonUnsupportedBytes]("[]") {
+        Result.Err(DecodeError.UnsupportedType) => true
+        _ => false
+    }
+}

@@ -1,0 +1,7 @@
+import std.option.Option
+
+// The visible non-refined base identity, available only at compile time.
+// None means non-refined or inaccessible through this package scope.
+// Abstract queries defer until the type is known.
+// This does not construct a value, discharge a predicate, or reveal hidden fields.
+pub intrinsic fn refinement_base[T]() Option[type]
