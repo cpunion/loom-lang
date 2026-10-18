@@ -34,6 +34,11 @@ Retained notes and intervening writes are still checked by the existing trial.
 The hotfix client reuses v1's actual entry point, but hotfix inspection remains
 `Unproven`; neither shared source nor these samples grant compatibility proof.
 
+Compilation also queries the actual v1/v2 `Order` field types through
+`field_implies`: v2 amount weakens to v1, while v1-to-v2 is unproved.
+These are declared-field proofs, not enclosing-record, codec, writer or
+receipt/schema compatibility evidence. No predicate text is duplicated.
+
 Each client prints the number of orders, with optional insertion arguments:
 
 ```sh
