@@ -4109,6 +4109,14 @@ single concrete call infers public requirements or discharges required proofs.
 See [symbolic.loom](examples/type_values/symbolic.loom) and
 [dependent.loom](examples/type_values/dependent.loom).
 
+A direct conditional alias can declare the result explicitly:
+`let Selected type = comptime if T == Int { Text } else { Int }`.
+The initializer is pure compile-time execution; an unknown choice stays opaque
+until specialization. This also supports forwarding unresolved static conditions
+through type-producing helpers. It does not permit unresolved static arguments
+in native calls or runtime values to choose a type. See
+[conditional.loom](examples/type_values/conditional.loom).
+
 Declared associated types are type values too: `S.Item[T]`, qualified
 `S.Concept.Item[T]`, and `Self.Item[T]` in methods. An immutable selected receiver
 type supports the same projections. Resolution retains the ordinary declared

@@ -286,6 +286,12 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
                 return guarded_proof_selection(context, node, source, expected, enforce)
             }
             let value = deferred(context, node, expected)?
+            // A type result can only execute in a pure compile-time stage.
+            // It cannot transfer runtime Tasks; concrete selection still
+            // checks capture isolation and purity before producing the type.
+            if get(context.env.types, expected).kind == TypeKind.Meta {
+                return Result.Ok(value)
+            }
             // This branch can read or replace visible Task bindings. Keep that
             // uncertainty separate from a deferred call's evaluated arguments.
             // Only concrete selection establishes their actual transfer state.

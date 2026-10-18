@@ -50,6 +50,14 @@ branch at specialization. This neither assumes that the result equals the input
 nor adds undeclared capabilities. Known structural results still retain their
 symbolic elements. See [dependent.loom](dependent.loom).
 
+Direct conditional aliases use an explicit result type while the choice is
+unknown: `let Selected type = comptime if T == Int { Text } else { Int }`.
+Their initializers run in the same pure stage, not in a runtime Meta local.
+Type-producing helpers can forward an unknown static condition during generic
+checking; concrete calls must resolve it. Runtime captures, effects and missing
+proofs still reject. [conditional.loom](conditional.loom) also checks that a type
+selection does not consume an unrelated Task before its real timer completes.
+
 `std.meta.tuple(elements)` and `std.meta.function(parameters, output)` build
 ordinary tuple/function types from computed `List[type]` inputs. The optional
 output is `None` for no result. Loops may select the elements; the result has

@@ -1,0 +1,71 @@
+import std.time.sleep_ms
+
+fn selected_number(comptime numeric Bool) type {
+    comptime if numeric {
+        Int
+    } else {
+        Text
+    }
+}
+
+pub fn conditional_label[T](value T) Text {
+    let Selected type = comptime if T == Int {
+        Text
+    } else {
+        Int
+    }
+    discard value
+    comptime if Selected == Text {
+        let label Selected = "integer"
+        label
+    } else {
+        let count Selected = 0
+        discard count
+        "other"
+    }
+}
+
+pub fn numeric_input[T](value T) Bool {
+    let Selected type = comptime {
+        selected_number(T == Int)
+    }
+    discard value
+    comptime if Selected == Int {
+        true
+    } else {
+        false
+    }
+}
+
+async fn selected_then_await[T](value T, pending Task[Int]) Int {
+    let Selected type = comptime if T == Int {
+        Text
+    } else {
+        Int
+    }
+    discard value
+    comptime if Selected == Text {
+        let label Selected = "integer"
+        discard label
+    } else {
+        let count Selected = 0
+        discard count
+    }
+    pending.await
+}
+
+async fn delayed_number() Int {
+    sleep_ms(1).await
+    7
+}
+
+fn conditional_type_values() {
+    assert conditional_label(7) == "integer"
+    assert conditional_label(true) == "other"
+    assert numeric_input(7) && !numeric_input("text")
+}
+
+test async fn conditional_types_leave_runtime_tasks_for_their_owner() {
+    assert selected_then_await(7, delayed_number()).await == 7
+    assert selected_then_await(true, delayed_number()).await == 7
+}

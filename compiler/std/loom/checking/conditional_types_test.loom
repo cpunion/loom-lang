@@ -1,0 +1,133 @@
+test fn conditional_type_aliases_defer_without_assuming_a_shape() {
+    discard accepted("""
+        pub fn select[T](value T) Int {
+            let Selected type = comptime if T == Int {
+                Text
+            } else {
+                Int
+            }
+            discard value
+            comptime if Selected == Text {
+                let label Selected = "integer"
+                discard label
+                1
+            } else {
+                let count Selected = 2
+                count
+            }
+        }
+        fn selected(comptime enabled Bool) type {
+            let Selected type = comptime if enabled { Int } else { Text }
+            Selected
+        }
+        pub fn label[T](value T) Int {
+            let Selected = comptime { selected(T == Int) }
+            discard value
+            comptime if Selected == Int { 1 } else { 2 }
+        }
+        fn main() {
+            assert select(7) == 1 && select(true) == 2
+            assert label(7) == 1 && label(true) == 2
+        }
+        """)
+    rejects("""
+        pub fn invalid[T](value T) {
+            let Selected type = comptime if T == Int { Text } else { Int }
+            let output Selected = value
+            discard output
+        }
+        """)
+    rejects("""
+        fn invalid(enabled Bool) {
+            let Selected type = comptime if enabled { Int } else { Text }
+            let output Selected = 1
+            discard output
+        }
+        """)
+    rejects("""
+        fn selected(comptime enabled Bool) type {
+            comptime if enabled { Int } else { Text }
+        }
+        pub fn invalid[T]() Int
+        ensures result > 0
+        {
+            let Selected type = comptime { selected(T == Int) }
+            comptime if Selected == Int { 0 } else { 1 }
+        }
+        """)
+    let effects = source_files("""
+        import std.io.effect
+        pub fn selected[T]() {
+            let Selected type = comptime if T == Int {
+                discard effect()
+                Int
+            } else {
+                Text
+            }
+        }
+        fn main() {
+            selected[Int]()
+        }
+        """)
+    push(effects, source_file("std.io", """
+        intrinsic fn write(handle Int, value Text, offset Int) Int
+        pub fn effect() Int {
+            write(1, "forbidden", 0)
+        }
+        """, true))
+    assert match checked(effects) {
+        Result.Err(failed) => failed.diagnostic.message == "compile-time evaluation forbids intrinsic write"
+        Result.Ok(_) => false
+    }
+}
+
+test fn conditional_type_aliases_cannot_hide_runtime_task_transfers() {
+    discard accepted("""
+        async fn item() Int {
+            7
+        }
+        pub async fn read[T](value T, task Task[Int]) Int {
+            let Selected type = comptime if T == Int { Text } else { Int }
+            discard value
+            comptime if Selected == Text {
+                let label Selected = "integer"
+                discard label
+            } else {
+                let count Selected = 1
+                discard count
+            }
+            task.await
+        }
+        async fn main() {
+            assert read(7, item()).await == 7
+            assert read(true, item()).await == 7
+        }
+        """)
+    rejects("""
+        async fn item() Int {
+            7
+        }
+        async fn invalid[T](task Task[Int]) {
+            let Selected type = comptime if T == Int {
+                discard task.await
+                Int
+            } else {
+                Text
+            }
+            discard task.await
+        }
+        async fn main() {
+            invalid[Int](item()).await
+        }
+        """)
+    rejects("""
+        async fn item() Int {
+            7
+        }
+        async fn invalid[T](task Task[Int]) {
+            let Selected type = comptime if T == Int { Int } else { Text }
+            discard task.await
+            discard task.await
+        }
+        """)
+}
