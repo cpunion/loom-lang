@@ -331,15 +331,24 @@ fn conditional(proof Verification, expr Expr, state State, depth Int) Result[Lis
     while index < length(conditions) {
         let condition = get(conditions, index)
         let fact = boolean(condition.value)?
-        discard append(output, execute(proof, get(expr.children, 1), assume(condition.state, fact), depth - 1)?)?
-        let alternative = assume(condition.state, not(fact))
-        if length(expr.children) == 3 {
-            discard append(output, execute(proof, get(expr.children, 2), alternative, depth - 1)?)?
-        } else {
-            discard add_outcome(output, Outcome {
-                    state = alternative
-                    value = Value.Empty
-                })?
+        // The guard has executed, including its effects and safety checks.
+        // Reuse proved value algebra before exploring an impossible branch;
+        // an unknown guard still keeps both paths and every obligation.
+        let yes = holds(fact, condition.state.facts)
+        let no = !yes && holds(not(fact), condition.state.facts)
+        if !no {
+            discard append(output, execute(proof, get(expr.children, 1), assume(condition.state, fact), depth - 1)?)?
+        }
+        if !yes {
+            let alternative = assume(condition.state, not(fact))
+            if length(expr.children) == 3 {
+                discard append(output, execute(proof, get(expr.children, 2), alternative, depth - 1)?)?
+            } else {
+                discard add_outcome(output, Outcome {
+                        state = alternative
+                        value = Value.Empty
+                    })?
+            }
         }
         index = index + 1
     }

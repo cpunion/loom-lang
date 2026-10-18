@@ -1,0 +1,99 @@
+import std.time.sleep_ms
+import std.task.worker.run
+import std.list.length
+import std.list.push
+import std.result.Result
+import std.result.ConstraintError
+
+// The child predicate fixes a complete representation, not just its length.
+type FixedContent = List[Int] where length(self) == 1 && self[0] == 7
+
+record ContentDraft {
+    table FixedContent
+    count Int
+    notes List[Int]
+}
+
+fn table_head(values List[Int]) Int {
+    values[0]
+}
+
+fn matching_content(value ContentDraft) Bool {
+    value.count == table_head(value.table)
+}
+
+type ContentSnapshot = ContentDraft where matching_content(self)
+
+fn checked_content(table FixedContent, count Int, notes List[Int]) Result[ContentSnapshot, ConstraintError] {
+    ContentSnapshot(ContentDraft {
+            table = table
+            count = count
+            notes = notes
+        })
+}
+
+fn observed_content(value ContentSnapshot) Int
+ensures result == table_head(value.table)
+{
+    value.count
+}
+
+fn stable_content_scope() Bool {
+    let table = FixedContent([7])
+    let notes = [1]
+    let snapshot = match checked_content(table, 7, notes) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return false
+        }
+    }
+    table[0] = 7
+    push(notes, 2)
+    assert observed_content(snapshot) == 7 && length(snapshot.notes) == 2
+    match checked_content(table, 8, notes) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+async fn retained_content(value ContentSnapshot) Int
+ensures result == table_head(value.table)
+{
+    sleep_ms(1).await
+    value.count
+}
+
+async fn exercise() {
+    assert stable_content_scope()
+    assert inline_representations()
+    let table = FixedContent([7])
+    let notes = [1]
+    let snapshot = match checked_content(table, 7, notes) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let pending = retained_content(snapshot)
+    table[0] = 7
+    push(notes, 9)
+    assert pending.await == 7 && length(snapshot.notes) == 2
+    let observed = run(fn() Int {
+            observed_content(snapshot)
+        })
+    push(notes, 10)
+    assert observed.await == 7
+}
+
+test async fn unique_contents_survive_alias_operations_and_real_suspension() {
+    exercise().await
+    assert comptime {
+        stable_content_scope()
+    }
+}
+
+async fn main() {
+    exercise().await
+}

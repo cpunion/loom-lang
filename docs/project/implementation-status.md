@@ -250,13 +250,18 @@ supported theories and boundaries. The central rules are:
   allocations. Publication still invalidates the corresponding private frames.
   Nested resize-protected List/Bytes extents can compose with record invariants
   through checked read-only helpers, retaining the child's mutation-policy
-  dependency. Mutable contents and resize-capable extents remain unsupported;
-  general nested-graph publication and content preservation remain conservative.
+  dependency. Contents also compose when a proof establishes one complete valid
+  child representation, including scalar, record, tuple and enum elements.
+  Actual stores still need preservation proof; unobserved siblings remain mutable,
+  including across real suspension and workers. Numerical Float equality alone
+  does not fix signed zeros. Multi-value mutable contents, resize-capable extents
+  and general nested-graph publication remain conservative.
 
 Representative native trials include
 [constrained shared views](../../compiler/examples/shared_views),
 [constrained Bytes](../../compiler/examples/byte_constraints/README.md),
 [draft publication](../../compiler/examples/record_refinement/drafts.loom),
+[stable shared contents](../../compiler/examples/constant_contents),
 [loop contracts](../../compiler/examples/loop_contracts),
 [sorting/permutation](../../compiler/examples/smt_contracts/quantified.loom),
 [copy/sort composition](../../compiler/examples/smt_contracts/copies.loom),

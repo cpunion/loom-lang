@@ -119,9 +119,10 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     if !shared {
         return Result.Ok(true)
     }
-    // A store preserves the predicate, not old cells or an append's old extent.
-    // Retain precise evidence only for types without the corresponding writes
-    // in this checked build; never reuse sequential certificates across workers.
+    // A preserving store need not preserve old cells or an append's old extent.
+    // Keep those facts only without corresponding writes, or after proving the
+    // entire valid representation unique. Sequential certificates do not cross
+    // workers.
     let modified = new[InputGuarantee]()
     index = 0
     while index < length(program.functions) {
@@ -147,9 +148,13 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     index = 6
     while env.has_refinements && index < length(env.types) {
         if constrained_sequence(env, index) {
-            var writes = sequence_writes(get(env.type_states, index).sequence)
+            let policy = get(env.type_states, index).sequence
+            var writes = sequence_writes(policy)
             var changed = 0
-            while changed < length(modified) {
+            // Every store above passed the complete invariant. If that
+            // invariant admits one representation, those legal stores cannot
+            // change observable contents, even in a different worker.
+            while policy != SequencePolicy.StableContents && changed < length(modified) {
                 let update = get(modified, changed)
                 if update.ty == index && update.writes > writes {
                     writes = update.writes

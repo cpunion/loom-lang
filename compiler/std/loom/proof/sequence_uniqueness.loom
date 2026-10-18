@@ -1,0 +1,252 @@
+// This is a property of a validated sequence predicate, not a promise that a
+// sampled allocation is private. Compare two arbitrary valid representations;
+// failure or unsupported reasoning supplies no content-stability permission.
+fn uniqueness_equal(program Program, left Expr, right Expr, locals List[Local], budget List[Int], depth Int) Expr {
+    if depth >= 32 || get(budget, 0) <= 0 {
+        return proof_bool(left, false)
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    let shape = get(program.types, left.ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        let base = get(shape.fields, 0).ty
+        return uniqueness_equal(program,
+            proof_expr(left, ExprKind.Coerce, base, "", -1, [left]),
+            proof_expr(right, ExprKind.Coerce, base, "", -1, [right]), locals, budget, depth + 1)
+    }
+    if shape.kind == TypeKind.Int || shape.kind == TypeKind.Bool || shape.kind == TypeKind.Text {
+        return proof_expr(left, ExprKind.Binary, 2, "==", -1, [left, right])
+    }
+    if shape.kind == TypeKind.Float {
+        let equal = proof_expr(left, ExprKind.Binary, 2, "==", -1, [left, right])
+        let zero = proof_expr(left, ExprKind.Float, 5, "0.0", -1, [])
+        let one = proof_expr(left, ExprKind.Float, 5, "1.0", -1, [])
+        let nonzero = proof_expr(left, ExprKind.Binary, 2, "!=", -1, [left, zero])
+        let first = proof_expr(left, ExprKind.Binary, 5, "/", -1, [one, left])
+        let second = proof_expr(right, ExprKind.Binary, 5, "/", -1, [one, right])
+        // Numerical equality alone merges signed zeros. Reciprocals retain
+        // their sign; NaNs never establish representation equality here.
+        let signed = proof_expr(left, ExprKind.Binary, 2, "==", -1, [first, second])
+        return proof_and(equal, proof_expr(left, ExprKind.Binary, 2, "||", -1, [nonzero, signed]))
+    }
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        var equal = proof_bool(left, true)
+        var index = 0
+        while index < length(shape.fields) {
+            let ty = get(shape.fields, index).ty
+            equal = proof_and(equal, uniqueness_equal(program,
+                    proof_expr(left, ExprKind.Field, ty, "", index, [left]),
+                    proof_expr(right, ExprKind.Field, ty, "", index, [right]), locals, budget, depth + 1))
+            index = index + 1
+        }
+        return equal
+    }
+    if shape.kind == TypeKind.Enum {
+        let arms = new[Arm]()
+        var variant = 0
+        while variant < length(shape.variants) {
+            let fields = get(shape.variants, variant).fields
+            let first = new[Int]()
+            let second = new[Int]()
+            var equal = proof_bool(left, true)
+            var field = 0
+            while field < length(fields) {
+                let ty = get(fields, field)
+                push(first, length(locals))
+                push(locals, Local {
+                        name = "left"
+                        ty = ty
+                        mutable = false
+                        is_scoped = false
+                    })
+                push(second, length(locals))
+                push(locals, Local {
+                        name = "right"
+                        ty = ty
+                        mutable = false
+                        is_scoped = false
+                    })
+                equal = proof_and(equal, uniqueness_equal(program,
+                        proof_expr(left, ExprKind.Local, ty, "", get(first, field), []),
+                        proof_expr(right, ExprKind.Local, ty, "", get(second, field), []), locals, budget, depth + 1))
+                field = field + 1
+            }
+            let matching = new[Arm]()
+            var other = 0
+            while other < length(shape.variants) {
+                push(matching, Arm {
+                        variant = other
+                        whole = -1
+                        bindings = if other == variant {
+                            second
+                        } else {
+                            []
+                        }
+                        body = [if other == variant {
+                                equal
+                            } else {
+                                proof_bool(right, false)
+                            }]
+                    })
+                other = other + 1
+            }
+            let matched = proof_expr(right, ExprKind.Match, 2, "", -1, [right])
+            let selected = Expr {
+                arms = matching
+                ..matched
+            }
+            push(arms, Arm {
+                    variant = variant
+                    whole = -1
+                    bindings = first
+                    body = [selected]
+                })
+            variant = variant + 1
+        }
+        let matched = proof_expr(left, ExprKind.Match, 2, "", -1, [left])
+        return Expr {
+            arms = arms
+            ..matched
+        }
+    }
+    // Unknown/shared leaves cannot establish equality. This still permits an
+    // empty sequence of arbitrary elements: no comparison is executed there.
+    proof_bool(left, false)
+}
+
+fn uniqueness_clauses(program Program, base Int, predicate Expr, clauses List[Expr], depth Int) {
+    if depth >= 32 {
+        return
+    }
+    if predicate.kind == ExprKind.Binary && predicate.text == "&&" {
+        uniqueness_clauses(program, base, get(predicate.children, 0), clauses, depth + 1)
+        uniqueness_clauses(program, base, get(predicate.children, 1), clauses, depth + 1)
+        return
+    }
+    match invariant_predicates(program, base, predicate) {
+        Result.Ok(values) => {
+            var index = 0
+            while index < length(values) {
+                let value = get(values, index)
+                if invariant_entry_supported(value, 0) {
+                    match preservation_predicate(value, 256) {
+                        Result.Ok(value) => push(clauses, value)
+                        Result.Err(_) => {
+                        }
+                    }
+                }
+                index = index + 1
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+}
+
+// The host must validate the complete predicate and its helper closure first.
+// This query introduces no callee summary axioms and no runtime operations.
+pub fn sequence_value_unique(program Program, base Int, predicate Expr, backend ProofBackend) Bool {
+    if base < 0 || base >= length(program.types) {
+        return false
+    }
+    let shape = get(program.types, base)
+    if shape.kind != TypeKind.List && shape.kind != TypeKind.Bytes {
+        return false
+    }
+    // Supported consequences may describe a larger domain than the complete
+    // predicate. Proving that larger domain unique is sufficient; unsupported
+    // conjuncts never become facts. Observation IDs are removed per clause.
+    let clauses = new[Expr]()
+    uniqueness_clauses(program, base, predicate, clauses, 0)
+    if length(clauses) == 0 {
+        return false
+    }
+    let source = get(clauses, 0)
+    let first = proof_expr(source, ExprKind.Local, base, "", 0, [])
+    let second = proof_expr(source, ExprKind.Local, base, "", 1, [])
+    let preconditions = new[Expr]()
+    var index = 0
+    while index < length(clauses) {
+        push(preconditions, invariant_entry_at(get(clauses, index), first))
+        push(preconditions, invariant_entry_at(get(clauses, index), second))
+        index = index + 1
+    }
+    let locals = [Local {
+            name = "first"
+            ty = base
+            mutable = false
+            is_scoped = false
+        },
+        Local {
+            name = "second"
+            ty = base
+            mutable = false
+            is_scoped = false
+        },
+        Local {
+            name = "index"
+            ty = 1
+            mutable = true
+            is_scoped = false
+        }]
+    let cursor = proof_expr(source, ExprKind.Local, 1, "", 2, [])
+    let zero = proof_expr(source, ExprKind.Integer, 1, "0", -1, [])
+    let one = proof_expr(source, ExprKind.Integer, 1, "1", -1, [])
+    let bytes = shape.kind == TypeKind.Bytes
+    let size_name = if bytes {
+        "bytes_len"
+    } else {
+        "list_len"
+    }
+    let get_name = if bytes {
+        "bytes_get"
+    } else {
+        "list_get"
+    }
+    let item = if bytes {
+        1
+    } else {
+        get(shape.arguments, 0)
+    }
+    let first_size = proof_expr(source, ExprKind.Intrinsic, 1, size_name, -1, [first])
+    let second_size = proof_expr(source, ExprKind.Intrinsic, 1, size_name, -1, [second])
+    let equal = uniqueness_equal(program,
+        proof_expr(source, ExprKind.Intrinsic, item, get_name, -1, [first, cursor]),
+        proof_expr(source, ExprKind.Intrinsic, item, get_name, -1, [second, cursor]), locals, [4096], 0)
+    let rejected = proof_expr(source, ExprKind.Return, 0, "", -1, [proof_bool(source, false)])
+    let body = proof_expr(source, ExprKind.Block, 2, "", -1, [
+            proof_expr(source, ExprKind.If, 0, "", -1,
+                [proof_expr(source, ExprKind.Binary, 2, "!=", -1, [first_size, second_size]), rejected]),
+            proof_expr(source, ExprKind.Let, 0, "", 2, [zero]),
+            proof_expr(source, ExprKind.While, 0, "", -1, [
+                    proof_expr(source, ExprKind.Binary, 2, "<", -1, [cursor, first_size]),
+                    proof_expr(source, ExprKind.Block, 0, "", -1, [
+                            proof_expr(source, ExprKind.If, 0, "", -1, [proof_not(equal), rejected]),
+                            proof_expr(source, ExprKind.Assign, 0, "", 2,
+                                [proof_expr(source, ExprKind.Binary, 1, "+", -1, [cursor, one])])])]),
+            proof_bool(source, true)])
+    let result_slot = length(locals)
+    push(locals, Local {
+            name = "result"
+            ty = 2
+            mutable = false
+            is_scoped = false
+        })
+    match verify_with_types(program.types, Function {
+            is_async = false
+            symbol = -1
+            arguments = []
+            params = [base, base]
+            result = 2
+            locals = locals
+            preconditions = preconditions
+            postconditions = [proof_expr(source, ExprKind.Local, 2, "", result_slot, [])]
+            result_cleanup = []
+            result_local = result_slot
+            body = body
+            runtime_name = ""
+            span = source.span
+        }, backend) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}

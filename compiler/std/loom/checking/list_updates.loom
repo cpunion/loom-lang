@@ -546,7 +546,7 @@ fn flow_list_update(context Context, node Node, value Expr) Expr {
         return value
     }
     let ty = get(receiver.children, 0).ty
-    if get(context.env.type_states, ty).sequence != SequencePolicy.Checked {
+    if sequence_writes(get(context.env.type_states, ty).sequence) != 0 {
         return value
     }
     match flow_list_update_proof(context, node, value, ty) {

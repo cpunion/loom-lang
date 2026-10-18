@@ -2569,6 +2569,17 @@ later validation cannot silently grant resizing. Growing or unrestricted childre
 and unknown observations still reject. See the
 [stable extent example](examples/record_refinement/extents.loom).
 
+Contents can also be observed when the compiler proves that any two valid child
+values have identical representations, including their length. For example,
+`List[Int] where length(self) == 1 && self[0] == 7` has one valid content value;
+a positive-element predicate does not. The proof composes inline scalar,
+record, tuple and enum elements. Numerical Float equality alone cannot establish
+representation equality for signed zeros. Each real store must still preserve
+the complete predicate, while unobserved siblings remain mutable. This guarantee
+survives real suspension and workers without copying, ownership syntax or runtime
+metadata. Unknown proofs and arbitrary mutable nested graphs still reject. See
+the [stable content example](examples/constant_contents).
+
 Scoped resources and one-shot Tasks cannot be wrapped in a refinement.
 Its constructor checks an unknown value once and returns `Result`; copying the
 refined value or widening it to the base record adds no check. Fields cannot be

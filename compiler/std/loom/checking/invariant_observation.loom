@@ -14,7 +14,7 @@ record InvariantReads {
     writes Int
     root_list Int
     header_reads Bool
-    stable_headers Option[List[Int]]
+    stable_sequences Option[List[Int]]
     element_reads List[Bool]
     calls List[InvariantCall]
     valid List[Bool]
@@ -190,7 +190,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
         }
     }
     if kind == ExprKind.Call && origin_shared(borrowed) {
-        let header = if permitted < 0 && match reads.stable_headers {
+        let header = if permitted < 0 && match reads.stable_sequences {
                 Option.Some(_) => true
                 Option.None => false
             } {
@@ -209,6 +209,17 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     }
     if kind == ExprKind.IndirectCall && origin_shared(borrowed) {
         borrowed = invariant_indirect(reads, value, inputs, depth + 1)
+    }
+    var stable_intrinsic = false
+    if kind == ExprKind.Intrinsic && origin_shared(borrowed) {
+        match invariant_header_call(reads, value, inputs, depth + 1) {
+            Option.Some(origin) => {
+                borrowed = origin
+                stable_intrinsic = true
+            }
+            Option.None => {
+            }
+        }
     }
     if kind == ExprKind.Intrinsic && origin_shared(borrowed) &&
     std.loom.proof.sequence_operation(value.text) != "list_len" {
@@ -229,7 +240,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
             borrowed = origin_indirect(borrowed)
         }
     }
-    if ((kind == ExprKind.Intrinsic && permitted < 0 && !invariant_intrinsic_allowed(reads, value.text, inputs)) || kind == ExprKind.DynCall ||
+    if ((kind == ExprKind.Intrinsic && permitted < 0 && !stable_intrinsic && !invariant_intrinsic_allowed(reads, value.text, inputs)) || kind == ExprKind.DynCall ||
         kind == ExprKind.FrameStore) && origin_shared(borrowed) {
         set(reads.valid, 0, false)
     }
@@ -320,7 +331,7 @@ fn invariant_reads(env Environment, functions List[Function], value Expr, conten
         writes = writes
         root_list = root_list
         header_reads = false
-        stable_headers = Option.None
+        stable_sequences = Option.None
         element_reads = invariant_flag(false)
         calls = new[InvariantCall]()
         valid = invariant_flag(true)
@@ -332,9 +343,9 @@ fn invariant_observation(env Environment, program std.loom.typed.Program, value 
 }
 
 fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int,
-    root_list Int, stable_headers Option[List[Int]]) InvariantReads {
+    root_list Int, stable_sequences Option[List[Int]]) InvariantReads {
     let reads = InvariantReads {
-        stable_headers = stable_headers
+        stable_sequences = stable_sequences
         ..invariant_reads(env, program.functions, value, root_list >= 0, 0, root_list)
     }
     let inputs = new[InputOrigin]()

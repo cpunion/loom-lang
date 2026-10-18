@@ -1,8 +1,15 @@
+import std.loom.proof.sequence_value_unique
+
 // A resize-protected sequence can change elements, but not its outer extent.
+// A proved unique representation additionally keeps its contents stable.
 // Revalidate the child invariant rather than depending on declaration order or
 // an uninitialized policy entry. Only this predicate's reachable types are
 // visited, and recursive stability queries never supply their own evidence.
 fn invariant_header_types(env Environment, root Int, checking List[Int]) List[Int] {
+    invariant_header_types(env, root, checking, false)
+}
+
+fn invariant_header_types(env Environment, root Int, checking List[Int], contents Bool) List[Int] {
     let pending = ints(root)
     let seen = new[Int]()
     let stable = new[Int]()
@@ -17,10 +24,16 @@ fn invariant_header_types(env Environment, root Int, checking List[Int]) List[In
                 if constrained_sequence(env, ty) && !resource_seen(checking, ty) {
                     match validate_refinement(env, ty, Option.Some(checking)) {
                         Result.Ok(writes) => {
-                            if writes == 1 {
-                                let state = get(env.type_states, ty)
+                            let state = get(env.type_states, ty)
+                            let unique = state.sequence == SequencePolicy.StableContents ||
+                            (contents && invariant_unique_contents(env, ty))
+                            if writes == 1 || unique {
                                 set(env.type_states, ty, TypeState {
-                                        sequence = SequencePolicy.StableExtent
+                                        sequence = if unique {
+                                            SequencePolicy.StableContents
+                                        } else {
+                                            SequencePolicy.StableExtent
+                                        }
                                         ..state
                                     })
                                 push(stable, ty)
@@ -54,6 +67,36 @@ fn invariant_header_types(env Environment, root Int, checking List[Int]) List[In
     stable
 }
 
+// Called only after the child passed ordinary purity, observation and mutation
+// policy validation. Use its emitted predicate, not an unbound type template.
+fn invariant_unique_contents(env Environment, ty Int) Bool {
+    let scope = match predicate_scope(env, ty) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let stage = match staging(scope, predicate_node(env, get(env.types, ty).symbol)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let value = match refinement_expression(stage, ty) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let program = match prepared_in(stage, !concrete(env, ty)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    std.loom.proof.sequence_value_unique(program, base_type(env, ty), value, get(env.inputs, 0).build.proof_backend)
+}
+
 fn invariant_header_argument(stable List[Int], value Expr) Bool {
     if resource_seen(stable, value.ty) {
         return true
@@ -63,16 +106,20 @@ fn invariant_header_argument(stable List[Int], value Expr) Bool {
 }
 
 // Mandatory proofs may retain the exact extents on which continuing record
-// predicates depend. Content versions still change across suspension/writes.
-fn stable_extent_guarantees(env Environment) List[std.loom.proof.InputGuarantee] {
+// predicates depend. A proved unique sequence also preserves content versions.
+fn stable_sequence_guarantees(env Environment) List[std.loom.proof.InputGuarantee] {
     let protected = new[std.loom.proof.InputGuarantee]()
     var ty = 6
     while env.has_refinements && ty < length(env.types) {
         let state = get(env.type_states, ty)
-        if state.phase == 2 && state.sequence == SequencePolicy.StableExtent {
+        if state.phase == 2 && sequence_dependency(state.sequence) {
             push(protected, std.loom.proof.InputGuarantee {
                     ty = ty
-                    writes = 1
+                    writes = if state.sequence == SequencePolicy.StableContents {
+                        0
+                    } else {
+                        1
+                    }
                 })
         }
         ty = ty + 1
@@ -80,12 +127,12 @@ fn stable_extent_guarantees(env Environment) List[std.loom.proof.InputGuarantee]
     protected
 }
 
-// The alternate footprint permits only length reads of protected inputs, not
-// element reads, writes, publication or suspension. Its memo and failure flag
-// are private to this probe. Known wrappers keep their ordinary origin walk,
-// so an unobserved raw sibling need not acquire a stable-extent guarantee.
+// Check effects with all input origins first, then forget only proved immutable
+// contents in a separate header-only pass. Mixed arguments retain their own
+// permissions; neither pass allows writes, publication or suspension. Known
+// wrappers keep ordinary origin tracking for unobserved mutable siblings.
 fn invariant_header_call(reads InvariantReads, value Expr, inputs List[InputOrigin], depth Int) Option[InputOrigin] {
-    let stable = match reads.stable_headers {
+    let stable = match reads.stable_sequences {
         Option.Some(stable) => stable
         Option.None => {
             return Option.None
@@ -96,27 +143,82 @@ fn invariant_header_call(reads InvariantReads, value Expr, inputs List[InputOrig
         return Option.None
     }
     var index = 0
+    var contents = false
+    let erased = new[InputOrigin]()
     while index < length(inputs) {
         if origin_shared(get(inputs, index)) && !invariant_header_argument(stable, get(value.children, index)) {
             return Option.None
         }
+        let argument = get(value.children, index)
+        let ty = if argument.kind == ExprKind.Coerce && length(argument.children) == 1 {
+            get(argument.children, 0).ty
+        } else {
+            argument.ty
+        }
+        let immutable = origin_shared(get(inputs, index)) &&
+        get(reads.env.type_states, ty).sequence == SequencePolicy.StableContents
+        contents = contents || immutable
+        push(erased, if immutable {
+                origin_empty()
+            } else {
+                get(inputs, index)
+            })
         index = index + 1
+    }
+    if contents {
+        let effects = InvariantReads {
+            contents = true
+            writes = 0
+            root_list = -1
+            header_reads = true
+            stable_sequences = Option.None
+            element_reads = invariant_flag(false)
+            calls = new[InvariantCall]()
+            valid = invariant_flag(true)
+            ..reads
+        }
+        discard invariant_probe_operation(effects, value, inputs, depth)
+        if !get(effects.valid, 0) {
+            return Option.None
+        }
     }
     let probe = InvariantReads {
         contents = false
         writes = 0
         root_list = -1
         header_reads = true
-        stable_headers = Option.None
+        stable_sequences = Option.None
         element_reads = invariant_flag(false)
         calls = new[InvariantCall]()
         valid = invariant_flag(true)
         ..reads
     }
-    let origin = invariant_call(probe, value.index, inputs, depth)
+    // Only the second, separately memoized pass forgets proved immutable data.
+    // The full-origin pass above still forbids writing or publishing it.
+    let origin = invariant_probe_operation(probe, value, if contents {
+            erased
+        } else {
+            inputs
+        }, depth)
     if get(probe.valid, 0) && !origin_shared(origin) {
         Option.Some(origin)
     } else {
         Option.None
     }
+}
+
+fn invariant_probe_operation(reads InvariantReads, value Expr, inputs List[InputOrigin], depth Int) InputOrigin {
+    if value.kind == ExprKind.Call {
+        return invariant_call(reads, value.index, inputs, depth)
+    }
+    var shared = false
+    var index = 0
+    while index < length(inputs) {
+        shared = shared || origin_shared(get(inputs, index))
+        index = index + 1
+    }
+    if shared && !invariant_intrinsic_allowed(reads, value.text, inputs) {
+        set(reads.valid, 0, false)
+    }
+    origin_empty()
 }

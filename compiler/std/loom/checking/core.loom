@@ -86,6 +86,7 @@ enum SequencePolicy {
     Replace
     Append
     StableExtent
+    StableContents
 }
 
 fn sequence_writes(policy SequencePolicy) Int {
@@ -94,16 +95,17 @@ fn sequence_writes(policy SequencePolicy) Int {
         SequencePolicy.Replace => 1
         SequencePolicy.Append => 2
         SequencePolicy.StableExtent => 1
+        SequencePolicy.StableContents => 0
     }
 }
 
 fn sequence_dependency(policy SequencePolicy) Bool {
-    policy == SequencePolicy.StableExtent
+    policy == SequencePolicy.StableExtent || policy == SequencePolicy.StableContents
 }
 
 fn sequence_policy(writes Int, previous SequencePolicy) SequencePolicy {
     if sequence_dependency(previous) {
-        return SequencePolicy.StableExtent
+        return previous
     }
     if writes == 2 {
         SequencePolicy.Append
@@ -118,8 +120,8 @@ record TypeState {
     // 0: header; 1: expanding layout; 2: ready; 3: checking a predicate.
     phase Int
     task_width Int
-    // Checked needs per-write proof; StableExtent retains the already checked
-    // replacement policy and its non-resizing dependency across rechecks.
+    // Checked/StableContents need per-write proof. Persistent dependencies
+    // retain their validated extent or representation guarantee on recheck.
     sequence SequencePolicy
 }
 
