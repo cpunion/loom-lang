@@ -39,7 +39,11 @@ fn invariant_entry_clauses(types List[Type], ty Int, input Expr, clauses List[Ex
         while index < length(shape.constraint) {
             let predicate = get(shape.constraint, index)
             if contains_list_read(predicate) && bounded_contract(predicate) && invariant_entry_supported(predicate, 0) {
-                push(clauses, invariant_entry_at(predicate, input))
+                match preservation_predicate(predicate, 256) {
+                    Result.Ok(current) => push(clauses, invariant_entry_at(current, input))
+                    Result.Err(_) => {
+                    }
+                }
             }
             index = index + 1
         }
@@ -66,21 +70,10 @@ fn established_invariants(proof Verification, state State) List[Outcome] {
         invariant_entry_clauses(proof.program.types, ty, input, clauses, 0)
         index = index + 1
     }
-    let eligible = if proof.shared {
-        let stable = new[Expr]()
-        index = 0
-        while index < length(clauses) {
-            let clause = get(clauses, index)
-            if invariant_reads_stable(clause, state) {
-                push(stable, clause)
-            }
-            index = index + 1
-        }
-        stable
-    } else {
-        clauses
-    }
-    match established_conditions(proof, eligible, state) {
+    // Validated input types hold in one logical entry heap. These are not
+    // extra executable reads or repeated source preconditions. Later accesses
+    // still get independent versions unless a separate guarantee retains them.
+    match established_conditions(preservation_snapshot(proof), clauses, state) {
         Result.Ok(paths) => paths
         // Optional type facts outside the supported theory supply no evidence.
         Result.Err(_) => outcomes(state, Value.Empty)

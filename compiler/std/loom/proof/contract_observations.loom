@@ -102,6 +102,14 @@ fn contract_observations(proof Verification, value Expr, guard Expr, state State
                 match entry_element(proof, expression, guard, current) {
                     Result.Ok(outcome) => {
                         current = outcome.state
+                        if length(proof.preservation) == 0 {
+                            // As for an actual atomic read, the continuing
+                            // predicate applies to this materialized version,
+                            // not to an earlier scalar observation. A store
+                            // preservation probe must prove that predicate,
+                            // never renew it as its own assumption.
+                            current = captured_input_invariants(proof, current, current)
+                        }
                         outcome.value
                     }
                     Result.Err(_) => {

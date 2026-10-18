@@ -46,9 +46,9 @@ fn proves_with_input_invariants(stage Context, program std.loom.typed.Program, f
     }
     match expanded_invariant_types(stage, function) {
         Result.Ok(types) => match if continuation {
-            verify_expression_with_helpers(proof_types(program, types), function, backend, stable_sequence_guarantees(stage.env))
+            verify_expression_with_helpers(proof_types(program, types), function, backend, continuing_sequence_guarantees(stage.env))
         } else {
-            verify_with_helpers(proof_types(program, types), function, backend, stable_sequence_guarantees(stage.env))
+            verify_with_helpers(proof_types(program, types), function, backend, continuing_sequence_guarantees(stage.env))
         } {
             Result.Ok(_) => true
             Result.Err(_) => false
@@ -198,6 +198,10 @@ fn expanded_invariant_types(env Environment, functions List[Function]) Result[Li
         }
         member = member + 1
     }
+    expanded_selected_invariants(env, selected)
+}
+
+fn expanded_selected_invariants(env Environment, selected List[Int]) Result[List[Type], Failure] {
     if length(selected) == 0 {
         return Result.Ok(env.types)
     }

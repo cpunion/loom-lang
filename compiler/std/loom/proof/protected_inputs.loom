@@ -2,7 +2,8 @@
 // Read-only bodies and handle spelling alone supply neither guarantee.
 pub record InputGuarantee {
     ty Int
-    // 0: no writes; 1: element replacement; 2: replacement and proved append.
+    // 0: contents unchanged; 1: extent unchanged; 2: both may change.
+    // Every case retains the independently validated continuing predicate.
     writes Int
 }
 
@@ -107,14 +108,19 @@ fn protected_input(types List[Type], protected List[InputGuarantee], ty Int, val
     }
     if shape.kind == TypeKind.Enum {
         match value {
-            Value.Sum(_, _, payloads) => {
+            Value.Sum(_, tag, payloads) => {
                 var current = state
                 var variant = 0
                 while variant < length(payloads) && variant < length(shape.variants) {
                     let fields = get(payloads, variant)
                     let types_in_variant = get(shape.variants, variant).fields
                     var field = 0
-                    while field < length(fields) && field < length(types_in_variant) {
+                    // Inactive payloads have no storage. In particular, an
+                    // uninhabited payload cannot provide an unconditional
+                    // continuing predicate after shared interference.
+                    let selected = integer_predicate("==", IntegerTerm.Linear(tag),
+                        IntegerTerm.Linear(constant(integer(variant))))
+                    while loop_holds(selected, current) && field < length(fields) && field < length(types_in_variant) {
                         current = protected_input(types, protected, get(types_in_variant, field),
                             get(fields, field), current, depth + 1)
                         field = field + 1
@@ -128,41 +134,6 @@ fn protected_input(types List[Type], protected List[InputGuarantee], ty Int, val
         }
     }
     state
-}
-
-fn invariant_reads_stable(value Expr, state State) Bool {
-    if list_read_expression(value) || list_length_expression(value) {
-        match pure(get(value.children, 0), state) {
-            Result.Ok(receiver) => match receiver {
-                Value.List(identity) => match list_state(identity, state) {
-                    Result.Ok(extent) => {
-                        if !stable_storage(extent) && !(list_length_expression(value) && extent.fixed_extent) {
-                            return false
-                        }
-                    }
-                    Result.Err(_) => {
-                        return false
-                    }
-                }
-                Value.EntryList(_, _) => {
-                }
-                _ => {
-                    return false
-                }
-            }
-            _ => {
-                return false
-            }
-        }
-    }
-    var index = 0
-    while index < length(value.children) {
-        if !invariant_reads_stable(get(value.children, index), state) {
-            return false
-        }
-        index = index + 1
-    }
-    true
 }
 
 // Length snapshots keep the continuing predicate for that sampled extent, not

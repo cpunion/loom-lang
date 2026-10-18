@@ -254,14 +254,20 @@ supported theories and boundaries. The central rules are:
   child representation, including scalar, record, tuple and enum elements.
   Actual stores still need preservation proof; unobserved siblings remain mutable,
   including across real suspension and workers. Numerical Float equality alone
-  does not fix signed zeros. Multi-value mutable contents, resize-capable extents
-  and general nested-graph publication remain conservative.
+  does not fix signed zeros. Predicate revalidation also admits stable projections
+  within multi-value contents: unrelated columns may change while the actual
+  parent predicate and its evaluation safety remain proved. Input type facts
+  use a logical entry heap; later reads still get fresh versions, and every store
+  independently preserves its complete predicate. Appendable children can retain
+  a proved prefix observation without fixing their length. Unproved state
+  relationships and general nested-graph publication remain conservative.
 
 Representative native trials include
 [constrained shared views](../../compiler/examples/shared_views),
 [constrained Bytes](../../compiler/examples/byte_constraints/README.md),
 [draft publication](../../compiler/examples/record_refinement/drafts.loom),
 [stable shared contents](../../compiler/examples/constant_contents),
+[stable projections](../../compiler/examples/stable_projections),
 [loop contracts](../../compiler/examples/loop_contracts),
 [sorting/permutation](../../compiler/examples/smt_contracts/quantified.loom),
 [copy/sort composition](../../compiler/examples/smt_contracts/copies.loom),

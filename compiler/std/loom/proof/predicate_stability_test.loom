@@ -1,0 +1,83 @@
+fn stability_projection(program Program, position Text) Expr {
+    let shape = publication_shape(TypeKind.Record, [])
+    push(program.types, Type {
+            fields = [Field {
+                    name = "values"
+                    ty = 7
+                }, Field {
+                    name = "number"
+                    ty = 1
+                }]
+            ..shape
+        })
+    let input = expression(ExprKind.Local, length(program.types) - 1, "", 0, [])
+    let values = expression(ExprKind.Field, 7, "values", 0, [input])
+    let raw = expression(ExprKind.Coerce, 6, "", -1, [values])
+    let observed = expression(ExprKind.Intrinsic, 1, "list_get", 43, [raw, literal(position)])
+    operation("==", expression(ExprKind.Field, 1, "number", 1, [input]), observed)
+}
+
+test fn predicate_stability_retains_only_the_actual_proved_projection() {
+    // The second element may change. Equality with the first does not freeze
+    // the whole collection, nor depend on one sampled source read (ID 43).
+    let stable = unique_scalar_sequence(literal("7"), "2")
+    let first = stability_projection(stable, "0")
+    // The predicate continues, but neither contents nor extent is frozen.
+    let continuing = [InputGuarantee {
+            ty = 7
+            writes = 2
+        }]
+    assert predicate_stable(stable, 8, first, no_proof_backend(), continuing)
+    let mutable = unique_scalar_sequence(literal("7"), "2")
+    let second = stability_projection(mutable, "1")
+    assert !predicate_stable(mutable, 8, second, no_proof_backend(), continuing)
+    let positive = atomic_pair_program()
+    let changing = stability_projection(positive, "0")
+    assert !predicate_stable(positive, 8, changing, no_proof_backend(), continuing)
+}
+
+test fn predicate_stability_reproves_bounds_instead_of_assuming_later_success() {
+    let program = atomic_pair_program()
+    let empty = get(program.types, 7)
+    std.list.set(program.types, 7, Type {
+            constraint = []
+            ..empty
+        })
+    let predicate = stability_projection(program, "0")
+    assert !predicate_stable(program, 8, predicate, no_proof_backend(), [])
+}
+
+import std.loom.typed.Variant
+
+test fn continuing_guarantees_require_the_selected_enum_payload() {
+    let program = atomic_pair_program()
+    let shape = publication_shape(TypeKind.Enum, [])
+    push(program.types, Type {
+            variants = [Variant {
+                    name = "Values"
+                    fields = [7]
+                }, Variant {
+                    name = "Absent"
+                    fields = []
+                }]
+            ..shape
+        })
+    let value = Value.Sum(8, variable(10), [[Value.List(20)], []])
+    let state = list_bounds(value, State {
+            locals = [value]
+            facts = []
+            extents = []
+            observations = []
+        })
+    let guarantee = [InputGuarantee {
+            ty = 7
+            writes = 2
+        }]
+    let unknown = protected_input(program.types, guarantee, 8, value, state, 0)
+    assert get(unknown.extents, 0).invariant_type < 0
+    let selected = assume(state, integer_predicate("==", IntegerTerm.Linear(variable(10)),
+            IntegerTerm.Linear(constant(integer(0)))))
+    let known = protected_input(program.types, guarantee, 8, value, selected, 0)
+    assert get(known.extents, 0).invariant_type == 7
+    assert !get(known.extents, 0).read_only && !get(known.extents, 0).fixed_extent
+}

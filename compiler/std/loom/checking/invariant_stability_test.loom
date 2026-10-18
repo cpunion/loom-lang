@@ -1,0 +1,99 @@
+test fn continuing_predicates_can_depend_on_one_stable_projection() {
+    let types = concat("""
+        import std.list.length
+        import std.list.push
+        type Table = List[Int] where length(self) == 2 && self[0] == 7
+        record Snapshot {
+            table Table
+            number Int
+        }
+        type Bound = Snapshot where self.number == self.table[0]
+        """, "\n")
+    list_constraint_accept(concat(types, """
+        pub fn number(value Bound) Int {
+            value.number
+        }
+        fn main() {
+            let table = Table([7, 1])
+            let bound = Bound(Snapshot {
+                table = table
+                number = 7
+            })
+            table[1] = 9
+            assert number(bound) == 7
+        }
+        """))
+    list_constraint_reject(concat(types, """
+        pub fn invalid(value Bound) {
+            value.table[0] = 8
+        }
+        """))
+    list_constraint_reject(concat(types, """
+        pub fn invalid(value Bound) {
+            push(value.table, 9)
+        }
+        """))
+    list_constraint_reject("""
+        import std.list.length
+        type Table = List[Int] where length(self) == 2 && self[0] == 7
+        record Snapshot {
+            table Table
+            number Int
+        }
+        type Invalid = Snapshot where self.number == self.table[1]
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Positive = List[Int] where length(self) == 1 && self[0] > 0
+        record Snapshot {
+            values Positive
+            number Int
+        }
+        type Invalid = Snapshot where self.number == self.values[0]
+        """)
+}
+
+test fn stable_projection_dependencies_are_rechecked_after_cache_restore() {
+    let app = """
+        import values.Table
+        record Snapshot {
+            table Table
+            number Int
+        }
+        type Bound = Snapshot where self.number == self.table[0]
+        pub fn read(value Bound) Int {
+            value.number
+        }
+        """
+    let provider = """
+        import std.list.length
+        fn valid(values List[Int]) Bool {
+            length(values) == 2 && values[0] == 7
+        }
+        pub type Table = List[Int] where valid(self)
+        """
+    let files = list_constraint_files(app)
+    push(files, source_file("values", provider, false))
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    set(files, 0, source_file("app", concat(app, concat("\n", """
+
+        fn unrelated() {
+        }
+        """)), false))
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(provider, "values[0] == 7"), "values[0] > 0")
+    set(files, length(files) - 1, source_file("values", changed, false))
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), restored) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

@@ -105,20 +105,22 @@ fn invariant_header_argument(stable List[Int], value Expr) Bool {
     resource_seen(stable, get(value.children, 0).ty)
 }
 
-// Mandatory proofs may retain the exact extents on which continuing record
-// predicates depend. A proved unique sequence also preserves content versions.
-fn stable_sequence_guarantees(env Environment) List[std.loom.proof.InputGuarantee] {
+// Continuing predicates hold on fresh versions after independently checked
+// stores. Only stronger dependency proofs retain exact extents or contents.
+fn continuing_sequence_guarantees(env Environment) List[std.loom.proof.InputGuarantee] {
     let protected = new[std.loom.proof.InputGuarantee]()
     var ty = 6
     while env.has_refinements && ty < length(env.types) {
         let state = get(env.type_states, ty)
-        if state.phase == 2 && sequence_dependency(state.sequence) {
+        if state.phase == 2 && constrained_sequence(env, ty) {
             push(protected, std.loom.proof.InputGuarantee {
                     ty = ty
                     writes = if state.sequence == SequencePolicy.StableContents {
                         0
-                    } else {
+                    } else if state.sequence == SequencePolicy.StableExtent {
                         1
+                    } else {
+                        2
                     }
                 })
         }

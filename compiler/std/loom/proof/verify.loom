@@ -716,6 +716,10 @@ fn verify_body(source Verification, protected List[InputGuarantee], allocations 
 }
 
 fn verify_body(source Verification, protected List[InputGuarantee], allocations List[Int], entries List[Int], continuation Bool) Result[Bool, Text] {
+    verify_body(source, protected, allocations, entries, continuation, false)
+}
+
+fn verify_body(source Verification, protected List[InputGuarantee], allocations List[Int], entries List[Int], continuation Bool, revalidate Bool) Result[Bool, Text] {
     let proof = protected_verification(source, protected)
     let function = proof.function
     if length(function.postconditions) == 0 {
@@ -815,7 +819,7 @@ fn verify_body(source Verification, protected List[InputGuarantee], allocations 
     }
     // A preservation probe starts from already validated type predicates, not
     // runtime observations. Actual body accesses still use the shared model.
-    let entry_proof = if length(proof.preservation) == 0 {
+    let entry_proof = if length(proof.preservation) == 0 && !revalidate {
         proof
     } else {
         preservation_snapshot(proof)
@@ -830,7 +834,12 @@ fn verify_body(source Verification, protected List[InputGuarantee], allocations 
                 discard required_conditions(entry_proof, proof.preservation,
                     get(entries, entry).state)?
             }
-            discard verify_entered(proof, get(entries, entry).state, continuation)?
+            let incoming = get(entries, entry).state
+            discard verify_entered(proof, if revalidate {
+                    interference(proof, incoming, true)
+                } else {
+                    incoming
+                }, continuation)?
             entry = entry + 1
         }
         index = index + 1

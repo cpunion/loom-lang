@@ -1,0 +1,73 @@
+fn stability_clauses(values List[Expr]) Result[List[Expr], Text] {
+    let clauses = new[Expr]()
+    var index = 0
+    while index < length(values) {
+        // A continuing predicate describes the current logical heap. Source
+        // observation IDs cannot turn a later read into an entry snapshot.
+        push(clauses, preservation_predicate(get(values, index), 256)?)
+        index = index + 1
+    }
+    Result.Ok(clauses)
+}
+
+fn predicate_stability(program Program, base Int, predicate Expr, backend ProofBackend,
+    protected List[InputGuarantee]) Result[Bool, Text] {
+    let locals = [Local {
+            name = "self"
+            ty = base
+            mutable = false
+            is_scoped = false
+        }, Local {
+            name = "result"
+            ty = 2
+            mutable = false
+            is_scoped = false
+        }]
+    let before = stability_clauses(invariant_predicates(program, base, predicate)?)?
+    let after = stability_clauses(normalized_predicates(program, locals, [predicate])?)?
+    let function = Function {
+        is_async = false
+        symbol = -1
+        arguments = []
+        params = [base]
+        result = 2
+        locals = locals
+        preconditions = before
+        postconditions = after
+        result_cleanup = []
+        result_local = 1
+        body = proof_bool(predicate, true)
+        runtime_name = ""
+        span = predicate.span
+    }
+    let types = new[Type]()
+    var index = 0
+    while index < length(program.types) {
+        let shape = get(program.types, index)
+        push(types, Type {
+                constraint = stability_clauses(shape.constraint)?
+                ..shape
+            })
+        index = index + 1
+    }
+    let ordinary = verification(function, proof_program_with_types(types), backend)
+    let proof = Verification {
+        shared = true
+        ..ordinary
+    }
+    // Establish the previously checked predicate, change every unprotected
+    // shared version, then prove the actual current predicate and its safety
+    // obligations. There is no source body whose failure could hide a store.
+    verify_body(proof, protected, [], [], false, true)
+}
+
+// The host validates child predicates and construction/escape/write policies,
+// and removes the predicate under examination (and active ancestors) from type
+// assumptions. Unknown reasoning never grants a stable observation footprint.
+pub fn predicate_stable(program Program, base Int, predicate Expr, backend ProofBackend,
+    protected List[InputGuarantee]) Bool {
+    match predicate_stability(program, base, predicate, backend, protected) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}
