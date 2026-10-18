@@ -96,7 +96,7 @@ fn named_reference(context Context, operation Node, expected Int, arity Int) Res
         return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected)
     }
     if local < 0 {
-        let options = referenced_functions(context, node.value)
+        let options = referenced_functions(context, node)?
         if length(options) != 0 { return function_value(context, operation, options, reference_type_arguments(operation), expected, arity) }
         if meta_named(context, node) { return meta_literal(context, node, context_type(context, node)?) }
         if end < length(node.value) { return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected) }

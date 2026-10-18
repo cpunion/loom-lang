@@ -27,7 +27,7 @@ fn method_contract_context(context Context, declaration Int) Result[Context, Fai
     let implementation = symbol(context.env, context.signature.symbol).node
     let prototype = symbol(context.env, declaration).node
     let current = context.signature
-    let arguments = ints(get(current.params, 0))
+    let arguments = ints(self_type(context.env, current.symbol, context.arguments, 0)?)
     let method_arguments = argument_tail(context.arguments, method_parameter_prefix(context.env, current.symbol))
     var argument = 0
     while argument < length(method_arguments) {

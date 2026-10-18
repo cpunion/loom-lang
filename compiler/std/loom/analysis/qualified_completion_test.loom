@@ -55,6 +55,45 @@ fn qualified_query(bindings std.loom.binding.Program, file Int, fragment Text) C
     }
 }
 
+test fn concept_namespace_completes_factories_without_inventing_value_methods() {
+    let header = """
+        concept Factory {
+            fn make(value Int) Self
+            fn label() Text
+            fn read(self Self) Int
+        }
+        impl Factory for Int {
+            fn make(value Int) Int {
+                value
+            }
+            fn label() Text {
+                "int"
+            }
+            fn read(self Int) Int {
+                self
+            }
+        }
+
+        """
+    let qualified = concat(header, """
+        fn main() {
+            discard Factory.ma
+        }
+        """)
+    let found = qualified_query(query_bindings(input(qualified)), 0, "Factory.ma")
+    assert length(found.items) == 1 && get(found.items, 0).name == "make"
+    assert get(found.items, 0).kind == CompletionKind.Function
+    let concrete = concat(header, """
+        fn main() {
+            let value = 1
+            discard value._
+        }
+        """)
+    let members = member_completion(concrete, "value._", 6)
+    assert completion_named(members.items, "read")
+    assert !completion_named(members.items, "make") && !completion_named(members.items, "label")
+}
+
 test fn qualified_names_reuse_import_instances_overloads_and_type_positions() {
     let source = qualified_project("fn main() { discard helper.util.deRest }")
     let methods = qualified_query(query_bindings(source), 0, "discard helper.util.de")
@@ -105,7 +144,10 @@ test fn qualified_paths_do_not_override_value_or_type_parameter_bindings() {
         Option.Some(_) => false
     }
     let self_source = input("record Token {}\nconcept C { fn demo(self Self, value Self.To) }")
-    set(self_source.modules, 0, ModuleInstance { name = "Self" source = "/Self" })
+    set(self_source.modules, 0, ModuleInstance {
+            name = "Self"
+            source = "/Self"
+        })
     assert match complete_at(query_bindings(self_source), 0, query_offset(get(self_source.files, 0).text, "value Self.To") + 13) {
         Option.None => true
         Option.Some(_) => false

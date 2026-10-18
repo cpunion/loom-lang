@@ -56,7 +56,7 @@ fn application(context Context, node Node, expected Int) Result[Expr, Failure] {
     if lookup(context, first) >= 0 {
         return named_reference(context, node, expected, -1)
     }
-    let options = referenced_functions(context, receiver.value)
+    let options = referenced_functions(context, receiver)?
     if length(options) == 0 {
         let message = unimported_function_message(context, receiver.value)
         if message != "" { return Result.Err(error(context, receiver, message)) }

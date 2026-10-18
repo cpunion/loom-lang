@@ -127,6 +127,10 @@ Eligible body snapshots rekey closed templates, nested captures and symbolic
 projections without exporting their local evidence. Dependent compile-time type
 computations remain unsupported. See [concepts](../../compiler/README.md#concepts).
 
+Receiver-free associated functions select an implementing type through
+`Concept.function[Self, ...](...)`, using ordinary calls, function values and
+contracts without adding dyn slots or runtime type discovery.
+
 [Bound method values](../../compiler/examples/bound_methods/README.md) retain one
 receiver evaluation and use ordinary closure environments. Exact contextual
 signatures select overloads and generic/variadic methods. Binding an async method

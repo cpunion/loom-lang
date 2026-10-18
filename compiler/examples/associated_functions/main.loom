@@ -1,0 +1,70 @@
+import std.result.Result
+import std.time.sleep_ms
+import std.int.to_text
+
+concept AsyncFactory {
+    async fn load(value Int) Self
+}
+
+impl AsyncFactory for Text {
+    async fn load(value Int) Text {
+        sleep_ms(1).await
+        to_text(value)
+    }
+}
+
+type Positive = Int where self > 0
+
+concept Factory {
+    fn from_number(value Int) Result[Self, Text]
+    fn label() Text {
+        "checked factory"
+    }
+    fn value(self Self) Int
+}
+
+impl Factory for Positive {
+    fn from_number(value Int) Result[Positive, Text] {
+        match Positive(value) {
+            Result.Ok(checked) => Result.Ok(checked)
+            Result.Err(_) => Result.Err("expected positive")
+        }
+    }
+
+    fn value(self Positive) Int {
+        self
+    }
+}
+
+fn construct[T Factory](number Int) Result[T, Text] {
+    Factory.from_number[T](number)
+}
+
+fn trial() {
+    let create fn(Int) Result[Positive, Text] = Factory.from_number[Positive]
+    let checked = match create(7) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert Factory.label[Positive]() == "checked factory"
+    let erased dyn Factory = checked
+    assert erased.value() == 7
+    assert match construct[Positive](0) {
+        Result.Err(error) => error == "expected positive"
+        Result.Ok(_) => false
+    }
+}
+
+async fn main() {
+    trial()
+    let load fn(Int) Task[Text] = AsyncFactory.load[Text]
+    assert load(42).await == "42"
+}
+
+test async fn associated_factories_preserve_checked_construction_and_dynamic_receivers() {
+    trial()
+    assert AsyncFactory.load[Text](42).await == "42"
+}

@@ -17,7 +17,8 @@ fn method_reference_candidates(context Context, node Node, receiver Expr, member
             var method = 0
             while method < length(capability.methods) {
                 let id = get(capability.methods, method)
-                if symbol(context.env, get(context.env.signatures, id).symbol).name == member && pack_instance(context.env, id) < 0 {
+                if method_receiver(context.env, get(context.env.signatures, id).symbol) &&
+                symbol(context.env, get(context.env.signatures, id).symbol).name == member && pack_instance(context.env, id) < 0 {
                     push(methods, id)
                 }
                 method = method + 1
@@ -26,7 +27,7 @@ fn method_reference_candidates(context Context, node Node, receiver Expr, member
             while method < length(context.env.packs) {
                 let pack = get(context.env.packs, method)
                 let item = symbol(context.env, pack.source)
-                if pack_family(pack) && item.owner == capability.symbol && item.name == member {
+                if pack_family(pack) && item.owner == capability.symbol && item.name == member && method_receiver(context.env, pack.source) {
                     push(methods, -1 - pack.source)
                 }
                 method = method + 1

@@ -25,7 +25,7 @@ fn visible_concept(context Context, capability Int) Bool {
 
 fn method_matches(env Environment, id Int, member Text, arity Int, type_count Int, choices List[Int]) Bool {
     let current = get(env.signatures, id)
-    symbol(env, current.symbol).name == member && length(current.params) == arity &&
+    method_receiver(env, current.symbol) && symbol(env, current.symbol).name == member && length(current.params) == arity &&
     (type_count < 0 || type_count == current.parameters - 1) && selected_method_pack(env, id, choices)
 }
 

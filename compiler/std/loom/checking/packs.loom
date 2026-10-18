@@ -1170,8 +1170,13 @@ fn pack_references(context Context, options List[Int], type_count Int, desired I
         } else {
             let owner = -1 - id
             let declaration = symbol(context.env, owner).node
+            let provided = if prototype(context.env, owner) && !method_receiver(context.env, owner) && type_count >= 0 {
+                type_count - 1
+            } else {
+                type_count
+            }
             if !one_type_pack(declaration) {
-                let widths = structural_reference_shapes(context.env, declaration, type_count, desired)
+                let widths = structural_reference_shapes(context.env, declaration, provided, desired)
                 if length(widths) != 0 {
                     push(choices, selected_pack_signature(context.env, owner, widths)?)
                 }
@@ -1180,8 +1185,8 @@ fn pack_references(context Context, options List[Int], type_count Int, desired I
             }
             let parameters = group(declaration, NodeKind.Parameters)
             let variadic = variadic_parameters(parameters)
-            let arity = if type_count >= 0 {
-                type_count - fixed_pack_parameters(declaration)
+            let arity = if provided >= 0 {
+                provided - fixed_pack_parameters(declaration)
             } else if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
                 if !variadic {

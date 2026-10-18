@@ -3,6 +3,32 @@ mod common;
 use common::success;
 
 #[test]
+fn receiver_free_factories_use_ordinary_native_calls_and_checked_construction() {
+    let package = "compiler/examples/associated_functions";
+    let directory = tempfile::tempdir().unwrap();
+    let executable = common::executable(directory.path(), "associated-factories");
+    success(&common::loom(&["check", package]));
+    for level in ["0", "2"] {
+        for mode in ["build", "test"] {
+            let mut command = common::command(&[mode, package]);
+            if mode == "test" {
+                command.arg("--no-run");
+            }
+            success(
+                &command
+                    .arg("--output")
+                    .arg(&executable)
+                    .env("LOOM_OPT_LEVEL", level)
+                    .output()
+                    .unwrap(),
+            );
+            success(&common::run_tasks(&executable));
+        }
+    }
+    success(&common::loom(&["run", package]));
+}
+
+#[test]
 fn transparent_dyn_projections_keep_gc_roots_and_explicit_adapter_work() {
     let directory = tempfile::tempdir().unwrap();
     let example = common::root().join("compiler/examples/dyn_adapter");

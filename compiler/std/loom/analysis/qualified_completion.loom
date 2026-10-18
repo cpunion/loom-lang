@@ -28,6 +28,28 @@ fn qualified_completion(bindings std.loom.binding.Program, file Int, offset Int,
     let stem = concat(receiver.value, ".")
     let prefix = slice(source.text, span.start, offset)
     let items = new[CompletionItem]()
+    if !type_path {
+        let owners = candidates(bindings, file, testing, receiver.value)
+        var owner = 0
+        while owner < length(owners) {
+            let id = get(owners, owner)
+            if get(bindings.symbols, id).node.kind == NodeKind.Concept {
+                var member = 0
+                while member < length(bindings.symbols) {
+                    let symbol = get(bindings.symbols, member)
+                    if symbol.owner == id && symbol.node.kind == NodeKind.Function && starts_with(symbol.name, prefix) {
+                        push(items, CompletionItem {
+                                name = symbol.name
+                                kind = CompletionKind.Function
+                                detail = completion_detail(get(bindings.files, symbol.file).text, symbol.node)
+                            })
+                    }
+                    member = member + 1
+                }
+            }
+            owner = owner + 1
+        }
+    }
     let names = visible_names(bindings, file, testing)
     index = 0
     while index < length(names) {

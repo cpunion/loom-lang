@@ -164,10 +164,8 @@ fn validate_method_pack_declarations(env Environment, capability Int) Result[Boo
         if pack_family(pack) && symbol(env, pack.source).owner == capability {
             let node = symbol(env, pack.source).node
             let parameters = group(node, NodeKind.Parameters)
-            if length(parameters) == 0 || child(get(parameters, 0), 0).value != "Self" ||
-            child(get(parameters, 0), 0).kind != NodeKind.Type ||
-            length(child(get(parameters, 0), 0).children) != 0 || has(get(parameters, 0), NodeKind.Comptime) {
-                return Result.Err(failure(env, pack.source, node, "a concept method's first parameter must have type Self and cannot be comptime"))
+            if method_receiver(env, pack.source) && has(get(parameters, 0), NodeKind.Comptime) {
+                return Result.Err(failure(env, pack.source, node, "the method receiver cannot be comptime"))
             }
             let arguments = abstract_arguments(env, function_parameter_count(env, pack.source))
             let obligations = requirements(env, pack.source, arguments)?
@@ -353,7 +351,7 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
     while index < count {
         let pack = get(context.env.packs, index)
         let item = symbol(context.env, pack.source)
-        if pack_family(pack) && prototype(context.env, pack.source) && item.name == member &&
+        if pack_family(pack) && method_receiver(context.env, pack.source) && item.name == member &&
         ((selected >= 0 && selected == item.owner) || (selected < 0 && visible_concept(context, item.owner))) {
             let admitted = if shape.kind == TypeKind.Dyn {
                 get(context.env.interfaces, shape.symbol).symbol == item.owner
@@ -437,7 +435,7 @@ fn dynamic_method_pack_headers(env Environment, capability Int) Result[Bool, Fai
     var index = 0
     while index < length(env.packs) {
         let pack = get(env.packs, index)
-        if pack_family(pack) && symbol(env, pack.source).owner == capability {
+        if pack_family(pack) && symbol(env, pack.source).owner == capability && method_receiver(env, pack.source) {
             let arguments = abstract_arguments(env, function_parameter_count(env, pack.source))
             let schema = method_pack_header(header_environment(env), pack.source, arguments, requirements(env, pack.source, arguments)?, true)?
             var member = 1
