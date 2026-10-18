@@ -1,0 +1,19 @@
+// Called only for source queries after ordinary typing, isolation and purity
+// checks. Retain the existing checked program; do not replay evaluation or put
+// these functions into the caller's native reachability queue.
+fn retain_staged_query(context Context, node Node, program std.loom.typed.Program, body Function) {
+    let functions = new[Function]()
+    var index = 0
+    while index < length(program.functions) {
+        push(functions, get(program.functions, index))
+        index = index + 1
+    }
+    // Appending the temporary entry leaves every staged callee/closure index
+    // intact without changing the program used by the evaluator.
+    push(functions, body)
+    push(get(context.env.inputs, 0).staged_queries, StagedQuery {
+            file = symbol(context.env, context.signature.symbol).file
+            span = node.span
+            functions = functions
+        })
+}

@@ -36,6 +36,15 @@ pub record CheckedQuery {
     headers List[SignatureHeader]
     type_headers List[TypeHeader]
     declarations List[DeclarationReference]
+    stages List[StagedQuery]
+}
+
+// Staging shares this query's binding/type universe but has its own function
+// indices. These tables never enter the executable caller queue.
+pub record StagedQuery {
+    file Int
+    span Span
+    functions List[Function]
 }
 
 // Signature eligibility uses the invocation's canonical nominal checks. These
@@ -72,6 +81,7 @@ pub fn check_query(source std.loom.binding.Program, inputs BuildInputs) Result[C
             headers = new[SignatureHeader]()
             type_headers = new[TypeHeader]()
             declarations = get(env.inputs, 0).declaration_references
+            stages = get(env.inputs, 0).staged_queries
         })
 }
 
@@ -265,5 +275,6 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
             headers = headers
             type_headers = type_headers
             declarations = get(env.inputs, 0).declaration_references
+            stages = get(env.inputs, 0).staged_queries
         })
 }

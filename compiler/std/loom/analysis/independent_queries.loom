@@ -123,6 +123,12 @@ fn independent_view(analysis Analysis, file Int, offset Int) Option[CheckedQuery
                                 header = current.header
                                 view = view
                             }))
+                    if !current.header {
+                        let retained = declaration_query_scope(analysis.bindings, file, offset)
+                        if retained.file >= 0 {
+                            retain_declaration_scope(analysis, retained, view.declarations)
+                        }
+                    }
                 }
                 Option.None => {
                 }

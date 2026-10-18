@@ -83,6 +83,53 @@ fn analysis_query_inputs(analysis Analysis) BuildInputs {
     inputs
 }
 
+fn declaration_query_scope(bindings std.loom.binding.Program, file Int, offset Int) Location {
+    var scope = Location {
+        file = -1
+        span = get(bindings.files, file).tree.span
+    }
+    var index = 0
+    while index < length(bindings.symbols) {
+        let symbol = get(bindings.symbols, index)
+        let node = symbol.node
+        if symbol.file == file && symbol.owner < 0 && node.kind == NodeKind.Function &&
+        inside(node.span, offset) && ordinary_query_owner(node) {
+            scope = Location {
+                file = file
+                span = node.span
+            }
+        }
+        index = index + 1
+    }
+    scope
+}
+
+// Keep the cheap nominal records after a checked body view is evicted. Both
+// query paths publish through this cache; headers never mark a body checked.
+fn retain_declaration_scope(analysis Analysis, scope Location, references List[DeclarationReference]) {
+    var index = 0
+    while index < length(analysis.declaration_scopes) {
+        let previous = get(analysis.declaration_scopes, index)
+        if previous.file < 0 || (previous.file == scope.file && same_span(previous.span, scope.span)) {
+            return
+        }
+        index = index + 1
+    }
+    push(analysis.declaration_scopes, scope)
+    if length(analysis.declarations) == 0 {
+        push(analysis.declarations, references)
+    } else if scope.file < 0 {
+        set(analysis.declarations, 0, references)
+    } else {
+        let stored = get(analysis.declarations, 0)
+        index = 0
+        while index < length(references) {
+            push(stored, get(references, index))
+            index = index + 1
+        }
+    }
+}
+
 // A successful analysis lazily records erased bindings per checked scope. Readers
 // replay the analysis's observed input snapshots, never fresh filesystem data.
 // Ordinary body queries and ordinary compilation do not run this extra check.
@@ -127,23 +174,7 @@ fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset
     // A successful analysis already checked unrelated bodies. Reuse the query
     // checker for an ordinary source function's closure; static/generic owners
     // still need application instances to account for their selected branches.
-    var scope = Location {
-        file = -1
-        span = source.tree.span
-    }
-    index = 0
-    while index < length(view.bindings.symbols) {
-        let symbol = get(view.bindings.symbols, index)
-        let node = symbol.node
-        if symbol.file == file && symbol.owner < 0 && node.kind == NodeKind.Function &&
-        inside(node.span, offset) && ordinary_query_owner(node) {
-            scope = Location {
-                file = file
-                span = node.span
-            }
-        }
-        index = index + 1
-    }
+    let scope = declaration_query_scope(view.bindings, file, offset)
     let references = if scope.file >= 0 {
         match check_query(view.bindings, file, offset, inputs) {
             Result.Ok(value) => value.declarations
@@ -155,19 +186,7 @@ fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset
             Result.Err(_) => new[DeclarationReference]()
         }
     }
-    push(analysis.declaration_scopes, scope)
-    if length(analysis.declarations) == 0 {
-        push(analysis.declarations, references)
-    } else if scope.file < 0 {
-        set(analysis.declarations, 0, references)
-    } else {
-        let stored = get(analysis.declarations, 0)
-        index = 0
-        while index < length(references) {
-            push(stored, get(references, index))
-            index = index + 1
-        }
-    }
+    retain_declaration_scope(analysis, scope, references)
     let report = Inspection {
         span = token.span
         types = new[Text]()
