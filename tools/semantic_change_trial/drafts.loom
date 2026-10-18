@@ -29,7 +29,7 @@ fn identity_row(tag Text, value Identity) Text {
 // Keep explicit choices and exact bindings, but reserve no new identities for
 // unmatched declarations while an old identity's intent remains unresolved.
 fn draft_sidecar(loaded Loaded, previous List[Identity], candidates List[Identity],
-    selected List[Text], old_used List[Bool]) Text {
+    selected List[Text], old_used List[Bool], lineage List[Lineage]) Text {
     let known = new[Identity]()
     var index = 0
     while index < length(candidates) {
@@ -44,7 +44,7 @@ fn draft_sidecar(loaded Loaded, previous List[Identity], candidates List[Identit
     var output = sidecar(Revision {
             identities = known
             ..loaded.revision
-        }, loaded.next)
+        }, loaded.next, lineage)
     output = concat(output, concat("draft ", concat(files_stamp(loaded.revision.files), "\n")))
     index = 0
     while index < length(previous) {

@@ -1,0 +1,215 @@
+fn lineage_value(id Text, parents List[Text]) Lineage {
+    Lineage {
+        id = id
+        parents = parents
+    }
+}
+
+fn lineage_ok(values List[Lineage]) List[Lineage] {
+    match normalized_lineage(values) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            new[Lineage]()
+        }
+    }
+}
+
+test fn lineage_headers_normalize_origins_and_reject_invalid_graphs() {
+    let metadata = "package sample\nnext 1\norigin second first\norigin first z a\n"
+    let parsed = match header(metadata, ".loom-ids") {
+        Result.Ok(value) => value.lineage
+        Result.Err(_) => {
+            assert false
+            new[Lineage]()
+        }
+    }
+    assert lineage_rows(parsed) == "origin first a z\norigin second first\n"
+    let invalid = [[lineage_value("first", ["second"]), lineage_value("second", ["first"])],
+        [lineage_value("first", ["root"]), lineage_value("first", ["other"])],
+        [lineage_value("first", ["first"])], [lineage_value("first", ["root", "root"])]]
+    var index = 0
+    while index < length(invalid) {
+        assert match normalized_lineage(get(invalid, index)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn lineage_merge_retains_history_without_unifying_parent_and_child() {
+    let base = lineage_ok([lineage_value("child", ["root"])])
+    let left = lineage_ok([get(base, 0), lineage_value("left", ["child"])])
+    let right = lineage_ok([get(base, 0), lineage_value("right", ["child"])])
+    let branches = [left, right]
+    var order = 0
+    while order < 2 {
+        let merged = match join_lineage(base, get(branches, order), get(branches, 1 - order), []) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                assert false
+                base
+            }
+        }
+        assert lineage_rows(merged) == "origin child root\norigin left child\norigin right child\n"
+        order = order + 1
+    }
+    assert match join_lineage(base, [], base, []) {
+        Result.Err(message) => contains(message, "removed or rewritten")
+        Result.Ok(_) => false
+    }
+    assert match join_lineage([], [lineage_value("child", ["a"])], [lineage_value("child", ["b"])], []) {
+        Result.Err(message) => contains(message, "conflicting parents")
+        Result.Ok(_) => false
+    }
+    let previous = [Identity {
+            id = "root"
+            path = "value.loom"
+            kind = NodeKind.Function
+            name = "value"
+            key = "-"
+        }]
+    assert match join_lineage([], [lineage_value("root", ["other"])], [], previous) {
+        Result.Err(message) => contains(message, "existing identity")
+        Result.Ok(_) => false
+    }
+    assert match concurrent_lineage([], [lineage_value("root", ["other"])], [], previous, previous) {
+        Result.Err(message) => contains(message, "disagrees about its origin")
+        Result.Ok(_) => false
+    }
+}
+
+fn lineage_declaration(value Loaded, name Text) Identity {
+    var index = 0
+    while index < length(value.revision.identities) {
+        let identity = get(value.revision.identities, index)
+        if identity.name == name {
+            return identity
+        }
+        index = index + 1
+    }
+    assert false
+    get(value.revision.identities, 0)
+}
+
+fn lineage_lifecycle(staging Text) Result[Text, Text] {
+    let source = path(staging, "source")
+    discard create_dir(source)
+    discard std.file.write_text(path(source, "loom.toml"), "[module]\nname = \"sample\"\n")
+    let file = path(source, "value.loom")
+    let original_text = """
+        fn source() Int {
+            1
+        }
+        """
+    let copied_text = """
+        fn copied() Int {
+            1
+        }
+        """
+    discard std.file.write_text(file, original_text)
+    discard initialize("sample", source)?
+    let original = read(source)?
+    let parent = lineage_declaration(original, "source").id
+    discard std.file.write_text(file, concat(original_text, copied_text))
+    let unknown = ["trial", "refresh", source, "--derive", "unknown", "value.loom", "copied", "-"]
+    assert match refresh_command(unknown) {
+        Result.Err(message) => contains(message, "known identity")
+        Result.Ok(_) => false
+    }
+    assert text_at(path(source, ".loom-ids")) == original.sidecar
+    discard refresh_command(["trial", "refresh", source, "--derive", parent, "value.loom", "copied", "-"])?
+    let copied = read(source)?
+    let copy_id = lineage_declaration(copied, "copied").id
+    assert copy_id != parent && lineage_declaration(copied, "source").id == parent
+    assert lineage_rows(loaded_lineage(copied)?) == concat("origin ", concat(copy_id, concat(" ", concat(parent, "\n"))))
+    assert refresh(source, [], false)? == "identities unchanged\n"
+    let split_text = """
+        fn first() Int {
+            1
+        }
+
+        fn second() Int {
+            2
+        }
+        """
+    discard std.file.write_text(file, concat(copied_text, split_text))
+    discard refresh_command(["trial", "refresh", source, "--delete", parent,
+            "--derive", parent, "value.loom", "first", "-",
+            "--derive", parent, "value.loom", "second", "-"])?
+    let split = read(source)?
+    let first = lineage_declaration(split, "first").id
+    let second = lineage_declaration(split, "second").id
+    assert first != second && first != parent && second != parent
+    assert length(loaded_lineage(split)?) == 3
+    let merged_text = """
+        fn joined() Int {
+            3
+        }
+        """
+    discard std.file.write_text(file, concat(copied_text, merged_text))
+    discard refresh_command(["trial", "refresh", source, "--delete", first, "--delete", second,
+            "--derive", first, "value.loom", "joined", "-",
+            "--derive", second, "value.loom", "joined", "-"])?
+    let joined = read(source)?
+    let joined_id = lineage_declaration(joined, "joined").id
+    let history = loaded_lineage(joined)?
+    assert length(history) == 4
+    let origin = get(history, lineage_index(history, joined_id))
+    assert length(origin.parents) == 2 && pending_identity(origin.parents, first) &&
+    pending_identity(origin.parents, second)
+    // Drafting and an explicit move retain the same derivation history.
+    discard std.file.write_text(file, replace(text_at(file), "fn joined()", "fn renamed()"))
+    discard refresh(source, [], true)?
+    assert lineage_rows(read_state(source)?.1.lineage) == lineage_rows(history)
+    discard refresh_command(["trial", "refresh", source, "--move", joined_id, "value.loom", "renamed", "-"])?
+    let final = read(source)?
+    assert lineage_declaration(final, "renamed").id == joined_id
+    assert lineage_rows(loaded_lineage(final)?) == lineage_rows(history)
+    let review = review(final, final, final)?
+    let output = path(staging, "output")
+    discard apply_directories(review.token, output, source, source, source)?
+    assert lineage_rows(loaded_lineage(read(output)?)?) == lineage_rows(history)
+    let module = read_module(source)?
+    let checked = review_module(module, module, module, module_context(module, "compiler/std")?)?
+    assert lineage_rows(get(checked.packages, 0).lineage) == lineage_rows(history)
+    let tree = mode_tree("")
+    let paths = [".loom-ids", "loom.toml", "value.loom"]
+    var entry = 0
+    while entry < length(paths) {
+        push(tree.entries, GitEntry {
+                relative = get(paths, entry)
+                object = "object"
+                mode = "100644"
+                regular = true
+            })
+        entry = entry + 1
+    }
+    let writes = git_module_writes(checked, "", tree, tree, tree)?
+    var found = false
+    var index = 0
+    while index < length(writes) {
+        let write = get(writes, index)
+        if write.relative == ".loom-ids" {
+            let text = match decode_utf8(write.bytes) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Err("Git identity output is not text")
+                }
+            }
+            assert lineage_rows(header(text, ".loom-ids")?.lineage) == lineage_rows(history)
+            found = true
+        }
+        index = index + 1
+    }
+    assert found
+    remove_module_fixture(staging)
+    Result.Ok("copy, split, merge and reviewed publication retain explicit lineage")
+}
+
+test fn lineage_cli_records_copy_split_merge_and_preserves_drafts_and_publication() {
+    assert successful(lineage_lifecycle(module_test_directory("lineage"))) ==
+    "copy, split, merge and reviewed publication retain explicit lineage"
+}

@@ -1,0 +1,289 @@
+import std.list.sorted
+import std.map.new
+import std.map.get
+import std.map.insert
+import std.text.join
+
+// An origin records derivation, never identity equality or behavior equivalence.
+// Retain historical rows even after their declarations disappear.
+record Lineage {
+    id Text
+    parents List[Text]
+}
+
+record Derivation {
+    parent Text
+    path Text
+    name Text
+    key Text
+}
+
+fn lineage_index(values List[Lineage], id Text) Int {
+    var index = 0
+    while index < length(values) {
+        if get(values, index).id == id {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn lineage_before(left Lineage, right Lineage) Bool {
+    git_name_before(left.id, right.id)
+}
+
+fn normalized_lineage(values List[Lineage]) Result[List[Lineage], Text] {
+    let output = new[Lineage]()
+    let ids = std.map.new[Text, Int]()
+    let incoming = new[Int]()
+    let children = new[List[Int]]()
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        if !lifecycle_word(value.id) || length(value.parents) == 0 {
+            return Result.Err("lineage needs a child identity and explicit parents")
+        }
+        if match std.map.insert(ids, value.id, index) {
+            Option.Some(_) => true
+            Option.None => false
+        } {
+            return Result.Err("duplicate lineage child identity")
+        }
+        let parents = sorted(value.parents, git_name_before)
+        var parent = 0
+        while parent < length(parents) {
+            let id = get(parents, parent)
+            if !lifecycle_word(id) || id == value.id ||
+            (parent > 0 && get(parents, parent - 1) == id) {
+                return Result.Err("lineage has an invalid, repeated or self parent")
+            }
+            parent = parent + 1
+        }
+        push(output, Lineage {
+                id = value.id
+                parents = parents
+            })
+        push(incoming, 0)
+        push(children, new[Int]())
+        index = index + 1
+    }
+    index = 0
+    while index < length(output) {
+        let parents = get(output, index).parents
+        var parent = 0
+        while parent < length(parents) {
+            match std.map.get(ids, get(parents, parent)) {
+                Option.Some(source) => {
+                    set(incoming, index, get(incoming, index) + 1)
+                    push(get(children, source), index)
+                }
+                Option.None => {
+                    // A root identity can outlive its source declaration.
+                }
+            }
+            parent = parent + 1
+        }
+        index = index + 1
+    }
+    let ready = new[Int]()
+    index = 0
+    while index < length(incoming) {
+        if get(incoming, index) == 0 {
+            push(ready, index)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(ready) {
+        let targets = get(children, get(ready, index))
+        var target = 0
+        while target < length(targets) {
+            let id = get(targets, target)
+            let count = get(incoming, id) - 1
+            set(incoming, id, count)
+            if count == 0 {
+                push(ready, id)
+            }
+            target = target + 1
+        }
+        index = index + 1
+    }
+    if length(ready) != length(output) {
+        return Result.Err("lineage contains a derivation cycle")
+    }
+    Result.Ok(sorted(output, lineage_before))
+}
+
+fn lineage_rows(values List[Lineage]) Text {
+    let rows = new[Text]()
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        push(rows, concat("origin ", concat(value.id, concat(" ", concat(join(value.parents, " "), "\n")))))
+        index = index + 1
+    }
+    join(rows, "")
+}
+
+fn loaded_lineage(value Loaded) Result[List[Lineage], Text] {
+    if value.sidecar == "" {
+        return Result.Ok(new[Lineage]())
+    }
+    Result.Ok(header(value.sidecar, ".loom-ids")?.lineage)
+}
+
+fn same_lineage(left Lineage, right Lineage) Bool {
+    left.id == right.id && join(left.parents, " ") == join(right.parents, " ")
+}
+
+fn join_lineage(base List[Lineage], left List[Lineage], right List[Lineage],
+    previous List[Identity]) Result[List[Lineage], Text] {
+    let branches = [left, right]
+    let merged = std.list.clone(base)
+    var side = 0
+    while side < 2 {
+        let branch = get(branches, side)
+        var index = 0
+        while index < length(base) {
+            let value = get(base, index)
+            let retained = lineage_index(branch, value.id)
+            if retained < 0 || !same_lineage(value, get(branch, retained)) {
+                return Result.Err("lineage history was removed or rewritten")
+            }
+            index = index + 1
+        }
+        index = 0
+        while index < length(branch) {
+            let value = get(branch, index)
+            let retained = lineage_index(merged, value.id)
+            if retained >= 0 {
+                if !same_lineage(value, get(merged, retained)) {
+                    return Result.Err("derived identity has conflicting parents")
+                }
+            } else {
+                if identity_at(previous, value.id) >= 0 {
+                    return Result.Err("an existing identity cannot acquire a new origin")
+                }
+                push(merged, value)
+            }
+            index = index + 1
+        }
+        side = side + 1
+    }
+    normalized_lineage(merged)
+}
+
+fn review_lineage(base Loaded, left Loaded, right Loaded) Result[List[Lineage], Text] {
+    let original = loaded_lineage(base)?
+    let a = loaded_lineage(left)?
+    let b = loaded_lineage(right)?
+    discard concurrent_lineage(original, a, b, left.revision.identities, right.revision.identities)?
+    join_lineage(original, a, b, base.revision.identities)
+}
+
+fn concurrent_lineage(base List[Lineage], left List[Lineage], right List[Lineage],
+    left_ids List[Identity], right_ids List[Identity]) Result[Bool, Text] {
+    let branches = [left, right]
+    let identities = [left_ids, right_ids]
+    var side = 0
+    while side < 2 {
+        let values = get(branches, side)
+        var index = 0
+        while index < length(values) {
+            let id = get(values, index).id
+            if lineage_index(base, id) < 0 && identity_at(get(identities, 1 - side), id) >= 0 &&
+            lineage_index(get(branches, 1 - side), id) < 0 {
+                return Result.Err("concurrent identity addition disagrees about its origin")
+            }
+            index = index + 1
+        }
+        side = side + 1
+    }
+    Result.Ok(true)
+}
+
+fn module_lineage(snapshot ModuleSnapshot, relative Text) Result[List[Lineage], Text] {
+    var index = 0
+    while index < length(snapshot.packages) {
+        let package = get(snapshot.packages, index)
+        if package.relative == relative {
+            return loaded_lineage(package.loaded)
+        }
+        index = index + 1
+    }
+    Result.Ok(new[Lineage]())
+}
+
+fn module_review_lineage(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
+    relative Text) Result[List[Lineage], Text] {
+    let previous = match module_package(base, relative) {
+        Result.Ok(value) => value.revision.identities
+        Result.Err(_) => new[Identity]()
+    }
+    let left_ids = match module_package(left, relative) {
+        Result.Ok(value) => value.revision.identities
+        Result.Err(_) => new[Identity]()
+    }
+    let right_ids = match module_package(right, relative) {
+        Result.Ok(value) => value.revision.identities
+        Result.Err(_) => new[Identity]()
+    }
+    let original = module_lineage(base, relative)?
+    let a = module_lineage(left, relative)?
+    let b = module_lineage(right, relative)?
+    discard concurrent_lineage(original, a, b, left_ids, right_ids)?
+    join_lineage(original, a, b, previous)
+}
+
+fn lineage_known(previous List[Identity], values List[Lineage], id Text) Bool {
+    if identity_at(previous, id) >= 0 {
+        return true
+    }
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        if value.id == id || pending_identity(value.parents, id) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn derivation_candidates(previous List[Identity], history List[Lineage], candidates List[Identity],
+    selected List[Text], choices List[Derivation]) Result[List[Int], Text] {
+    let targets = new[Int]()
+    var index = 0
+    while index < length(choices) {
+        let choice = get(choices, index)
+        if !lineage_known(previous, history, choice.parent) {
+            return Result.Err("--derive parent must be a known identity in this package")
+        }
+        var target = -1
+        var candidate = 0
+        while candidate < length(candidates) {
+            let value = get(candidates, candidate)
+            if value.path == choice.path && value.name == choice.name && value.key == choice.key {
+                if target >= 0 {
+                    return Result.Err("--derive target is ambiguous")
+                }
+                target = candidate
+            }
+            candidate = candidate + 1
+        }
+        if target < 0 || get(selected, target) != "" {
+            return Result.Err("--derive target must be an unmatched new declaration")
+        }
+        var previous_choice = 0
+        while previous_choice < index {
+            if get(targets, previous_choice) == target && get(choices, previous_choice).parent == choice.parent {
+                return Result.Err("--derive repeats the same parent and target")
+            }
+            previous_choice = previous_choice + 1
+        }
+        push(targets, target)
+        index = index + 1
+    }
+    Result.Ok(targets)
+}

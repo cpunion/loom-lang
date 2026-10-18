@@ -58,6 +58,7 @@ record Header {
     next Int
     draft Text
     pending List[Text]
+    lineage List[Lineage]
 }
 
 record Loaded {
@@ -71,6 +72,7 @@ record Review {
     merged Revision
     token Text
     next Int
+    lineage List[Lineage]
 }
 
 record Context {
@@ -127,6 +129,7 @@ fn kind_name(value NodeKind) Text {
 
 fn header(metadata Text, sidecar Text) Result[Header, Text] {
     let identities = new[Identity]()
+    let lineage = new[Lineage]()
     var package_name = ""
     var next = 0
     var seen_next = false
@@ -157,6 +160,20 @@ fn header(metadata Text, sidecar Text) Result[Header, Text] {
                     }
                     seen_next = true
                 } else {
+                    if length(words) >= 3 && get(words, 0) == "origin" {
+                        let parents = new[Text]()
+                        var parent = 2
+                        while parent < length(words) {
+                            push(parents, get(words, parent))
+                            parent = parent + 1
+                        }
+                        push(lineage, Lineage {
+                                id = get(words, 1)
+                                parents = parents
+                            })
+                        index = index + 1
+                        continue
+                    }
                     if length(words) == 2 && get(words, 0) == "draft" && draft == "" {
                         draft = get(words, 1)
                         index = index + 1
@@ -209,6 +226,7 @@ fn header(metadata Text, sidecar Text) Result[Header, Text] {
             next = next
             draft = draft
             pending = pending
+            lineage = normalized_lineage(lineage)?
         })
 }
 
@@ -423,6 +441,10 @@ fn read_git_tree(git_executable Text, repository Text, snapshot GitTree) Result[
 }
 
 fn sidecar(revision Revision, next Int) Text {
+    sidecar(revision, next, new[Lineage]())
+}
+
+fn sidecar(revision Revision, next Int, lineage List[Lineage]) Text {
     var output = concat("package ", concat(revision.package_name,
             concat("\nnext ", concat(to_text(next), "\n"))))
     var index = 0
@@ -431,7 +453,7 @@ fn sidecar(revision Revision, next Int) Text {
         output = concat(output, identity_row("id", identity))
         index = index + 1
     }
-    output
+    concat(output, lineage_rows(lineage))
 }
 
 fn frame(output Bytes, value Text) {
@@ -655,24 +677,27 @@ fn loaded_stamp(loaded Loaded) Text {
 
 fn review(base Loaded, left Loaded, right Loaded) Result[Review, Text] {
     let merged = merge(base.revision, left.revision, right.revision, backend("z3"))?
+    let lineage = review_lineage(base, left, right)?
     let next = std.int.maximum(std.int.maximum(base.next, left.next), right.next)
     let output = std.bytes.new()
     frame(output, "loom-semantic-review-v1")
     frame_loaded(output, base)
     frame_loaded(output, left)
     frame_loaded(output, right)
-    frame(output, sidecar(merged, next))
+    frame(output, sidecar(merged, next, lineage))
     frame_files(output, merged.files)
     Result.Ok(Review {
             merged = merged
             token = hex(output)
             next = next
+            lineage = lineage
         })
 }
 
 fn review_context(base Loaded, left Loaded, right Loaded, context Context) Result[Review, Text] {
     let merged = merge_with_context(base.revision, left.revision, right.revision,
         context.production, context.tests, context.directory, backend("z3"))?
+    let lineage = review_lineage(base, left, right)?
     let next = std.int.maximum(std.int.maximum(base.next, left.next), right.next)
     let output = std.bytes.new()
     frame(output, "loom-semantic-review-context-v1")
@@ -680,12 +705,13 @@ fn review_context(base Loaded, left Loaded, right Loaded, context Context) Resul
     frame_loaded(output, left)
     frame_loaded(output, right)
     frame(output, context.stamp)
-    frame(output, sidecar(merged, next))
+    frame(output, sidecar(merged, next, lineage))
     frame_files(output, merged.files)
     Result.Ok(Review {
             merged = merged
             token = hex(output)
             next = next
+            lineage = lineage
         })
 }
 
@@ -697,7 +723,7 @@ fn show(value Review) Text {
 fn show_revision(value Review, prefix Text) Text {
     let revision = value.merged
     var output = concat("=== ", concat(prefix, ".loom-ids ===\n"))
-    output = concat(output, sidecar(revision, value.next))
+    output = concat(output, sidecar(revision, value.next, value.lineage))
     var index = 0
     while index < length(revision.files) {
         let file = get(revision.files, index)
@@ -862,7 +888,7 @@ fn write_revision(directory Text, value Review) Result[Bool, Text] {
     // semantic-change package. We never remove or overwrite an old tree.
     let target = path(directory, ".loom-ids")
     discard vacant(target)?
-    match std.file.write_text(target, sidecar(merged, value.next)) {
+    match std.file.write_text(target, sidecar(merged, value.next, value.lineage)) {
         Result.Ok(_) => Result.Ok(true),
         _ => Result.Err(concat("could not write merged identities: ", target))
     }
@@ -978,7 +1004,7 @@ fn main() {
     !automatic_preview && !automatic_apply && !dependencies_preview {
         discard write_error("usage: semantic_change_trial init PACKAGE_NAME DIR\n")
         discard write_error("   or: semantic_change_trial scan DIR\n")
-        discard write_error("   or: semantic_change_trial refresh DIR [--draft] [--move ID NEW_FILE NEW_NAME KEY | --delete ID]...\n")
+        discard write_error("   or: semantic_change_trial refresh DIR [--draft] [--move ID FILE NAME KEY | --derive PARENT FILE NAME KEY | --delete ID]...\n")
         discard write_error("usage: semantic_change_trial BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         discard write_error("   or: semantic_change_trial --context PACKAGE_DIR STD_ROOT BASE_DIR LEFT_DIR RIGHT_DIR\n")

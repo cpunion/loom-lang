@@ -391,6 +391,7 @@ test fn reviewed_one_sided_addition_publishes_new_identity() {
                 merged = base.revision
                 token = ""
                 next = 1
+                lineage = new[Lineage]()
             }
         }
     }
