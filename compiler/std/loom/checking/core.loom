@@ -105,6 +105,7 @@ record Environment {
     expanding_helpers Bool
     signatures List[Signature]
     pending List[Instance]
+    pending_by_signature List[Option[List[Int]]]
     stage_depth Int
     computations List[Computation]
     validations List[Validation]
@@ -441,6 +442,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, decl
         expanding_helpers = false
         signatures = new[Signature]()
         pending = new[Instance]()
+        pending_by_signature = new[Option[List[Int]]]()
         stage_depth = 0
         computations = new[Computation]()
         validations = new[Validation]()

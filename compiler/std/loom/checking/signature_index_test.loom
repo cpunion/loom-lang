@@ -33,6 +33,11 @@ test fn signature_index_retains_each_declaration_after_late_pack_expansion() {
             assert identity(8) == 8
             assert configured(true, 9) == 9
             assert configured(false, 9) == 10
+            assert comptime { configured(false, 1) } == 2
+            let callback = fn(value Int) Int {
+                identity(value)
+            }
+            assert callback(13) == 13
             assert Inspect.value(11) == 11
             assert packed(12, "pack").0 == 12
             assert packed(true).0
@@ -75,4 +80,31 @@ test fn signature_index_retains_each_declaration_after_late_pack_expansion() {
     assert get(options, 0) == source_signature_id(env, get(overloads, 0))
     assert get(options, 1) == source_signature_id(env, get(overloads, 1))
     assert get(options, 2) == get(options, 1)
+    var total = 0
+    index = 0
+    while index < length(env.pending_by_signature) {
+        match get(env.pending_by_signature, index) {
+            Option.Some(instances) => {
+                var candidate = 0
+                while candidate < length(instances) {
+                    let slot = get(instances, candidate)
+                    assert get(env.pending, slot).signature == index
+                    candidate = candidate + 1
+                }
+                total = total + length(instances)
+            }
+            Option.None => {
+            }
+        }
+        index = index + 1
+    }
+    var scheduled = 0
+    index = 0
+    while index < length(env.pending) {
+        if get(env.pending, index).signature >= 0 {
+            scheduled = scheduled + 1
+        }
+        index = index + 1
+    }
+    assert total == scheduled && scheduled < length(env.pending)
 }
