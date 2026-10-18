@@ -14,6 +14,7 @@ import std.loom.typed.task_outcome_result
 import std.loom.typed.task_terminal_result
 import std.list.new
 import std.list.get
+import std.list.set
 import std.list.push
 import std.list.length
 import std.text.slice
@@ -127,20 +128,31 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
     if get(env.inputs, 0).declaration_queries {
         require_query_template(env, id)
     }
+    // Queues are append-only. Keep global instance IDs, including interleaved
+    // closures, while searching only this declaration's concrete instances.
+    let absent Option[List[Int]] = Option.None
+    while length(env.pending_by_signature) <= id {
+        push(env.pending_by_signature, absent)
+    }
+    let instances = match get(env.pending_by_signature, id) {
+        Option.Some(values) => values
+        Option.None => {
+            let values = new[Int]()
+            set(env.pending_by_signature, id, Option.Some(values))
+            values
+        }
+    }
     var index = 0
-    var instances = 0
-    while index < length(env.pending) {
-        let previous = get(env.pending, index)
-        if previous.signature == id {
-            instances = instances + 1
-            if same(previous.arguments, arguments) && same_constants(previous.constants, constants) {
-                return Result.Ok(index)
-            }
+    while index < length(instances) {
+        let slot = get(instances, index)
+        let previous = get(env.pending, slot)
+        if same(previous.arguments, arguments) && same_constants(previous.constants, constants) {
+            return Result.Ok(slot)
         }
         index = index + 1
     }
     // Independent declarations do not consume one global expansion budget.
-    if instances >= 1024 {
+    if length(instances) >= 1024 {
         return Result.Err(failure(env, current.symbol, declaration, "function specialization budget exceeded; expansion must be finite"))
     }
     index = 0
@@ -156,6 +168,7 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
             arguments = arguments
             constants = constants
         })
+    push(instances, scheduled)
     Result.Ok(scheduled)
 }
 

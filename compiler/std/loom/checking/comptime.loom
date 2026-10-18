@@ -80,6 +80,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
     let env = Environment {
         expand_data = true
         pending = new[Instance]()
+        pending_by_signature = new[Option[List[Int]]]()
         stage_depth = context.env.stage_depth + 1
         witnesses = new[Witness]()
         uses = new[SlotUse]()
