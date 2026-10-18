@@ -1,0 +1,334 @@
+record Cursor {
+    chunk Bytes
+    position Int
+    eof Bool
+    retired Bool
+    busy Bool
+}
+
+pub record Reader[S Stream, E] {
+    state State[S, E]
+}
+
+record State[S Stream, E] {
+    source S
+    bytes fn(S.Item) Result[Bytes, E]
+    limits Limits
+    cursor List[Cursor]
+}
+
+// Borrow the producer. Callers serialize reads and own transport cleanup.
+// Limits include all start/field/chunk-extension/trailer line octets and CRLFs.
+pub fn reader[S Stream, E](source S, bytes fn(S.Item) Result[Bytes, E], maximum Limits) Reader[S, E]
+requires valid_limits(maximum)
+{
+    Reader[S, E] {
+        state = State[S, E] {
+            source = source
+            bytes = bytes
+            limits = maximum
+            cursor = [Cursor {
+                    chunk = std.bytes.new()
+                    position = 0
+                    eof = false
+                    retired = false
+                    busy = false
+                }]
+        }
+    }
+}
+
+fn retire(state List[Cursor]) {
+    state[0] = Cursor {
+        chunk = std.bytes.new()
+        position = 0
+        retired = true
+        busy = false
+        ..state[0]
+    }
+}
+
+fn begin(state List[Cursor]) Result[Bool, ProtocolError] {
+    if state[0].busy {
+        return Result.Err(ProtocolError.Busy)
+    }
+    if state[0].retired {
+        return Result.Err(ProtocolError.Closed)
+    }
+    state[0] = Cursor {
+        busy = true
+        ..state[0]
+    }
+    Result.Ok(true)
+}
+
+async fn available[S Stream, E](input Reader[S, E]) Result[Bool, ReadError[E]] {
+    while input.state.cursor[0].position == length(input.state.cursor[0].chunk) {
+        if input.state.cursor[0].eof {
+            return Result.Ok(false)
+        }
+        let chunk = match input.state.source.next().await {
+            Option.None => {
+                input.state.cursor[0] = Cursor {
+                    chunk = std.bytes.new()
+                    position = 0
+                    eof = true
+                    ..input.state.cursor[0]
+                }
+                return Result.Ok(false)
+            }
+            Option.Some(item) => match input.state.bytes(item) {
+                Result.Ok(bytes) => bytes
+                Result.Err(error) => {
+                    return Result.Err(ReadError.Input(error))
+                }
+            }
+        }
+        input.state.cursor[0] = Cursor {
+            chunk = chunk
+            position = 0
+            ..input.state.cursor[0]
+        }
+    }
+    Result.Ok(true)
+}
+
+fn protocol[T, E](value Result[T, ProtocolError]) Result[T, ReadError[E]] {
+    match value {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(error) => Result.Err(ReadError.Protocol(error))
+    }
+}
+
+// Scan buffered octets synchronously. Tasks occur per line/chunk, not per byte.
+async fn line[S Stream, E](input Reader[S, E], budget List[Int]) Result[Option[Bytes], ReadError[E]] {
+    let output = std.bytes.new()
+    var carriage = false
+    while available(input).await? {
+        let current = input.state.cursor[0]
+        var position = current.position
+        while position < length(current.chunk) {
+            if budget[0] == 0 {
+                return Result.Err(ReadError.Protocol(ProtocolError.Limit))
+            }
+            budget[0] = budget[0] - 1
+            let next = get(current.chunk, position)
+            position = position + 1
+            if carriage {
+                if next != 10 {
+                    return Result.Err(ReadError.Protocol(ProtocolError.Syntax))
+                }
+                input.state.cursor[0] = Cursor {
+                    position = position
+                    ..current
+                }
+                return Result.Ok(Option.Some(output))
+            }
+            if next == 13 {
+                carriage = true
+            } else {
+                if next == 10 {
+                    return Result.Err(ReadError.Protocol(ProtocolError.Syntax))
+                }
+                if length(output) == input.state.limits.line_bytes {
+                    return Result.Err(ReadError.Protocol(ProtocolError.Limit))
+                }
+                push(output, next)
+            }
+        }
+        input.state.cursor[0] = Cursor {
+            position = position
+            ..current
+        }
+    }
+    if carriage || length(output) != 0 {
+        return Result.Err(ReadError.Protocol(ProtocolError.Truncated))
+    }
+    Result.Ok(Option.None)
+}
+
+async fn required_line[S Stream, E](input Reader[S, E], budget List[Int]) Result[Bytes, ReadError[E]] {
+    match line(input, budget).await? {
+        Option.Some(value) => Result.Ok(value)
+        Option.None => Result.Err(ReadError.Protocol(ProtocolError.Truncated))
+    }
+}
+
+async fn fields[S Stream, E](input Reader[S, E], budget List[Int], trailers Bool) Result[List[Header], ReadError[E]] {
+    let output = std.list.new[Header]()
+    while true {
+        let next = required_line(input, budget).await?
+        if length(next) == 0 {
+            return Result.Ok(output)
+        }
+        let entry = protocol[Header, E](field(next))?
+        if trailers && !trailer(entry) {
+            return Result.Err(ReadError.Protocol(ProtocolError.Framing))
+        }
+        std.list.push(output, entry)
+    }
+    Result.Ok(output)
+}
+
+async fn body_part[S Stream, E](input Reader[S, E], output Bytes, count Int) Result[Int, ReadError[E]] {
+    var remaining = count
+    while remaining > 0 {
+        if !available(input).await? {
+            return Result.Err(ReadError.Protocol(ProtocolError.Truncated))
+        }
+        let current = input.state.cursor[0]
+        let ready = length(current.chunk) - current.position
+        let copied = if ready < remaining {
+            ready
+        } else {
+            remaining
+        }
+        var index = 0
+        while index < copied {
+            push(output, get(current.chunk, current.position + index))
+            index = index + 1
+        }
+        input.state.cursor[0] = Cursor {
+            position = current.position + copied
+            ..current
+        }
+        remaining = remaining - copied
+    }
+    Result.Ok(count)
+}
+
+async fn body[S Stream, E](input Reader[S, E], headers List[Header], budget List[Int], request Bool) Result[(Bytes, List[Header]), ReadError[E]] {
+    let shape = protocol[Framing, E](framing(headers, input.state.limits.body_bytes))?
+    let output = std.bytes.new()
+    let trailers = std.list.new[Header]()
+    if shape.chunked {
+        while true {
+            let size = protocol[Int, E](chunk_size(required_line(input, budget).await?, input.state.limits.body_bytes - length(output)))?
+            if size == 0 {
+                return Result.Ok((output, fields(input, budget, true).await?))
+            }
+            discard body_part(input, output, size).await?
+            if length(required_line(input, budget).await?) != 0 {
+                return Result.Err(ReadError.Protocol(ProtocolError.Syntax))
+            }
+        }
+    } else if shape.size >= 0 {
+        discard body_part(input, output, shape.size).await?
+    } else if !request {
+        while available(input).await? {
+            let current = input.state.cursor[0]
+            let count = length(current.chunk) - current.position
+            if count > input.state.limits.body_bytes - length(output) {
+                return Result.Err(ReadError.Protocol(ProtocolError.Limit))
+            }
+            discard body_part(input, output, count).await?
+        }
+    }
+    Result.Ok((output, trailers))
+}
+
+pub async fn read_request[S Stream, E](input Reader[S, E]) Result[Option[Request], ReadError[E]] {
+    discard protocol[Bool, E](begin(input.state.cursor))?
+    var completed = false
+    defer {
+        if !completed {
+            retire(input.state.cursor)
+        }
+        input.state.cursor[0] = Cursor {
+            busy = false
+            ..input.state.cursor[0]
+        }
+    }
+    let budget = [input.state.limits.metadata_bytes]
+    var first = line(input, budget).await?
+    while (match first {
+            Option.Some(value) => length(value) == 0
+            Option.None => false
+        }) {
+        first = line(input, budget).await?
+    }
+    let start = match first {
+        Option.None => {
+            completed = true
+            return Result.Ok(Option.None)
+        }
+        Option.Some(value) => protocol[(Text, Text), E](request_line(value))?
+    }
+    let headers = fields(input, budget, false).await?
+    var hosts = 0
+    var index = 0
+    while index < std.list.length(headers) {
+        if named(headers[index].name, "host") {
+            hosts = hosts + 1
+        }
+        index = index + 1
+    }
+    if hosts != 1 {
+        return Result.Err(ReadError.Protocol(ProtocolError.Framing))
+    }
+    let contents = body(input, headers, budget, true).await?
+    completed = true
+    Result.Ok(Option.Some(Request {
+                method = start.0
+                target = start.1
+                headers = headers
+                body = contents.0
+                trailers = contents.1
+            }))
+}
+
+// The caller supplies the corresponding request method, including HEAD/CONNECT.
+// Informational responses are returned individually, not silently skipped.
+pub async fn read_response[S Stream, E](input Reader[S, E], method Text) Result[Option[Response], ReadError[E]] {
+    discard protocol[Bool, E](begin(input.state.cursor))?
+    var completed = false
+    defer {
+        if !completed {
+            retire(input.state.cursor)
+        }
+        input.state.cursor[0] = Cursor {
+            busy = false
+            ..input.state.cursor[0]
+        }
+    }
+    let budget = [input.state.limits.metadata_bytes]
+    let start = match line(input, budget).await? {
+        Option.None => {
+            completed = true
+            return Result.Ok(Option.None)
+        }
+        Option.Some(value) => protocol[(Int, Bytes), E](status_line(value))?
+    }
+    let headers = fields(input, budget, false).await?
+    let contents = if no_body(method, start.0) {
+        (std.bytes.new(), std.list.new[Header]())
+    } else {
+        body(input, headers, budget, false).await?
+    }
+    if tunnel(method, start.0) {
+        input.state.cursor[0] = Cursor {
+            retired = true
+            ..input.state.cursor[0]
+        }
+    }
+    completed = true
+    Result.Ok(Option.Some(Response {
+                status = start.0
+                reason = start.1
+                headers = headers
+                body = contents.0
+                trailers = contents.1
+            }))
+}
+
+// Retire HTTP parsing and transfer a copy of unread prefetched octets. The
+// producer remains caller-owned; use this once when switching protocols.
+pub fn take_buffered[S Stream, E](input Reader[S, E]) Result[Bytes, ProtocolError] {
+    if input.state.cursor[0].busy {
+        return Result.Err(ProtocolError.Busy)
+    }
+    let current = input.state.cursor[0]
+    let output = portion(current.chunk, current.position, length(current.chunk))
+    retire(input.state.cursor)
+    Result.Ok(output)
+}

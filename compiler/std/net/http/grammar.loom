@@ -1,0 +1,226 @@
+record Framing {
+    size Int
+    chunked Bool
+}
+
+fn ows(value Int) Bool {
+    value == 32 || value == 9
+}
+
+fn field(value Bytes) Result[Header, ProtocolError] {
+    var colon = 0
+    while colon < length(value) && token(get(value, colon)) {
+        colon = colon + 1
+    }
+    if colon == 0 || colon == length(value) || get(value, colon) != 58 {
+        return Result.Err(ProtocolError.Syntax)
+    }
+    var start = colon + 1
+    var end = length(value)
+    while start < end && ows(get(value, start)) {
+        start = start + 1
+    }
+    while end > start && ows(get(value, end - 1)) {
+        end = end - 1
+    }
+    let contents = portion(value, start, end)
+    if !valid_field(contents) {
+        return Result.Err(ProtocolError.Syntax)
+    }
+    Result.Ok(Header {
+            name = to_text(portion(value, 0, colon))
+            value = contents
+        })
+}
+
+fn digit(value Int, base Int) Int {
+    if value >= 48 && value <= 57 {
+        return value - 48
+    }
+    if base == 16 && lower(value) >= 97 && lower(value) <= 102 {
+        return lower(value) - 97 + 10
+    }
+    -1
+}
+
+fn number(value Bytes, base Int, maximum Int) Result[Int, ProtocolError] {
+    if length(value) == 0 {
+        return Result.Err(ProtocolError.Framing)
+    }
+    var total = 0
+    var index = 0
+    while index < length(value) {
+        let next = digit(get(value, index), base)
+        if next < 0 {
+            return Result.Err(ProtocolError.Framing)
+        }
+        if next > maximum || total > (maximum - next) / base {
+            return Result.Err(ProtocolError.Limit)
+        }
+        total = total * base + next
+        index = index + 1
+    }
+    Result.Ok(total)
+}
+
+fn framing(headers List[Header], maximum Int) Result[Framing, ProtocolError] {
+    var size = -1
+    var chunked = false
+    var index = 0
+    while index < std.list.length(headers) {
+        let entry = headers[index]
+        if named(entry.name, "content-length") {
+            // Strictly reject duplicate/list lengths, even when equal.
+            if size >= 0 || chunked {
+                return Result.Err(ProtocolError.Framing)
+            }
+            size = number(entry.value, 10, maximum)?
+        }
+        if named(entry.name, "transfer-encoding") {
+            if chunked || size >= 0 {
+                return Result.Err(ProtocolError.Framing)
+            }
+            if !valid_token(entry.value) || !named(to_text(entry.value), "chunked") {
+                return Result.Err(ProtocolError.Unsupported)
+            }
+            chunked = true
+        }
+        index = index + 1
+    }
+    Result.Ok(Framing {
+            size = size
+            chunked = chunked
+        })
+}
+
+fn trailer(entry Header) Bool {
+    // Retain trailers separately, never reinterpret them as framing or routing.
+    !named(entry.name, "content-length") && !named(entry.name, "transfer-encoding") &&
+    !named(entry.name, "host") && !named(entry.name, "trailer")
+}
+
+fn request_line(value Bytes) Result[(Text, Text), ProtocolError] {
+    var first = 0
+    while first < length(value) && token(get(value, first)) {
+        first = first + 1
+    }
+    if first == 0 || first == length(value) || get(value, first) != 32 {
+        return Result.Err(ProtocolError.Syntax)
+    }
+    var end = first + 1
+    while end < length(value) && get(value, end) > 32 && get(value, end) < 127 {
+        end = end + 1
+    }
+    if end == first + 1 || end == length(value) || get(value, end) != 32 {
+        return Result.Err(ProtocolError.Syntax)
+    }
+    if !same_bytes(portion(value, end + 1, length(value)), to_bytes("HTTP/1.1")) {
+        return Result.Err(ProtocolError.Unsupported)
+    }
+    Result.Ok((to_text(portion(value, 0, first)), to_text(portion(value, first + 1, end))))
+}
+
+fn status_line(value Bytes) Result[(Int, Bytes), ProtocolError] {
+    if length(value) < 13 || !same_bytes(portion(value, 0, 9), to_bytes("HTTP/1.1 ")) || get(value, 12) != 32 {
+        return Result.Err(ProtocolError.Syntax)
+    }
+    let status = number(portion(value, 9, 12), 10, 999)?
+    let reason = portion(value, 13, length(value))
+    if status < 100 || !valid_field(reason) {
+        return Result.Err(ProtocolError.Syntax)
+    }
+    Result.Ok((status, reason))
+}
+
+fn same_bytes(left Bytes, right Bytes) Bool {
+    if length(left) != length(right) {
+        return false
+    }
+    var index = 0
+    while index < length(left) {
+        if get(left, index) != get(right, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn no_body(method Text, status Int) Bool {
+    method == "HEAD" || status < 200 || status == 204 || status == 304 || tunnel(method, status)
+}
+
+fn tunnel(method Text, status Int) Bool {
+    status == 101 || (method == "CONNECT" && status >= 200 && status < 300)
+}
+
+fn chunk_size(value Bytes, maximum Int) Result[Int, ProtocolError] {
+    var end = 0
+    while end < length(value) && digit(get(value, end), 16) >= 0 {
+        end = end + 1
+    }
+    let size = number(portion(value, 0, end), 16, maximum)?
+    var index = end
+    while index < length(value) {
+        while index < length(value) && ows(get(value, index)) {
+            index = index + 1
+        }
+        if index == length(value) || get(value, index) != 59 {
+            return Result.Err(ProtocolError.Syntax)
+        }
+        index = index + 1
+        while index < length(value) && ows(get(value, index)) {
+            index = index + 1
+        }
+        let start = index
+        while index < length(value) && token(get(value, index)) {
+            index = index + 1
+        }
+        if index == start {
+            return Result.Err(ProtocolError.Syntax)
+        }
+        let after_name = index
+        while index < length(value) && ows(get(value, index)) {
+            index = index + 1
+        }
+        if index < length(value) && get(value, index) == 61 {
+            index = index + 1
+            while index < length(value) && ows(get(value, index)) {
+                index = index + 1
+            }
+            if index < length(value) && get(value, index) == 34 {
+                index = index + 1
+                var closed = false
+                while index < length(value) && !closed {
+                    let current = get(value, index)
+                    index = index + 1
+                    if current == 34 {
+                        closed = true
+                    } else if current == 92 {
+                        if index == length(value) || !field_octet(get(value, index)) {
+                            return Result.Err(ProtocolError.Syntax)
+                        }
+                        index = index + 1
+                    } else if !field_octet(current) {
+                        return Result.Err(ProtocolError.Syntax)
+                    }
+                }
+                if !closed {
+                    return Result.Err(ProtocolError.Syntax)
+                }
+            } else {
+                let start = index
+                while index < length(value) && token(get(value, index)) {
+                    index = index + 1
+                }
+                if index == start {
+                    return Result.Err(ProtocolError.Syntax)
+                }
+            }
+        } else {
+            // Leave BWS to the next extension; trailing whitespace alone is invalid.
+            index = after_name
+        }
+    }
+    Result.Ok(size)
+}
