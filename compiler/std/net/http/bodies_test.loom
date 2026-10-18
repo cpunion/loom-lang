@@ -167,6 +167,15 @@ async fn consume_pending_body(input Reader[WaitingBody, Text]) {
     }
 }
 
+async fn completed_header[S Stream, E](input Reader[S, E], finished List[Bool]) Result[Option[IncomingResponse[S, E]], ReadError[E]] {
+    defer {
+        // No suspension follows this signal: the parent can observe it only
+        // after this activation has returned its unclaimed resource result.
+        finished[0] = true
+    }
+    open_response(input, "GET", 1).await
+}
+
 test async fn cancellation_drains_body_pulls_and_disposes_completed_unclaimed_messages() {
     let events = std.list.new[Int]()
     let input = reader(WaitingBody {
@@ -187,8 +196,11 @@ test async fn cancellation_drains_body_pulls_and_disposes_completed_unclaimed_me
     }
 
     let ready = reader(from_iter(from_list([to_bytes("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx")])), raw, limits())
-    let header_task = open_response(ready, "GET", 1)
-    sleep_ms(1).await
+    let finished = [false]
+    let header_task = completed_header(ready, finished)
+    while !finished[0] {
+        sleep_ms(0).await
+    }
     {
         scoped selected = cancel(header_task)
         assert match selected {
