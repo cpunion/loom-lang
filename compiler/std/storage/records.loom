@@ -1,0 +1,151 @@
+import std.list.new
+import std.list.push
+import std.list.set
+import std.reflect.describe
+import std.reflect.Kind
+import std.reflect.from_fields
+
+// Prepare a bijection from source field names to stable column IDs. Physical
+// names and column order do not determine a field's identity.
+fn record_positions(table Table, fields List[Text], aliases List[(Text, Text)]) Result[List[Int], CodecError] {
+    if length(fields) != length(table.columns) {
+        return Result.Err(CodecError.InvalidSchema)
+    }
+    var index = 0
+    while index < length(aliases) {
+        let alias = get(aliases, index)
+        var found = false
+        var field = 0
+        while field < length(fields) {
+            found = found || get(fields, field) == alias.0
+            field = field + 1
+        }
+        if !found || alias.1 == "" {
+            return Result.Err(CodecError.InvalidSchema)
+        }
+        var previous = 0
+        while previous < index {
+            if get(aliases, previous).0 == alias.0 {
+                return Result.Err(CodecError.InvalidSchema)
+            }
+            previous = previous + 1
+        }
+        index = index + 1
+    }
+    let positions = new[Int]()
+    index = 0
+    while index < length(fields) {
+        var id = get(fields, index)
+        var alias = 0
+        while alias < length(aliases) {
+            let entry = get(aliases, alias)
+            if entry.0 == id {
+                id = entry.1
+                break
+            }
+            alias = alias + 1
+        }
+        var position = -1
+        var column = 0
+        while column < length(table.columns) {
+            if get(table.columns, column).id == id {
+                position = column
+            }
+            column = column + 1
+        }
+        if position < 0 {
+            return Result.Err(CodecError.InvalidSchema)
+        }
+        var previous = 0
+        while previous < length(positions) {
+            if get(positions, previous) == position {
+                return Result.Err(CodecError.InvalidSchema)
+            }
+            previous = previous + 1
+        }
+        push(positions, position)
+        index = index + 1
+    }
+    Result.Ok(positions)
+}
+
+fn encode_column[T](value T) Result[Value, CodecError] {
+    comptime if T implements ColumnValue {
+        value.to_column()
+    } else {
+        Result.Err(CodecError.Rejected)
+    }
+}
+
+fn decode_column[T](value Value) Result[T, CodecError] {
+    comptime if T implements ColumnValue {
+        ColumnValue.from_column[T](value)
+    } else {
+        Result.Err(CodecError.Rejected)
+    }
+}
+
+pub fn record_codec[T](table Table) Result[PreparedRowCodec[T], CodecError] {
+    record_codec[T](table, [])
+}
+
+// Visible unrefined records only. Each field needs an explicit ColumnValue
+// implementation; unsupported shapes and mismatched descriptors are errors.
+pub fn record_codec[T](table Table, aliases List[(Text, Text)]) Result[PreparedRowCodec[T], CodecError] {
+    comptime if describe[T]().types[0].kind == Kind.Record {
+        let frozen = snapshot(table)
+        discard validate_table(frozen)?
+        let names = new[Text]()
+        comptime for name, Field in T {
+            push(names, name)
+        }
+        let positions = record_positions(frozen, names, aliases)?
+        var index = 0
+        comptime for Field in T {
+            comptime if Field implements ColumnValue {
+                let column = get(frozen.columns, get(positions, index))
+                if column.kind != ColumnValue.column_kind[Field]() ||
+                column.nullable != ColumnValue.column_nullable[Field]() {
+                    return Result.Err(CodecError.InvalidSchema)
+                }
+            } else {
+                return Result.Err(CodecError.InvalidSchema)
+            }
+            index = index + 1
+        }
+        let encoder = fn(value T) Result[List[Value], CodecError] {
+            let row = new[Value]()
+            var index = 0
+            while index < length(positions) {
+                push(row, Value.Null)
+                index = index + 1
+            }
+            index = 0
+            comptime for name, field in value {
+                discard name
+                set(row, get(positions, index), encode_column(field)?)
+                index = index + 1
+            }
+            Result.Ok(row)
+        }
+        let decoder = fn(row List[Value]) Result[T, CodecError] {
+            var index = 0
+            let fields = comptime map name, Field in T {
+                discard name
+                let position = get(positions, index)
+                index = index + 1
+                decode_column[Field](get(row, position))?
+            }
+            let assembled T = from_fields(fields)
+            Result.Ok(assembled)
+        }
+        return Result.Ok(PreparedRowCodec {
+                state = PreparedState {
+                    table = frozen
+                    encode_value = encoder
+                    decode_value = decoder
+                }
+            })
+    }
+    Result.Err(CodecError.InvalidSchema)
+}

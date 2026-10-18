@@ -1,0 +1,186 @@
+record DerivedOrder {
+    id Int
+    amount Int
+    enabled Bool
+    note Option[Text]
+}
+
+fn derived_table() Table {
+    Table {
+        id = "orders"
+        physical_name = "current_orders"
+        columns = [
+            column("note", "note_body", ValueKind.Text, true),
+            column("order-id", "order_number", ValueKind.Int, false),
+            column("amount", "total_cents", ValueKind.Int, false),
+            column("enabled", "is_enabled", ValueKind.Int, false)
+        ]
+    }
+}
+
+test fn record_codec_maps_stable_ids_and_checked_fields() {
+    let codec = match record_codec[DerivedOrder](derived_table(), [("id", "order-id")]) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let original = DerivedOrder {
+        id = 7
+        amount = 1250
+        enabled = true
+        note = Option.Some("gift")
+    }
+    let row = match encode_prepared_row(codec, original) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match get(row, 0) {
+        Value.Text("gift") => true
+        _ => false
+    }
+    assert match get(row, 1) {
+        Value.Int(7) => true
+        _ => false
+    }
+    assert match decode_prepared_row(codec, row) {
+        Result.Ok(value) => value.id == 7 && value.amount == 1250 && value.enabled &&
+        (match value.note {
+                Option.Some("gift") => true
+                _ => false
+            })
+        _ => false
+    }
+    set(row, 2, Value.Int(0))
+    set(row, 3, Value.Int(2))
+    assert match decode_prepared_row(codec, row) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
+    set(row, 3, Value.Int(0))
+    set(row, 0, Value.Null)
+    assert match decode_prepared_row(codec, row) {
+        Result.Ok(value) => !value.enabled && (match value.note {
+                Option.None => true
+                _ => false
+            })
+        _ => false
+    }
+}
+
+test fn record_codec_freezes_mapping_and_rejects_ambiguous_schemas() {
+    let table = derived_table()
+    let aliases = [("id", "order-id")]
+    let codec = match record_codec[DerivedOrder](table, aliases) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    set(aliases, 0, ("id", "amount"))
+    set(table.columns, 1, column("wrong", "wrong", ValueKind.Text, true))
+    assert match decode_prepared_row(codec, [Value.Null, Value.Int(7), Value.Int(1), Value.Int(1)]) {
+        Result.Ok(value) => value.id == 7 && value.amount == 1 && value.enabled
+        _ => false
+    }
+    let invalid = [
+        [("id", "missing")],
+        [("id", "amount")],
+        [("missing", "order-id")],
+        [("id", "order-id"), ("id", "amount")]
+    ]
+    var index = 0
+    while index < length(invalid) {
+        assert match record_codec[DerivedOrder](derived_table(), get(invalid, index)) {
+            Result.Err(CodecError.InvalidSchema) => true
+            _ => false
+        }
+        index = index + 1
+    }
+    let wrong_kind = derived_table()
+    set(wrong_kind.columns, 2, column("amount", "amount", ValueKind.Float, false))
+    assert match record_codec[DerivedOrder](wrong_kind, [("id", "order-id")]) {
+        Result.Err(CodecError.InvalidSchema) => true
+        _ => false
+    }
+    let wrong_nullability = derived_table()
+    set(wrong_nullability.columns, 0, column("note", "note", ValueKind.Text, false))
+    assert match record_codec[DerivedOrder](wrong_nullability, [("id", "order-id")]) {
+        Result.Err(CodecError.InvalidSchema) => true
+        _ => false
+    }
+}
+
+record DerivedBlob {
+    bytes Bytes
+    price Float
+}
+
+record UnsupportedField {
+    values List[Int]
+}
+
+test fn record_codec_defaults_preserve_bytes_sharing_without_type_discovery() {
+    let table = Table {
+        id = "blobs"
+        physical_name = "blobs"
+        columns = [
+            column("bytes", "payload", ValueKind.Bytes, false),
+            column("price", "price", ValueKind.Float, false)
+        ]
+    }
+    let codec = match record_codec[DerivedBlob](table) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let payload = std.bytes.new()
+    std.bytes.push(payload, 7)
+    let row = match encode_prepared_row(codec, DerivedBlob {
+            bytes = payload
+            price = 2.5
+        }) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    std.bytes.push(payload, 8)
+    assert match decode_prepared_row(codec, row) {
+        Result.Ok(value) => value.price == 2.5 && std.bytes.length(value.bytes) == 2
+        _ => false
+    }
+    assert match record_codec[Int](table) {
+        Result.Err(CodecError.InvalidSchema) => true
+        _ => false
+    }
+    let unsupported = Table {
+        id = "unsupported"
+        physical_name = "unsupported"
+        columns = [column("values", "values", ValueKind.Int, false)]
+    }
+    assert match record_codec[UnsupportedField](unsupported) {
+        Result.Err(CodecError.InvalidSchema) => true
+        _ => false
+    }
+}
+
+test fn optional_column_encoding_rejects_some_null() {
+    let value Option[Option[Int]] = Option.Some(Option.None)
+    assert match value.to_column() {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
+    assert match ColumnValue.from_column[Option[Int]](Value.Null) {
+        Result.Ok(Option.None) => true
+        _ => false
+    }
+}

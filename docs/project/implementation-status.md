@@ -257,8 +257,11 @@ These are bounded proved stories, not general mutable-graph or content induction
 ## Standard library, memory and async
 
 Source `std` provides collections, text/numeric/byte operations, Option/Result,
-typed JSON, storage descriptors/codecs, reflection, filesystem/process APIs,
+typed JSON, [storage descriptors/codecs](../../compiler/std/storage/README.md), reflection, filesystem/process APIs,
 iterators and async streams. JSON policy has no special runtime implementation.
+Storage record codecs use ordinary compile-time fields and explicit `ColumnValue`
+implementations, with frozen stable-ID mappings and checked refined constructors;
+they do not infer database migrations or discover erased runtime types.
 [Iterators](../../compiler/std/iter/README.md),
 [file lines](../../compiler/std/file/lines/README.md) and
 [streams](../../compiler/std/stream/README.md) support ordered, short-circuiting

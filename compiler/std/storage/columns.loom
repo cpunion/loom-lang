@@ -1,0 +1,133 @@
+import std.option.Option
+
+// A field's explicit physical representation. Refined types decode through
+// ordinary checked constructors, never through descriptor data.
+pub concept ColumnValue {
+    fn column_kind() ValueKind
+    fn column_nullable() Bool {
+        false
+    }
+    fn to_column(self Self) Result[Value, CodecError]
+    fn from_column(value Value) Result[Self, CodecError]
+}
+
+impl ColumnValue for Int {
+    fn column_kind() ValueKind {
+        ValueKind.Int
+    }
+
+    fn to_column(self Int) Result[Value, CodecError] {
+        Result.Ok(Value.Int(self))
+    }
+
+    fn from_column(value Value) Result[Int, CodecError] {
+        match value {
+            Value.Int(number) => Result.Ok(number)
+            _ => Result.Err(CodecError.Rejected)
+        }
+    }
+}
+
+impl ColumnValue for Float {
+    fn column_kind() ValueKind {
+        ValueKind.Float
+    }
+
+    fn to_column(self Float) Result[Value, CodecError] {
+        Result.Ok(Value.Float(self))
+    }
+
+    fn from_column(value Value) Result[Float, CodecError] {
+        match value {
+            Value.Float(number) => Result.Ok(number)
+            _ => Result.Err(CodecError.Rejected)
+        }
+    }
+}
+
+impl ColumnValue for Text {
+    fn column_kind() ValueKind {
+        ValueKind.Text
+    }
+
+    fn to_column(self Text) Result[Value, CodecError] {
+        Result.Ok(Value.Text(self))
+    }
+
+    fn from_column(value Value) Result[Text, CodecError] {
+        match value {
+            Value.Text(text) => Result.Ok(text)
+            _ => Result.Err(CodecError.Rejected)
+        }
+    }
+}
+
+impl ColumnValue for Bytes {
+    fn column_kind() ValueKind {
+        ValueKind.Bytes
+    }
+
+    fn to_column(self Bytes) Result[Value, CodecError] {
+        Result.Ok(Value.Bytes(self))
+    }
+
+    fn from_column(value Value) Result[Bytes, CodecError] {
+        match value {
+            Value.Bytes(bytes) => Result.Ok(bytes)
+            _ => Result.Err(CodecError.Rejected)
+        }
+    }
+}
+
+impl ColumnValue for Bool {
+    fn column_kind() ValueKind {
+        ValueKind.Int
+    }
+
+    fn to_column(self Bool) Result[Value, CodecError] {
+        let number = if self {
+            1
+        } else {
+            0
+        }
+        Result.Ok(Value.Int(number))
+    }
+
+    fn from_column(value Value) Result[Bool, CodecError] {
+        match value {
+            Value.Int(0) => Result.Ok(false)
+            Value.Int(1) => Result.Ok(true)
+            _ => Result.Err(CodecError.Rejected)
+        }
+    }
+}
+
+impl[T ColumnValue] ColumnValue for Option[T] {
+    fn column_kind() ValueKind {
+        ColumnValue.column_kind[T]()
+    }
+
+    fn column_nullable() Bool {
+        true
+    }
+
+    fn to_column(self Option[T]) Result[Value, CodecError] {
+        match self {
+            Option.None => Result.Ok(Value.Null)
+            Option.Some(value) => {
+                // Some(NULL) and None cannot share one physical cell.
+                match value.to_column()? {
+                    Value.Null => Result.Err(CodecError.Rejected)
+                    encoded => Result.Ok(encoded)
+                }
+            }
+        }
+    }
+
+    fn from_column(value Value) Result[Option[T], CodecError] {
+        match value {
+            Value.Null => Result.Ok(Option.None)
+            _ => Result.Ok(Option.Some(ColumnValue.from_column[T](value)?))
+        }
+    }
+}
