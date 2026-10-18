@@ -119,7 +119,9 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
             return schedule(env, selected.signature, selected.arguments, constants, node)
         }
     }
-    if !known_constants(constants) {
+    // A private staging queue may retain unknown static operands for symbolic
+    // type evaluation. Strict CTFE still rejects them; native queues never do.
+    if !known_constants(constants) && env.stage_depth == 0 {
         return Result.Err(failure(env, current.symbol, declaration, "comptime arguments must be determined for this instance"))
     }
     // Dispatch must validate the selected implementation/default, not only the

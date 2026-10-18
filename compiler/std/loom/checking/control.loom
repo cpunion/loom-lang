@@ -86,7 +86,15 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
         } else {
             -1
         }
-        let value = expr(context, child(node, length(node.children) - 1), annotation)?
+        let initializer = child(node, length(node.children) - 1)
+        // A declared type binding is evaluated in the private pure stage, not
+        // as a runtime conditional whose Meta result could leak into a local.
+        let value = if annotation >= 0 && get(context.env.types, annotation).kind == TypeKind.Meta &&
+        initializer.kind == NodeKind.Comptime {
+            computed_type(context, initializer, initializer)?
+        } else {
+            expr(context, initializer, annotation)?
+        }
         // A known type identity is a lexical alias at every checking stage.
         // Unknown/type-producing computations still retain their ordinary IR.
         if kind == NodeKind.Let && value.kind == ExprKind.TypeValue {
