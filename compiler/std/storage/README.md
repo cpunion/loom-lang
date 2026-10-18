@@ -22,6 +22,8 @@ Physical column order determines row order, not record declaration order.
 The prepared codec privately snapshots the descriptor and resolved positions.
 Later edits to the caller's descriptor or aliases do not change it. Row width,
 kind and nullability are still validated at encode/decode boundaries.
+`codec_table(codec)` returns an independent metadata copy for drivers to select
+the same physical columns in the decoder's order.
 
 `ColumnValue` defines each field's representation:
 

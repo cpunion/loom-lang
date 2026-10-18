@@ -198,6 +198,12 @@ pub fn prepare_codec[T](codec RowCodec[T]) Result[PreparedRowCodec[T], CodecErro
         })
 }
 
+// Drivers use the same frozen column order as the codec. Return a metadata
+// copy so a caller cannot change the prepared mapping through this view.
+pub fn codec_table[T](codec PreparedRowCodec[T]) Table {
+    snapshot(codec.state.table)
+}
+
 pub fn encode_prepared_row[T](codec PreparedRowCodec[T], value T) Result[List[Value], CodecError] {
     let values = (codec.state.encode_value)(value)?
     discard validate_values(codec.state.table, values)?

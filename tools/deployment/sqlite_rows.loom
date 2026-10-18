@@ -1,0 +1,245 @@
+import std.bytes.new
+import std.bytes.get
+import std.bytes.push
+import std.bytes.length
+import std.bytes.decode_utf8
+import std.float.from_int
+import std.int.parse
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+import std.storage.Value
+import std.storage.CodecError
+import std.storage.PreparedRowCodec
+import std.storage.codec_table
+import std.storage.decode_prepared_row
+import std.text.byte
+import std.text.length
+import std.text.slice
+import std.text.concat
+import std.text.contains
+import std.text.ends_with
+import std.text.split
+import std.text.join
+
+// Errors identify the boundary and row, never SQL, stored values or stderr.
+pub enum SqliteRowError {
+    Mapping
+    Query
+    Encoding
+    Decode(Int, CodecError)
+}
+
+fn row_identifier(value Text) Result[Text, SqliteRowError] {
+    if value == "" || contains(value, "\0") {
+        return Result.Err(SqliteRowError.Mapping)
+    }
+    Result.Ok(concat("\"", concat(join(split(value, "\""), "\"\""), "\"")))
+}
+
+fn row_expression(column Text) Text {
+    var output = concat("CASE typeof(", concat(column, ") "))
+    output = concat(output, "WHEN 'null' THEN 'n' ")
+    output = concat(output, concat("WHEN 'integer' THEN 'i'||hex(printf('%lld',", concat(column, ")) ")))
+    output = concat(output, concat("WHEN 'real' THEN 'f'||hex(ieee754_to_blob(", concat(column, ")) ")))
+    output = concat(output, concat("WHEN 'text' THEN 't'||hex(CAST(", concat(column, " AS BLOB)) ")))
+    output = concat(output, concat("WHEN 'blob' THEN 'b'||hex(", concat(column, ") ")))
+    concat(output, "ELSE 'x' END")
+}
+
+fn row_query[T](codec PreparedRowCodec[T]) Result[Text, SqliteRowError] {
+    let table = codec_table(codec)
+    var output = "SELECT "
+    var index = 0
+    while index < std.list.length(table.columns) {
+        if index != 0 {
+            output = concat(output, "||'|'||")
+        }
+        // Qualified names cannot fall back to SQLite's legacy double-quoted
+        // string literals when a requested column does not exist.
+        let column = concat("loom_row.", row_identifier(std.list.get(table.columns, index).physical_name)?)
+        output = concat(output, row_expression(column))
+        index = index + 1
+    }
+    output = concat(output, " FROM main.")
+    Result.Ok(concat(output, concat(row_identifier(table.physical_name)?, " AS loom_row;\n")))
+}
+
+fn row_digit(value Int) Int {
+    if value >= 48 && value <= 57 {
+        return value - 48
+    }
+    if value >= 65 && value <= 70 {
+        return value - 55
+    }
+    if value >= 97 && value <= 102 {
+        return value - 87
+    }
+    -1
+}
+
+fn row_bytes(value Text) Result[Bytes, SqliteRowError] {
+    if std.text.length(value) % 2 != 0 {
+        return Result.Err(SqliteRowError.Encoding)
+    }
+    let output = std.bytes.new()
+    var index = 0
+    while index < std.text.length(value) {
+        let high = row_digit(byte(value, index))
+        let low = row_digit(byte(value, index + 1))
+        if high < 0 || low < 0 {
+            return Result.Err(SqliteRowError.Encoding)
+        }
+        std.bytes.push(output, high * 16 + low)
+        index = index + 2
+    }
+    Result.Ok(output)
+}
+
+// Decode SQLite CLI's big-endian binary64 payload using ordinary arithmetic.
+// Integer significands fit exactly in Float. Power-of-two scaling preserves
+// finite values, subnormals and signed zero without decimal formatting loss.
+fn row_float(value Bytes) Result[Float, SqliteRowError] {
+    if std.bytes.length(value) != 8 {
+        return Result.Err(SqliteRowError.Encoding)
+    }
+    let negative = std.bytes.get(value, 0) >= 128
+    let exponent = (std.bytes.get(value, 0) & 127) * 16 + (std.bytes.get(value, 1) >> 4)
+    var fraction = std.bytes.get(value, 1) & 15
+    var index = 2
+    while index < 8 {
+        fraction = fraction * 256 + std.bytes.get(value, index)
+        index = index + 1
+    }
+    if exponent == 2047 {
+        // SQLite represents NaN as NULL; a real-cell NaN payload is not valid
+        // wire data. Infinity has an ordinary IEEE value in Loom.
+        if fraction != 0 {
+            return Result.Err(SqliteRowError.Encoding)
+        }
+        return Result.Ok(if negative {
+                -1.0 / 0.0
+            } else {
+                1.0 / 0.0
+            })
+    }
+    var output = from_int(fraction)
+    var power = -1074
+    if exponent != 0 {
+        output = output + 4503599627370496.0
+        power = exponent - 1075
+    }
+    var remaining = if power < 0 {
+        -power
+    } else {
+        power
+    }
+    var factor = if power < 0 {
+        0.5
+    } else {
+        2.0
+    }
+    while remaining > 0 {
+        if (remaining & 1) == 1 {
+            output = output * factor
+        }
+        remaining = remaining >> 1
+        if remaining > 0 {
+            factor = factor * factor
+        }
+    }
+    Result.Ok(if negative {
+            -output
+        } else {
+            output
+        })
+}
+
+fn row_value(value Text) Result[Value, SqliteRowError] {
+    if value == "n" {
+        return Result.Ok(Value.Null)
+    }
+    if std.text.length(value) == 0 {
+        return Result.Err(SqliteRowError.Encoding)
+    }
+    let tag = byte(value, 0)
+    if tag != 105 && tag != 102 && tag != 116 && tag != 98 {
+        return Result.Err(SqliteRowError.Encoding)
+    }
+    let payload = row_bytes(slice(value, 1, std.text.length(value)))?
+    if tag == 98 {
+        return Result.Ok(Value.Bytes(payload))
+    }
+    if tag == 102 {
+        return Result.Ok(Value.Float(row_float(payload)?))
+    }
+    let text = match decode_utf8(payload) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(SqliteRowError.Encoding)
+        }
+    }
+    if tag == 116 {
+        return Result.Ok(Value.Text(text))
+    }
+    match parse(text) {
+        Result.Ok(number) => Result.Ok(Value.Int(number))
+        Result.Err(_) => Result.Err(SqliteRowError.Encoding)
+    }
+}
+
+fn decoded_rows[T](codec PreparedRowCodec[T], output Bytes) Result[List[T], SqliteRowError] {
+    let text = match decode_utf8(output) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(SqliteRowError.Encoding)
+        }
+    }
+    let rows = std.list.new[T]()
+    let lines = split(text, "\n")
+    var index = 0
+    while index < std.list.length(lines) {
+        let line = std.list.get(lines, index)
+        if line == "" && index == std.list.length(lines) - 1 {
+            break
+        }
+        let body = if ends_with(line, "\r") {
+            slice(line, 0, std.text.length(line) - 1)
+        } else {
+            line
+        }
+        let encoded = split(body, "|")
+        let values = std.list.new[Value]()
+        var column = 0
+        while column < std.list.length(encoded) {
+            std.list.push(values, row_value(std.list.get(encoded, column))?)
+            column = column + 1
+        }
+        match decode_prepared_row(codec, values) {
+            Result.Ok(value) => {
+                std.list.push(rows, value)
+            }
+            Result.Err(error) => {
+                return Result.Err(SqliteRowError.Decode(index, error))
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(rows)
+}
+
+// One explicit, read-only snapshot of the codec's selected physical columns.
+// This reads all rows into memory, has no ordering promise, and is not schema
+// compatibility evidence. User codec callbacks retain their ordinary effects.
+pub fn read_sqlite_rows[T](tool Text, database Text, codec PreparedRowCodec[T]) Result[List[T], SqliteRowError] {
+    let query = row_query(codec)?
+    let output = match inspect(tool, database, query) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(SqliteRowError.Query)
+        }
+    }
+    decoded_rows(codec, output)
+}
