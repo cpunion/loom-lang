@@ -577,7 +577,7 @@ test fn noncarrier_trivia_changes_are_not_silently_lost() {
     }
 }
 
-test fn merged_program_must_pass_type_analysis() {
+test fn invalid_branch_bodies_cannot_enter_a_composed_program() {
     let base = revision("value.loom", "fn amount() Int { 1 }\n",
         "fn entry() {}\n")
     let left = revision("value.loom", "fn amount() Int { true }\n",
@@ -589,7 +589,7 @@ test fn merged_program_must_pass_type_analysis() {
             assert false
         }
         Result.Err(message) => {
-            assert contains(message, "failed analysis")
+            assert contains(message, "left source has no complete checked binding evidence")
         }
     }
 }

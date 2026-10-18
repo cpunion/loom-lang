@@ -78,3 +78,57 @@ test fn anonymous_implementations_keep_explicit_identity_through_scan_and_refres
     let directory = module_test_directory("implementation-identity")
     assert successful(implementation_identity_lifecycle(directory)) == "implementation identities retained"
 }
+
+fn method_body_merge_lifecycle(staging Text) Result[Text, Text] {
+    let base = path(staging, "base")
+    let left = path(staging, "left")
+    let right = path(staging, "right")
+    let output = path(staging, "merged")
+    discard create_dir(base)
+    discard create_dir(left)
+    discard create_dir(right)
+    let source = """
+        concept Read {
+            fn first(self Self) Int
+            fn second(self Self) Int
+        }
+        impl Read for Int {
+            fn first(self Int) Int {
+                self + 1
+            }
+            fn second(self Int) Int {
+                self * 2
+            }
+        }
+        fn main() {
+            let value = 7
+            assert value.first() + value.second() > 0
+        }
+        """
+    discard write_text(path(base, "main.loom"), source)
+    discard initialize("sample", base)?
+    let original = read(base)?
+    discard git_fixture_package(left, original)?
+    discard git_fixture_package(right, original)?
+    discard write_text(path(left, "main.loom"), replace(source, "self + 1", "let next = self + 2\n        next"))
+    discard write_text(path(right, "main.loom"), replace(source, "self * 2", "self * 3"))
+    let edited_left = read(left)?
+    let edited_right = read(right)?
+    let plan = review(original, edited_left, edited_right)?
+    assert contains(show(plan), "let next = self + 2") && contains(show(plan), "self * 3")
+    discard apply_directories(plan.token, output, base, left, right)?
+    let merged = read(output)?
+    assert get(merged.revision.files, 0).text == get(plan.merged.files, 0).text
+    assert merged.sidecar == original.sidecar
+    assert read(base)?.sidecar == original.sidecar
+    assert text_at(path(base, "main.loom")) == source
+    Result.Ok("reviewed method bodies published without changing inputs")
+}
+
+test fn independent_method_edits_survive_review_and_directory_apply() {
+    let staging = module_test_directory("method-bodies")
+    defer {
+        remove_module_fixture(staging)
+    }
+    assert successful(method_body_merge_lifecycle(staging)) == "reviewed method bodies published without changing inputs"
+}

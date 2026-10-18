@@ -454,8 +454,11 @@ Checked bindings prevent silent nominal/field drift.
 Anonymous impls now participate through explicit owner IDs and header locators.
 Method bodies are separate from interface headers; member positions normalize
 within checked slots, so an earlier body edit does not retarget a later method.
-Concurrent container-body edits remain explicit conflicts, not inferred nested
-declaration merges. Symbolic impl/associated headers need no concrete caller;
+Independent method-body edits in one impl or concept compose under unchanged
+headers, contracts, member order and surrounding source. Retained regions keep
+their checked bindings across shifted body offsets. Same-method conflicts and
+member/interface changes still require resolution, not inferred member identity.
+Symbolic impl/associated headers need no concrete caller;
 unexpanded pack queries retain their conservative boundary.
 Generic reference comparison requires checked abstract bodies and agreement
 with observed concrete instances; missing or ambiguous bindings and unselected

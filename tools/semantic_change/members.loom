@@ -3,6 +3,7 @@ import std.loom.source.Span
 record MemberScope {
     locator Text
     span Span
+    body Span
 }
 
 // A rename edits tokens, never member order. Map the checked member anchor
@@ -48,11 +49,29 @@ fn member_scopes(node Node, empty List[MemberScope]) Result[List[MemberScope], T
             push(members, MemberScope {
                     locator = locator
                     span = member.span
+                    body = member_body(member)
                 })
         }
         index = index + 1
     }
     Result.Ok(members)
+}
+
+fn member_body(node Node) Span {
+    if node.kind == NodeKind.Function {
+        var index = 0
+        while index < length(node.children) {
+            let child = get(node.children, index)
+            if child.kind == NodeKind.Block {
+                return child.span
+            }
+            index = index + 1
+        }
+    }
+    Span {
+        start = -1
+        end = -1
+    }
 }
 
 fn scoped_target(entry Entry, package Int, location Span) Result[BindingTarget, Text] {

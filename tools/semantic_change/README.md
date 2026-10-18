@@ -17,7 +17,7 @@ With the same declaration-ID sequence in all three versions of a file, independe
 gaps between declarations join by the same equality rules. Exact bytes and line
 endings remain intact. Competing destinations, disagreeing changes to one gap, or
 concurrent layout and gap edits require resolution. This does not infer comment
-attachment across movement or merge inside a declaration.
+attachment across movement or merge arbitrary edits inside a declaration.
 
 `merge_packages(base, left, right, production, tests)` accepts lists of
 `PackageRevision { directory, revision }` from one module, with a nonempty baseline.
@@ -48,9 +48,13 @@ with associated declarations and checked `dyn` bindings use the same reference
 comparison. Anonymous impls use explicit IDs, a `-` locator label and a key for
 their concept, target and generic declarations. Moves compose with method-body
 edits. Member bindings normalize within the identified owner and checked member
-signature rather than sibling-body byte offsets; this does not synthesize durable
-member IDs or merge concurrent container-body edits. Interface/default-presence
-changes and ambiguous member slots still require resolution.
+signature rather than sibling-body byte offsets. Independent method-body edits
+within one impl or concept combine when its headers, contracts, member order and
+surrounding source are unchanged. Competing edits to the same method still
+require resolution. Retained method bodies and headers keep their checked
+bindings even when another method changes length. This does not synthesize
+durable member IDs: member renames, interface/default-presence changes and
+ambiguous member slots still require resolution.
 
 Import edges are rebuilt from each complete source tree with the ordinary
 loader's dependency rules. External module identities remain pinned: a same-named

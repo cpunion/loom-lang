@@ -152,10 +152,72 @@ test fn default_member_binding_survives_an_earlier_method_body_edit() {
     }
 }
 
-test fn implementation_body_conflicts_do_not_guess_nested_edit_intent() {
+test fn independent_method_bodies_compose_with_moves_and_checked_member_slots() {
     let base = implementation_case(false, false, false)
-    assert match merge(base, implementation_case(false, true, false), implementation_case(false, false, true)) {
-        Result.Err(message) => contains(message, "concurrent body edits")
+    let branches = [implementation_case(true, true, false), implementation_case(false, false, true)]
+    let context = rename_context(base)
+    var order = 0
+    while order < 2 {
+        let left = get(branches, order)
+        let right = get(branches, 1 - order)
+        let merged = match merge(base, left, right) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        let source = get(merged.files, 2).text
+        assert contains(source, "let computed = self + 2") && contains(source, "self * 3")
+        assert match merge_with_context(base, left, right, context, context, "pkg") {
+            Result.Ok(value) => get(value.files, 2).text == source
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        assert match merge_packages(generic_package_case(base), generic_package_case(left),
+            generic_package_case(right), context, context) {
+            Result.Ok(value) => get(get(value, 0).revision.files, 2).text == source
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        order = order + 1
+    }
+}
+
+test fn the_same_method_body_and_changed_container_headers_still_conflict() {
+    let base = implementation_case(false, false, false)
+    let left = implementation_case(false, true, false)
+    let files = clone(left.files)
+    let source = get(files, 1)
+    set(files, 1, File {
+            text = replace(source.text, "self + 2", "self + 3")
+            ..source
+        })
+    assert match merge(base, left, Revision {
+            files = files
+            ..left
+        }) {
+        Result.Err(message) => contains(message, "concurrent method body edits")
+        Result.Ok(_) => false
+    }
+    let defaults = default_container_case(false, false)
+    let changed = default_container_case(false, true)
+    let contract_files = clone(defaults.files)
+    let original = get(contract_files, 1)
+    set(contract_files, 1, File {
+            text = replace(original.text, "fn second(self Self) Int {", "fn second(self Self) Int\n    ensures result == 2 {")
+            ..original
+        })
+    assert match merge(defaults, changed, Revision {
+            files = contract_files
+            ..defaults
+        }) {
+        Result.Err(_) => true
         Result.Ok(_) => false
     }
 }

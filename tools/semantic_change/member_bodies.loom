@@ -1,0 +1,181 @@
+record RetainedRegion {
+    before Int
+    after Int
+    size Int
+}
+
+record RetainedSite {
+    before Int
+    after Int
+}
+
+fn container(entry Entry) Bool {
+    entry.kind == NodeKind.Impl || entry.kind == NodeKind.Concept
+}
+
+fn aligned_members(before Entry, after Entry) Bool {
+    if !container(before) || before.kind != after.kind || before.header != after.header ||
+    length(before.members) != length(after.members) {
+        return false
+    }
+    var index = 0
+    while index < length(before.members) {
+        let a = get(before.members, index)
+        let b = get(after.members, index)
+        if a.locator != b.locator || (a.body.start < 0) != (b.body.start < 0) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+// These are existing checked API slots, not inferred new persistent identities.
+// Header/member changes still require resolution; only method blocks compose.
+fn joined_member_bodies(base Entry, left Entry, right Entry) Result[Text, Text] {
+    if !aligned_members(base, left) || !aligned_members(base, right) {
+        return Result.Err(concat("concurrent body edits require unchanged container headers: ", base.id))
+    }
+    var original = 0
+    var a = 0
+    var b = 0
+    var output = ""
+    var index = 0
+    while index < length(base.members) {
+        let member = get(base.members, index)
+        if member.body.start >= 0 {
+            let previous_span = member.body
+            let l = get(left.members, index).body
+            let r = get(right.members, index).body
+            let gap = slice(base.body, original, previous_span.start - base.start)
+            if gap != slice(left.body, a, l.start - left.start) || gap != slice(right.body, b, r.start - right.start) {
+                return Result.Err("container scaffolding changed around a method body")
+            }
+            let previous = slice(base.body, previous_span.start - base.start, previous_span.end - base.start)
+            let first = slice(left.body, l.start - left.start, l.end - left.start)
+            let second = slice(right.body, r.start - right.start, r.end - right.start)
+            let selected = if first == second || previous == second {
+                first
+            } else if previous == first {
+                second
+            } else {
+                return Result.Err(concat("concurrent method body edits: ", concat(base.id, concat(" / ", member.locator))))
+            }
+            output = concat(output, concat(gap, selected))
+            original = previous_span.end - base.start
+            a = l.end - left.start
+            b = r.end - right.start
+        }
+        index = index + 1
+    }
+    let tail = slice(base.body, original, length(base.body))
+    if tail != slice(left.body, a, length(left.body)) || tail != slice(right.body, b, length(right.body)) {
+        return Result.Err("container scaffolding changed after a method body")
+    }
+    Result.Ok(concat(output, tail))
+}
+
+fn retained_region(regions List[RetainedRegion], before Entry, after Entry,
+    start Int, end Int, current Int, last Int) Result[Bool, Text] {
+    if slice(before.body, start, end) != slice(after.body, current, last) {
+        return Result.Err("retained container scaffolding does not match")
+    }
+    if start < end {
+        push(regions, RetainedRegion {
+                before = start
+                after = current
+                size = end - start
+            })
+    }
+    Result.Ok(true)
+}
+
+fn retained_regions(before Entry, after Entry) Result[List[RetainedRegion], Text] {
+    let regions = new[RetainedRegion]()
+    if before.body == after.body {
+        discard retained_region(regions, before, after, 0, length(before.body), 0, length(after.body))?
+    } else if aligned_members(before, after) {
+        var previous = 0
+        var current = 0
+        var index = 0
+        while index < length(before.members) {
+            let a = get(before.members, index).body
+            let b = get(after.members, index).body
+            if a.start >= 0 {
+                let start = a.start - before.start
+                let end = a.end - before.start
+                let next = b.start - after.start
+                let last = b.end - after.start
+                discard retained_region(regions, before, after, previous, start, current, next)?
+                if slice(before.body, start, end) == slice(after.body, next, last) {
+                    discard retained_region(regions, before, after, start, end, next, last)?
+                }
+                previous = end
+                current = last
+            }
+            index = index + 1
+        }
+        discard retained_region(regions, before, after, previous, length(before.body), current, length(after.body))?
+    }
+    Result.Ok(regions)
+}
+
+fn retained_sites(before Entry, after Entry) Result[List[RetainedSite], Text] {
+    let sites = new[RetainedSite]()
+    let regions = retained_regions(before, after)?
+    if length(regions) == 0 {
+        return Result.Ok(sites)
+    }
+    let references = entry_references(before)?
+    var unknown = 0
+    while unknown < length(references.unknown) {
+        let span = get(references.unknown, unknown)
+        var region = 0
+        while region < length(regions) {
+            let retained = get(regions, region)
+            if span.start < retained.before + retained.size && retained.before < span.end {
+                return Result.Err("retained source reference form has no binding comparison support")
+            }
+            region = region + 1
+        }
+        unknown = unknown + 1
+    }
+    var index = 0
+    while index < length(references.offsets) {
+        let offset = get(references.offsets, index)
+        var region = 0
+        while region < length(regions) {
+            let retained = get(regions, region)
+            if offset >= retained.before && offset < retained.before + retained.size {
+                push(sites, RetainedSite {
+                        before = offset
+                        after = retained.after + offset - retained.before
+                    })
+            }
+            region = region + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(sites)
+}
+
+fn same_entry_bodies(before Indexed, after Indexed) Bool {
+    if length(before.entries) != length(after.entries) {
+        return false
+    }
+    var index = 0
+    while index < length(after.entries) {
+        let current = get(after.entries, index)
+        let previous = entry_index(before.entries, current.id)
+        if previous < 0 || get(before.entries, previous).body != current.body {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn binding_review_needed(base Indexed, left Indexed, right Indexed, merged Indexed) Bool {
+    !same_layout(base, left) || !same_layout(base, right) ||
+    (!same_entry_bodies(left, merged) && !same_entry_bodies(right, merged))
+}

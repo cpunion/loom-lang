@@ -93,7 +93,7 @@ fn joined_file_gaps(base Indexed, left Indexed, right Indexed, path Text) Result
         let gap = joined_source_gap(slice(original.text, before, entry.start),
             slice(edited_left.text, left_offset, a_changed.start),
             slice(edited_right.text, right_offset, b_changed.start), path)?
-        output = concat(output, concat(gap, chosen_entry(base, left, right, entry.id).body))
+        output = concat(output, concat(gap, chosen_entry(base, left, right, entry.id)?.body))
         before = entry.end
         left_offset = a_changed.end
         right_offset = b_changed.end
@@ -130,7 +130,7 @@ fn rendered_file(base Indexed, left Indexed, right Indexed, path Text) Result[Op
         }
         let entry = get(carrier.entries, position)
         output = concat(output, slice(file.text, offset, entry.start))
-        output = concat(output, chosen_entry(base, left, right, entry.id).body)
+        output = concat(output, chosen_entry(base, left, right, entry.id)?.body)
         offset = entry.end
         ordinal = ordinal + 1
     }
@@ -186,7 +186,7 @@ fn placed_identity(entry Entry, path Text) Identity {
 // the rendered source against these obligations catches lost, resurrected or
 // duplicated declarations. Retained metadata order stays stable; fresh rows are
 // sorted by ID so swapping branches cannot reorder persistent identity metadata.
-fn joined_identities(base Indexed, left Indexed, right Indexed) List[Identity] {
+fn joined_identities(base Indexed, left Indexed, right Indexed) Result[List[Identity], Text] {
     let output = new[Identity]()
     var index = 0
     while index < length(base.revision.identities) {
@@ -201,7 +201,7 @@ fn joined_identities(base Indexed, left Indexed, right Indexed) List[Identity] {
             } else {
                 a_path
             }
-            push(output, placed_identity(chosen_entry(base, left, right, identity.id), selected))
+            push(output, placed_identity(chosen_entry(base, left, right, identity.id)?, selected))
         }
         index = index + 1
     }
@@ -227,5 +227,5 @@ fn joined_identities(base Indexed, left Indexed, right Indexed) List[Identity] {
         push(output, get(ordered, index))
         index = index + 1
     }
-    output
+    Result.Ok(output)
 }
