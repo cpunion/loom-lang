@@ -1,0 +1,103 @@
+test fn enum_type_iteration_uses_payload_tuples_and_normal_lexical_blocks() {
+    discard accepted("""
+        enum Event[T] {
+            Empty
+            Item(T)
+            Pair(Int, T)
+        }
+        fn exercise[T](value T) T {
+            let Shape = comptime { Event[T] }
+            var count = 0
+            comptime for name, Payload in Shape {
+                assert name == "Empty" || name == "Item" || name == "Pair"
+                count = count + 1
+                comptime for index, Field in Payload {
+                    assert index < 2
+                    assert comptime { Field == Int || Field == T }
+                }
+            }
+            assert count == 3
+            let callbacks = comptime map name, Payload in Shape {
+                fn(payload Payload) Payload {
+                    payload
+                }
+            }
+            let item = callbacks.1((value,))
+            callbacks.2((7, item.0)).1
+        }
+        fn main() {
+            assert exercise(42) == 42
+            assert exercise(true)
+        }
+        """)
+}
+
+test fn enum_iteration_does_not_iterate_values_or_grant_generic_and_private_access() {
+    rejects("""
+        enum Event {
+            Item(Int)
+        }
+        fn main() {
+            let value = Event.Item(7)
+            comptime for Payload in value {
+                discard 1
+            }
+        }
+        """)
+    rejects("""
+        fn unknown[T]() {
+            comptime for Payload in T {
+                discard 1
+            }
+        }
+        fn main() {
+            unknown[Int]()
+        }
+        """)
+    rejects("""
+        concept Display {
+            fn display(self Self) Text
+        }
+        impl Display for Int {
+            fn display(self Int) Text {
+                "integer"
+            }
+        }
+        enum Event[T] {
+            Item(T)
+        }
+        pub fn render[T](value T) Text {
+            let Shape = comptime { Event[T] }
+            let callbacks = comptime map Payload in Shape {
+                fn(payload Payload) Text {
+                    payload.0.display()
+                }
+            }
+            callbacks.0((value,))
+        }
+        fn main() {
+            discard render(7)
+        }
+        """)
+    let files = source_files("""
+        import hidden.shape
+        fn main() {
+            let Shape = comptime { shape() }
+            comptime for Payload in Shape {
+                discard 1
+            }
+        }
+        """)
+    push(files, source_file("hidden", """
+        enum Secret {
+            Item(Int)
+        }
+        pub fn shape() type {
+            Secret
+        }
+        """, false))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "cannot inspect a private type from another package"
+        Result.Ok(_) => false
+    }
+}

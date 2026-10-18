@@ -1,0 +1,61 @@
+enum VariantMetadata[T] {
+    Empty
+    Item(T)
+    Pair(Int, T)
+    Branch(List[VariantMetadata[T]])
+}
+
+type RefinedVariantMetadata = VariantMetadata[Int] where true
+
+test fn enum_metadata_preserves_order_empty_payloads_and_recursive_types() {
+    assert comptime {
+        let variants = match enum_variants[VariantMetadata[Text]]() {
+            Option.Some(variants) => variants
+            Option.None => {
+                assert false
+                new[VariantType]()
+            }
+        }
+        assert length(variants) == 4
+        assert variants[0].name == "Empty" && variants[0].payload == tuple(new[type]())
+        assert variants[1].name == "Item" && variants[1].payload == of[(Text,)]()
+        assert variants[2].name == "Pair" && variants[2].payload == of[(Int, Text)]()
+        assert variants[3].name == "Branch" &&
+        variants[3].payload == of[(List[VariantMetadata[Text]],)]()
+        assert match enum_variants[RefinedVariantMetadata]() {
+            Option.Some(variants) => variants[2].payload == of[(Int, Int)]()
+            Option.None => false
+        }
+        match enum_variants[Int]() {
+            Option.None => true
+            Option.Some(_) => false
+        }
+    }
+}
+
+test fn enum_metadata_can_select_types_without_executing_variant_constructors() {
+    let Payload = comptime {
+        let variants = match enum_variants[VariantMetadata[Bool]]() {
+            Option.Some(variants) => variants
+            Option.None => {
+                assert false
+                new[VariantType]()
+            }
+        }
+        variants[0] = VariantType {
+            name = "changed"
+            payload = Int
+        }
+        let fresh = match enum_variants[VariantMetadata[Bool]]() {
+            Option.Some(variants) => variants
+            Option.None => {
+                assert false
+                new[VariantType]()
+            }
+        }
+        assert fresh[0].name == "Empty"
+        fresh[2].payload
+    }
+    let value Payload = (42, true)
+    assert value.0 == 42 && value.1
+}

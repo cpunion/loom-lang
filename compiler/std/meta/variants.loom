@@ -1,0 +1,38 @@
+import std.list.new
+import std.list.push
+import std.option.Option
+import std.reflect.describe
+import std.reflect.Kind
+
+// Payload identities are ordered tuple types, empty for a payload-free case.
+// Variant names are source spellings, not persistent serialization identities.
+pub record VariantType {
+    name Text
+    payload type
+}
+
+fn visible_enum[T]() Bool {
+    let schema = describe[T]()
+    let root = schema.types[schema.root]
+    if root.kind == Kind.Refined {
+        return schema.types[root.arguments[0]].kind == Kind.Enum
+    }
+    root.kind == Kind.Enum
+}
+
+// No sample value, runtime type registry or constructor is required.
+// Opaque and non-enum types return None.
+pub fn enum_variants[T]() Option[List[VariantType]] {
+    comptime if visible_enum[T]() {
+        let variants = new[VariantType]()
+        comptime for name, Payload in T {
+            push(variants, VariantType {
+                    name = name
+                    payload = Payload
+                })
+        }
+        Option.Some(variants)
+    } else {
+        Option.None
+    }
+}
