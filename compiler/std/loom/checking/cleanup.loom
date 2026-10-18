@@ -49,20 +49,8 @@ fn registered_cleanup(context Context, node Node) Result[Step, Failure] {
             previous = context.cleanup_head
         })
     let next = Context {
-        lexical = context.lexical
-        env = context.env
-        signature = context.signature
-        arguments = context.arguments
-        constants = context.constants
-        locals = context.locals
-        bindings = context.bindings
-        head = context.head
-        cleanups = context.cleanups
         cleanup_head = head
-        loop_boundary = context.loop_boundary
-        facts = context.facts
-        fact_head = context.fact_head
-        emit = context.emit
+        ..context
     }
     Result.Ok(Step {
             context = next

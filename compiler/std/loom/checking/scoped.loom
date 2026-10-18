@@ -19,21 +19,9 @@ fn scope_register(context Context, node Node, dispose Expr, registrations List[E
         })
     push(registrations, expression(ExprKind.Defer, 0, node, "scoped", head, expressions(body), true))
     Context {
-            lexical = context.lexical
-            env = context.env
-            signature = context.signature
-            arguments = context.arguments
-            constants = context.constants
-            locals = context.locals
-            bindings = context.bindings
-            head = context.head
-            cleanups = context.cleanups
-            cleanup_head = head
-            loop_boundary = context.loop_boundary
-            facts = context.facts
-            fact_head = context.fact_head
-            emit = context.emit
-        }
+        cleanup_head = head
+        ..context
+    }
 }
 
 fn registered_scoped(context Context, node Node, boundary Int) Result[Step, Failure] {

@@ -303,10 +303,10 @@ fn with_evidence(context Context, ty Int, capability Int) Context {
         index = index + 1 }
     if !entailed(context.env, context.signature.requirements, ty, capability) { push(obligations, Requirement { ty = ty capability = capability }) }
     let updated = Signature { symbol = current.symbol parameters = current.parameters params = current.params compile_time = current.compile_time result = current.result requirements = obligations }
-    Context { lexical = context.lexical env = context.env signature = updated arguments = context.arguments locals = context.locals
-        constants = context.constants bindings = context.bindings head = context.head
-        cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
-        facts = context.facts fact_head = context.fact_head emit = context.emit }
+    Context {
+        signature = updated
+        ..context
+    }
 }
 fn implementation(context Context, ty Int, capability Int) Result[Int, Failure] {
     if !satisfies(context, ty, capability)? { return Result.Ok(-1) }
