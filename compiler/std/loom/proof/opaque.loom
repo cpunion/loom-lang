@@ -1,20 +1,20 @@
 // Publication can invalidate these exclusions, never recover privacy. Only
-// actual private allocations qualify: a later symbolic handle may alias any
-// earlier allocation, regardless of its logical ID.
+// proved private allocations qualify: a later symbolic handle may alias any
+// earlier allocation. Its logical ID is not an allocation timestamp.
 fn opaque_frame(value Value, extent ListExtent) Bool {
-    if !extent.allocated || !extent.private_storage {
+    if extent.birth_floor < 0 || !extent.private_storage {
         return false
     }
     match value {
-        Value.Opaque(frontier, excluded) => (frontier >= 0 && extent.identity >= frontier) ||
+        Value.Opaque(frontier, excluded) => (frontier >= 0 && extent.birth_floor >= frontier) ||
         storage_identity_member(excluded, extent.identity)
         _ => false
     }
 }
 
 fn list_graph_frame(root ListExtent, target ListExtent) Bool {
-    root.identity != target.identity && target.allocated && target.private_storage &&
-    ((root.frontier >= 0 && target.identity >= root.frontier) ||
+    root.identity != target.identity && target.birth_floor >= 0 && target.private_storage &&
+    ((root.frontier >= 0 && target.birth_floor >= root.frontier) ||
         storage_identity_member(root.unreachable, target.identity))
 }
 
@@ -37,7 +37,7 @@ fn opaque_completion(value Value, state State, observed Int) Value {
 // A read inherits only exclusions established for its source graph. An opaque
 // call instead excludes every still-private allocation after publishing inputs.
 fn storage_excluded(extent ListExtent, state State, source Int) Bool {
-    if !extent.allocated || !extent.private_storage {
+    if extent.birth_floor < 0 || !extent.private_storage {
         return false
     }
     if source < 0 {
@@ -98,10 +98,15 @@ fn opaque_completion(value Value, state State, observed Int, source Int) Value {
 }
 
 fn graph_extent(extent ListExtent, frontier Int, unreachable List[Int]) ListExtent {
+    provenance_extent(extent, extent.birth_floor, frontier, unreachable)
+}
+
+fn provenance_extent(extent ListExtent, birth_floor Int, frontier Int, unreachable List[Int]) ListExtent {
     ListExtent {
         identity = extent.identity
         size = extent.size
         allocated = extent.allocated
+        birth_floor = birth_floor
         private_storage = extent.private_storage
         read_only = extent.read_only
         fixed_extent = extent.fixed_extent
@@ -110,6 +115,26 @@ fn graph_extent(extent ListExtent, frontier Int, unreachable List[Int]) ListExte
         unreachable = unreachable
         contents = extent.contents
         cells = extent.cells
+    }
+}
+
+fn storage_birth(identity Int, floor Int, state State) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        push(extents, if extent.identity == identity && floor > extent.birth_floor {
+                provenance_extent(extent, floor, extent.frontier, extent.unreachable)
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+        observations = state.observations
     }
 }
 

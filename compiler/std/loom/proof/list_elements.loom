@@ -30,6 +30,7 @@ fn element_contents(extent ListExtent, contents Int, cells List[ListCell]) ListE
         identity = extent.identity
         size = extent.size
         allocated = extent.allocated
+        birth_floor = extent.birth_floor
         private_storage = extent.private_storage
         read_only = extent.read_only
         fixed_extent = extent.fixed_extent

@@ -103,6 +103,9 @@ publishes the returned shape. Unpublished provenance is proved at entry and ever
 backedge, independently of identity or allocation separation. A callback may
 retain an old buffer when the loop replaces it with a new private one; previously
 exposed aliases cannot be recovered as private on a later iteration.
+Generic buffer swaps can also retain their shape across an unrelated callback.
+The proof carries allocation-epoch lower bounds separately from symbolic handle
+IDs; the callback still mutates shared element children normally.
 
 The sorting example proves only its stated length contract. Its concrete order
 and element checks are runtime tests, not sortedness/permutation proofs. General

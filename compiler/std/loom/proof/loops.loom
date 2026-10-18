@@ -13,6 +13,7 @@ enum LoopCandidate {
     Guard(Expr)
     Header(Int, List[Int], Int)
     Unpublished(Int, List[Int])
+    Born(Int, List[Int], Int)
     Unreachable(Int, List[Int], Int)
     EntryExtent(Int, List[Int], Text, Linear)
     Element(Int, Linear, Text, Value)
@@ -231,6 +232,10 @@ fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] 
         LoopCandidate.Unpublished(local, path) => match loop_local_value(get(state.locals, local), path)? {
             Value.List(identity) => Result.Ok(Predicate.Constant(list_state(identity, state)?.private_storage))
             _ => Result.Err("loop storage invariant needs a tracked sequence")
+        }
+        LoopCandidate.Born(local, path, floor) => match loop_local_value(get(state.locals, local), path)? {
+            Value.List(identity) => Result.Ok(Predicate.Constant(list_state(identity, state)?.birth_floor >= floor))
+            _ => Result.Err("loop allocation invariant needs a tracked sequence")
         }
         LoopCandidate.Unreachable(local, path, identity) => Result.Ok(Predicate.Constant(
                 storage_frame(loop_local_value(get(state.locals, local), path)?, list_state(identity, state)?, state)))

@@ -111,6 +111,9 @@ record ListExtent {
     identity Int
     size Linear
     allocated Bool
+    // Earliest proved allocation epoch; -1 is unknown. A sampled loop handle
+    // may retain this bound without being a distinct allocation itself.
+    birth_floor Int
     private_storage Bool
     read_only Bool
     fixed_extent Bool

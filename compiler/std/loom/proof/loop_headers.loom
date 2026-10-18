@@ -1,6 +1,6 @@
 // Header identity is an internal alias fact, not observable pointer equality.
 // It is true at entry and must survive every actual backedge before publication.
-fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local Int, path List[Int], value Value, entry State) Result[Bool, Text] {
+fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], epochs List[Int], local Int, path List[Int], value Value, entry State) Result[Bool, Text] {
     if length(candidates) >= 64 {
         return Result.Ok(true)
     }
@@ -10,6 +10,16 @@ fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local In
             discard add_loop_candidate(candidates, LoopCandidate.Header(local, path, identity), entry)?
             if length(candidates) < 64 && list_state(identity, entry)?.private_storage {
                 discard add_loop_candidate(candidates, LoopCandidate.Unpublished(local, path), entry)?
+            }
+            let birth = list_state(identity, entry)?.birth_floor
+            var epoch = 0
+            while epoch < length(epochs) && length(candidates) < 64 {
+                let floor = get(epochs, epoch)
+                if birth >= floor {
+                    discard loop_step(proof)?
+                    discard add_loop_candidate(candidates, LoopCandidate.Born(local, path, floor), entry)?
+                }
+                epoch = epoch + 1
             }
             var index = 0
             while index < length(entry.extents) && length(candidates) < 64 {
@@ -40,7 +50,7 @@ fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local In
             while field < length(fields) && length(candidates) < 64 {
                 let nested = std.list.clone(path)
                 push(nested, field)
-                discard loop_header_leaf(proof, candidates, local, nested,
+                discard loop_header_leaf(proof, candidates, epochs, local, nested,
                     get(fields, field), entry)?
                 field = field + 1
             }
@@ -51,12 +61,59 @@ fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local In
     Result.Ok(true)
 }
 
+fn loop_epoch(epochs List[Int], value Int) {
+    if value >= 0 && length(epochs) < 64 && !storage_identity_member(epochs, value) {
+        push(epochs, value)
+    }
+}
+
+// Epochs are proposals, not facts. Partial collection only loses precision;
+// every installed bound still needs entry and all-backedge proofs.
+fn loop_value_epochs(value Value, epochs List[Int], budget List[Int], depth Int) {
+    if depth >= 32 || get(budget, 0) <= 0 || length(epochs) >= 64 {
+        return
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    match value {
+        Value.Opaque(frontier, _) => loop_epoch(epochs, frontier)
+        Value.Record(fields) => loop_values_epochs(fields, epochs, budget, depth + 1)
+        Value.Function(_, captures) => loop_values_epochs(captures, epochs, budget, depth + 1)
+        Value.Task(_, inputs, _) => loop_values_epochs(inputs, epochs, budget, depth + 1)
+        Value.Sum(_, _, variants) => {
+            var index = 0
+            while index < length(variants) {
+                loop_values_epochs(get(variants, index), epochs, budget, depth + 1)
+                index = index + 1
+            }
+        }
+        _ => {
+        }
+    }
+}
+
+fn loop_values_epochs(values List[Value], epochs List[Int], budget List[Int], depth Int) {
+    var index = 0
+    while index < length(values) && get(budget, 0) > 0 {
+        loop_value_epochs(get(values, index), epochs, budget, depth)
+        index = index + 1
+    }
+}
+
 fn loop_header_candidates(proof Verification, candidates List[LoopCandidate], writes List[Bool], entry State) Result[Int, Text] {
     let before = length(candidates)
+    let epochs = [0]
+    loop_values_epochs(entry.locals, epochs, [256], 0)
+    var extent = 0
+    while extent < length(entry.extents) && length(epochs) < 64 {
+        let root = get(entry.extents, extent)
+        loop_epoch(epochs, root.identity + 1)
+        loop_epoch(epochs, root.frontier)
+        extent = extent + 1
+    }
     var local = 0
     while local < length(writes) && length(candidates) < 64 {
         if get(writes, local) {
-            discard loop_header_leaf(proof, candidates, local, new[Int](),
+            discard loop_header_leaf(proof, candidates, epochs, local, new[Int](),
                 get(entry.locals, local), entry)?
         }
         local = local + 1
@@ -73,6 +130,9 @@ fn loop_header_count(candidates List[LoopCandidate]) Int {
                 count = count + 1
             }
             LoopCandidate.Unpublished(_, _) => {
+                count = count + 1
+            }
+            LoopCandidate.Born(_, _, _) => {
                 count = count + 1
             }
             LoopCandidate.Unreachable(_, _, _) => {
@@ -270,6 +330,17 @@ fn loop_separated_head(local Int, value Value, candidates List[LoopCandidate], s
     var index = 0
     while index < length(candidates) {
         match get(candidates, index) {
+            LoopCandidate.Born(target, path, floor) => {
+                if target == local {
+                    match loop_local_value(value, path)? {
+                        Value.List(identity) => {
+                            current = storage_birth(identity, floor, current)
+                        }
+                        _ => {
+                        }
+                    }
+                }
+            }
             LoopCandidate.Unpublished(target, path) => {
                 if target == local {
                     // An entry/all-backedge property, not a new allocation or
