@@ -970,7 +970,13 @@ fn capture_process(
     command: std::process::Command,
     input: Vec<u8>,
 ) -> Result<std::process::Output, i64> {
-    match process_io::capture(command, input) {
+    capture_process_result(process_io::capture(command, input))
+}
+
+fn capture_process_result(
+    output: std::io::Result<std::process::Output>,
+) -> Result<std::process::Output, i64> {
+    match output {
         Ok(output) => Ok(output),
         Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => fatal("out of memory"),
         Err(_) => Err(-1),

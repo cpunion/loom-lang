@@ -320,7 +320,9 @@ capture and verified client/server TLS work through source policy and narrow
 native boundaries. TLS uses a separately linked Rustls provider.
 Revocation and broader application networking remain open. Blocking OS calls
 use bounded workers and copied native data; cancellation waits for completion.
-Process capture has unbounded output buffering and reaps only the direct child.
+Async process capture supports explicit per-stream output limits and truncation
+flags while draining both pipes. Unlimited calls remain unbounded; cancellation
+reaps only the direct child and does not impose a hard timeout.
 
 [Shared workers](../../compiler/README.md#shared-workers) explicitly request CPU
 parallelism. No-worker executables retain direct lowering.

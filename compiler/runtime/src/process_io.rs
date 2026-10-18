@@ -5,7 +5,7 @@ use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
-type Drain = fn(usize, &mut dyn Read) -> io::Result<Vec<u8>>;
+type Drain = fn(usize, &mut dyn Read, Option<usize>) -> io::Result<Vec<u8>>;
 
 pub(super) fn valid_env_name(name: &str) -> bool {
     !name.is_empty() && !name.contains(['=', '\0'])
@@ -65,9 +65,16 @@ impl Drop for Running<'_> {
     }
 }
 
-fn read_all(_: usize, pipe: &mut dyn Read) -> io::Result<Vec<u8>> {
+fn read_all(_: usize, pipe: &mut dyn Read, limit: Option<usize>) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    pipe.read_to_end(&mut bytes)?;
+    if let Some(limit) = limit {
+        // One extra byte distinguishes exact fit from truncation. Keep draining
+        // both pipes: reaching a memory bound must not block a writing child.
+        pipe.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+        io::copy(pipe, &mut io::sink())?;
+    } else {
+        pipe.read_to_end(&mut bytes)?;
+    }
     Ok(bytes)
 }
 
@@ -81,13 +88,15 @@ fn reader(
     index: usize,
     completed: Sender<Completion>,
     drain: Drain,
+    limit: Option<usize>,
 ) -> io::Result<JoinHandle<()>> {
     thread::Builder::new().spawn(move || {
         // Report failures immediately: waiting for the other stream first can
         // deadlock when the child is blocked writing to the failed stream.
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drain(index, &mut pipe)))
-                .unwrap_or_else(|_| Err(io::Error::other("process output reader panicked")));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drain(index, &mut pipe, limit)
+        }))
+        .unwrap_or_else(|_| Err(io::Error::other("process output reader panicked")));
         let _ = completed.send(Completion::Output(index, result));
     })
 }
@@ -184,7 +193,12 @@ fn consume_sigpipe() -> io::Result<()> {
     Ok(())
 }
 
-fn capture_started(child: &mut Child, input: Vec<u8>, drain: Drain) -> io::Result<Output> {
+fn capture_started(
+    child: &mut Child,
+    input: Vec<u8>,
+    drain: Drain,
+    limit: Option<usize>,
+) -> io::Result<Output> {
     let mut running = Running {
         child,
         workers: Vec::new(),
@@ -203,10 +217,10 @@ fn capture_started(child: &mut Child, input: Vec<u8>, drain: Drain) -> io::Resul
     let (completed, results) = mpsc::channel();
     running
         .workers
-        .push(reader(stdout, 0, completed.clone(), drain)?);
+        .push(reader(stdout, 0, completed.clone(), drain, limit)?);
     running
         .workers
-        .push(reader(stderr, 1, completed.clone(), drain)?);
+        .push(reader(stderr, 1, completed.clone(), drain, limit)?);
     if !input.is_empty() {
         let stdin = running
             .child
@@ -243,7 +257,26 @@ fn capture_started(child: &mut Child, input: Vec<u8>, drain: Drain) -> io::Resul
     })
 }
 
-pub(super) fn capture(mut command: Command, input: Vec<u8>) -> io::Result<Output> {
+pub(super) fn capture(command: Command, input: Vec<u8>) -> io::Result<Output> {
+    capture_with_limit(command, input, None)
+}
+
+// The returned streams retain at most limit + 1 bytes; the caller removes the
+// extra byte after recording each truncation flag. Runtime callers use an Int
+// bound, so adding one fits the host's usize/u64 on supported 64-bit targets.
+pub(super) fn capture_bounded(
+    command: Command,
+    input: Vec<u8>,
+    limit: usize,
+) -> io::Result<Output> {
+    capture_with_limit(command, input, Some(limit))
+}
+
+fn capture_with_limit(
+    mut command: Command,
+    input: Vec<u8>,
+    limit: Option<usize>,
+) -> io::Result<Output> {
     let mut child = command
         .stdin(if input.is_empty() {
             Stdio::null()
@@ -253,7 +286,7 @@ pub(super) fn capture(mut command: Command, input: Vec<u8>) -> io::Result<Output
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    capture_started(&mut child, input, read_all)
+    capture_started(&mut child, input, read_all, limit)
 }
 
 pub(super) fn run_input(mut command: Command, input: Vec<u8>) -> io::Result<ExitStatus> {
@@ -296,6 +329,17 @@ pub(super) const TEST_BYTES: usize = 256 * 1024;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_read_keeps_a_prefix_and_drains_the_suffix() {
+        let input = (0..16385).map(|index| index as u8).collect::<Vec<_>>();
+        for limit in [0, 1, 8191, input.len() - 1, input.len(), input.len() + 1] {
+            let mut pipe = io::Cursor::new(&input);
+            let retained = read_all(0, &mut pipe, Some(limit)).unwrap();
+            assert_eq!(retained, input[..input.len().min(limit + 1)]);
+            assert_eq!(pipe.position() as usize, input.len());
+        }
+    }
 
     #[test]
     fn configuration_is_child_local_ordered_and_validated() {
@@ -474,11 +518,15 @@ mod tests {
 
     #[test]
     fn setup_and_read_failures_reap_the_child() {
-        fn fail_read(index: usize, pipe: &mut dyn Read) -> io::Result<Vec<u8>> {
+        fn fail_read(
+            index: usize,
+            pipe: &mut dyn Read,
+            limit: Option<usize>,
+        ) -> io::Result<Vec<u8>> {
             if index == 0 {
                 Err(io::Error::other("injected read failure"))
             } else {
-                read_all(index, pipe)
+                read_all(index, pipe, limit)
             }
         }
         for missing_pipe in [None, Some("stdout"), Some("stdin")] {
@@ -496,7 +544,8 @@ mod tests {
             if missing_pipe == Some("stdin") {
                 drop(child.stdin.take());
             }
-            let error = capture_started(&mut child, vec![0; TEST_BYTES], fail_read).unwrap_err();
+            let error =
+                capture_started(&mut child, vec![0; TEST_BYTES], fail_read, None).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 match missing_pipe {

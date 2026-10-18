@@ -159,7 +159,10 @@ fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
         jump(graph, start, park)
         finish(graph, park, Exit.Park, operation("task_wait_next", 2, source.span, new[Expr]()), edges(after), new[Arm]())
         if source.text == "task_next" {
-            return Value { state = after expression = operation("task_next_result", 1, source.span, new[Expr]()) }
+            return Value {
+                state = after
+                expression = operation("task_next_result", 1, source.span, new[Expr]())
+            }
         }
         let selected = temporary(graph, 1)
         save(graph, after, selected, operation("task_next_terminal_result", 1, source.span, new[Expr]()))
@@ -204,16 +207,23 @@ fn external_parking(graph Graph, source Expr, start Int, loop Loop) Value {
             let park = state(graph)
             let after = state(graph)
             jump(graph, current, park)
-            let wait = if source.text == "tls_wait" { "task_wait_tls" } else { "task_wait_socket" }
+            let wait = if source.text == "tls_wait" {
+                "task_wait_tls"
+            } else {
+                "task_wait_socket"
+            }
             finish(graph, park, Exit.Park, operation(wait, 2, source.span, arguments), edges(after), new[Arm]())
-            return Value { state = after expression = empty(source.span) }
+            return Value {
+                state = after
+                expression = empty(source.span)
+            }
         }
         let reading = source.text == "async_read"
         if source.text == "async_process_capture" {
-            assert source.ty == 1 && length(arguments) == 7
+            assert source.ty == 1 && length(arguments) == 9
             let inputs = new[Expr]()
             var input = 0
-            while input < 5 {
+            while input < 6 {
                 push(inputs, get(arguments, input))
                 input = input + 1
             }
@@ -221,10 +231,15 @@ fn external_parking(graph Graph, source Expr, start Int, loop Loop) Value {
             let after = state(graph)
             jump(graph, current, park)
             finish(graph, park, Exit.Park, operation("task_wait_process_capture", 2, source.span, inputs), edges(after), new[Arm]())
-            let output = operation("task_process_capture_result", 1, source.span, pair(get(arguments, 5), get(arguments, 6)))
+            let outputs = pair(get(arguments, 6), get(arguments, 7))
+            push(outputs, get(arguments, 8))
+            let output = operation("task_process_capture_result", 1, source.span, outputs)
             let saved = temporary(graph, 1)
             save(graph, after, saved, output)
-            return Value { state = after expression = local(graph, saved) }
+            return Value {
+                state = after
+                expression = local(graph, saved)
+            }
         }
         let resolving = source.text == "async_resolve"
         let bytes_result = reading || resolving
@@ -397,7 +412,7 @@ fn evaluate(graph Graph, source Expr, start Int, loop Loop) Value {
             expression = empty(source.span)
         }
     }
-    if source.kind == ExprKind.Binary &&(source.text == "&&" || source.text == "||") {
+    if source.kind == ExprKind.Binary && (source.text == "&&" || source.text == "||") {
         let values = one(get(source.children, 0))
         let short = boolean(source.text == "||", source.span)
         push(values, if source.text == "&&" {
@@ -434,11 +449,16 @@ fn evaluate(graph Graph, source Expr, start Int, loop Loop) Value {
     }
     let output = changed(source, source.text, children, source.falls)
     if current >= 0 && !source.falls {
-        append(graph, current, if statement(output.kind) { output } else {
-            node(ExprKind.Discard, 0, source.span, -1, one(output))
-        })
+        append(graph, current, if statement(output.kind) {
+                output
+            } else {
+                node(ExprKind.Discard, 0, source.span, -1, one(output))
+            })
         finish(graph, current, Exit.Unreachable, empty(source.span), new[Edge](), new[Arm]())
-        return Value { state = -1 expression = empty(source.span) }
+        return Value {
+            state = -1
+            expression = empty(source.span)
+        }
     }
     if statement(output.kind) {
         append(graph, current, output)

@@ -4625,7 +4625,16 @@ binary output streams are drained concurrently and copied back on the owner.
 Cancellation discards queued work or drains a running capture and reaps its
 direct child; it does not kill process trees or impose a hard timeout. The same
 four-worker pool bounds concurrent jobs, but active captures also use pipe
-threads. Output remains unbounded buffering, not streaming. See the
+threads. Without a limit, output buffering is unbounded. The overloads
+`capture(arguments[, options], limit)` and
+`capture_input(arguments, input[, options], limit)` instead return
+`Result[std.process.tasks.LimitedOutput, SpawnError]`: `output` retains the
+ordinary status and binary streams, and `stdout_truncated` / `stderr_truncated`
+report discarded suffixes independently. Each stream retains at most `limit`
+bytes; zero discards all bytes and negative limits return `InvalidOptions`.
+Both pipes still drain to EOF, without killing the child or imposing a timeout.
+The bound applies to captured output, not input size or child memory. This is
+bounded capture, not streaming. See the
 [process example](examples/async_processes/README.md).
 
 `std.net.tcp` provides a narrow numeric-address TCP path: await `listen` to bind
