@@ -888,6 +888,9 @@ fn invoke_ready(context Context, node Node, instance Instance, signature Signatu
     if reflection_intrinsic(context.env, signature.symbol) {
         discard validate_intrinsic(context.env, instance.signature)?
         if predicate_intrinsic(context.env, signature.symbol) {
+            if symbol(context.env, signature.symbol).name == "implies" {
+                return predicate_implication(context, node, get(instance.arguments, 0), get(instance.arguments, 1))
+            }
             return predicate_description(context, node, get(instance.arguments, 0), signature.result)
         }
         if symbol(context.env, signature.symbol).name == "from_fields" {

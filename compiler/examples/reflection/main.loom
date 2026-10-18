@@ -63,6 +63,7 @@ fn check_tree(schema Schema) {
 
 fn exercise() {
     predicate_trial()
+    weakening_trial()
     let point = describe_value(Point {
             x = 1,
             y = 2

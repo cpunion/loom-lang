@@ -157,6 +157,9 @@ projections, hygienic expression macros and explicit declaration generation use
 ordinary typing and visibility. Declaration generation is not an implicit
 fixed-point expansion. Reflection exposes filtered schemas, not extra access
 or conformance evidence.
+`std.reflect.predicates.implies` queries the existing checked weakening rules;
+an optional source witness binds both endpoint types. Unproved queries return
+false, never migration or application-compatibility evidence.
 Tracked files, build options and target properties bind checks, caches, editor
 freshness and receipts; pure evaluation cannot hide external I/O.
 

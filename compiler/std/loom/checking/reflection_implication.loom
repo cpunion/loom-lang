@@ -1,0 +1,89 @@
+// Read the complete refinement chain before probing a conversion. A query in
+// a constraint must not turn an uninitialized or recursively assumed predicate
+// into a Boolean fact. Other type graphs retain ordinary nominal identity.
+fn implication_base(context Context, node Node, ty Int) Result[Int, Failure] {
+    var current = ty
+    var depth = 0
+    while depth < 64 {
+        let phase = get(context.env.type_states, current).phase
+        if phase == 1 || phase == 3 {
+            return Result.Err(error(context, node, "recursive type implication query"))
+        }
+        if get(context.env.type_states, current).phase == 0 {
+            discard expand_type(context.env, current, 0)?
+        }
+        let shape = get(context.env.types, current)
+        if shape.kind != TypeKind.Refined {
+            return Result.Ok(current)
+        }
+        if length(shape.constraint) == 0 {
+            discard initialize_refinement(context.env, current)?
+        }
+        current = base_type(context.env, current)
+        depth = depth + 1
+    }
+    Result.Err(error(context, node, "type implication depth exhausted"))
+}
+
+fn predicate_implication(context Context, node Node, from Int, to Int) Result[Expr, Failure] {
+    if !concrete(context.env, from) || !concrete(context.env, to) {
+        return deferred(context, node, 2)
+    }
+    let source = implication_base(context, node, from)?
+    let target = implication_base(context, node, to)?
+    var proved = false
+    if source == target {
+        if from == to {
+            proved = true
+        } else {
+            // An immutable symbolic input has no caller facts, runtime value,
+            // cleanup or capture. Use a private queue, like helper implication;
+            // querying a helper must not keep it alive in the emitted program.
+            let scope = staging(predicate_scope(context.env, if get(context.env.types, to).kind == TypeKind.Refined {
+                        to
+                    } else {
+                        from
+                    })?, node)?
+            let probe = Context {
+                emit = false
+                ..scope
+            }
+            set(probe.locals, 0, Local {
+                    name = "self"
+                    ty = from
+                    mutable = false
+                    is_scoped = false
+                })
+            let value = atom(ExprKind.Local, from, node, 0)
+            match typed(probe, node, value, to) {
+                Result.Ok(_) => {
+                    proved = true
+                }
+                Result.Err(_) => {
+                    if get(context.env.types, to).kind == TypeKind.Refined {
+                        let input = pack_node(node, NodeKind.Name, "self", new[Node]())
+                        let ready = new[Option[Expr]]()
+                        push(ready, Option.Some(value))
+                        let inputs = CallInputs {
+                            nodes = source_nodes(input)
+                            ready = Option.Some(ready)
+                            effects = Option.None
+                        }
+                        match constrained(probe, node, get(context.env.types, to).symbol, new[Node](), inputs, to) {
+                            Result.Ok(converted) => {
+                                proved = converted.ty == to
+                            }
+                            Result.Err(_) => {
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Result.Ok(expression(ExprKind.Bool, 2, node, if proved {
+                "true"
+            } else {
+                "false"
+            }, -1, new[Expr](), true))
+}
