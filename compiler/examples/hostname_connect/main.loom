@@ -4,7 +4,6 @@ import std.net.tcp.listen
 import std.net.tcp.connect
 import std.net.tcp.accept
 import std.net.tcp.local_port
-import std.net.tcp.close_listener
 import std.net.tcp.close_stream
 import std.net.tcp.read
 import std.net.tcp.write_bytes
@@ -14,10 +13,7 @@ import std.bytes.get
 import std.io.write_text
 
 async fn exchange() Result[Int, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     // Resolution may return ::1 before 127.0.0.1. Source policy interleaves
     // address families and closes all losing attempts before returning.
     let client = connect("localhost", local_port(listener)?).await?

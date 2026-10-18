@@ -4636,12 +4636,16 @@ failure or Task cancellation closes its socket.
 WouldBlock writes until its initial buffer length is sent. Bytes contents are
 not snapshotted: alias mutation during a pending write can change existing data
 or cause a write error, but appended bytes stay outside the initial write end.
-`Listener` and
-`Stream` contain private owner-local token state, never a raw descriptor.
-Copying a wrapper aliases its identity; `close_listener`/`close_stream` revoke
-all copies and reject close while a pending or delivered readiness wait leases
-the socket. Use `defer` to close after suspension, and cancel/drain child waits
-before closing a shared socket. The [loopback example](examples/tcp_loopback/main.loom)
+`Listener` is a `MustScope` resource: bind `listen(...).await?` through `scoped`.
+Its Task payload retains cleanup before extraction; block exit closes it, and
+explicit `close_listener` is idempotent. Borrowing calls must be directly awaited.
+`detach(listener)?` deactivates that owner and transfers manual responsibility
+to a copyable `ListenerHandle`, for protocols retaining parallel accept Tasks.
+`ListenerHandle` and `Stream` contain private owner-local token state, never a raw
+descriptor. Copying a handle aliases its identity; closing revokes all copies
+and rejects while a pending or delivered readiness wait leases the socket.
+Use `defer` for manual handles and cancel/drain child waits before close.
+The [loopback example](examples/tcp_loopback/main.loom)
 exercises O0/O2, forced GC, close, and cancellation.
 
 For scoped numeric connections, `open(address).await` and

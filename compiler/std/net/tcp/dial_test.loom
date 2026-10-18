@@ -20,10 +20,7 @@ fn immediate_options() ConnectOptions {
 }
 
 async fn raced_fixture() Result[Int, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let address = local_address(listener)?
     let opened = new[Stream]()
     defer {
@@ -85,15 +82,12 @@ async fn cancelled_dial(address Text, opened List[Stream]) {
 }
 
 test async fn cancellation_closes_registered_sockets_even_before_result_extraction() {
-    let listener = match listen("127.0.0.1:0").await {
+    scoped listener = match listen("127.0.0.1:0").await {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
             return
         }
-    }
-    defer {
-        discard close_listener(listener)
     }
     let address = match local_address(listener) {
         Result.Ok(value) => value
@@ -115,15 +109,12 @@ test async fn cancellation_closes_registered_sockets_even_before_result_extracti
 }
 
 test async fn public_race_falls_back_and_reports_invalid_or_exhausted_inputs() {
-    let listener = match listen("127.0.0.1:0").await {
+    scoped listener = match listen("127.0.0.1:0").await {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
             return
         }
-    }
-    defer {
-        discard close_listener(listener)
     }
     let address = match local_address(listener) {
         Result.Ok(value) => value

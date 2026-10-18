@@ -281,6 +281,8 @@ Owned stream and framing factories accept synchronous or asynchronous acquisitio
 including typed errors; nested adapters dispose once after pending children drain.
 TCP `Connection` and owned chunks construct resources inside acquisition
 Tasks, retaining cleanup for unclaimed results as well as lexical consumers.
+TCP listeners now use the same scoped lifetime; explicitly detached
+`ListenerHandle` values retain manual close responsibility for parallel accepts.
 TLS retains that transport protection until handshake handoff, without changing
 its explicitly managed, full-duplex connection API.
 Other framing and general borrow-retaining adapters remain open.

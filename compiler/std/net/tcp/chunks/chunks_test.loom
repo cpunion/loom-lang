@@ -4,7 +4,6 @@ import std.net.tcp.accept
 import std.net.tcp.local_address
 import std.net.tcp.write_bytes
 import std.net.tcp.shutdown_write
-import std.net.tcp.close_listener
 import std.net.tcp.close_stream
 import std.net.tcp.abort
 import std.stream.collect
@@ -18,10 +17,7 @@ import std.task.Outcome
 import std.list.length
 
 async fn pair() Result[(std.net.tcp.Stream, std.net.tcp.Stream), TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let client = connect(local_address(listener)?).await?
     var handed_off = false
     defer {

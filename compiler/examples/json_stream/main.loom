@@ -7,7 +7,6 @@ import std.net.tcp.accept
 import std.net.tcp.local_address
 import std.net.tcp.write_bytes
 import std.net.tcp.shutdown_write
-import std.net.tcp.close_listener
 import std.net.tcp.close_stream
 import std.net.tcp.chunks.read
 import std.json.Value
@@ -86,10 +85,7 @@ async fn reply(server std.net.tcp.Stream, value Value) Result[Int, TcpError] {
 }
 
 async fn trial() Result[Bool, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let client = connect(local_address(listener)?).await?
     defer {
         discard close_stream(client)
@@ -136,10 +132,7 @@ async fn trial() Result[Bool, TcpError] {
 }
 
 async fn line_trial() Result[Bool, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let client = connect(local_address(listener)?).await?
     defer {
         discard close_stream(client)

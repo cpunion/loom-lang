@@ -16,7 +16,6 @@ import std.net.tcp.set_send_buffer_size
 import std.time.sleep_ms
 import std.option.Option
 import std.net.tcp.shutdown_write
-import std.net.tcp.close_listener
 import std.net.tcp.close_stream
 import std.net.tcp.read
 import std.net.tcp.write_bytes
@@ -53,10 +52,7 @@ fn buffer_option(value Result[Int, TcpError]) Int {
 }
 
 async fn exchange() Result[Int, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let listening = local_address(listener)?
     discard set_receive_buffer_size(listener, 32768)?
     discard set_send_buffer_size(listener, 32768)?

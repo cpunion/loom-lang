@@ -3,6 +3,8 @@ import std.bytes.length
 import std.net.dns.resolve
 import std.list.length
 import std.list.get
+import std.resource.MustScope
+import std.resource.Dispose
 
 // Tokens are owner-local identities, never operating-system descriptors.
 // Copying a wrapper copies its identity, not the native socket: after close,
@@ -12,7 +14,17 @@ record State {
 }
 
 pub record Listener {
+    state ListenerState
+}
+
+// Explicit manual handoff for protocols that retain concurrent accept Tasks.
+pub record ListenerHandle {
     state State
+}
+
+record ListenerState {
+    token Int
+    closed List[Bool]
 }
 
 pub record Stream {
@@ -66,11 +78,16 @@ pub async fn listen(address Text) Result[Listener, TcpError] {
     if token < 0 {
         return Result.Err(TcpError.Listen)
     }
-    Result.Ok(Listener {
-            state = State {
-                token = token
-            }
-        })
+    Result.Ok(owned_listener(token))
+}
+
+fn owned_listener(token Int) Listener {
+    Listener {
+        state = ListenerState {
+            token = token
+            closed = [false]
+        }
+    }
 }
 
 // A native socket is private to this Task until connect succeeds immediately or
@@ -118,6 +135,17 @@ pub async fn connect(host Text, port Int) Result[Stream, TcpError] {
 }
 
 pub fn local_port(listener Listener) Result[Int, TcpError] {
+    if listener.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    let port = socket_local_port(listener.state.token)
+    if port < 0 {
+        return Result.Err(TcpError.Port)
+    }
+    Result.Ok(port)
+}
+
+pub fn local_port(listener ListenerHandle) Result[Int, TcpError] {
     let port = socket_local_port(listener.state.token)
     if port < 0 {
         return Result.Err(TcpError.Port)
@@ -143,6 +171,13 @@ fn address(token Int, peer Int) Result[Text, TcpError] {
 
 // Numeric endpoints: IPv4 host:port or bracketed IPv6 [host]:port. No DNS.
 pub fn local_address(listener Listener) Result[Text, TcpError] {
+    if listener.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    address(listener.state.token, 0)
+}
+
+pub fn local_address(listener ListenerHandle) Result[Text, TcpError] {
     address(listener.state.token, 0)
 }
 
@@ -185,6 +220,26 @@ pub fn abort(stream Stream) Result[Int, TcpError] {
 }
 
 pub async fn accept(listener Listener) Result[Stream, TcpError] {
+    if listener.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    while true {
+        let token = socket_accept(listener.state.token)
+        if token >= 0 {
+            return Result.Ok(Stream {
+                    state = State {
+                        token = token
+                    }
+                })
+        }
+        if token != -2 {
+            return Result.Err(TcpError.Accept)
+        }
+        socket_wait(listener.state.token, 1).await
+    }
+}
+
+pub async fn accept(listener ListenerHandle) Result[Stream, TcpError] {
     while true {
         let token = socket_accept(listener.state.token)
         if token >= 0 {
@@ -239,10 +294,54 @@ pub async fn write_bytes(stream Stream, value Bytes) Result[Int, TcpError] {
 }
 
 pub fn close_listener(listener Listener) Result[Int, TcpError] {
+    close_listener_state(listener.state)
+}
+
+fn close_listener_state(state ListenerState) Result[Int, TcpError] {
+    if state.closed[0] {
+        return Result.Ok(0)
+    }
+    if socket_close(state.token) < 0 {
+        return Result.Err(TcpError.Close)
+    }
+    state.closed[0] = true
+    Result.Ok(0)
+}
+
+pub fn close_listener(listener ListenerHandle) Result[Int, TcpError] {
     if socket_close(listener.state.token) < 0 {
         return Result.Err(TcpError.Close)
     }
     Result.Ok(0)
+}
+
+pub fn detach(listener Listener) Result[ListenerHandle, TcpError] {
+    if listener.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    listener.state.closed[0] = true
+    Result.Ok(ListenerHandle {
+            state = State {
+                token = listener.state.token
+            }
+        })
+}
+
+impl MustScope for Listener {
+}
+
+impl Dispose for Listener {
+    fn dispose(self Listener) {
+    }
+}
+
+impl MustScope for ListenerState {
+}
+
+impl Dispose for ListenerState {
+    fn dispose(self ListenerState) {
+        discard close_listener_state(self)
+    }
 }
 
 pub fn close_stream(stream Stream) Result[Int, TcpError] {

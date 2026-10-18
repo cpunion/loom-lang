@@ -3,7 +3,9 @@ import std.resource.MustScope
 import std.stream.take
 import std.stream.collect
 import std.task.all
-import std.net.tcp.Listener
+import std.net.tcp.ListenerHandle
+import std.net.tcp.detach
+import std.net.tcp.close_listener
 import std.net.tcp.chunks.OwnedChunks
 import std.net.tcp.chunks.open
 import std.net.tcp.read
@@ -71,7 +73,7 @@ async fn receive_owned(input ConnectionInput) Result[Bool, TcpError] {
         })
 }
 
-async fn send_owned(listener std.net.tcp.Listener) Result[Int, TcpError] {
+async fn send_owned(listener ListenerHandle) Result[Int, TcpError] {
     let connection = accept(listener).await?
     defer {
         discard close_stream(connection)
@@ -90,7 +92,8 @@ async fn send_owned(listener std.net.tcp.Listener) Result[Int, TcpError] {
 }
 
 async fn owned_trial() Result[Bool, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
+    scoped owner = listen("127.0.0.1:0").await?
+    let listener = detach(owner)?
     defer {
         discard close_listener(listener)
     }

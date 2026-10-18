@@ -1,7 +1,6 @@
 import std.task.cancel
 import std.task.Outcome
 import std.net.tcp.listen
-import std.net.tcp.close_listener
 import std.net.tcp.local_port
 import std.net.tcp.accept
 import std.task.deadline.after_ns
@@ -33,15 +32,12 @@ test async fn configuration_errors_do_not_open_a_transport() {
 }
 
 test async fn cancellation_drains_handshake_and_closes_the_transport() {
-    let listener = match listen("127.0.0.1:0").await {
+    scoped listener = match listen("127.0.0.1:0").await {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
             return
         }
-    }
-    defer {
-        discard close_listener(listener)
     }
     let address = match std.net.tcp.local_address(listener) {
         Result.Ok(value) => value
@@ -78,15 +74,12 @@ test async fn cancellation_drains_handshake_and_closes_the_transport() {
 }
 
 async fn cancelled_acquisition(hostname Bool) {
-    let listener = match listen("127.0.0.1:0").await {
+    scoped listener = match listen("127.0.0.1:0").await {
         Result.Ok(value) => value
-        _ => {
+        Result.Err(_) => {
             assert false
             return
         }
-    }
-    defer {
-        discard close_listener(listener)
     }
     let address = match std.net.tcp.local_address(listener) {
         Result.Ok(value) => value

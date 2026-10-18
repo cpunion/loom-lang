@@ -5,10 +5,7 @@ import std.bytes.to_text
 import std.text.to_bytes
 
 async fn bounded_write_fixture() Result[Int, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let client = connect(local_address(listener)?).await?
     defer {
         discard close_stream(client)
