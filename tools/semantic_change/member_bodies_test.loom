@@ -1,0 +1,110 @@
+fn generic_member_body_revision(first Bool, second Bool) Revision {
+    let source = replace(replace("""
+        concept Read {
+            fn first[T](self Self, input T) T {
+                discard self
+                FIRST
+            }
+            fn second[U](self Self, input U) U {
+                discard self
+                SECOND
+            }
+        }
+        impl Read for Int {
+        }
+        fn entry() Int {
+            let value = 7
+            discard value.first(true)
+            value.second(9)
+        }
+        """, "FIRST", if first {
+                "let kept = input\n        kept"
+            } else {
+                "input"
+            }), "SECOND", if second {
+            "let other = input\n        other"
+        } else {
+            "input"
+        })
+    package_fixture("sample", "pkg", [File {
+                path = "methods.loom"
+                text = source
+            }]).revision
+}
+
+test fn generic_default_method_bodies_retain_abstract_bindings_after_composition() {
+    let base = generic_member_body_revision(false, false)
+    let left = generic_member_body_revision(true, false)
+    let right = generic_member_body_revision(false, true)
+    assert match merge(base, left, right) {
+        Result.Ok(value) => contains(get(value.files, 0).text, "let kept = input") &&
+        contains(get(value.files, 0).text, "let other = input")
+        Result.Err(message) => {
+            discard write_error(message)
+            false
+        }
+    }
+}
+
+fn comptime_helper_body_revision(changed Bool, edited Bool) Revision {
+    let source = replace(replace("""
+        fn choose_integer() Bool {
+            FLAG
+        }
+        fn pick(value Int) Int {
+            value
+        }
+        fn pick(value Bool) Int {
+            if value { 2 } else { 3 }
+        }
+        fn entry() Int {
+            let value = comptime if choose_integer() { 1 } else { true }
+            pick(value) + EXTRA
+        }
+        """, "FLAG", if changed {
+                "false"
+            } else {
+                "true"
+            }), "EXTRA", if edited {
+            "1"
+        } else {
+            "0"
+        })
+    package_fixture("sample", "pkg", [File {
+                path = "main.loom"
+                text = source
+            }]).revision
+}
+
+test fn composed_bodies_require_reference_evidence_even_when_ordinary_checking_passes() {
+    let base = comptime_helper_body_revision(false, false)
+    let left = comptime_helper_body_revision(true, false)
+    let right = comptime_helper_body_revision(false, true)
+    let candidate = match proposed(base, left, right) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            base
+        }
+    }
+    // The mixed result type-checks but selects another overload. Compile-time
+    // expansion lacks complete source-reference evidence, so it cannot authorize
+    // composition merely because ordinary checking succeeds.
+    assert match checked(candidate, no_proof_backend()) {
+        Result.Ok(_) => true
+        Result.Err(message) => {
+            discard write_error(message)
+            false
+        }
+    }
+    assert match merge(base, left, right) {
+        Result.Err(message) => {
+            if message != "retained source reference form has no binding comparison support" {
+                discard write_error(message)
+            }
+            message == "retained source reference form has no binding comparison support"
+        }
+        Result.Ok(_) => false
+    }
+}

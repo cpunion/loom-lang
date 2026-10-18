@@ -185,22 +185,22 @@ fn package_target(analysis Analysis, scopes List[PackageScope], package Int, pat
 
 fn compare_package_entry(before Analysis, before_scopes List[PackageScope], original Entry,
     after Analysis, after_scopes List[PackageScope], current Entry, package Int, directory Text) Result[Bool, Text] {
-    let sites = reference_sites(original)?
+    let sites = retained_sites(original, current)?
     var index = 0
     while index < length(sites) {
-        let offset = get(sites, index)
+        let site = get(sites, index)
         let expected = package_target(before, before_scopes, package,
             if directory == "" {
                 original.path
             } else {
                 join_path(directory, original.path)
-            }, original.start + offset, original.abstract_body)?
+            }, original.start + site.before, original.abstract_body)?
         let target = package_target(after, after_scopes, package,
             if directory == "" {
                 current.path
             } else {
                 join_path(directory, current.path)
-            }, current.start + offset, current.abstract_body)?
+            }, current.start + site.after, current.abstract_body)?
         if !same_target(expected, target) {
             return Result.Err("package merge changed a retained checked reference binding")
         }
@@ -230,10 +230,8 @@ fn compare_packages(before Analysis, original List[PackageRevision], after Analy
             let retained_index = entry_index(previous.indexed.entries, current.id)
             if retained_index >= 0 && package_entry_active(after, scope.package, current)? {
                 let retained = get(previous.indexed.entries, retained_index)
-                if retained.body == current.body {
-                    discard compare_package_entry(before, old_scopes, retained, after, new_scopes,
-                        current, scope.package, scope.directory)?
-                }
+                discard compare_package_entry(before, old_scopes, retained, after, new_scopes,
+                    current, scope.package, scope.directory)?
             }
             entry = entry + 1
         }

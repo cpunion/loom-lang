@@ -4,6 +4,7 @@ import std.loom.analysis.inspect_at
 import std.loom.analysis.inspect_independent
 import std.loom.analysis.inspect_references
 import std.loom.analysis.reference_obligations
+import std.loom.analysis.ReferenceObligations
 import std.loom.analysis.abstract_reference_scope
 import std.loom.analysis.Location
 import std.loom.ast.Node
@@ -256,7 +257,7 @@ fn indexed(revision Revision) Result[Indexed, Text] {
         })
 }
 
-fn reference_sites(entry Entry) Result[List[Int], Text] {
+fn entry_references(entry Entry) Result[ReferenceObligations, Text] {
     let tree = match parse(entry.body) {
         Result.Ok(value) => value
         Result.Err(_) => {
@@ -274,6 +275,11 @@ fn reference_sites(entry Entry) Result[List[Int], Text] {
         }
     }
     let obligations = reference_obligations(get(tree.children, 0), tokens)
+    Result.Ok(obligations)
+}
+
+fn reference_sites(entry Entry) Result[List[Int], Text] {
+    let obligations = entry_references(entry)?
     if length(obligations.unknown) != 0 {
         return Result.Err("source reference form has no binding comparison support")
     }
@@ -404,8 +410,8 @@ fn compare_retained(source Analysis, source_revision Indexed, merged Analysis, m
         let source_index = entry_index(source_revision.entries, after.id)
         if source_index >= 0 {
             let before = get(source_revision.entries, source_index)
-            if before.body == after.body {
-                let sites = reference_sites(after)?
+            let sites = retained_sites(before, after)?
+            if length(sites) > 0 {
                 let source_file = analysis_file(source, directory, before.path)
                 let merged_file = analysis_file(merged, directory, after.path)
                 if source_file < 0 || merged_file < 0 {
@@ -415,8 +421,8 @@ fn compare_retained(source Analysis, source_revision Indexed, merged Analysis, m
                 let merged_offsets = new[Int]()
                 var site = 0
                 while site < length(sites) {
-                    push(source_offsets, before.start + get(sites, site))
-                    push(merged_offsets, after.start + get(sites, site))
+                    push(source_offsets, before.start + get(sites, site).before)
+                    push(merged_offsets, after.start + get(sites, site).after)
                     site = site + 1
                 }
                 let source_evidence = inspect_references(source, source_file, source_offsets)
@@ -589,7 +595,7 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
             }
             if edited_left.body != original.body && edited_right.body != original.body &&
             edited_left.body != edited_right.body {
-                return Result.Err(concat("concurrent body edits: ", original.id))
+                discard joined_member_bodies(original, edited_left, edited_right)?
             }
         }
         index = index + 1
@@ -636,25 +642,35 @@ fn validate_added(base Indexed, branch Indexed, other Indexed) Result[Bool, Text
     Result.Ok(added)
 }
 
-fn chosen_entry(base Indexed, left Indexed, right Indexed, id Text) Entry {
+fn chosen_entry(base Indexed, left Indexed, right Indexed, id Text) Result[Entry, Text] {
     let edited_left = entry_index(left.entries, id)
     let edited_right = entry_index(right.entries, id)
     let base_index = entry_index(base.entries, id)
     if base_index < 0 {
-        return if edited_left >= 0 {
+        return Result.Ok(if edited_left >= 0 {
             get(left.entries, edited_left)
         } else {
             get(right.entries, edited_right)
-        }
+        })
     }
     let original = get(base.entries, base_index)
+    if edited_left >= 0 && edited_right >= 0 {
+        let a = get(left.entries, edited_left)
+        let b = get(right.entries, edited_right)
+        if a.body != original.body && b.body != original.body && a.body != b.body {
+            return Result.Ok(Entry {
+                    body = joined_member_bodies(original, a, b)?
+                    ..a
+                })
+        }
+    }
     if edited_left >= 0 && get(left.entries, edited_left).body != original.body {
-        return get(left.entries, edited_left)
+        return Result.Ok(get(left.entries, edited_left))
     }
     if edited_right >= 0 && get(right.entries, edited_right).body != original.body {
-        return get(right.entries, edited_right)
+        return Result.Ok(get(right.entries, edited_right))
     }
-    original
+    Result.Ok(original)
 }
 
 fn project_of(revision Revision) Result[Project, Text] {
@@ -1037,7 +1053,7 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
     let merged = Revision {
         package_name = base.package_name
         files = files
-        identities = joined_identities(original, edited_left, edited_right)
+        identities = joined_identities(original, edited_left, edited_right)?
     }
     discard indexed(merged)?
     Result.Ok(merged)
@@ -1060,11 +1076,12 @@ fn merge_same_names(base Revision, left Revision, right Revision, backend ProofB
     needs_result_import(right, true)? {
         return Result.Err("import-bearing merges require an explicit pinned project context")
     }
-    discard checked(merged, backend)?
     let original = indexed(base)?
-    if !same_layout(original, indexed(left)?) || !same_layout(original, indexed(right)?) {
+    if binding_review_needed(original, indexed(left)?, indexed(right)?, indexed(merged)?) {
         let project = project_of(base)?
         discard checked_bindings(left, right, merged, "", project, project, backend)?
+    } else {
+        discard checked(merged, backend)?
     }
     Result.Ok(merged)
 }
@@ -1100,7 +1117,7 @@ fn merge_same_names_with_context(base Revision, left Revision, right Revision,
         return Result.Err("merged imports differ from the pinned project context")
     }
     discard checked_context(base, merged, production, tests, directory, backend)?
-    if !same_layout(original, indexed(left)?) || !same_layout(original, indexed(right)?) {
+    if binding_review_needed(original, indexed(left)?, indexed(right)?, indexed(merged)?) {
         discard checked_bindings(left, right, merged, directory, production, tests, backend)?
     }
     Result.Ok(merged)
