@@ -1,0 +1,91 @@
+test fn ordinary_comptime_locals_keep_checked_types_and_definition_locations() {
+    let source = """
+        fn identity(value Int) Int {
+            value
+        }
+        fn unused() Int {
+            comptime {
+                let callback fn(Int) Int = identity
+                let kept = callback(7)
+                kept
+            }
+        }
+        fn main() {
+        }
+        """
+    let analysis = accepted(input(source))
+    let functions = length(analysis.program.functions)
+    let symbols = length(analysis.bindings.symbols)
+    let callback = inspection(analysis, source, "callback(7)")
+    let declared = query_offset(source, "callback fn")
+    only_type(callback, "fn(Int) Int")
+    only_definition(callback, declared, declared + 8)
+    let kept = inspection(analysis, source, "kept\n")
+    let binding = query_offset(source, "kept =")
+    only_type(kept, "Int")
+    only_definition(kept, binding, binding + 4)
+    only_definition(inspection(analysis, source, "callback fn"), declared, declared + 8)
+    assert length(analysis.program.functions) == functions && length(analysis.bindings.symbols) == symbols
+}
+
+test fn comptime_closure_captures_use_their_staged_parent_not_runtime_function_indices() {
+    let source = """
+        fn unused() Int {
+            comptime {
+                let saved = 4
+                let apply = fn(extra Int) Int {
+                    saved + extra
+                }
+                apply(3)
+            }
+        }
+        fn main() {
+        }
+        """
+    let analysis = accepted(input(source))
+    let saved = query_offset(source, "saved =")
+    only_definition(inspection(analysis, source, "saved +"), saved, saved + 5)
+    let extra = query_offset(source, "extra Int")
+    only_definition(inspection(analysis, source, "extra\n"), extra, extra + 5)
+    let apply = query_offset(source, "apply =")
+    only_definition(inspection(analysis, source, "apply(3)"), apply, apply + 5)
+}
+
+test fn repeated_comptime_values_keep_each_source_binding_when_evaluation_is_reused() {
+    let source = """
+        fn unused() {
+            discard comptime {
+                let item = 3 // first binding
+                item // first use
+            }
+            discard comptime {
+                let item = 3 // second binding
+                item // second use
+            }
+        }
+        fn main() {
+        }
+        """
+    let analysis = accepted(input(source))
+    let first = query_offset(source, "item = 3 // first")
+    let second = query_offset(source, "item = 3 // second")
+    only_definition(inspection(analysis, source, "item // first"), first, first + 4)
+    only_definition(inspection(analysis, source, "item // second"), second, second + 4)
+}
+
+test fn failed_comptime_evaluation_publishes_no_partial_local_query_facts() {
+    let source = """
+        fn broken() Int {
+            comptime {
+                let value = 3
+                value / 0
+            }
+        }
+        fn main() {
+        }
+        """
+    assert match inspect_independent(query_bindings(input(source)), 0, query_offset(source, "value /")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}

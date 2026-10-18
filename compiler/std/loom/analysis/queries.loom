@@ -7,6 +7,7 @@ import std.loom.typed.Function
 import std.loom.ast.has
 import std.option.Option
 import std.loom.checking.CheckedQuery
+import std.loom.checking.StagedQuery
 import std.loom.checking.SignatureHeader
 import std.loom.checking.TypeHeader
 import std.loom.checking.check_query
@@ -849,13 +850,25 @@ fn checked_inspection(analysis Analysis, file Int, offset Int, tokens List[Token
         } else {
             get(analysis.declarations, 0)
         }
+        stages = new[std.loom.checking.StagedQuery]()
     }
     match inspect_view(view, file, offset, tokens) {
         Option.Some(found) => Option.Some(found)
         Option.None => {
             match inspect_abstract_body(analysis, file, offset, tokens) {
                 Option.Some(found) => Option.Some(found)
-                Option.None => inspect_declaration_at(analysis, view, file, offset, tokens)
+                Option.None => {
+                    if ordinary_comptime_at(get(analysis.source.files, file).tree, offset) {
+                        match independent_inspection(analysis, file, offset, tokens) {
+                            Option.Some(found) => {
+                                return Option.Some(found)
+                            }
+                            Option.None => {
+                            }
+                        }
+                    }
+                    inspect_declaration_at(analysis, view, file, offset, tokens)
+                }
             }
         }
     }
@@ -993,10 +1006,60 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int, tokens List[Token])
         }
         index = index + 1
     }
+    index = 0
+    while index < length(analysis.stages) {
+        let stage = get(analysis.stages, index)
+        if stage.file == file && inside(stage.span, offset) {
+            let view = CheckedQuery {
+                functions = stage.functions
+                headers = new[SignatureHeader]()
+                type_headers = new[TypeHeader]()
+                // Stages are flat; inspecting one must not revisit its parent.
+                stages = new[StagedQuery]()
+                ..analysis
+            }
+            match inspect_view(view, file, offset, tokens) {
+                Option.Some(found) => {
+                    var item = 0
+                    while item < length(found.types) {
+                        add_type(report, get(found.types, item))
+                        item = item + 1
+                    }
+                    item = 0
+                    while item < length(found.definitions) {
+                        let location = get(found.definitions, item)
+                        add_location(report, location.file, location.span)
+                        item = item + 1
+                    }
+                }
+                Option.None => {
+                }
+            }
+        }
+        index = index + 1
+    }
     if length(report.types) == 0 && length(report.definitions) == 0 {
         return Option.None
     }
     Option.Some(report)
+}
+
+fn ordinary_comptime_at(node Node, offset Int) Bool {
+    if !inside(node.span, offset) {
+        return false
+    }
+    if node.kind == NodeKind.Comptime && length(node.children) == 1 &&
+    get(node.children, 0).kind == NodeKind.Block {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if ordinary_comptime_at(get(node.children, index), offset) {
+            return true
+        }
+        index = index + 1
+    }
+    false
 }
 
 // Parameters and direct match payloads need not have an expression at their

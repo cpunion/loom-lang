@@ -11,14 +11,21 @@ fn comptime_rename_case(name Text, location Text, answer Text, local Text) Revis
                 FUNCTION()
             }
         }
-        """, "LOCAL", local), "FUNCTION", name)
+        """, "LOCAL", replace(local, "\n", "\n        ")), "FUNCTION", name)
     renamed_case(name, location, body, caller)
 }
 
 test fn ordinary_comptime_call_renames_compose_with_moves_and_body_edits() {
-    let base = comptime_rename_case("amount", "value.loom", "1", "")
-    let branches = [comptime_rename_case("balance", "app.loom", "1", ""),
-        comptime_rename_case("amount", "value.loom", "2", "")]
+    let local = """
+        let saved = FUNCTION()
+        let apply = fn(extra Int) Int {
+            saved + extra
+        }
+        discard apply(1)
+        """
+    let base = comptime_rename_case("amount", "value.loom", "1", local)
+    let branches = [comptime_rename_case("balance", "app.loom", "1", local),
+        comptime_rename_case("amount", "value.loom", "2", local)]
     let context = rename_context(base)
     var order = 0
     while order < 2 {
@@ -62,7 +69,9 @@ test fn comptime_rename_rejects_a_capturing_staged_local() {
     let base = comptime_rename_case("amount", "value.loom", "1", "")
     let renamed = comptime_rename_case("balance", "value.loom", "1", "")
     let edited = comptime_rename_case("amount", "value.loom", "2", """
-        let balance = fn() Int { 7 }
+        let balance = fn() Int {
+            7
+        }
         discard balance
         """)
     assert match checked(edited, no_proof_backend()) {
@@ -72,14 +81,14 @@ test fn comptime_rename_rejects_a_capturing_staged_local() {
             false
         }
     }
-    // The program is valid, but a staged local still needs complete checked
-    // binding evidence before a rename can safely rewrite a call beside it.
+    // Both sources are valid. The staged local now has checked evidence, and
+    // rewriting amount() would select that local instead of the renamed function.
     assert match merge(base, renamed, edited) {
         Result.Err(message) => {
-            if !contains(message, "no checked binding evidence") {
+            if !contains(message, "rename changed a checked reference binding") {
                 discard write_error(message)
             }
-            contains(message, "no checked binding evidence")
+            contains(message, "rename changed a checked reference binding")
         }
         Result.Ok(_) => false
     }

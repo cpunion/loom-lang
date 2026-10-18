@@ -52,7 +52,10 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
     let project = input("""
         import std.build.input_file
         fn main() {
-            let message = input_file("message.txt")
+            let message = comptime {
+                let captured = input_file("message.txt")
+                captured
+            }
             discard message
         }
         """)
@@ -162,4 +165,19 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
         Option.Some(found) => length(found.types) == 1 && get(found.types, 0) == "Text"
         Option.None => false
     }
+    let staged = query_offset(get(project.files, 0).text, "captured\n")
+    assert match inspect_independent(analysis.bindings, 0, staged) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    let found = match inspect_independent(analysis, 0, staged) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    only_type(found, "Text")
+    let declaration_site = query_offset(get(project.files, 0).text, "captured =")
+    only_definition(found, declaration_site, declaration_site + 8)
 }
