@@ -99,8 +99,9 @@ Public reference queries share a token stream for a batch or exact-name scan,
 retaining unanswered and ambiguous candidates. Editor and semantic-change
 consumers share this evidence without treating it as complete source coverage.
 Compiler-owned reference obligations also expose unsupported source ranges;
-semantic merge uses them for bounded generics and cleanup blocks instead of
-maintaining a second syntax whitelist. All required binding checks still apply.
+semantic merge uses them for bounded generics, cleanup and ordinary compile-time
+blocks instead of maintaining a second syntax whitelist. Static branch selection
+and generated forms retain unknown ranges; all required binding checks still apply.
 Default methods use their implicit abstract `Self` scope; valid abstract evidence
 is required without inventing implementations or dropping observed-target checks.
 Their IDs and spans belong to a snapshot, not persistent semantic history.

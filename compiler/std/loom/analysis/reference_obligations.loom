@@ -87,10 +87,17 @@ fn reference_children(node Node, tokens List[Token], parameters List[Text], outp
 
 fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited List[Text], output ReferenceObligations, pattern Bool, inherited_self Bool) {
     let kind = node.kind
-    if has(node, NodeKind.ExpansionId) || kind == NodeKind.ExpansionId ||
-    (kind == NodeKind.Comptime && length(node.children) != 0) {
+    if has(node, NodeKind.ExpansionId) || kind == NodeKind.ExpansionId {
         push(output.unknown, node.span)
         return
+    }
+    if kind == NodeKind.Comptime && length(node.children) != 0 {
+        // An ordinary block keeps source-reference roles across staging. This
+        // does not establish checked bindings or cover selected/generated AST.
+        if length(node.children) != 1 || get(node.children, 0).kind != NodeKind.Block {
+            push(output.unknown, node.span)
+            return
+        }
     }
     // Names inside patterns introduce locals. Their later uses are ordinary
     // references, while nominal paths and field labels still resolve bindings.

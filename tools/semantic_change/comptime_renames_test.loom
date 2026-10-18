@@ -1,0 +1,86 @@
+fn comptime_rename_case(name Text, location Text, answer Text, local Text) Revision {
+    let body = replace(replace("""
+        fn FUNCTION() Int {
+            ANSWER
+        }
+        """, "FUNCTION", name), "ANSWER", answer)
+    let caller = replace(replace("""
+        fn entry() Int {
+            comptime {
+                LOCAL
+                FUNCTION()
+            }
+        }
+        """, "LOCAL", local), "FUNCTION", name)
+    renamed_case(name, location, body, caller)
+}
+
+test fn ordinary_comptime_call_renames_compose_with_moves_and_body_edits() {
+    let base = comptime_rename_case("amount", "value.loom", "1", "")
+    let branches = [comptime_rename_case("balance", "app.loom", "1", ""),
+        comptime_rename_case("amount", "value.loom", "2", "")]
+    let context = rename_context(base)
+    var order = 0
+    while order < 2 {
+        let left = get(branches, order)
+        let right = get(branches, 1 - order)
+        let merged = match merge(base, left, right) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+                base
+            }
+        }
+        assert get(merged.files, 0).text == ""
+        assert contains(get(merged.files, 1).text, """
+            fn balance() Int {
+                2
+            }
+            """) &&
+        contains(get(merged.files, 1).text, "balance()") && !contains(get(merged.files, 1).text, "amount")
+        assert match merge_with_context(base, left, right, context, context, "pkg") {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        assert match merge_packages(generic_package_case(base), generic_package_case(left),
+            generic_package_case(right), context, context) {
+            Result.Ok(_) => true
+            Result.Err(message) => {
+                discard write_error(message)
+                false
+            }
+        }
+        order = order + 1
+    }
+}
+
+test fn comptime_rename_rejects_a_capturing_staged_local() {
+    let base = comptime_rename_case("amount", "value.loom", "1", "")
+    let renamed = comptime_rename_case("balance", "value.loom", "1", "")
+    let edited = comptime_rename_case("amount", "value.loom", "2", """
+        let balance = fn() Int { 7 }
+        discard balance
+        """)
+    assert match checked(edited, no_proof_backend()) {
+        Result.Ok(_) => true
+        Result.Err(message) => {
+            discard write_error(message)
+            false
+        }
+    }
+    // The program is valid, but a staged local still needs complete checked
+    // binding evidence before a rename can safely rewrite a call beside it.
+    assert match merge(base, renamed, edited) {
+        Result.Err(message) => {
+            if !contains(message, "no checked binding evidence") {
+                discard write_error(message)
+            }
+            contains(message, "no checked binding evidence")
+        }
+        Result.Ok(_) => false
+    }
+}

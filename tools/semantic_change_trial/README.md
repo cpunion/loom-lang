@@ -141,6 +141,9 @@ Generic bodies require checked abstract bindings, not guessed type arguments
 or only the observed concrete instances. Those bindings must agree. Every
 reference must still have a unique checked definition;
 unselected static branches and unsupported generic forms require resolution.
+Ordinary `comptime { ... }` blocks contribute source references through the same
+compiler-owned rules. Missing staged-local bindings and generated source still
+require resolution, not a guessed compile-time execution context.
 Exported macro providers require explicit resolution for rename
 composition, even without a current invocation in the selected package.
 Source-token checks cannot preserve their hidden definition-context references.
