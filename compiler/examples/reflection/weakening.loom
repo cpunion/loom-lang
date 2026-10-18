@@ -14,7 +14,26 @@ fn relation[From, To]() Bool {
     implies[From, To]()
 }
 
+fn widen[From, To](value From) To
+requires implies[From, To]() {
+    comptime if std.reflect.describe[To]().types[0].kind == Kind.Refined {
+        To(value)
+    } else {
+        value
+    }
+}
+
+fn checked_identity[From, To](value Int) Int
+requires relation[From, To]()
+ensures result == value {
+    value
+}
+
 fn weakening_trial() {
+    let positive = Positive(7)
+    let widened = widen[Positive, Nonnegative](positive)
+    assert widened == 7 && widen[Positive, Int](positive) == 7
+    assert checked_identity[Positive, Nonnegative](7) == 7
     assert implies[Positive, Nonnegative]()
     assert implies[SmallPositive, Positive]()
     assert implies[Positive, Int]() && implies[Int, AllIntegers]()

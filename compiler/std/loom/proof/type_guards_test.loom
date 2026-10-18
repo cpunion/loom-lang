@@ -35,6 +35,30 @@ test fn private_type_decisions_are_fresh_but_other_deferred_values_remain_unprov
         }, [])
 }
 
+test fn type_query_entry_conditions_are_not_postcondition_axioms() {
+    let guard = expression(ExprKind.Deferred, 2, "$typeguard", -1, [])
+    assert total_scalar(guard) && !entry_guard_expression(guard)
+    assert !conjunction_implies(guard, guard)
+    let source = Function {
+        preconditions = [guard]
+        ..fixture(literal("1"), [], operation("==", local(1), literal("1")))
+    }
+    assert verified(source)
+    assert match verify_with_helpers(empty_proof_program(), source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let wrong = Function {
+        postconditions = [guard]
+        ..source
+    }
+    assert !verified(wrong)
+    assert match verify_with_helpers(empty_proof_program(), wrong) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
 test fn private_pack_entries_are_fresh_and_require_abstract_types() {
     let entry = expression(ExprKind.Deferred, 0, "$packentry", -1, [])
     let proof = verification(fixture(literal("0"), [], literal("true")),

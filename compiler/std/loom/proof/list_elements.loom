@@ -322,7 +322,7 @@ fn established_conditions(proof Verification, conditions List[Expr], state State
     var reads = false
     var index = 0
     while index < length(conditions) {
-        reads = reads || contains_list_read(get(conditions, index))
+        reads = reads || contains_list_read(get(conditions, index)) || contains_type_guard(get(conditions, index))
         index = index + 1
     }
     if !reads && !proof.shared {
