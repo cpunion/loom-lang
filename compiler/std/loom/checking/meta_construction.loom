@@ -47,8 +47,7 @@ fn complete_structural_types(env Environment) {
         push(env.type_states, TypeState {
                 phase = 2,
                 task_width = -1,
-                list_writes = 0
-                stable_extent = false
+                sequence = SequencePolicy.Checked
             })
     }
 }

@@ -150,7 +150,7 @@ fn constraint_input_origin(env Environment, value Expr, depth Int) InputOrigin {
 
 fn constraint_input_writes(env Environment, value Expr, depth Int) Int {
     if constraint_weakened(env, value) {
-        return get(env.type_states, get(value.children, 0).ty).list_writes
+        return sequence_writes(get(env.type_states, get(value.children, 0).ty).sequence)
     }
     if depth >= 64 {
         return 0

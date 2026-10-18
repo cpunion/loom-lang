@@ -147,7 +147,7 @@ fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool
     index = 6
     while env.has_refinements && index < length(env.types) {
         if constrained_sequence(env, index) {
-            var writes = get(env.type_states, index).list_writes
+            var writes = sequence_writes(get(env.type_states, index).sequence)
             var changed = 0
             while changed < length(modified) {
                 let update = get(modified, changed)

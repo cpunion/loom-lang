@@ -1,6 +1,6 @@
 // A resize-protected sequence can change elements, but not its outer extent.
 // Revalidate the child invariant rather than depending on declaration order or
-// an uninitialized list_writes entry. Only this predicate's reachable types are
+// an uninitialized policy entry. Only this predicate's reachable types are
 // visited, and recursive stability queries never supply their own evidence.
 fn invariant_header_types(env Environment, root Int, checking List[Int]) List[Int] {
     let pending = ints(root)
@@ -20,8 +20,7 @@ fn invariant_header_types(env Environment, root Int, checking List[Int]) List[In
                             if writes == 1 {
                                 let state = get(env.type_states, ty)
                                 set(env.type_states, ty, TypeState {
-                                        list_writes = 1
-                                        stable_extent = true
+                                        sequence = SequencePolicy.StableExtent
                                         ..state
                                     })
                                 push(stable, ty)
@@ -70,7 +69,7 @@ fn stable_extent_guarantees(env Environment) List[std.loom.proof.InputGuarantee]
     var ty = 6
     while env.has_refinements && ty < length(env.types) {
         let state = get(env.type_states, ty)
-        if state.phase == 2 && state.stable_extent && state.list_writes == 1 {
+        if state.phase == 2 && state.sequence == SequencePolicy.StableExtent {
             push(protected, std.loom.proof.InputGuarantee {
                     ty = ty
                     writes = 1

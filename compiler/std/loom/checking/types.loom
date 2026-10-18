@@ -93,8 +93,7 @@ fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
         push(env.type_states, TypeState {
                 phase = 2
                 task_width = -1
-                list_writes = 0
-                stable_extent = false
+                sequence = SequencePolicy.Checked
             })
     }
     ty
@@ -363,8 +362,7 @@ fn data_type_grouped(env Environment, declaration Int, arguments List[Int], widt
     push(env.type_states, TypeState {
             phase = 0
             task_width = -1
-            list_writes = 0
-            stable_extent = false
+            sequence = SequencePolicy.Checked
         })
     if env.expand_data {
         discard expand_type(env, id, depth)?
@@ -379,8 +377,7 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     set(env.type_states, id, TypeState {
             phase = 1
             task_width = -1
-            list_writes = 0
-            stable_extent = get(env.type_states, id).stable_extent
+            sequence = sequence_policy(0, get(env.type_states, id).sequence)
         })
     let shape = get(env.types, id)
     let declaration = shape.symbol
@@ -457,8 +454,7 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     set(env.type_states, id, TypeState {
             phase = 2
             task_width = -1
-            list_writes = 0
-            stable_extent = get(env.type_states, id).stable_extent
+            sequence = sequence_policy(0, get(env.type_states, id).sequence)
         })
     if kind == TypeKind.Refined && length(arguments) != 0 {
         let template = data_type(env, declaration, abstract_arguments(env, length(arguments)), depth + 1)?

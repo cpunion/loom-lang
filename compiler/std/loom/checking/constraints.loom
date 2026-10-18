@@ -137,8 +137,7 @@ fn refinement_expression(scope Context, ty Int) Result[Expr, Failure] {
     set(scope.env.type_states, ty, TypeState {
             phase = 3
             task_width = state.task_width
-            list_writes = state.list_writes
-            stable_extent = state.stable_extent
+            sequence = state.sequence
         })
     let checked = expr(scope, predicate_node(scope.env, get(scope.env.types, ty).symbol), 2)
     set(scope.env.type_states, ty, state)
@@ -227,7 +226,7 @@ fn validate_refinement(env Environment, ty Int, checking Option[List[Int]]) Resu
             return Result.Err(failure(env, owner, predicate, concat("type constraint: ", failed.message)))
         }
     }
-    if get(env.type_states, ty).stable_extent && writes != 1 {
+    if sequence_dependency(get(env.type_states, ty).sequence) && writes != 1 {
         return Result.Err(failure(env, owner, predicate, "a persistent constraint requires an unchanged sequence extent policy"))
     }
     Result.Ok(writes)
@@ -250,8 +249,7 @@ fn initialize_refinement(env Environment, ty Int) Result[Bool, Failure] {
     set(env.type_states, ty, TypeState {
             phase = state.phase
             task_width = state.task_width
-            list_writes = writes
-            stable_extent = state.stable_extent
+            sequence = sequence_policy(writes, state.sequence)
         })
     Result.Ok(true)
 }
@@ -290,8 +288,7 @@ fn refinements(env Environment) Result[Bool, Failure] {
             set(env.type_states, index, TypeState {
                     phase = state.phase
                     task_width = state.task_width
-                    list_writes = writes
-                    stable_extent = state.stable_extent
+                    sequence = sequence_policy(writes, state.sequence)
                 })
         }
         index = index + 1
