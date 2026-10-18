@@ -1,0 +1,124 @@
+import std.net.http.client.Request
+import std.net.http.client.Options
+import std.net.http.client.Error
+import std.net.http.client.TransportError
+import std.net.http.client.options
+import std.net.http.client.request
+import std.net.http.client.send
+import std.net.http.Header
+import std.net.http.Limits
+import std.net.http.ProtocolError
+import std.net.tls.Trust
+import std.net.tls.TlsError
+import std.file.read_bytes
+import std.process.arguments
+import std.bytes.new
+import std.bytes.length
+import std.bytes.get
+import std.bytes.set
+import std.text.to_bytes
+import std.list.length
+import std.result.Result
+import std.io.write_text
+
+fn loaded(path Text) Bytes {
+    match read_bytes(path) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            std.bytes.new()
+        }
+    }
+}
+
+async fn main() {
+    let args = arguments()
+    assert std.list.length(args) == 5
+    let mode = args[4]
+    let payload = if mode == "ok" {
+        loaded(args[3])
+    } else {
+        std.bytes.new()
+    }
+    let first = if std.bytes.length(payload) > 0 {
+        get(payload, 0)
+    } else {
+        0
+    }
+    let base = options()
+    let pending = send(Request {
+            body = payload
+            headers = [Header {
+                    name = "X-Snapshot"
+                    value = to_bytes("before")
+                }]
+            ..request(if mode == "ok" {
+                    "POST"
+                } else {
+                    "GET"
+                }, args[1])
+        }, Options {
+            trust = Trust.Certificates(loaded(args[2]))
+            limits = Limits {
+                body_bytes = if mode == "limit" {
+                    4
+                } else {
+                    base.limits.body_bytes
+                }
+                ..base.limits
+            }
+            max_informational = if mode == "interim-limit" {
+                2
+            } else {
+                base.max_informational
+            }
+            timeout_ns = 5000000000
+            ..base
+        })
+    if std.bytes.length(payload) > 0 {
+        set(payload, 0, if first == 0 {
+                255
+            } else {
+                0
+            })
+    }
+    let response = pending.await
+    if mode == "wrong-name" {
+        assert match response {
+            Result.Err(Error.Transport(TransportError.Tls(TlsError.Peer))) => true
+            _ => false
+        }
+        discard write_text("peer rejected\n")
+    } else if mode == "limit" || mode == "interim-limit" {
+        assert match response {
+            Result.Err(Error.Protocol(ProtocolError.Limit)) => true
+            _ => false
+        }
+        discard write_text("bounded protocol rejection\n")
+    } else if mode == "redirect" {
+        assert match response {
+            Result.Ok(value) => value.status == 302 && std.bytes.length(value.body) == 0
+            _ => false
+        }
+        discard write_text("redirect returned\n")
+    } else {
+        assert match response {
+            Result.Ok(value) => {
+                if value.status != 200 || std.bytes.length(value.body) != std.bytes.length(payload) ||
+                std.bytes.length(value.body) == 0 || get(value.body, 0) != first {
+                    false
+                } else {
+                    var index = 1
+                    var same = true
+                    while index < std.bytes.length(payload) {
+                        same = same && get(value.body, index) == get(payload, index)
+                        index = index + 1
+                    }
+                    same
+                }
+            }
+            _ => false
+        }
+        discard write_text("HTTPS response\n")
+    }
+}

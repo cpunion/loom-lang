@@ -3,6 +3,8 @@
 `std.net.http.client` performs one bounded, buffered HTTP(S) exchange using the
 source URL/message libraries and scoped TCP/TLS acquisition. There is no HTTP
 runtime or new dependency.
+The [interoperability fixture](../../../../examples/http_client/README.md) uses
+a real independent TLS peer; the native gate also runs the source package tests.
 
 ```loom
 let response = std.net.http.client.get("https://example.com/data").await?

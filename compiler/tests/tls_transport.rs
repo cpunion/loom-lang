@@ -231,6 +231,7 @@ fn unused_tls_imports_need_only_the_core_archive() {
         package.join("main.loom"),
         r#"
 import std.net.tls.default_client
+import std.net.http.client.get
 import std.time.sleep_ns
 
 async fn main() {
