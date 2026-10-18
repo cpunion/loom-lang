@@ -342,12 +342,12 @@ pub async fn connect(address Text, name Text, options ClientOptions) Result[std.
     outcome
 }
 
-pub async fn accept(listener Listener, options ServerOptions) Result[std.net.tls.Connection, TlsError] {
-    accept_transport(listener, options, accept_owned).await
+pub fn accept(listener Listener, options ServerOptions) Task[Result[std.net.tls.Connection, TlsError]] {
+    accept_transport(listener, options, accept_owned)
 }
 
-pub async fn accept(listener ListenerHandle, options ServerOptions) Result[std.net.tls.Connection, TlsError] {
-    accept_transport(listener, options, accept_owned).await
+pub fn accept(listener ListenerHandle, options ServerOptions) Task[Result[std.net.tls.Connection, TlsError]] {
+    accept_transport(listener, options, accept_owned)
 }
 
 async fn accept_transport[L](listener L, options ServerOptions,

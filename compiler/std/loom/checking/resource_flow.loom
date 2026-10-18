@@ -13,6 +13,8 @@ import std.result.Result
 
 record ResourceValue {
     protected Bool
+    // All protected origins are caller parameters, not locally scoped owners.
+    caller Bool
     fresh Bool
     pending Int
 }
@@ -43,9 +45,28 @@ record ResourceFlow {
 fn resource_value(protected Bool, fresh Bool, pending Int) ResourceValue {
     ResourceValue {
         protected = protected
+        caller = false
         fresh = fresh
         pending = pending
     }
+}
+
+fn resource_origin(value ResourceValue, caller Bool) ResourceValue {
+    ResourceValue {
+        caller = caller
+        ..value
+    }
+}
+
+fn resource_origins(left ResourceValue, right ResourceValue) Bool {
+    (!left.protected || left.caller) && (!right.protected || right.caller)
+}
+
+fn resource_task_return(flow ResourceFlow, value ResourceValue) Bool {
+    let current = get(flow.analysis.functions, flow.function)
+    // An async return would expose an inner Task after the caller's await.
+    !current.is_async && value.caller &&
+    get(flow.analysis.env.types, current.result).kind == TypeKind.Task
 }
 
 fn resource_error(flow ResourceFlow, expr Expr, message Text) Failure {
@@ -119,12 +140,12 @@ fn resource_join(flow ResourceFlow, branch ResourceFlow) {
     while index < length(flow.locals) {
         let prior = get(flow.locals, index)
         let next = get(branch.locals, index)
-        set(flow.locals, index, resource_value(prior.protected || next.protected, prior.fresh && next.fresh,
-                if prior.pending == next.pending {
-                    prior.pending
-                } else {
-                    -2
-                }))
+        set(flow.locals, index, resource_origin(resource_value(prior.protected || next.protected, prior.fresh && next.fresh,
+                    if prior.pending == next.pending {
+                        prior.pending
+                    } else {
+                        -2
+                    }), resource_origins(prior, next)))
         index = index + 1
     }
 }
@@ -173,7 +194,8 @@ fn resource_function(analysis ResourceAnalysis, id Int, borrowed List[Int]) Resu
     let locals = new[ResourceValue]()
     index = 0
     while index < length(current.locals) {
-        push(locals, resource_value(resource_seen(borrowed, index) || get(current.locals, index).is_scoped, false, -1))
+        push(locals, resource_origin(resource_value(resource_seen(borrowed, index) ||
+                    get(current.locals, index).is_scoped, false, -1), index < length(current.params)))
         index = index + 1
     }
     let automatic = new[Int]()
@@ -187,7 +209,7 @@ fn resource_function(analysis ResourceAnalysis, id Int, borrowed List[Int]) Resu
         returns = new[Bool]()
     }
     let value = resource_expression(flow, current.body, false)?
-    if value.protected {
+    if value.protected && !resource_task_return(flow, value) {
         return Result.Err(resource_error(flow, current.body, "a scoped value or borrowed receiver cannot escape through a return"))
     }
     if flow_resource(flow, current.result)? && current.body.falls && !value.fresh {
@@ -213,15 +235,20 @@ fn resource_function(analysis ResourceAnalysis, id Int, borrowed List[Int]) Resu
 
 fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Result[ResourceValue, Failure] {
     let borrowed = new[Int]()
+    var caller = true
     var index = 0
     while index < length(expr.children) {
         let child = get(expr.children, index)
         let value = resource_expression(flow, child, false)?
         if value.protected {
+            if get(flow.analysis.env.types, child.ty).kind == TypeKind.Task {
+                return Result.Err(resource_error(flow, child, "a Task borrowing a scoped resource must be awaited directly"))
+            }
             if ((expr.kind != ExprKind.Call && expr.kind != ExprKind.TaskCall) || expr.index < 0) && !flow_resource(flow, child.ty)? {
                 return Result.Err(resource_error(flow, child, "indirect borrowing requires a MustScope parameter"))
             }
             push(borrowed, index)
+            caller = caller && value.caller
         } else {
             if flow_resource(flow, child.ty)? {
                 return Result.Err(resource_error(flow, child, "a resource must enter scoped before a method call"))
@@ -229,13 +256,12 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Res
         }
         index = index + 1
     }
-    // A borrowed resource stays in the caller's scope until this exact call is
-    // awaited and its children drain. Do not let its Task escape into a local,
-    // another call, or a block whose owner may already have been disposed.
-    if length(borrowed) != 0 && task_value(flow.analysis.env, expr.ty) {
-        if !awaited {
-            return Result.Err(resource_error(flow, expr, "a Task borrowing a scoped resource must be awaited directly"))
-        }
+    // A borrowed Task is directly awaited or returned by a synchronous wrapper
+    // borrowing its own caller. The taint cannot enter ordinary bindings or
+    // another call; local owners and async inner-Task returns cannot escape.
+    let task_borrow = length(borrowed) != 0 && task_value(flow.analysis.env, expr.ty)
+    let forwarding = task_borrow && !awaited
+    if task_borrow {
         index = 0
         while index < length(borrowed) {
             let argument = get(expr.children, get(borrowed, index))
@@ -260,7 +286,7 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Res
         // Every emitted function and activated witness must transfer fresh
         // MustScope results. That obligation survives function-value dispatch;
         // Dispose alone has no such promise and may return an ordinary alias.
-        return Result.Ok(resource_value(false, resource, -1))
+        return Result.Ok(resource_origin(resource_value(forwarding, resource, -1), caller))
     }
     let target = get(flow.analysis.functions, expr.index)
     if length(borrowed) != 0 {
@@ -270,7 +296,7 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Res
         }
     }
     let fresh = resource_function(flow.analysis, expr.index, borrowed)?
-    Result.Ok(resource_value(false, fresh, -1))
+    Result.Ok(resource_origin(resource_value(forwarding, fresh, -1), caller))
 }
 
 fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
@@ -353,7 +379,7 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         if length(expr.children) > 1 {
             discard resource_expression(flow, get(expr.children, 1), false)?
         }
-        return Result.Ok(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1))
+        return Result.Ok(resource_origin(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1), value.caller))
     }
     if kind == ExprKind.Cleanup && expr.text == "resource-disarm" {
         return Result.Ok(resource_value(false, false, -1))
@@ -366,11 +392,14 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         let value = resource_expression(flow, get(expr.children, 0), false)?
         let local = get(current.locals, expr.index)
+        if value.protected && get(flow.analysis.env.types, local.ty).kind == TypeKind.Task {
+            return Result.Err(resource_error(flow, expr, "a Task borrowing a scoped resource must be awaited directly"))
+        }
         if kind == ExprKind.Let && expr.text == "macro-input" && flow_resource(flow, local.ty)? && !value.protected {
             return Result.Err(resource_error(flow, expr, "a macro resource input must enter scoped before invocation"))
         }
         if kind == ExprKind.Let && (expr.text == "pattern-binding" || expr.text == "macro-input") && value.protected {
-            set(flow.locals, expr.index, resource_value(true, false, -1))
+            set(flow.locals, expr.index, resource_origin(resource_value(true, false, -1), value.caller))
             return Result.Ok(resource_value(false, false, -1))
         }
         if local.is_scoped {
@@ -385,7 +414,8 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
             }
             // Named ordinary bindings remain shareable. They do not silently
             // become consumed/exclusive when subsequently passed to scoped.
-            set(flow.locals, expr.index, resource_value(value.protected, local.name == "" && value.fresh, value.pending))
+            set(flow.locals, expr.index, resource_origin(resource_value(value.protected,
+                        local.name == "" && value.fresh, value.pending), value.caller))
         }
         return Result.Ok(resource_value(false, false, -1))
     }
@@ -395,7 +425,10 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         task.kind == ExprKind.IndirectCall || task.kind == ExprKind.DynCall {
             discard resource_call(flow, task, false, true)?
         } else {
-            discard resource_expression(flow, task, false)?
+            let value = resource_expression(flow, task, false)?
+            if value.protected {
+                return Result.Err(resource_error(flow, task, "a Task borrowing a scoped resource must be awaited directly"))
+            }
         }
         // Every producer must prove its MustScope result fresh; Task flow
         // separately proves that this extraction consumes the one-shot handle.
@@ -405,7 +438,11 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     (kind == ExprKind.Intrinsic && (expr.text == "task_cancel" || expr.text == "task_ready_result" || expr.text == "task_ready_outcome" || expr.text == "task_ready_payload")) {
         var index = 0
         while index < length(expr.children) {
-            discard resource_expression(flow, get(expr.children, index), false)?
+            let child = get(expr.children, index)
+            let value = resource_expression(flow, child, false)?
+            if value.protected && get(flow.analysis.env.types, child.ty).kind == TypeKind.Task {
+                return Result.Err(resource_error(flow, child, "a Task borrowing a scoped resource must be awaited directly"))
+            }
             index = index + 1
         }
         return Result.Ok(resource_value(false, flow_resource(flow, expr.ty)?, -1))
@@ -425,7 +462,8 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         }
         resource_join(flow, yes)
         resource_join(flow, no)
-        return Result.Ok(resource_value(first.protected || other.protected, first.fresh && other.fresh, -1))
+        return Result.Ok(resource_origin(resource_value(first.protected || other.protected,
+                    first.fresh && other.fresh, -1), resource_origins(first, other)))
     }
     if kind == ExprKind.Match {
         return resource_match(flow, expr, automatic)
@@ -442,7 +480,7 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
             return Result.Ok(resource_value(false, true, -1))
         }
         let value = resource_expression(flow, get(expr.children, 0), false)?
-        if value.protected {
+        if value.protected && !resource_task_return(flow, value) {
             return Result.Err(resource_error(flow, expr, "a scoped value or borrowed receiver cannot escape through a return"))
         }
         if flow_resource(flow, get(expr.children, 0).ty)? && !value.fresh {
@@ -465,7 +503,7 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         let value = resource_expression(flow, get(expr.children, 0), false)?
         // Ordinary fields retain their ordinary sharing semantics. A scoped
         // wrapper does not acquire exclusive ownership of its reachable data.
-        return Result.Ok(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1))
+        return Result.Ok(resource_origin(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1), value.caller))
     }
     if (kind == ExprKind.Record || kind == ExprKind.Variant || kind == ExprKind.List) && expr.text == "resource-pending-transfer" {
         var field = 0
@@ -538,18 +576,19 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
     }
     var protected = false
     var fresh = true
+    var caller = true
     var pending = -1
     var index = 0
     while index < length(expr.arms) {
         let arm = get(expr.arms, index)
         let branch = resource_branch(flow)
         if arm.whole >= 0 {
-            set(branch.locals, arm.whole, resource_value(value.protected, resource && !value.protected,
-                    if resource && !value.protected {
-                        arm.whole
-                    } else {
-                        -1
-                    }))
+            set(branch.locals, arm.whole, resource_origin(resource_value(value.protected, resource && !value.protected,
+                        if resource && !value.protected {
+                            arm.whole
+                        } else {
+                            -1
+                        }), value.caller))
         } else {
             if resource && !value.protected && arm.variant < 0 {
                 return Result.Err(resource_error(flow, expr, "a wildcard cannot discard a resource payload"))
@@ -565,12 +604,12 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
                     return Result.Err(resource_error(flow, expr, "a wildcard cannot discard a resource payload"))
                 }
                 if local >= 0 {
-                    set(branch.locals, local, resource_value(value.protected && needed, needed && !value.protected,
-                            if needed && !value.protected {
-                                local
-                            } else {
-                                -1
-                            }))
+                    set(branch.locals, local, resource_origin(resource_value(value.protected && needed, needed && !value.protected,
+                                if needed && !value.protected {
+                                    local
+                                } else {
+                                    -1
+                                }), value.caller))
                 }
                 field = field + 1
             }
@@ -585,6 +624,7 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
             return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped or transfer into a fresh result"))
         }
         protected = protected || output.protected
+        caller = caller && (!output.protected || output.caller)
         if get(arm.body, length(arm.body) - 1).falls {
             fresh = fresh && output.fresh
             if output.pending >= 0 {
@@ -594,7 +634,7 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
         resource_join(flow, branch)
         index = index + 1
     }
-    Result.Ok(resource_value(protected, fresh, pending))
+    Result.Ok(resource_origin(resource_value(protected, fresh, pending), caller))
 }
 
 fn resource_functions(env Environment, functions List[Function]) Result[Bool, Failure] {

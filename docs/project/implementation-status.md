@@ -305,7 +305,9 @@ MustScope freshness/escape checks and typed cleanup protect nested and recursive
 resources, partial aggregate construction and unextracted Task results.
 Cleanup retains the first fault while draining remaining work; OOM/termination
 offer no cleanup guarantee. Existing scoped resources cannot generally transfer
-into Tasks; directly awaited borrows drain before scope exit.
+into Tasks; directly awaited borrows drain before scope exit. Synchronous Task
+forwarders retain caller-borrow provenance without adding a coroutine frame;
+local-owner escapes, inner borrowing Tasks from async functions and saved handles reject.
 NoSuspend guards reject suspension. Mixed resource/Task containers remain
 conservative where typed transfer is unsupported.
 

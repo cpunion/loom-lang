@@ -6,12 +6,61 @@ test fn async_resource_borrows_require_the_exact_call_to_be_awaited() {
         async fn invoke[T MustScope](value T, callback fn(T) Task[Int]) Int {
             callback(value).await
         }
+        fn forward(value Handle) Task[Int] {
+            read(value)
+        }
+        fn relay(value Handle) Task[Int] {
+            return forward(value)
+        }
+        fn dispatch[T MustScope](value T, callback fn(T) Task[Int]) Task[Int] {
+            callback(value)
+        }
+        record Held {
+            inner Handle
+        }
+        impl Dispose for Held {
+            fn dispose(self Held) {
+            }
+        }
+        enum Choice {
+            Some(Handle)
+            None
+        }
+        impl Dispose for Choice {
+            fn dispose(self Choice) {
+            }
+        }
+        fn projected(value Held) Task[Int] {
+            forward(value.inner)
+        }
+        fn selected(value Choice, fallback Handle) Task[Int] {
+            match value {
+                Choice.Some(inner) => read(inner)
+                Choice.None => forward(fallback)
+            }
+        }
+        fn conditional(first Handle, second Handle, flag Bool) Task[Int] {
+            if flag {
+                read(first)
+            } else {
+                return forward(second)
+            }
+        }
         """)
     resource_accept(concat(header, """
         async fn run() {
             scoped value = make([0])
             assert read(value).await == 7
             assert invoke(value, read).await == 7
+            assert forward(value).await == 7
+            assert relay(value).await == 7
+            assert dispatch(value, read).await == 7
+            scoped other = make([0])
+            scoped held = Held { inner = make([0]) }
+            scoped choice = Choice.Some(make([0]))
+            assert projected(held).await == 7
+            assert selected(choice, value).await == 7
+            assert conditional(value, other, false).await == 7
         }
         """))
     resource_reject_reason(concat(header, """
@@ -30,8 +79,10 @@ test fn async_resource_borrows_require_the_exact_call_to_be_awaited() {
         }
         """), "a Task borrowing a scoped resource must be awaited directly")
     resource_reject_reason(concat(header, """
-        fn forward(value Handle) Task[Int] {
-            read(value)
+        async fn run() {
+            scoped value = make([0])
+            let pending = relay(value)
+            discard pending.await
         }
         """), "a Task borrowing a scoped resource must be awaited directly")
     resource_reject(concat(header, """
@@ -68,6 +119,68 @@ test fn async_resource_borrows_require_the_exact_call_to_be_awaited() {
             }).await == 7
         }
         """, "a borrowed Task argument cannot leave its resource scope before the call")
+}
+
+test fn synchronous_task_forwarding_cannot_extend_resource_scopes_or_hide_nested_tasks() {
+    let header = concat(resource_header(), """
+        async fn read(value Handle) Int {
+            value.use()
+        }
+        fn forward(value Handle) Task[Int] {
+            read(value)
+        }
+        fn identity(task Task[Int]) Task[Int] {
+            task
+        }
+        async fn read_two(first Handle, second Handle) Int {
+            first.use() + second.use()
+        }
+        """)
+    let bodies = ["""
+        fn escaped() Task[Int] {
+            scoped local = make([0])
+            forward(local)
+        }
+        """, """
+        async fn nested(value Handle) Task[Int] {
+            forward(value)
+        }
+        """, """
+        fn escaped(value Handle) Task[Int] {
+            scoped local = make([0])
+            read_two(value, local)
+        }
+        """, """
+        fn escaped(value Handle, flag Bool) Task[Int] {
+            scoped local = make([0])
+            if flag {
+                forward(value)
+            } else {
+                forward(local)
+            }
+        }
+        """, """
+        async fn run() {
+            scoped value = make([0])
+            discard identity(forward(value)).await
+        }
+        """, """
+        fn escaped(value Handle) (Task[Int], Int) {
+            (forward(value), 0)
+        }
+        """, """
+        async fn run() {
+            discard {
+                scoped value = make([0])
+                forward(value)
+            }.await
+        }
+        """]
+    var index = 0
+    while index < length(bodies) {
+        resource_reject(concat(header, get(bodies, index)))
+        index = index + 1
+    }
 }
 
 test fn task_resource_results_require_fresh_producers_and_scoped_extraction() {
