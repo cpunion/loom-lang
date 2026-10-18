@@ -140,20 +140,8 @@ fn member_context(scope MemberScope, node Node, offset Int) Result[MemberScope, 
         if source.kind != NodeKind.If {
             let stage = staging(context, node)?
             let validation = Context {
-                lexical = stage.lexical
-                env = stage.env
-                signature = stage.signature
-                arguments = stage.arguments
-                constants = stage.constants
-                locals = stage.locals
-                bindings = stage.bindings
-                head = stage.head
-                cleanups = stage.cleanups
-                cleanup_head = stage.cleanup_head
-                loop_boundary = stage.loop_boundary
-                facts = stage.facts
-                fact_head = stage.fact_head
                 emit = false
+                ..stage
             }
             return member_context(MemberScope {
                     context = validation

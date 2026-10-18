@@ -169,10 +169,15 @@ fn static_probe_context(context Context, node Node) Result[Context, Failure] {
     let stage = staging(context, node)?
     // This contender may become a runtime argument. Preserve its lexical
     // proofs and exits while keeping speculative locals and queues private.
-    let validation = Context { lexical = stage.lexical env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
-        locals = stage.locals bindings = stage.bindings head = stage.head
-        cleanups = clone(context.cleanups) cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
-        facts = clone(context.facts) fact_head = context.fact_head emit = false }
+    let validation = Context {
+        cleanups = clone(context.cleanups)
+        cleanup_head = context.cleanup_head
+        loop_boundary = context.loop_boundary
+        facts = clone(context.facts)
+        fact_head = context.fact_head
+        emit = false
+        ..stage
+    }
     Result.Ok(validation)
 }
 fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] {
@@ -189,10 +194,10 @@ fn static_argument(context Context, node Node, checked Expr, expected Int, ident
         // Unlike overload probing, a selected static argument cannot use an
         // enclosing runtime loop, cleanup or proof context.
         let stage = staging(context, node)?
-        let validation = Context { lexical = stage.lexical env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
-            locals = stage.locals bindings = stage.bindings head = stage.head
-            cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
-            facts = stage.facts fact_head = stage.fact_head emit = false }
+        let validation = Context {
+            emit = false
+            ..stage
+        }
         discard isolated(context, node, expr(validation, node, expected)?, length(context.locals))?
         return Result.Ok(StaticValue { ty = expected known = false number = 0 text = "" arguments = new[Int]() storage = -1 })
     }
@@ -280,13 +285,10 @@ fn validate_static(env Environment, id Int, constants List[StaticValue], node No
     if length(env.validations) >= 1024 { return Result.Err(failure(env, original.symbol, node, "comptime specialization budget exceeded; expansion must be finite")) }
     let selected = length(env.validations)
     push(env.validations, Validation { signature = id constants = constants })
-    let validation = Environment { inputs = env.inputs static_aliases = env.static_aliases packs = env.packs closures = env.closures source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
-        signatures = env.signatures pending = env.pending stage_depth = env.stage_depth + 1 computations = env.computations
-        validations = env.validations concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
-        associations = env.associations association_depth = env.association_depth
-        family_applications = env.family_applications promise_path = env.promise_path promise_depth = env.promise_depth
-        dynamic_interfaces = env.dynamic_interfaces
-        witnesses = env.witnesses uses = env.uses }
+    let validation = Environment {
+        stage_depth = env.stage_depth + 1
+        ..env
+    }
     match function(validation, id, abstract_arguments(env, original.parameters), constants, false) {
         Result.Ok(_) => {}
         Result.Err(failed) => {

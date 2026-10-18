@@ -15,10 +15,10 @@ fn resource_cleanup_context(context Context, ty Int) Context {
         result = current.result
         requirements = current.requirements
     }
-    Context { lexical = context.lexical env = context.env signature = signature arguments = context.arguments
-        constants = context.constants locals = context.locals bindings = context.bindings head = context.head
-        cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
-        facts = context.facts fact_head = context.fact_head emit = context.emit }
+    Context {
+        signature = signature
+        ..context
+    }
 }
 
 record ResourcePath {
