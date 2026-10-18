@@ -85,6 +85,22 @@ fn reference_children(node Node, tokens List[Token], parameters List[Text], outp
     }
 }
 
+// Lexer tokens are ordered by byte position. Locate a source range without
+// rescanning the whole file for every AST reference.
+fn reference_token_from(tokens List[Token], offset Int) Int {
+    var first = 0
+    var end = length(tokens)
+    while first < end {
+        let middle = first + (end - first) / 2
+        if get(tokens, middle).span.start < offset {
+            first = middle + 1
+        } else {
+            end = middle
+        }
+    }
+    first
+}
+
 fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited List[Text], output ReferenceObligations, pattern Bool, inherited_self Bool) {
     let kind = node.kind
     if has(node, NodeKind.ExpansionId) || kind == NodeKind.ExpansionId {
@@ -159,10 +175,13 @@ fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited Lis
             node.span.end
         }
         var selected = -1
-        var index = 0
+        var index = reference_token_from(tokens, from)
         while index < length(tokens) {
             let token = get(tokens, index)
-            if token.span.start >= from && token.span.end <= until && token.kind == Kind.Name &&
+            if token.span.start > until {
+                break
+            }
+            if token.span.end <= until && token.kind == Kind.Name &&
             ((kind != NodeKind.Select && kind != NodeKind.MethodCall) || token.value == node.value) {
                 if kind == NodeKind.Name && !(implicit_self && token.value == "self" && token.span.start == node.span.start) {
                     push(output.offsets, token.span.start)
@@ -203,8 +222,9 @@ fn reference_nodes(node Node, parent NodeKind, tokens List[Token], inherited Lis
     reference_children(node, tokens, parameters, output, pattern, implicit_self)
 }
 
-// The AST and tokens must describe the same source snapshot. Positions follow
-// AST traversal order; unsupported or missing-token ranges remain explicit.
+// The AST and ordered lexer tokens must describe the same source snapshot.
+// Positions follow AST traversal order; unsupported or missing-token ranges
+// remain explicit.
 pub fn reference_obligations(tree Node, tokens List[Token]) ReferenceObligations {
     let output = ReferenceObligations {
         offsets = new[Int]()

@@ -8,6 +8,27 @@ fn source_obligations(source Text) ReferenceObligations {
     }
 }
 
+test fn reference_token_ranges_follow_byte_offsets_including_gaps_and_eof() {
+    let source = "alpha // ignored\r\n  βeta.field(\"text\")\n"
+    let tokens = match lex(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    var offset = -1
+    var expected = 0
+    while offset <= std.text.length(source) + 1 {
+        while expected < length(tokens) && get(tokens, expected).span.start < offset {
+            expected = expected + 1
+        }
+        assert reference_token_from(tokens, offset) == expected
+        offset = offset + 1
+    }
+    assert reference_token_from(new[Token](), 0) == 0
+}
+
 test fn reference_obligations_include_bounds_but_not_lexical_type_labels() {
     let source = """
         concept Marker {
