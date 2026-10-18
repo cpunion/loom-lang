@@ -133,8 +133,11 @@ ownership and must drain pending Tasks before cleanup. Deadlines are explicit
 Task policy, not a hidden codec timeout.
 
 This is a message codec, not a complete client/server or proxy. HTTP/1.0, HTTP/2,
-URL/authority and field-specific validation, routing, redirects, cookies, content
+general URI and field-specific validation, routing, redirects, cookies, content
 decompression and connection pools are not supplied.
+The separate pure [HTTP(S) URL parser](url/README.md) supplies a bounded outbound
+host/port, Host authority and origin-form target; it does not interpret an incoming
+request's routing policy or establish that its Host is authorized.
 Applications must validate Host/target semantics for their routing policy and
 handle trailer-specific rules. TCP/TLS acquisition and trust remain separate;
 this package does not weaken TLS verification or silently send credentials over

@@ -11,6 +11,9 @@ followed by a chunked POST on the same connection. The server reads both with
 the source-written [HTTP message codec](../../std/net/http/README.md), returns
 HEAD metadata without a body, and echoes the POST's binary payload and trailers.
 Small input chunks split protocol lines and payloads across socket reads.
+The client obtains its host, port, Host field and first request target from the
+pure [HTTP(S) URL parser](../../std/net/http/url/README.md); the local fragment
+does not enter the request.
 Both responses finish while the connection remains open; EOF is not mistaken
 for the boundary of a length-delimited or chunked message.
 The client scopes the POST response, consumes at most two body bytes per pull,
