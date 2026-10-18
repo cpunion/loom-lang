@@ -46,8 +46,37 @@ test fn generic_default_method_bodies_retain_abstract_bindings_after_composition
     }
 }
 
-fn comptime_helper_body_revision(changed Bool, edited Bool) Revision {
-    let source = replace(replace("""
+fn comptime_helper_body_revision(changed Bool, edited Bool, methods Bool) Revision {
+    let consumer = if methods {
+        """
+            concept Read {
+                fn first(self Self) Int
+                fn second(self Self) Int
+            }
+            impl Read for Int {
+                fn first(self Int) Int {
+                    FIRST
+                }
+                fn second(self Int) Int {
+                    discard self
+                    let value = comptime if choose_integer() { 1 } else { true }
+                    pick(value) + EXTRA
+                }
+            }
+            fn entry() Int {
+                let value = 7
+                value.first() + value.second()
+            }
+            """
+    } else {
+        """
+            fn entry() Int {
+                let value = comptime if choose_integer() { 1 } else { true }
+                pick(value) + EXTRA
+            }
+            """
+    }
+    let source = replace(replace(replace(concat("""
         fn choose_integer() Bool {
             FLAG
         }
@@ -57,18 +86,18 @@ fn comptime_helper_body_revision(changed Bool, edited Bool) Revision {
         fn pick(value Bool) Int {
             if value { 2 } else { 3 }
         }
-        fn entry() Int {
-            let value = comptime if choose_integer() { 1 } else { true }
-            pick(value) + EXTRA
-        }
-        """, "FLAG", if changed {
-                "false"
+        """, consumer), "FLAG", if changed {
+                    "false"
+                } else {
+                    "true"
+                }), "EXTRA", if edited {
+                "1"
             } else {
-                "true"
-            }), "EXTRA", if edited {
-            "1"
+                "0"
+            }), "FIRST", if changed {
+            "let kept = self + 2\n        kept"
         } else {
-            "0"
+            "self + 1"
         })
     package_fixture("sample", "pkg", [File {
                 path = "main.loom"
@@ -76,10 +105,10 @@ fn comptime_helper_body_revision(changed Bool, edited Bool) Revision {
             }]).revision
 }
 
-test fn composed_bodies_require_reference_evidence_even_when_ordinary_checking_passes() {
-    let base = comptime_helper_body_revision(false, false)
-    let left = comptime_helper_body_revision(true, false)
-    let right = comptime_helper_body_revision(false, true)
+fn requires_composed_body_evidence(methods Bool) {
+    let base = comptime_helper_body_revision(false, false, methods)
+    let left = comptime_helper_body_revision(true, false, methods)
+    let right = comptime_helper_body_revision(false, true, methods)
     let candidate = match proposed(base, left, right) {
         Result.Ok(value) => value
         Result.Err(message) => {
@@ -107,4 +136,11 @@ test fn composed_bodies_require_reference_evidence_even_when_ordinary_checking_p
         }
         Result.Ok(_) => false
     }
+}
+
+test fn composed_bodies_require_reference_evidence_even_when_ordinary_checking_passes() {
+    requires_composed_body_evidence(false)
+    // No whole impl body survives either branch unchanged. The retained second
+    // method must still account for its unknown generated-reference range.
+    requires_composed_body_evidence(true)
 }
