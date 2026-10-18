@@ -17,6 +17,29 @@ are distinct from earlier handles; inner elements retain sharing. The loop's
 output-length/index equality is checked inductively, including zero iterations.
 Later unknown handles and opaque calls can still reach those allocations.
 
+`generated.loom` composes the source `std.list.generate` length contract into a
+generic length-two type, without a checked Result or a second predicate check.
+Callbacks run once in index order, may update a captured trace, and can create
+managed Text. Body provenance proves that the fresh output never reaches them;
+callback effects do not become a false global-purity requirement. The result
+survives suspension. Returning an input or exposing the output to an unknown
+callback still cannot establish the required unpublished header.
+
+The asynchronous producer builds its List, waits on a real timer, and returns
+the private header. Direct `.await` composes its proved length without a second
+predicate check. A saved Task can also yield a local draft for checked
+construction: its raw alias may replace an element, but cannot resize the
+published length-two value. Unknown Task origins supply no freshness promise.
+
+`transforms.loom` proves length contracts for ordinary generic wrappers over
+source `map` and `filter`, using each input's entry length even when callbacks
+append to that input. A read projects its source graph's established exclusions:
+its shared children cannot expose a later private output merely because they
+are passed to a callback. Published graphs lose this frame. Shared notes remain
+shared across suspension; no input snapshot or runtime copy is introduced.
+These wrapper contracts inspect the source bodies; they are not new public
+`std.list.map/filter` guarantees or a promise of worker-safe input lengths.
+
 `refinements.loom` uses `Nonempty[T]` with shared nested Lists. Its predicate
 observes only the outer length, so inner mutations do not invalidate it. Outer
 replacement and append preserve nonemptiness through generic helpers and

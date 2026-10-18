@@ -56,18 +56,30 @@ fn construction_proof(context Context, node Node, source Node, expected Int, val
     // Executable/fact calls retain their selected instance. Non-executable
     // templates intentionally have no queued target; instantiate those with
     // the original contextual hint, never a newly inferred result hint.
-    let input = if value.index == -1 {
+    let completion = value.kind == ExprKind.Await && length(value.children) == 1
+    let selected = if completion {
+        get(value.children, 0)
+    } else {
+        value
+    }
+    let input = if selected.index == -1 {
         expr_mode(stage, source, expected, false)?
     } else {
         value
     }
-    if input.kind != ExprKind.Call || input.ty != base {
+    let invoked = if completion {
+        get(input.children, 0)
+    } else {
+        input
+    }
+    if input.ty != base || (invoked.kind != ExprKind.Call &&
+        !(completion && invoked.kind == ExprKind.TaskCall)) {
         return Result.Ok(false)
     }
-    let callee = if value.index == -1 {
-        input.index
+    let callee = if selected.index == -1 {
+        invoked.index
     } else {
-        let instance = fact_instance(context.env, input.index)
+        let instance = fact_instance(context.env, selected.index)
         schedule(stage.env, instance.signature, instance.arguments, instance.constants, node)?
     }
     // Argument effects have already happened when the callee is entered.
@@ -85,8 +97,8 @@ fn construction_proof(context Context, node Node, source Node, expected Int, val
     }
     let arguments = new[Expr]()
     var index = 0
-    while index < length(input.children) {
-        let argument = get(input.children, index)
+    while index < length(invoked.children) {
+        let argument = get(invoked.children, index)
         let value = if construction_controlled(argument, 0) {
             match construction_control_input(control, argument, 0, 0) {
                 Result.Ok(value) => value
@@ -101,7 +113,12 @@ fn construction_proof(context Context, node Node, source Node, expected Int, val
         index = index + 1
     }
     let premises = construction_premises(context, stage, node, bindings, params, locals)
-    let body = expression(input.kind, input.ty, node, input.text, callee, arguments, input.falls)
+    let call = expression(invoked.kind, invoked.ty, node, invoked.text, callee, arguments, invoked.falls)
+    let body = if completion {
+        expression(input.kind, input.ty, node, input.text, input.index, expressions(call), input.falls)
+    } else {
+        call
+    }
     construction_body_proof(stage, node,
         construction_control_finish(control, body),
         params, locals, premises, target)
@@ -401,10 +418,16 @@ fn proved_construction(context Context, node Node, source Node, expected Int, va
         return Result.Ok(false)
     }
     if value.kind == ExprKind.Record || value.kind == ExprKind.List || value.kind == ExprKind.Variant || construction_view(context.env, value) ||
-    (value.kind != ExprKind.Call && construction_controlled(value, 0)) {
+    (value.kind != ExprKind.Call && value.kind != ExprKind.Await && construction_controlled(value, 0)) {
         return flow_construction_proof(context, node, value, target)
     }
-    if value.kind != ExprKind.Call {
+    // Re-type only a known invocation, never consume an opaque saved Task a
+    // second time merely to attempt an optional predicate proof.
+    if value.kind == ExprKind.Await && (length(value.children) != 1 ||
+        (get(value.children, 0).kind != ExprKind.Call && get(value.children, 0).kind != ExprKind.TaskCall)) {
+        return Result.Ok(false)
+    }
+    if value.kind != ExprKind.Call && value.kind != ExprKind.Await {
         // Preserve bounded pure scalar computations, not just bare bindings.
         // fact_size excludes mutable locals, heap observations and calls.
         // This is the same normal-return proof for every immutable scalar

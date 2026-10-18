@@ -1,0 +1,14 @@
+// Build a fresh outer List in ascending index order. The callback runs once
+// per index and may have effects; returned elements keep ordinary sharing.
+pub fn generate[T](count Int, create fn(Int) T) List[T]
+requires count >= 0
+ensures length(result) == count
+{
+    let output = new[T](count)
+    var index = 0
+    while index < count {
+        push(output, create(index))
+        index = index + 1
+    }
+    output
+}

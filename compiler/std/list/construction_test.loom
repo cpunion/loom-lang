@@ -1,0 +1,56 @@
+fn unexpected_generation(index Int) Int {
+    discard index
+    assert false
+    0
+}
+
+fn generated_squares() List[Int] {
+    generate(4, fn(index Int) Int {
+            index * index
+        })
+}
+
+test fn generation_handles_zero_and_compile_time_construction() {
+    let empty = generate(0, unexpected_generation)
+    assert length(empty) == 0
+    push(empty, 7)
+    assert get(empty, 0) == 7
+    let runtime = generated_squares()
+    let prepared = comptime {
+        generated_squares()
+    }
+    assert length(runtime) == 4 && length(prepared) == 4
+    var index = 0
+    while index < 4 {
+        assert get(runtime, index) == index * index
+        assert get(prepared, index) == get(runtime, index)
+        index = index + 1
+    }
+}
+
+record GeneratedEntry {
+    index Int
+    shared List[Int]
+}
+
+test fn generation_keeps_callback_order_and_shared_children() {
+    let trace = new[Int]()
+    let shared = [7]
+    let entries = generate(3, fn(index Int) GeneratedEntry {
+            push(trace, index)
+            GeneratedEntry {
+                index = index
+                shared = shared
+            }
+        })
+    assert length(trace) == 3 && length(entries) == 3
+    var index = 0
+    while index < 3 {
+        assert get(trace, index) == index && get(entries, index).index == index
+        index = index + 1
+    }
+    set(get(entries, 0).shared, 0, 9)
+    assert get(shared, 0) == 9 && get(get(entries, 2).shared, 0) == 9
+    push(entries, get(entries, 0))
+    assert length(trace) == 3 && length(shared) == 1
+}

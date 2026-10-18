@@ -28,7 +28,7 @@ fn draft_stable_root(env Environment, functions List[Function], current Function
         return missing_draft_root()
     }
     let root = draft_value_root(env, functions, current, get(get(definitions, 0).children, 0),
-        path, local, path, identities, budget, depth + 1, false)
+        path, local, path, identities, budget, depth + 1, false, false)
     if root.local < 0 {
         return root
     }
@@ -56,7 +56,7 @@ fn draft_stable_assignments(env Environment, functions List[Function], current F
         // An unbound new allocation is not the old slot's allocation. Giving
         // the RHS that slot's anchor would falsely equate fresh replacements.
         let assigned = draft_value_root(env, functions, current, get(value.children, 0),
-            path, -1, new[Int](), identities, budget, 0, false)
+            path, -1, new[Int](), identities, budget, 0, false, false)
         if !same_draft_root(root, assigned) {
             return false
         }

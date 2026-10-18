@@ -92,7 +92,7 @@ fn unchanged_store(proof Verification, primitive Text, receiver Int, identity In
     }
     // Called after argument evaluation, bounds validation and interference.
     // This is a logical read at the atomic store, not another executable read.
-    let current = read_element_outcomes(proof, element, identity, index, state)?
+    let current = read_element_outcomes(proof, element, receiver, identity, index, state)?
     let output = new[Outcome]()
     var path = 0
     while path < length(current) {

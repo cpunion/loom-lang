@@ -12,7 +12,8 @@ pub fn root() -> &'static Path {
 }
 
 pub fn compiler() -> PathBuf {
-    executable(&root().join("target"), "loom")
+    std::env::var_os("LOOM_TEST_COMPILER")
+        .map_or_else(|| executable(&root().join("target"), "loom"), PathBuf::from)
 }
 
 pub fn executable(directory: &Path, name: &str) -> PathBuf {

@@ -5,6 +5,17 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Project current mutable-graph exclusions through List element reads, including
+  generic and inline payloads. Ordinary callback transforms can prove their
+  private output shapes without assuming different handles are disjoint or
+  retaining privacy after publication.
+
+- Add source `std.list.generate` with a required result-length contract, ordered
+  callbacks, shared elements and worker support. Constrained factories can reuse
+  bounded body provenance through effects that do not publish their output;
+  successful source Task results share this boundary, including saved results
+  used as local drafts. Unverified summaries never supply freshness or value facts.
+
 - Query and configure OS receive/send buffer sizes for TCP listeners/streams
   and UDP sockets/connections. Keep aliases and pending I/O intact; reject
   invalid or unrepresentable sizes without silent narrowing. Effective sizes

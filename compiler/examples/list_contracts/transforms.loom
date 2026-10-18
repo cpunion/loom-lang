@@ -1,0 +1,58 @@
+import std.list.map
+import std.list.filter
+
+fn mapped_snapshot[T, U](values List[T], transform fn(T) U) List[U]
+ensures length(result) == old(length(values))
+{
+    map(values, transform)
+}
+
+fn filtered_snapshot[T](values List[T], predicate fn(T) Bool) List[T]
+ensures length(result) <= old(length(values))
+{
+    filter(values, predicate)
+}
+
+record TransformEntry {
+    label Text
+    notes List[Int]
+}
+
+async fn exercise_transforms() {
+    let notes = [0]
+    let values = [TransformEntry {
+            label = "first"
+            notes = notes
+        }, TransformEntry {
+            label = "second"
+            notes = notes
+        }]
+    let original = length(values)
+    let mapped = mapped_snapshot(values, fn(value TransformEntry) Text {
+            push(values, value)
+            value.label
+        })
+    assert length(mapped) == original && length(values) == 2 * original
+    assert mapped[0] == "first" && mapped[1] == "second"
+    let filtered = filtered_snapshot(values, fn(value TransformEntry) Bool {
+            push(notes, 1)
+            value.label == "first"
+        })
+    assert length(filtered) == 2 && length(notes) == 5
+    filtered[0].notes[0] = 7
+    sleep_ms(1).await
+    assert notes[0] == 7 && length(filtered) == 2
+    let empty = filtered_snapshot(values, fn(value TransformEntry) Bool {
+            discard value
+            false
+        })
+    assert length(empty) == 0
+    let mapped_empty = mapped_snapshot(empty, fn(value TransformEntry) Text {
+            value.label
+        })
+    assert length(mapped_empty) == 0
+}
+
+test async fn transform_shapes_use_entry_snapshots_without_freezing_shared_elements() {
+    exercise_transforms().await
+}

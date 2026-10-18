@@ -46,7 +46,8 @@ fn private_body_result(proof Verification, target Int, function Function,
     while index < length(paths) {
         let path = get(paths, index)
         if !holds(Predicate.Constant(false), path.state.facts) {
-            if storage_leaves(path.value) == 0 || !private_return_storage(path.value, path.state) {
+            let exposed = published_opaque_result(candidate, function.result, path.value, path.state)
+            if storage_leaves(path.value) == 0 || !private_return_storage(path.value, exposed) {
                 return false
             }
             returned = true
@@ -54,6 +55,49 @@ fn private_body_result(proof Verification, target Int, function Function,
         index = index + 1
     }
     returned
+}
+
+// Construction may inspect a prepared group whose summaries are not yet
+// certified. Project only body provenance: strip every postcondition before
+// using the existing source-call/loop/publication rules. No value facts escape.
+fn private_factory_body(program Program, target Int) Bool {
+    let functions = new[Function]()
+    var index = 0
+    while index < length(program.functions) {
+        push(functions, snapshot_function(get(program.functions, index), []))
+        index = index + 1
+    }
+    let isolated = Program {
+        types = program.types
+        functions = functions
+        entry = -1
+        tests = []
+        test_names = []
+        exports = []
+        interfaces = program.interfaces
+        witnesses = program.witnesses
+    }
+    let function = get(functions, target)
+    let proof = verification(function, isolated)
+    let values = new[Value]()
+    var state = State {
+        locals = []
+        facts = []
+        extents = []
+        observations = []
+    }
+    index = 0
+    while index < length(function.params) {
+        let ty = get(function.params, index)
+        let value = record_parameter_value(proof, ty, 0)
+        push(values, value)
+        state = typed_value_state(proof, ty, value, state)
+        index = index + 1
+    }
+    private_body_result(proof, target, function, CallArguments {
+            state = state
+            values = values
+        }, function.is_async, 256)
 }
 
 fn body_result_origins(proof Verification, target Int, function Function, input CallArguments,

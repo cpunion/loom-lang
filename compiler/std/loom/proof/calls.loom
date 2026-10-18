@@ -338,7 +338,7 @@ fn summarized_value(context Expansion, function Function, path Expr, snapshot Ex
     Result.Ok(proof_expr(path, ExprKind.Record, path.ty, "", -1, fields))
 }
 
-fn applied_summary(proof Verification, call Expr, function Function, state State,
+fn applied_summary(proof Verification, call Expr, function Function, state State, inputs List[Value],
     bindings List[ExpansionBinding], boundary Int, depth Int) Result[List[Outcome], Text] {
     let entry = Expansion {
         program = proof.program
@@ -359,6 +359,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
     let closed = closed_storage_inputs(proof.program, function.params)
     let local_storage = closed || storage_local(proof.program, function.body)
     let private_result = private_factory(proof.program, function)
+    let mutable_result = !immutable_storage_type(proof.program, function.result, 0)
     let kept_extent = length(state.extents) == 0 || extent_preserving(proof.program, function.body)
     let stable = closed || (local_storage && kept_extent)
     let concurrent = proof.shared || (closed && (function.is_async || !kept_extent))
@@ -373,24 +374,38 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         var after = if stable {
             interference(proof, before, concurrent)
         } else {
-            if local_storage {
-                let modified = new[Int]()
-                push(modified, -1)
-                forget_modified_extents(proof, interference(proof, before), modified)
-            } else {
-                forget_extents(proof, before)
-            }
+            suspension_state(proof, published_inputs(proof, function.params, inputs, 0, before))
         }
         if stable && length(before.extents) != 0 && !stable_contents {
             after = forget_elements(after)
         }
-        let result_value = record_parameter_value(proof, function.result, 0)
+        // Returned graphs cannot reach an unexposed private allocation. Even a
+        // read-only callee may return an input alias: qualify result frames
+        // before recovering privacy for a source-local call.
+        if stable && mutable_result {
+            after = published_inputs(proof, function.params, inputs, 0, after)
+        }
+        let sampled = record_parameter_value(proof, function.result, 0)
+        let result_value = if mutable_result {
+            opaque_completion(sampled, after, get(proof.fresh, 0))
+        } else {
+            sampled
+        }
         if private_result {
             after = fresh_storage(result_value, after)
         }
         let result_values = new[Value]()
         push(result_values, result_value)
         after = typed_value_state(proof, function.result, result_value, call_scope(after, result_values))
+        if mutable_result {
+            after = completion_separation(result_value, after)
+        }
+        if local_storage && (!stable || mutable_result) {
+            after = local_summary_privacy(before, after)
+        }
+        if mutable_result {
+            after = published_opaque_result(proof, function.result, result_value, after)
+        }
         let reference = proof_expr(call, ExprKind.Local, function.result, "",
             boundary + length(function.params), new[Expr]())
         let current_bindings = new[ExpansionBinding]()
@@ -503,7 +518,7 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
     // A fresh factory's body footprint supplies only private storage origin.
     if length(function.postconditions) != 0 || function.body.kind == ExprKind.Deferred ||
     private_factory(proof.program, function) {
-        let completed = applied_summary(proof, call, function, state, bindings, boundary, depth)?
+        let completed = applied_summary(proof, call, function, state, arguments.values, bindings, boundary, depth)?
         return Result.Ok(if function.is_async {
                 completed
             } else {
@@ -513,7 +528,7 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
     if function.result == 0 {
         return match inferred_body_call(proof, call.index, function, arguments, false, depth) {
             Result.Ok(completed) => Result.Ok(completed)
-            Result.Err(_) => applied_summary(proof, call, function, state, bindings, boundary, depth)
+            Result.Err(_) => applied_summary(proof, call, function, state, arguments.values, bindings, boundary, depth)
         }
     }
     // Arguments already ran once. Only snapshot references and a finite pure

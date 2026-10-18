@@ -124,6 +124,64 @@ async fn main() {
 }
 
 #[test]
+fn transform_entry_snapshots_do_not_become_worker_safe() {
+    let package = tempfile::tempdir().unwrap();
+    let declarations = r#"
+import std.list.length
+import std.list.map
+import std.task.worker.run
+
+fn mapped[T](values List[T], transform fn(T) T) List[T]
+ensures length(result) == old(length(values))
+{
+    map(values, transform)
+}
+
+fn identity(value Int) Int {
+    value
+}
+"#;
+    for (entry, shared) in [
+        (
+            r#"
+fn main() {
+    discard mapped([1], identity)
+}
+"#,
+            false,
+        ),
+        (
+            r#"
+async fn main() {
+    let values = [1]
+    discard run(fn() List[Int] {
+            mapped(values, identity)
+        }).await
+}
+"#,
+            true,
+        ),
+    ] {
+        std::fs::write(
+            package.path().join("main.loom"),
+            format!("{declarations}{entry}"),
+        )
+        .unwrap();
+        let output = common::loom(&["check", package.path().to_str().unwrap()]);
+        if shared {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("interference-safe"),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        } else {
+            common::success(&output);
+        }
+    }
+}
+
+#[test]
 fn edited_worker_builds_revalidate_cached_observation_identities() {
     for (predicate, accepted) in [
         ("same(length(values)) && same(old(length(values)))", true),

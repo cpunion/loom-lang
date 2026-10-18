@@ -20,6 +20,31 @@ test fn private_summary_fields_do_not_imply_distinct_allocations() {
     assert c.private_storage && c.allocated && !extent_overlap(a, c)
 }
 
+test fn factory_provenance_cannot_trust_an_unverified_callee_postcondition() {
+    let types = new[Type]()
+    var index = 0
+    while index < 6 {
+        push(types, publication_shape(TypeKind.Int, []))
+        index = index + 1
+    }
+    push(types, publication_shape(TypeKind.List, [1]))
+    let input = expression(ExprKind.Local, 6, "", 0, [])
+    let flag = expression(ExprKind.Local, 2, "", 1, [])
+    let borrowed = contract_fixture([6], 6, input, [],
+        [expression(ExprKind.Bool, 2, "false", -1, [])])
+    let fresh = expression(ExprKind.List, 6, "", -1, [literal("1")])
+    let selected = expression(ExprKind.If, 6, "", -1,
+        [flag, helper_call(0, 6, [input]), fresh])
+    let factory = contract_fixture([6, 2], 6, selected, [], [])
+    let program = proof_program_with_types(types)
+    push(program.functions, borrowed)
+    push(program.functions, factory)
+    assert !fresh_list_factory(program, 1)
+    push(program.functions, contract_fixture([6, 2], 6,
+            expression(ExprKind.If, 6, "", -1, [flag, fresh, fresh]), [], []))
+    assert fresh_list_factory(program, 2)
+}
+
 test fn selective_content_havoc_uses_allocation_time_not_different_ids() {
     let entry = State {
         locals = []
@@ -76,4 +101,26 @@ test fn protected_storage_is_stable_without_inventing_private_or_disjoint_origin
             writes = 2
         }, published)
     assert !get(growing.extents, 1).fixed_extent
+}
+
+test fn projected_reads_inherit_only_the_current_source_graph_frame() {
+    let entry = State {
+        locals = []
+        facts = []
+        extents = []
+        observations = []
+    }
+    let state = fresh_storage(Value.List(12), list_bounds(Value.List(10), entry))
+    let target = get(state.extents, 1)
+    let opaque = opaque_completion(Value.Opaque(20, []), state, 20, 10)
+    assert opaque_frame(opaque, target)
+    assert !opaque_frame(opaque_completion(Value.Opaque(20, []), state, 20, 99), target)
+    let sampled = list_bounds(Value.List(20), state)
+    let separated = completion_separation(Value.Record([Value.List(20)]), sampled, 10)
+    assert !extent_overlap(get(separated.extents, 2), get(separated.extents, 1))
+    let published = published_storage(state)
+    assert !opaque_frame(opaque_completion(Value.Opaque(20, []), published, 20, 10),
+        get(published.extents, 1))
+    let connected = unframed_graphs(state, [10])
+    assert !opaque_frame(opaque_completion(Value.Opaque(20, []), connected, 20, 10), target)
 }

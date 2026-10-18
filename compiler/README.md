@@ -1703,6 +1703,12 @@ the reservation, and its aliases keep observing the same elements. Negative
 capacity raises a RuntimeFault with ordinary Task fault handling. OOM remains
 an uncatchable process-level fault, not a recoverable Result. Source `clone`
 and `map` reserve their known output lengths.
+`std.list.generate(count, create)` reserves a fresh outer List and invokes
+`create(index)` once per index in ascending order. Its required contract proves
+`length(result) == count` for nonnegative counts; zero calls no callback and a
+negative count faults at the precondition. Callbacks may have effects and
+elements retain sharing. The scalar count and unpublished output also support
+shared workers; this does not promise an atomic snapshot of callback inputs.
 An element block currently needs a value-producing path: an unconditional
 `[{ return }]` is rejected even with a List type context. General typing of
 non-returning expressions remains incomplete, as it is for tuples and bindings.
@@ -2535,9 +2541,18 @@ type, including generic or shared elements. Content predicates may observe
 immutable element fields even beside unobserved shared fields. Reads through
 those fields into nested mutable Lists or Bytes reject, including a recursive
 List with the same stored type as the outer header.
-Construction must use a fresh List literal, a pure factory proved to return a
+Construction must use a fresh List literal, a factory proved to return a
 fresh unpublished outer header, or a proved unpublished local draft. Elements may retain their specified sharing;
 the existing header cannot be returned through a nested input either.
+Effects on unrelated inputs and unknown callbacks are permitted only when the
+checked body proves that they cannot publish the new header. The bounded
+provenance projection ignores unverified postconditions and exports no hidden
+value facts; publication, unknown origins and exhausted reasoning still reject.
+Successful await of a known source producer uses the same provenance boundary
+and can reuse its required result contract. Results extracted from saved Tasks
+can become local drafts; later raw aliases still need preservation checks.
+An arbitrary `Task[List[T]]` does not promise a fresh header. Copy explicitly
+when its producer/origin cannot be established.
 Explicit source `std.list.clone` is one such factory, not a
 compiler-recognized public name:
 
@@ -4896,3 +4911,6 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 bash scripts/bootstrap.sh --dev
 cargo test --locked --workspace
 ```
+
+To run a Rust integration test against a candidate compiler without replacing
+`target/loom`, set `LOOM_TEST_COMPILER` to its absolute executable path.

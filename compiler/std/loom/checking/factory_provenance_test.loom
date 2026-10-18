@@ -1,0 +1,164 @@
+test fn constrained_factories_retain_private_results_through_effectful_callbacks() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.list.push
+        type Pair[T] = List[T] where length(self) == 2
+        fn gathered[T](count Int, create fn(Int) T) List[T]
+        requires count >= 0
+        ensures length(result) == count
+        {
+            let output List[T] = []
+            var index = 0
+            while index < count {
+                push(output, create(index))
+                index = index + 1
+            }
+            output
+        }
+        fn pair[T](create fn(Int) T) Pair[T] {
+            Pair(gathered(2, create))
+        }
+        fn traced(trace List[Int]) Pair[Int] {
+            pair(fn(index Int) Int {
+                    push(trace, index)
+                    index
+                })
+        }
+        """)
+}
+
+test fn constrained_factories_cannot_return_inputs_or_publish_their_result() {
+    let prefix = concat("""
+        import std.list.length
+        import std.list.push
+        import std.result.Result
+        import std.result.ConstraintError
+        type One = List[Int] where length(self) == 1
+        """, "\n")
+    list_constraint_reject(concat(prefix, """
+        fn borrowed(values List[Int]) List[Int] {
+            values
+        }
+        fn invalid(values List[Int]) Result[One, ConstraintError] {
+            One(borrowed(values))
+        }
+        """))
+    list_constraint_reject(concat(prefix, """
+        fn leaked(effect fn(List[Int])) List[Int] {
+            let output = [1]
+            effect(output)
+            output
+        }
+        fn invalid(effect fn(List[Int])) Result[One, ConstraintError] {
+            One(leaked(effect))
+        }
+        """))
+    list_constraint_reject(concat(prefix, """
+        fn leaked(holder List[List[Int]]) List[Int] {
+            let output = [1]
+            push(holder, output)
+            output
+        }
+        fn invalid(holder List[List[Int]]) Result[One, ConstraintError] {
+            One(leaked(holder))
+        }
+        """))
+}
+
+test fn constrained_factories_project_successful_async_completion() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.list.push
+        import std.result.Result
+        import std.result.ConstraintError
+        type Pair[T] = List[T] where length(self) == 2
+        async fn gathered[T](create fn(Int) T) List[T]
+        ensures length(result) == 2
+        {
+            let output List[T] = []
+            push(output, create(0))
+            push(output, create(1))
+            output
+        }
+        async fn pair[T](create fn(Int) T) Pair[T] {
+            Pair(gathered(create).await)
+        }
+        async fn saved[T](create fn(Int) T) Result[Pair[T], ConstraintError] {
+            let pending = gathered(create)
+            let draft = pending.await
+            Pair(draft)
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        import std.result.Result
+        import std.result.ConstraintError
+        type One = List[Int] where length(self) == 1
+        async fn borrowed(values List[Int]) List[Int] {
+            values
+        }
+        async fn invalid(values List[Int]) Result[One, ConstraintError] {
+            One(borrowed(values).await)
+        }
+        """)
+    assert match list_constraint_checked("""
+        import std.list.length
+        import std.result.Result
+        import std.result.ConstraintError
+        type One = List[Int] where length(self) == 1
+        async fn invalid(pending Task[List[Int]]) Result[One, ConstraintError] {
+            One(pending.await)
+        }
+        """) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "fresh unpublished")
+        Result.Ok(_) => false
+    }
+    list_constraint_reject("""
+        import std.list.length
+        import std.list.push
+        import std.result.Result
+        import std.result.ConstraintError
+        type One = List[Int] where length(self) == 1
+        async fn fresh() List[Int] {
+            [1]
+        }
+        async fn invalid() Result[One, ConstraintError] {
+            let pending = fresh()
+            let draft = pending.await
+            let value = One(draft)?
+            push(draft, 2)
+            Result.Ok(value)
+        }
+        """)
+}
+
+test fn constructor_completion_keeps_contextual_instances_and_caller_exits() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.result.Result
+        type Empty[T] = List[T] where length(self) == 0
+        type Pair = List[Int] where length(self) == 2
+        async fn empty[T]() List[T]
+        ensures length(result) == 0
+        {
+            []
+        }
+        async fn contextual() Empty[Text] {
+            Empty[Text](empty().await)
+        }
+        async fn two(count Int) List[Int]
+        requires count == 2
+        ensures length(result) == count
+        {
+            [1, 2]
+        }
+        async fn selected(stop Bool) Result[Pair, Text] {
+            let value = Pair(two(if stop {
+                    return Result.Err("stop")
+                } else {
+                    2
+                }).await)
+            Result.Ok(value)
+        }
+        """)
+}

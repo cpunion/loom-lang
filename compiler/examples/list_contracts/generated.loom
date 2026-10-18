@@ -1,0 +1,73 @@
+import std.list.generate
+import std.int.to_text
+
+type GeneratedPair[T] = List[T] where length(self) == 2
+
+fn generated_pair[T](create fn(Int) T) GeneratedPair[T] {
+    GeneratedPair(generate(2, create))
+}
+
+fn generated_count[T](count Int, create fn(Int) T) Int
+requires count >= 0
+ensures result == count
+{
+    length(generate(count, create))
+}
+
+async fn delayed_generation[T](count Int, create fn(Int) T) List[T]
+requires count >= 0
+ensures length(result) == count
+{
+    let values = generate(count, create)
+    sleep_ms(1).await
+    values
+}
+
+async fn selected_generation(stop Bool) Result[GeneratedPair[Text], Text] {
+    let pair = GeneratedPair(delayed_generation(if stop {
+                return Result.Err("stop")
+            } else {
+                2
+            }, to_text).await)
+    Result.Ok(pair)
+}
+
+async fn exercise_generated() {
+    let trace = new[Int]()
+    let pair = generated_pair(fn(index Int) Text {
+            push(trace, index)
+            to_text(index)
+        })
+    assert length(pair) == 2 && get(pair, 0) == "0" && get(pair, 1) == "1"
+    assert length(trace) == 2 && trace[0] == 0 && trace[1] == 1
+    sleep_ms(1).await
+    assert length(pair) == 2 && get(pair, 1) == "1"
+    assert generated_count(0, to_text) == 0
+    assert generated_count(3, to_text) == 3
+    let delayed = GeneratedPair(delayed_generation(2, to_text).await)
+    assert length(delayed) == 2 && get(delayed, 1) == "1"
+    let pending = delayed_generation(2, to_text)
+    let raw = pending.await
+    let saved = match GeneratedPair(raw) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    raw[0] = "saved"
+    sleep_ms(1).await
+    assert get(saved, 0) == "saved" && length(saved) == 2
+    assert match selected_generation(true).await {
+        Result.Err(error) => error == "stop"
+        Result.Ok(_) => false
+    }
+    assert match selected_generation(false).await {
+        Result.Ok(value) => length(value) == 2 && get(value, 1) == "1"
+        Result.Err(_) => false
+    }
+}
+
+test async fn source_generation_composes_a_proved_shape_without_runtime_rechecking() {
+    exercise_generated().await
+}

@@ -16,7 +16,7 @@ fn observation_guard(valid Predicate, state State) Predicate {
     valid
 }
 
-fn read_element_outcomes(proof Verification, ty Int, identity Int, index Linear,
+fn read_element_outcomes(proof Verification, ty Int, receiver_type Int, identity Int, index Linear,
     entry State) Result[List[Outcome], Text] {
     let output = new[Outcome]()
     var state = array_contents(proof, identity, entry)?
@@ -54,10 +54,26 @@ fn read_element_outcomes(proof Verification, ty Int, identity Int, index Linear,
             }
         }
     }
-    let value = record_parameter_value(proof, ty, 0)
+    let sampled = record_parameter_value(proof, ty, 0)
+    if mutable_value(sampled, true) {
+        state = task_private_value(proof, receiver_type, Value.List(identity),
+            published_inputs(proof, [receiver_type], [Value.List(identity)], 0, state))
+    }
+    state = typed_value_state(proof, ty, sampled, state)
+    // Project the current source graph's exclusions through the sampled value,
+    // not an assumption that arbitrary returned handles have distinct IDs.
+    let shared = length(state.extents) > 1 && mutable_value(sampled)
+    let value = if shared {
+        opaque_completion(sampled, state, get(proof.fresh, 0), identity)
+    } else {
+        sampled
+    }
+    if shared {
+        state = completion_separation(value, state, identity)
+    }
     discard add_outcome(output, Outcome {
             state = remember_element(identity, index, value,
-                array_read(proof, identity, index, value, Predicate.Constant(true), typed_value_state(proof, ty, value, state))?)?
+                array_read(proof, identity, index, value, Predicate.Constant(true), state)?)?
             value = value
         })?
     Result.Ok(output)

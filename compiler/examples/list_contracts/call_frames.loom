@@ -1,0 +1,72 @@
+type FramePair = List[Int] where length(self) == 2
+
+type FrameTriple = List[Int] where length(self) == 3
+
+fn touch_input(values List[Int]) Int
+ensures result == 7
+{
+    push(values, 7)
+    7
+}
+
+fn private_pair(values List[Int]) List[Int]
+ensures length(result) == 2
+{
+    let output = [1, 2]
+    discard touch_input(values)
+    output
+}
+
+fn append_private(values List[Int])
+ensures length(values) == old(length(values)) + 1
+{
+    push(values, 3)
+}
+
+fn private_triple() List[Int]
+ensures length(result) == 3
+{
+    let output = [1, 2]
+    append_private(output)
+    output
+}
+
+async fn observed[T](value T, effect fn(T)) Int
+ensures result == 7
+{
+    effect(value)
+    sleep_ms(1).await
+    7
+}
+
+async fn completion_pair[T](values List[T], effect fn(T)) List[Int]
+requires length(values) > 0
+ensures length(result) == 2
+{
+    let output = [1, 2]
+    discard observed(get(values, 0), effect).await
+    output
+}
+
+async fn exercise_call_frames() {
+    let other = [9]
+    let pair = FramePair(private_pair(other))
+    assert length(pair) == 2 && length(other) == 2 && other[1] == 7
+    let triple = FrameTriple(private_triple())
+    assert length(triple) == 3 && triple[2] == 3
+    let notes = [0]
+    let source = [TransformEntry {
+            label = "shared"
+            notes = notes
+        }]
+    let completed = FramePair(completion_pair(source, fn(value TransformEntry) {
+                push(value.notes, 8)
+            }).await)
+    assert length(completed) == 2 && length(notes) == 2 && notes[1] == 8
+    sleep_ms(1).await
+    assert pair[1] == 2 && triple[2] == 3 && completed[0] == 1
+}
+
+test async fn source_summary_frames_preserve_unexposed_private_outputs() {
+    exercise_call_frames().await
+}

@@ -1,0 +1,70 @@
+test fn generic_transforms_frame_private_output_through_input_reads() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.new
+        import std.list.get
+        import std.list.push
+        fn mapped[T, U](values List[T], transform fn(T) U) List[U]
+        ensures length(result) == old(length(values))
+        {
+            let count = length(values)
+            let output = new[U](count)
+            var index = 0
+            while index < count {
+                push(output, transform(get(values, index)))
+                index = index + 1
+            }
+            output
+        }
+        fn selected[T](values List[T], predicate fn(T) Bool) List[T]
+        ensures length(result) <= old(length(values))
+        {
+            let count = length(values)
+            let output = new[T]()
+            var index = 0
+            while index < count {
+                let value = get(values, index)
+                if predicate(value) {
+                    push(output, value)
+                }
+                index = index + 1
+            }
+            output
+        }
+        """, true)
+}
+
+test fn reads_of_published_graphs_cannot_frame_callback_effects() {
+    assert match checked(list_length_files("""
+        import std.list.length
+        import std.list.get
+        import std.list.push
+        fn exposed(effect fn(List[Int])) Int
+        ensures result == 1
+        {
+            let output = [1]
+            let holder = [output]
+            effect(get(holder, 0))
+            length(output)
+        }
+        """)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+        Result.Ok(_) => false
+    }
+    assert match checked(list_length_files("""
+        import std.list.length
+        import std.list.get
+        import std.list.push
+        fn exposed(holder List[List[Int]], effect fn(List[Int])) Int
+        ensures result == 1
+        {
+            let output = [1]
+            push(holder, output)
+            effect(get(holder, 0))
+            length(output)
+        }
+        """)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+        Result.Ok(_) => false
+    }
+}

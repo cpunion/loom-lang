@@ -183,7 +183,10 @@ supported theories and boundaries. The central rules are:
   rules, including callback writes, loop induction and entry observations through
   captured List handles and inline records. Unobserved generic fields stay opaque.
   Shared children retain interference and alias rules; general mutable-frame graphs
-  remain open. Bounded synchronous recursive groups retain checked storage frames
+  remain open. Contracted helpers frame unexposed private graphs using evaluated
+  inputs. Erased callback captures expose reachable storage; later stores cannot
+  reuse a stale allocation frontier, and sampled sibling fields imply no separation.
+  Bounded synchronous recursive groups retain checked storage frames
   only after all reachable bodies and actual arguments pass the same effect rules.
 - Loop candidates need entry and every-backedge proof; losing a candidate
   rechecks dependents. Logical `old` snapshots preserve supported entry values
@@ -224,6 +227,10 @@ supported theories and boundaries. The central rules are:
   after checked construction and escape analysis. Raw writable aliases cannot
   escape. Shared builds independently revalidate preservation; no implicit copy,
   monitor, ownership syntax or sampled reservation is introduced.
+  Bounded body provenance also admits unrelated input effects and callbacks
+  that cannot reach the fresh output, including successful source Task results,
+  without trusting pending postconditions. Saved known Tasks can yield local
+  drafts without making arbitrary Task results fresh or permitting raw escapes.
   General nested-graph publication and changing loop-carried identities remain
   conservative.
 

@@ -28,14 +28,19 @@ test fn opaque_frames_require_real_unpublished_allocations() {
         Result.Ok(value) => opaque_frame(value, extent)
         Result.Err(_) => false
     }
-    assert match opaque_completion(Value.Opaque(11, []), state) {
+    assert match opaque_completion(Value.Opaque(11, []), state, 11) {
         Value.Opaque(_, excluded) => storage_identity_member(excluded, 10)
         _ => false
     }
-    assert match opaque_completion(Value.Opaque(11, []), published_storage(state)) {
+    assert match opaque_completion(Value.Opaque(11, []), published_storage(state), 11) {
         Value.Opaque(_, excluded) => length(excluded) == 0
         _ => false
     }
+    // Symbolic sibling handles are not later allocations, whichever field
+    // the result sampler visits first.
+    let sibling = get(fresh_storage(Value.List(20), state).extents, 1)
+    assert opaque_frame(Value.Opaque(20, []), sibling)
+    assert !opaque_frame(opaque_completion(Value.Opaque(20, []), state, 21), sibling)
     let returned = completion_separation(Value.List(20), list_bounds(Value.List(20), state))
     assert match list_state(20, returned) {
         Result.Ok(root) => !extent_overlap(root, extent)
