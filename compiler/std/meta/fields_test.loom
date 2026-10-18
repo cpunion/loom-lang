@@ -1,0 +1,67 @@
+record FieldMetadataSample[T] {
+    count Int
+    value T
+}
+
+record FieldMetadataEmpty {
+}
+
+type FieldMetadataChecked = FieldMetadataSample[Text] where self.count > 0
+
+test fn record_metadata_preserves_names_types_refinements_and_empty_shapes() {
+    assert comptime {
+        let fields = match record_fields[FieldMetadataSample[Text]]() {
+            Option.Some(fields) => fields
+            Option.None => {
+                assert false
+                new[FieldType]()
+            }
+        }
+        assert length(fields) == 2
+        assert fields[0].name == "count" && fields[0].ty == Int
+        assert fields[1].name == "value" && fields[1].ty == Text
+        assert match field_type[FieldMetadataChecked]("value") {
+            Option.Some(ty) => ty == Text
+            Option.None => false
+        }
+        assert match record_fields[FieldMetadataEmpty]() {
+            Option.Some(fields) => length(fields) == 0
+            Option.None => false
+        }
+        assert match record_fields[Int]() {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        match field_type[FieldMetadataSample[Text]]("absent") {
+            Option.None => true
+            Option.Some(_) => false
+        }
+    }
+}
+
+test fn record_metadata_is_fresh_data_and_can_construct_structural_types() {
+    let Fields = comptime {
+        let original = match record_fields[FieldMetadataSample[Bool]]() {
+            Option.Some(fields) => fields
+            Option.None => {
+                assert false
+                new[FieldType]()
+            }
+        }
+        original[0] = FieldType {
+            name = "changed"
+            ty = Text
+        }
+        let fresh = match record_fields[FieldMetadataSample[Bool]]() {
+            Option.Some(fields) => fields
+            Option.None => {
+                assert false
+                new[FieldType]()
+            }
+        }
+        assert fresh[0].name == "count" && fresh[0].ty == Int
+        tuple([fresh[0].ty, fresh[1].ty])
+    }
+    let value Fields = (42, true)
+    assert value.0 == 42 && value.1
+}

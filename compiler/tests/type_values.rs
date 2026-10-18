@@ -163,3 +163,51 @@ fn main() {
         );
     }
 }
+
+#[test]
+fn record_metadata_neither_escapes_to_runtime_nor_grants_private_construction() {
+    let folder = tempfile::tempdir().unwrap();
+    for (body, expected) in [
+        (
+            r#"
+pub record PublicRecord {
+    value Int
+}
+fn main() {
+    let fields = record_fields[PublicRecord]()
+    discard fields
+}
+"#,
+            "type values cannot be stored in runtime locals or parameters",
+        ),
+        (
+            r#"
+type Positive = Int where self > 0
+type Nonnegative = Int where self >= 0
+fn main() {
+    let State = comptime {
+        match field_type[Weakening[Nonnegative, Positive]]("state") {
+            Option.Some(ty) => ty
+            Option.None => Int
+        }
+    }
+    let state = State {}
+    discard Weakening[Nonnegative, Positive] { state = state }
+}
+"#,
+            "private type",
+        ),
+    ] {
+        fs::write(
+            folder.path().join("main.loom"),
+            format!(
+                "import std.meta.record_fields\nimport std.meta.field_type\nimport std.reflect.predicates.Weakening\nimport std.option.Option\n{body}"
+            ),
+        )
+        .unwrap();
+        let output = loom(&["check", folder.path().to_str().unwrap()]);
+        assert!(!output.status.success(), "accepted invalid metadata use");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains(expected), "{diagnostic}");
+    }
+}
