@@ -1,0 +1,106 @@
+import std.resource.Dispose
+import std.resource.MustScope
+import std.stream.take
+import std.stream.collect
+import std.task.all
+import std.net.tcp.Listener
+import std.net.tcp.chunks.Chunks
+import std.stream.lines.Lines
+import std.list.length
+
+record ConnectionInput {
+    address Text
+    // Successful acquisitions, closes, and bytes delivered to the adapter.
+    counts List[Int]
+}
+
+record ConnectedChunks {
+    connection std.net.tcp.Stream
+    chunks std.net.tcp.chunks.Chunks
+    counts List[Int]
+}
+
+impl MustScope for ConnectedChunks {
+}
+
+impl Dispose for ConnectedChunks {
+    fn dispose(self ConnectedChunks) {
+        assert match close_stream(self.connection) {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        }
+        self.counts[1] = self.counts[1] + 1
+    }
+}
+
+impl std.stream.Stream for ConnectedChunks {
+    type Item = Result[Bytes, TcpError]
+
+    async fn next(self ConnectedChunks) Option[Result[Bytes, TcpError]] {
+        let item = self.chunks.next().await
+        match item {
+            Option.Some(Result.Ok(bytes)) => {
+                self.counts[2] = self.counts[2] + length(bytes)
+            }
+            _ => {
+            }
+        }
+        item
+    }
+}
+
+async fn open_connection(input ConnectionInput) Result[ConnectedChunks, TcpError] {
+    let connection = connect(input.address).await?
+    input.counts[0] = input.counts[0] + 1
+    Result.Ok(ConnectedChunks {
+            connection = connection
+            chunks = read(connection, 2)
+            counts = input.counts
+        })
+}
+
+async fn open_lines(input ConnectionInput) Result[std.stream.lines.Lines[ConnectedChunks, TcpError], TcpError] {
+    lines(open_connection, input, packet, 32).await
+}
+
+async fn receive_owned(input ConnectionInput) Result[Bool, TcpError] {
+    scoped source = take(open_lines, input, 2).await?
+    let values = collect(source).await
+    Result.Ok(std.list.length(values) == 2 && match values[0] {
+            Result.Ok(text) => text == "first"
+            _ => false
+        } && match values[1] {
+            Result.Ok(text) => text == "second"
+            _ => false
+        })
+}
+
+async fn send_owned(listener std.net.tcp.Listener) Result[Int, TcpError] {
+    let connection = accept(listener).await?
+    defer {
+        discard close_stream(connection)
+    }
+    let wire = to_bytes("first\r\nsecond\n")
+    push(wire, 255)
+    push(wire, 10)
+    write_bytes(connection, wire).await
+}
+
+async fn owned_trial() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let counts = [0, 0, 0]
+    let address = local_address(listener)?
+    // Join both tasks before propagating either error.
+    let sent, received = all((send_owned(listener), receive_owned(ConnectionInput {
+                    address = address
+                    counts = counts
+                }))).await
+    assert sent? == 16
+    let valid = received?
+    // A delivered two-byte chunk may retain one suffix byte. No further pull
+    // or UTF-8 decoding of the deliberately invalid suffix is allowed.
+    Result.Ok(valid && counts[0] == 1 && counts[1] == 1 && counts[2] >= 14 && counts[2] <= 15)
+}

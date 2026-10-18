@@ -49,11 +49,14 @@ Resource factories use the same convention as other stream adapters:
 ```loom
 scoped reader = lines(create, input, bytes, 1024)
 // Or: scoped reader = lines(open, input, bytes, 1024)?
+// Async factory: scoped reader = lines(connect, input, bytes, 1024).await?
 ```
 
 The factory runs once and transfers a fresh `Stream + Dispose + MustScope`
-source. Existing scoped borrows cannot escape into returned adapters. Owned
-adapters dispose their source at scope exit, after pending child pulls drain.
+source. Existing scoped borrows cannot escape into returned adapters.
+Factories returning `Task[S]` use `.await`; `Task[Result[S, E]]` uses `.await?`.
+Acquisition does not pull, and cancellation drains the factory before cleanup.
+Owned adapters dispose their source at scope exit, after pending child pulls drain.
 A lazy source such as `std.file.chunks.stream` still opens only when pulled.
 
 Run `loom test compiler/std/stream/lines` or the

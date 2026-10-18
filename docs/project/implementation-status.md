@@ -264,6 +264,8 @@ handles bounded binary messages over arbitrary chunks, including scoped factorie
 and real TCP. [UTF-8 line framing](../../compiler/std/stream/lines/README.md)
 adds explicit byte limits, CRLF handling and strict decoding across arbitrary
 chunks; errors/cancellation retire the shared cursor without suffix prefetch.
+Owned stream and framing factories accept synchronous or asynchronous acquisition,
+including typed errors; nested adapters dispose once after pending children drain.
 Other framing and general borrow-retaining adapters remain open.
 
 Stop-the-world copying GC preserves precise roots, sharing and cycles.

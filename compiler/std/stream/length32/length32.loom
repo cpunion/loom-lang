@@ -93,6 +93,34 @@ requires maximum >= 0 && maximum <= 4294967295
         })
 }
 
+pub async fn frames[A, S Stream + Dispose + MustScope, E](create fn(A) Task[S], input A,
+    bytes fn(S.Item) Result[Bytes, E], maximum Int) Frames[S, E]
+requires maximum >= 0 && maximum <= 4294967295
+{
+    Frames[S, E] {
+        state = State[S, E] {
+            source = create(input).await
+            bytes = bytes
+            maximum = maximum
+            cursor = cursor()
+        }
+    }
+}
+
+pub async fn frames[A, S Stream + Dispose + MustScope, E, F](create fn(A) Task[Result[S, F]], input A,
+    bytes fn(S.Item) Result[Bytes, E], maximum Int) Result[Frames[S, E], F]
+requires maximum >= 0 && maximum <= 4294967295
+{
+    Result.Ok(Frames[S, E] {
+            state = State[S, E] {
+                source = create(input).await?
+                bytes = bytes
+                maximum = maximum
+                cursor = cursor()
+            }
+        })
+}
+
 fn failed[E](state List[Cursor], error FrameError[E]) Option[Result[Bytes, FrameError[E]]] {
     state[0] = Cursor {
         chunk = new()
