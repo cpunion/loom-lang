@@ -1,0 +1,44 @@
+import std.meta.field_type
+import std.reflect.predicates.implies
+import std.option.Option
+
+fn optional_types_imply(comptime source Option[type], comptime target Option[type]) Bool {
+    comptime if match (source, target) {
+        (Option.Some(_), Option.Some(_)) => true
+        _ => false
+    } {
+        let Source = comptime {
+            match source {
+                Option.Some(ty) => ty
+                Option.None => {
+                    assert false
+                    Int
+                }
+            }
+        }
+        let Target = comptime {
+            match target {
+                Option.Some(ty) => ty
+                Option.None => {
+                    assert false
+                    Int
+                }
+            }
+        }
+        implies[Source, Target]()
+    } else {
+        false
+    }
+}
+
+// Only the explicitly named field types are compared. Enclosing invariants,
+// storage mapping, writers and deployed artifacts remain separate obligations.
+// False includes missing/opaque fields and unproved relations. Each field is
+// looked up once; the complete query is selected before native emission.
+pub fn field_implies[From, To](comptime source_field Text, comptime target_field Text) Bool {
+    comptime if optional_types_imply(field_type[From](source_field), field_type[To](target_field)) {
+        true
+    } else {
+        false
+    }
+}

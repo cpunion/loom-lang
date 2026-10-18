@@ -1,0 +1,42 @@
+type RelationPositive = Int where self > 0
+
+type RelationNonnegative = Int where self >= 0
+
+pub record RelationFrom {
+    id Int
+    amount RelationNonnegative
+}
+
+pub record RelationTo {
+    identifier Int
+    amount RelationPositive
+}
+
+record RelationPrivate {
+    amount Int
+}
+
+pub record RelationPlain {
+    amount Int
+}
+
+pub type RelationChecked = RelationPlain where self.amount > 0
+
+test fn named_field_queries_use_actual_types_and_explicit_correspondence() {
+    assert comptime {
+        assert field_implies[RelationTo, RelationFrom]("amount", "amount")
+        assert !field_implies[RelationFrom, RelationTo]("amount", "amount")
+        assert field_implies[RelationFrom, RelationTo]("id", "identifier")
+        assert !field_implies[RelationFrom, RelationTo]("missing", "identifier")
+        assert !field_implies[RelationFrom, RelationTo]("id", "missing")
+        !field_implies[RelationPrivate, RelationPlain]("amount", "amount")
+    }
+}
+
+test fn field_queries_do_not_establish_enclosing_record_invariants() {
+    assert comptime {
+        // Both fields are Int; only the enclosing refinement requires > 0.
+        assert field_implies[RelationPlain, RelationChecked]("amount", "amount")
+        !implies[RelationPlain, RelationChecked]()
+    }
+}

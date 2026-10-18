@@ -6,3 +6,9 @@ path = ".."
 
 [dependencies.orders_migration]
 path = "../orders_migration"
+
+[dependencies.migration_v1]
+path = "../fixture_v1"
+
+[dependencies.migration_v2]
+path = "../fixture_v2"

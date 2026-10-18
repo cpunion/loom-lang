@@ -700,6 +700,10 @@ fn rejects_corrupt_receipt_and_artifact(database Text, receipt_path Text) Bool {
 }
 
 fn main() {
+    discard comptime {
+        declared_field_relations()
+        true
+    }
     let args = arguments()
     assert length(args) == 7
     assert match succeeds(get(args, 1), get(args, 4), get(args, 5), get(args, 6)) {

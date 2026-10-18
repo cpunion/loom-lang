@@ -1,0 +1,9 @@
+import deployment.field_implies
+import migration_v1.Order
+import migration_v2.Order
+
+fn declared_field_relations() {
+    assert field_implies[migration_v2.Order, migration_v1.Order]("amount", "amount")
+    assert !field_implies[migration_v1.Order, migration_v2.Order]("amount", "amount")
+    assert field_implies[migration_v1.Order, migration_v2.Order]("id", "id")
+}
