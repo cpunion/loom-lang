@@ -87,6 +87,28 @@ test fn allocation_epoch_candidates_drop_earlier_aliases_and_published_frames() 
             }
             length(current)
         }
+        """, """
+        import std.list.length
+        import std.list.push
+        fn invalid(turns Int) Int
+        requires turns > 0
+        ensures result == 1
+        {
+            let original = [1]
+            var first = original
+            var second = [2]
+            var third = [3]
+            var turn = 0
+            while turn < turns {
+                let previous = first
+                first = second
+                second = third
+                third = previous
+                turn = turn + 1
+            }
+            push(second, 9)
+            length(original)
+        }
         """]
     var index = 0
     while index < length(cases) {

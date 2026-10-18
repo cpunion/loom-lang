@@ -82,4 +82,18 @@ test fn allocation_epochs_do_not_turn_sampled_headers_into_distinct_allocations(
     assert loop_candidate_preserved(proof, candidate, state)
     assert loop_header_count([candidate]) == 1
     assert !loop_candidate_preserved(proof, candidate, assigned(state, 0, Value.List(5)))
+    assert match loop_birth_floor(0, [], 12, [Outcome {
+                state = assigned(state, 0, Value.List(10))
+                value = Value.Empty
+            }]) {
+        Result.Ok(floor) => floor == 10
+        Result.Err(_) => false
+    }
+    assert match loop_birth_floor(0, [], 10, [Outcome {
+                state = assigned(state, 0, Value.List(5))
+                value = Value.Empty
+            }]) {
+        Result.Ok(floor) => floor == -1
+        Result.Err(_) => false
+    }
 }
