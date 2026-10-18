@@ -1,0 +1,161 @@
+import std.result.Result
+import std.option.Option
+import std.stream.Stream
+import std.bytes.new
+import std.bytes.length
+import std.bytes.get
+import std.bytes.push
+import std.bytes.to_text
+import std.text.to_bytes
+import std.text.length
+import std.text.byte
+import std.text.concat
+import std.list.new
+import std.list.length
+import std.list.push
+import std.int.to_text
+
+pub enum ProtocolError {
+    Syntax
+    Framing
+    Unsupported
+    Limit
+    Truncated
+    Busy
+    Closed
+}
+
+pub enum ReadError[E] {
+    Input(E)
+    Protocol(ProtocolError)
+}
+
+// Values and reason phrases are octets, not assumed UTF-8. Names are ASCII.
+pub record Header {
+    name Text
+    value Bytes
+}
+
+pub record Request {
+    method Text
+    target Text
+    headers List[Header]
+    body Bytes
+    trailers List[Header]
+}
+
+pub record Response {
+    status Int
+    reason Bytes
+    headers List[Header]
+    body Bytes
+    trailers List[Header]
+}
+
+pub record Limits {
+    line_bytes Int
+    metadata_bytes Int
+    body_bytes Int
+}
+
+pub fn limits() Limits {
+    Limits {
+        line_bytes = 8192
+        metadata_bytes = 65536
+        body_bytes = 8388608
+    }
+}
+
+fn valid_limits(value Limits) Bool {
+    value.line_bytes >= 0 && value.metadata_bytes >= 0 && value.body_bytes >= 0
+}
+
+fn append(output Bytes, value Bytes) {
+    let size = length(value)
+    var index = 0
+    while index < size {
+        push(output, get(value, index))
+        index = index + 1
+    }
+}
+
+fn portion(value Bytes, start Int, end Int) Bytes {
+    let output = std.bytes.new()
+    var index = start
+    while index < end {
+        push(output, get(value, index))
+        index = index + 1
+    }
+    output
+}
+
+fn lower(value Int) Int {
+    if value >= 65 && value <= 90 {
+        value + 32
+    } else {
+        value
+    }
+}
+
+fn named(value Text, expected Text) Bool {
+    if std.text.length(value) != std.text.length(expected) {
+        return false
+    }
+    var index = 0
+    while index < std.text.length(value) {
+        if lower(byte(value, index)) != byte(expected, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn token(value Int) Bool {
+    (value >= 48 && value <= 57) || (value >= 65 && value <= 90) ||
+    (value >= 97 && value <= 122) || value == 33 || value == 35 || value == 36 ||
+    value == 37 || value == 38 || value == 39 || value == 42 || value == 43 ||
+    value == 45 || value == 46 || value == 94 || value == 95 || value == 96 ||
+    value == 124 || value == 126
+}
+
+fn valid_token(value Bytes) Bool {
+    if length(value) == 0 {
+        return false
+    }
+    var index = 0
+    while index < length(value) {
+        if !token(get(value, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn field_octet(value Int) Bool {
+    value == 9 || (value >= 32 && value != 127)
+}
+
+fn valid_field(value Bytes) Bool {
+    var index = 0
+    while index < length(value) {
+        if !field_octet(get(value, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+// This codec does not interpret field-specific syntax, authorities or URIs.
+pub fn header(name Text, value Text) Result[Header, ProtocolError] {
+    let bytes = to_bytes(value)
+    if !valid_token(to_bytes(name)) || !valid_field(bytes) {
+        return Result.Err(ProtocolError.Syntax)
+    }
+    Result.Ok(Header {
+            name = name
+            value = bytes
+        })
+}

@@ -1,0 +1,192 @@
+fn snapshot(headers List[Header], maximum Limits) Result[List[Header], ProtocolError] {
+    let output = std.list.new[Header]()
+    var remaining = maximum.metadata_bytes
+    var index = 0
+    while index < std.list.length(headers) {
+        let entry = headers[index]
+        let size = length(entry.value)
+        let name_size = std.text.length(entry.name)
+        if size > maximum.line_bytes || maximum.line_bytes - size < 2 ||
+        name_size > maximum.line_bytes - size - 2 {
+            return Result.Err(ProtocolError.Limit)
+        }
+        let line_size = name_size + size + 2
+        if remaining < 2 || line_size > remaining - 2 {
+            return Result.Err(ProtocolError.Limit)
+        }
+        remaining = remaining - line_size - 2
+        let value = portion(entry.value, 0, size)
+        if !valid_token(to_bytes(entry.name)) || !valid_field(value) {
+            return Result.Err(ProtocolError.Syntax)
+        }
+        let bytes = to_bytes(concat(entry.name, ":"))
+        append(bytes, value)
+        std.list.push(output, field(bytes)?)
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+
+fn emit_line(output Bytes, value Bytes, budget List[Int], maximum Limits) Result[Int, ProtocolError] {
+    let size = length(value)
+    if size > maximum.line_bytes || budget[0] < 2 || size > budget[0] - 2 {
+        return Result.Err(ProtocolError.Limit)
+    }
+    budget[0] = budget[0] - size - 2
+    append(output, value)
+    push(output, 13)
+    push(output, 10)
+    Result.Ok(size + 2)
+}
+
+fn emit_fields(output Bytes, headers List[Header], budget List[Int], maximum Limits) Result[Int, ProtocolError] {
+    var index = 0
+    while index < std.list.length(headers) {
+        let entry = headers[index]
+        let bytes = to_bytes(concat(entry.name, ": "))
+        append(bytes, entry.value)
+        discard emit_line(output, bytes, budget, maximum)?
+        index = index + 1
+    }
+    Result.Ok(0)
+}
+
+fn hexadecimal(value Int) Bytes {
+    let reverse = std.bytes.new()
+    var remaining = value
+    while remaining > 0 {
+        push(reverse, byte("0123456789abcdef", remaining % 16))
+        remaining = remaining / 16
+    }
+    let output = std.bytes.new()
+    var index = length(reverse)
+    while index > 0 {
+        index = index - 1
+        push(output, get(reverse, index))
+    }
+    output
+}
+
+fn empty_framing(headers List[Header], forbidden Bool) Result[Bool, ProtocolError] {
+    var lengths = 0
+    var transfers = 0
+    var index = 0
+    while index < std.list.length(headers) {
+        let entry = headers[index]
+        if named(entry.name, "content-length") {
+            lengths = lengths + 1
+            if length(entry.value) == 0 {
+                return Result.Err(ProtocolError.Framing)
+            }
+            var digit = 0
+            while digit < length(entry.value) {
+                let current = get(entry.value, digit)
+                if current < 48 || current > 57 {
+                    return Result.Err(ProtocolError.Framing)
+                }
+                digit = digit + 1
+            }
+        }
+        if named(entry.name, "transfer-encoding") {
+            transfers = transfers + 1
+            if !valid_token(entry.value) || !named(to_text(entry.value), "chunked") {
+                return Result.Err(ProtocolError.Unsupported)
+            }
+        }
+        index = index + 1
+    }
+    if lengths + transfers > 1 || (forbidden && lengths + transfers != 0) {
+        return Result.Err(ProtocolError.Framing)
+    }
+    Result.Ok(true)
+}
+
+fn encode_message(start Bytes, headers List[Header], content Bytes, suffix List[Header], maximum Limits, empty Bool) Result[Bytes, ProtocolError] {
+    let trailers = snapshot(suffix, maximum)?
+    // Do not publish a length and later copy a possibly changed shared payload.
+    let size = length(content)
+    if size > maximum.body_bytes {
+        return Result.Err(ProtocolError.Limit)
+    }
+    let payload = portion(content, 0, size)
+    let output = std.bytes.new()
+    let budget = [maximum.metadata_bytes]
+    discard emit_line(output, start, budget, maximum)?
+    discard emit_fields(output, headers, budget, maximum)?
+    if empty {
+        if length(payload) != 0 || std.list.length(trailers) != 0 {
+            return Result.Err(ProtocolError.Framing)
+        }
+        discard emit_line(output, std.bytes.new(), budget, maximum)?
+        return Result.Ok(output)
+    }
+    let shape = framing(headers, maximum.body_bytes)?
+    if shape.chunked {
+        var index = 0
+        while index < std.list.length(trailers) {
+            if !trailer(trailers[index]) {
+                return Result.Err(ProtocolError.Framing)
+            }
+            index = index + 1
+        }
+    } else {
+        if std.list.length(trailers) != 0 || (shape.size >= 0 && shape.size != length(payload)) {
+            return Result.Err(ProtocolError.Framing)
+        }
+        if shape.size < 0 {
+            discard emit_line(output, to_bytes(concat("Content-Length: ", to_text(length(payload)))), budget, maximum)?
+        }
+    }
+    discard emit_line(output, std.bytes.new(), budget, maximum)?
+    if shape.chunked {
+        if length(payload) > 0 {
+            discard emit_line(output, hexadecimal(length(payload)), budget, maximum)?
+            append(output, payload)
+            discard emit_line(output, std.bytes.new(), budget, maximum)?
+        }
+        discard emit_line(output, to_bytes("0"), budget, maximum)?
+        discard emit_fields(output, trailers, budget, maximum)?
+        discard emit_line(output, std.bytes.new(), budget, maximum)?
+    } else {
+        append(output, payload)
+    }
+    Result.Ok(output)
+}
+
+// Content-Length is generated when absent. An explicit chunked transfer coding
+// emits one data chunk and a separate trailer section. Neither path sends I/O.
+pub fn encode_request(value Request, maximum Limits) Result[Bytes, ProtocolError]
+requires valid_limits(maximum)
+{
+    let start = to_bytes(concat(concat(concat(value.method, " "), value.target), " HTTP/1.1"))
+    discard request_line(start)?
+    let headers = snapshot(value.headers, maximum)?
+    var hosts = 0
+    var index = 0
+    while index < std.list.length(headers) {
+        if named(headers[index].name, "host") {
+            hosts = hosts + 1
+        }
+        index = index + 1
+    }
+    if hosts != 1 {
+        return Result.Err(ProtocolError.Framing)
+    }
+    encode_message(start, headers, value.body, value.trailers, maximum, false)
+}
+
+pub fn encode_response(value Response, method Text, maximum Limits) Result[Bytes, ProtocolError]
+requires valid_limits(maximum)
+{
+    if value.status < 100 || value.status > 999 {
+        return Result.Err(ProtocolError.Syntax)
+    }
+    let start = to_bytes(concat(concat("HTTP/1.1 ", to_text(value.status)), " "))
+    append(start, value.reason)
+    discard status_line(start)?
+    let headers = snapshot(value.headers, maximum)?
+    if no_body(method, value.status) {
+        discard empty_framing(headers, value.status < 200 || value.status == 204 || tunnel(method, value.status))?
+    }
+    encode_message(start, headers, value.body, value.trailers, maximum, no_body(method, value.status))
+}

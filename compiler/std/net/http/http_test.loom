@@ -1,0 +1,362 @@
+import std.iter.from_list
+import std.stream.from_iter
+import std.time.sleep_ms
+import std.task.cancel
+import std.task.Outcome
+import std.bytes.set
+import std.text.replace
+
+fn raw(value Bytes) Result[Bytes, Text] {
+    Result.Ok(value)
+}
+
+fn supplied(value Result[Bytes, Text]) Result[Bytes, Text] {
+    value
+}
+
+fn message(value Text) Bytes {
+    to_bytes(replace(value, "\n", "\r\n"))
+}
+
+fn checked_header(name Text, value Text) Header {
+    match header(name, value) {
+        Result.Ok(entry) => entry
+        Result.Err(_) => {
+            assert false
+            Header {
+                name = "invalid",
+                value = std.bytes.new()
+            }
+        }
+    }
+}
+
+fn fragments(value Bytes, width Int) List[Bytes] {
+    let output = std.list.new[Bytes]()
+    std.list.push(output, std.bytes.new())
+    var index = 0
+    while index < length(value) {
+        let end = if width < length(value) - index {
+            index + width
+        } else {
+            length(value)
+        }
+        std.list.push(output, portion(value, index, end))
+        index = end
+    }
+    output
+}
+
+test async fn http_requests_preserve_pipeline_boundaries_and_binary_fields() {
+    let wire = to_bytes("\r\nPOST /items?q=one HTTP/1.1\r\nHost: local\r\nContent-Length: 3\r\nX-Octets: ")
+    push(wire, 255)
+    append(wire, to_bytes("\r\n\r\n"))
+    push(wire, 0)
+    push(wire, 255)
+    push(wire, 128)
+    append(wire, to_bytes("GET /next HTTP/1.1\r\nHost: local\r\n\r\n"))
+    let widths = [1, 3, 4096]
+    var index = 0
+    while index < std.list.length(widths) {
+        let input = reader(from_iter(from_list(fragments(wire, widths[index]))), raw, limits())
+        let copy = input
+        assert match read_request(input).await {
+            Result.Ok(Option.Some(value)) => value.method == "POST" && value.target == "/items?q=one" &&
+            length(value.body) == 3 && get(value.body, 0) == 0 && get(value.body, 1) == 255 &&
+            get(value.headers[2].value, 0) == 255
+            _ => false
+        }
+        assert match read_request(copy).await {
+            Result.Ok(Option.Some(value)) => value.method == "GET" && value.target == "/next" && length(value.body) == 0
+            _ => false
+        }
+        assert match read_request(input).await {
+            Result.Ok(Option.None) => true
+            _ => false
+        }
+        index = index + 1
+    }
+}
+
+test async fn http_chunked_extensions_and_trailers_are_separate_from_headers() {
+    let wire = message("""
+        HTTP/1.1 200 OK
+        Transfer-Encoding: ChUnKeD
+
+        2 ; name = "a\"b"; flag
+        ab
+        3
+        cde
+        00;end=yes
+        X-Check: done
+
+        HTTP/1.1 204 Done
+
+
+        """)
+    let input = reader(from_iter(from_list(fragments(wire, 1))), raw, limits())
+    assert match read_response(input, "GET").await {
+        Result.Ok(Option.Some(value)) => to_text(value.body) == "abcde" &&
+        std.list.length(value.headers) == 1 && std.list.length(value.trailers) == 1 &&
+        value.trailers[0].name == "X-Check" && to_text(value.trailers[0].value) == "done"
+        _ => false
+    }
+    assert match read_response(input, "GET").await {
+        Result.Ok(Option.Some(value)) => value.status == 204 && length(value.body) == 0
+        _ => false
+    }
+}
+
+test async fn http_method_status_and_tunnel_framing_precede_length_headers() {
+    let wire = message("""
+        HTTP/1.1 200 OK
+        Content-Length: 999999999999999999999
+
+        HTTP/1.1 100 Continue
+
+        HTTP/1.1 200 OK
+        Content-Length: 1
+
+        xHTTP/1.1 200 Connected
+        Content-Length: nonsense
+        Transfer-Encoding: unknown
+
+        tunnel
+        """)
+    let input = reader(from_iter(from_list([wire])), raw, limits())
+    assert match read_response(input, "HEAD").await {
+        Result.Ok(Option.Some(value)) => value.status == 200 && length(value.body) == 0
+        _ => false
+    }
+    assert match read_response(input, "POST").await {
+        Result.Ok(Option.Some(value)) => value.status == 100 && length(value.body) == 0
+        _ => false
+    }
+    assert match read_response(input, "POST").await {
+        Result.Ok(Option.Some(value)) => value.status == 200 && to_text(value.body) == "x"
+        _ => false
+    }
+    assert match read_response(input, "CONNECT").await {
+        Result.Ok(Option.Some(value)) => value.status == 200 && length(value.body) == 0
+        _ => false
+    }
+    assert match read_response(input, "GET").await {
+        Result.Err(ReadError.Protocol(ProtocolError.Closed)) => true
+        _ => false
+    }
+    assert match take_buffered(input) {
+        Result.Ok(value) => to_text(value) == "tunnel"
+        _ => false
+    }
+}
+
+test async fn http_bad_framing_is_terminal_without_reading_a_later_chunk() {
+    let invalid = [
+        "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx",
+        "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\nx",
+        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\nx",
+        "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1, 1\r\n\r\nx",
+        "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: +1\r\n\r\nx",
+        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost : a\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: a\r\n folded\r\n\r\n",
+        "GET / HTTP/1.1\nHost: a\n\n",
+        "GET / HTTP/1.1\r\nHost: a\rX: b\r\n\r\n",
+        "GET / HTTP/1.1\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nContent-Length: 4\r\n\r\n"
+    ]
+    var index = 0
+    while index < std.list.length(invalid) {
+        let source = from_iter(from_list([to_bytes(invalid[index]), to_bytes("unread")]))
+        let input = reader(source, raw, limits())
+        assert match read_request(input).await {
+            Result.Err(_) => true
+            _ => false
+        }
+        assert match read_request(input).await {
+            Result.Err(ReadError.Protocol(ProtocolError.Closed)) => true
+            _ => false
+        }
+        assert match source.next().await {
+            Option.Some(value) => to_text(value) == "unread"
+            _ => false
+        }
+        index = index + 1
+    }
+}
+
+test async fn http_limits_truncation_and_close_delimited_responses() {
+    let small = Limits {
+        line_bytes = 32
+        metadata_bytes = 128
+        body_bytes = 3
+    }
+    let invalid = [
+        "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 4\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 9999999999999999999999999\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\nfffffffffffffffffffffffff\r\n",
+        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n2\r\ncd\r\n",
+        "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\n\r\nx",
+        "GET / HTTP/1.1\r\nHost: a\r\n",
+        "GET / HTTP/1.1\r",
+        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n1; x=\"unterminated\r\nx\r\n0\r\n\r\n"
+    ]
+    var index = 0
+    while index < std.list.length(invalid) {
+        let input = reader(from_iter(from_list([to_bytes(invalid[index])])), raw, small)
+        assert match read_request(input).await {
+            Result.Err(_) => true
+            _ => false
+        }
+        index = index + 1
+    }
+    let input = reader(from_iter(from_list(fragments(to_bytes("HTTP/1.1 200 OK\r\n\r\nabc"), 2))), raw, small)
+    assert match read_response(input, "GET").await {
+        Result.Ok(Option.Some(value)) => to_text(value.body) == "abc"
+        _ => false
+    }
+    let overflow = reader(from_iter(from_list([to_bytes("HTTP/1.1 200 OK\r\n\r\nabcd")])), raw, small)
+    assert match read_response(overflow, "GET").await {
+        Result.Err(ReadError.Protocol(ProtocolError.Limit)) => true
+        _ => false
+    }
+    let metadata = reader(from_iter(from_list([to_bytes("\r\n\r\n\r\n")])), raw,
+        Limits {
+            metadata_bytes = 4
+            ..small
+        })
+    assert match read_request(metadata).await {
+        Result.Err(ReadError.Protocol(ProtocolError.Limit)) => true
+        _ => false
+    }
+    let packets List[Result[Bytes, Text]] = [Result.Ok(to_bytes("HTTP/1.1 200 OK\r\n")), Result.Err("transport failed")]
+    let source = from_iter(from_list(packets))
+    let failed = reader(source, supplied, limits())
+    assert match read_response(failed, "GET").await {
+        Result.Err(ReadError.Input(value)) => value == "transport failed"
+        _ => false
+    }
+}
+
+test fn http_encoding_uses_ordinary_pure_compile_time_execution() {
+    assert comptime {
+        let value = Request {
+            method = "GET"
+            target = "/"
+            headers = [checked_header("Host", "local")]
+            body = std.bytes.new()
+            trailers = std.list.new[Header]()
+        }
+        match encode_request(value, limits()) {
+            Result.Ok(bytes) => to_text(bytes) == "GET / HTTP/1.1\r\nHost: local\r\nContent-Length: 0\r\n\r\n"
+            _ => false
+        }
+    }
+}
+
+record Waiting {
+    events List[Int]
+}
+
+impl Stream for Waiting {
+    type Item = Bytes
+
+    async fn next(self Waiting) Option[Bytes] {
+        std.list.push(self.events, 1)
+        defer {
+            std.list.push(self.events, 2)
+        }
+        sleep_ms(10000).await
+        Option.None
+    }
+}
+
+test async fn http_cancelled_reads_retire_shared_cursors_and_busy_reads_do_not() {
+    let events = std.list.new[Int]()
+    let input = reader(Waiting {
+            events = events
+        }, raw, limits())
+    let pending = read_request(input)
+    sleep_ms(1).await
+    assert match read_request(input).await {
+        Result.Err(ReadError.Protocol(ProtocolError.Busy)) => true
+        _ => false
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert std.list.length(events) == 2 && events[0] == 1 && events[1] == 2
+    assert match read_request(input).await {
+        Result.Err(ReadError.Protocol(ProtocolError.Closed)) => true
+        _ => false
+    }
+}
+
+test async fn http_encoders_snapshot_payloads_and_roundtrip_chunked_trailers() {
+    let payload = to_bytes("binary")
+    push(payload, 0)
+    push(payload, 255)
+    let fields = [checked_header("Host", "local"), checked_header("Transfer-Encoding", "chunked")]
+    let value = Request {
+        method = "POST"
+        target = "/"
+        headers = fields
+        body = payload
+        trailers = [checked_header("X-Check", "done")]
+    }
+    let wire = match encode_request(value, limits()) {
+        Result.Ok(bytes) => bytes
+        _ => {
+            assert false
+            std.bytes.new()
+        }
+    }
+    set(payload, 0, 42)
+    set(fields[0].value, 0, 42)
+    let input = reader(from_iter(from_list(fragments(wire, 2))), raw, limits())
+    assert match read_request(input).await {
+        Result.Ok(Option.Some(value)) => length(value.body) == 8 && get(value.body, 0) == 98 && get(value.body, 7) == 255 &&
+        to_text(value.headers[0].value) == "local" && std.list.length(value.trailers) == 1
+        _ => false
+    }
+    let response = Response {
+        status = 200
+        reason = to_bytes("OK")
+        headers = std.list.new[Header]()
+        body = to_bytes("hello")
+        trailers = std.list.new[Header]()
+    }
+    let encoded = match encode_response(response, "GET", limits()) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            std.bytes.new()
+        }
+    }
+    let reply = reader(from_iter(from_list([encoded])), raw, limits())
+    assert match read_response(reply, "GET").await {
+        Result.Ok(Option.Some(value)) => value.status == 200 && to_text(value.body) == "hello" &&
+        value.headers[0].name == "Content-Length" && to_text(value.headers[0].value) == "5"
+        _ => false
+    }
+    assert match header("X", "secret\r\nInjected: yes") {
+        Result.Err(ProtocolError.Syntax) => true
+        _ => false
+    }
+    assert match encode_response(Response {
+            headers = [checked_header("Content-Length", "4")]
+            ..response
+        }, "GET", limits()) {
+        Result.Err(ProtocolError.Framing) => true
+        _ => false
+    }
+    assert match encode_response(Response {
+            status = 204
+            ..response
+        }, "GET", limits()) {
+        Result.Err(ProtocolError.Framing) => true
+        _ => false
+    }
+}

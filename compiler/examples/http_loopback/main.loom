@@ -1,0 +1,168 @@
+import std.net.http.Header
+import std.net.http.Request
+import std.net.http.Response
+import std.net.http.reader
+import std.net.http.limits
+import std.net.http.read_request
+import std.net.http.read_response
+import std.net.http.encode_request
+import std.net.http.encode_response
+import std.net.tcp.Stream
+import std.net.tcp.TcpError
+import std.net.tcp.listen
+import std.net.tcp.local_address
+import std.net.tcp.connect
+import std.net.tcp.accept
+import std.net.tcp.close_stream
+import std.net.tcp.write_bytes
+import std.net.tcp.chunks.read
+import std.text.to_bytes
+import std.bytes.new
+import std.bytes.push
+import std.bytes.get
+import std.bytes.length
+import std.list.new
+import std.list.length
+import std.result.Result
+import std.option.Option
+import std.io.write_text
+
+fn packet(value Result[Bytes, TcpError]) Result[Bytes, TcpError] {
+    value
+}
+
+fn field(name Text, value Text) Header {
+    Header {
+        name = name
+        value = to_bytes(value)
+    }
+}
+
+async fn serve(connection Stream) Bool {
+    let input = reader(read(connection, 3), packet, limits())
+    assert match read_request(input).await {
+        Result.Ok(Option.Some(value)) => value.method == "HEAD" && value.target == "/metadata"
+        _ => false
+    }
+    let metadata = Response {
+        status = 200
+        reason = to_bytes("OK")
+        headers = [field("Content-Length", "12345")]
+        body = std.bytes.new()
+        trailers = std.list.new[Header]()
+    }
+    let first = match encode_response(metadata, "HEAD", limits()) {
+        Result.Ok(value) => value
+        _ => {
+            return false
+        }
+    }
+    assert match write_bytes(connection, first).await {
+        Result.Ok(_) => true
+        _ => false
+    }
+    let request = match read_request(input).await {
+        Result.Ok(Option.Some(value)) => value
+        _ => {
+            return false
+        }
+    }
+    assert request.method == "POST" && request.target == "/echo"
+    assert std.list.length(request.trailers) == 1
+    let reply = Response {
+        headers = [field("Transfer-Encoding", "chunked")]
+        body = request.body
+        trailers = [field("X-Result", "complete")]
+        ..metadata
+    }
+    let second = match encode_response(reply, "POST", limits()) {
+        Result.Ok(value) => value
+        _ => {
+            return false
+        }
+    }
+    match write_bytes(connection, second).await {
+        Result.Ok(_) => true
+        _ => false
+    }
+}
+
+async fn exercise() Result[Bool, TcpError] {
+    scoped listener = listen("127.0.0.1:0").await?
+    let address = local_address(listener)?
+    let client = connect(address).await?
+    defer {
+        discard close_stream(client)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    let metadata = Request {
+        method = "HEAD"
+        target = "/metadata"
+        headers = [field("Host", address)]
+        body = std.bytes.new()
+        trailers = std.list.new[Header]()
+    }
+    let first = match encode_request(metadata, limits()) {
+        Result.Ok(value) => value
+        _ => {
+            return Result.Ok(false)
+        }
+    }
+    let payload = to_bytes("hello")
+    push(payload, 0)
+    push(payload, 255)
+    let request = Request {
+        method = "POST"
+        target = "/echo"
+        headers = [field("Host", address), field("Transfer-Encoding", "chunked")]
+        body = payload
+        trailers = [field("X-Sent", "complete")]
+        ..metadata
+    }
+    let second = match encode_request(request, limits()) {
+        Result.Ok(value) => value
+        _ => {
+            return Result.Ok(false)
+        }
+    }
+    let serving = serve(server)
+    assert match write_bytes(client, first).await {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert match write_bytes(client, second).await {
+        Result.Ok(_) => true
+        _ => false
+    }
+    let input = reader(read(client, 5), packet, limits())
+    assert match read_response(input, "HEAD").await {
+        Result.Ok(Option.Some(value)) => value.status == 200 && length(value.body) == 0
+        _ => false
+    }
+    assert match read_response(input, "POST").await {
+        Result.Ok(Option.Some(value)) => value.status == 200 && length(value.body) == 7 &&
+        get(value.body, 0) == 104 && get(value.body, 5) == 0 && get(value.body, 6) == 255 &&
+        std.list.length(value.trailers) == 1 && value.trailers[0].name == "X-Result"
+        _ => false
+    }
+    // Neither reader needs EOF: the connection remains open through both replies.
+    Result.Ok(serving.await)
+}
+
+async fn main() {
+    assert match exercise().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    discard write_text("HTTP/1.1 loopback passed\n")
+}
+
+test async fn http_pipeline_has_binary_bodies_and_does_not_need_connection_eof() {
+    assert match exercise().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}

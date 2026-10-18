@@ -12,6 +12,8 @@ fn source_framing_keeps_binary_text_boundaries_limits_and_real_tcp_cleanup() {
         "compiler/examples/framed_tcp",
         "compiler/std/stream/lines",
         "compiler/examples/tcp_lines",
+        "compiler/std/net/http",
+        "compiler/examples/http_loopback",
     ] {
         success(&common::loom(&["check", package]));
         for level in ["0", "2"] {
@@ -29,6 +31,7 @@ fn source_framing_keeps_binary_text_boundaries_limits_and_real_tcp_cleanup() {
     for package in [
         "compiler/examples/framed_tcp",
         "compiler/examples/tcp_lines",
+        "compiler/examples/http_loopback",
     ] {
         success(
             &common::command(&["build", package])

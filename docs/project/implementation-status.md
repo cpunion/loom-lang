@@ -313,6 +313,13 @@ TLS retains that transport protection until handshake handoff, without changing
 its explicitly managed, full-duplex connection API.
 Other framing and general borrow-retaining adapters remain open.
 
+The source-written [HTTP/1.1 message codec](../../compiler/std/net/http/README.md)
+adds bounded request/response framing over ordinary Streams, including chunked
+data, separate trailers, method-dependent response boundaries and explicit
+buffered protocol handoff. A real TCP application exercises a persistent binary
+request/response pipeline. It is not a complete HTTP client/server: routing,
+authority validation, connection policy and streaming bodies remain library work.
+
 Stop-the-world copying GC preserves precise roots, sharing and cycles.
 Nonallocating functions stay root-free; liveness retires dead locals at checked
 boundaries, final reads and conditional joins, and consumed operand snapshots
