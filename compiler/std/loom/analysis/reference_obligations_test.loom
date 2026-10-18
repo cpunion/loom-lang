@@ -143,6 +143,38 @@ test fn abstract_reference_scopes_include_implicit_self_and_static_parameters() 
     assert !abstract_reference_scope(get(ordinary.children, 0))
 }
 
+test fn ordinary_comptime_blocks_retain_source_roles_without_hiding_nested_unknowns() {
+    let source = """
+        fn helper(value Int) Int {
+            value
+        }
+        fn folded() Int {
+            comptime {
+                let saved = helper(4)
+                discard comptime { helper(5) }
+                saved
+            }
+        }
+        """
+    let obligations = source_obligations(source)
+    assert length(obligations.unknown) == 0 && length(obligations.offsets) == 4
+    let analysis = match analyze(input(source), false) {
+        Result.Ok(value) => value
+        Result.Err(problem) => {
+            discard std.io.write_error(problem.diagnostic.message)
+            assert false
+            accepted(input(source))
+        }
+    }
+    let declared = query_offset(source, "helper(value")
+    only_definition(inspection(analysis, source, "helper(4)"), declared, declared + 6)
+    only_definition(inspection(analysis, source, "helper(5)"), declared, declared + 6)
+    let selected = "fn folded() Int { comptime { comptime if true { helper() } else { other() } } }"
+    let conditional = source_obligations(selected)
+    assert length(conditional.unknown) == 1 &&
+    get(conditional.unknown, 0).start == query_offset(selected, "comptime if")
+}
+
 test fn reference_obligations_do_not_turn_missing_source_tokens_into_coverage() {
     let tokens = match lex("123") {
         Result.Ok(value) => value

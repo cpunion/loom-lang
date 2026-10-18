@@ -271,6 +271,8 @@ fn module_lifecycle(staging Text) Result[Text, Text] {
 // The clock is process-relative, not a globally unique directory allocator.
 // Claim a fresh path atomically and leave failed test snapshots intact.
 fn module_test_directory(label Text) Text {
+    // A custom --output may leave the package's usual build directory absent.
+    discard create_dir("tools/semantic_change_trial/target")
     let prefix = concat("tools/semantic_change_trial/target/", concat(label, "-"))
     var sequence = 0
     while true {
