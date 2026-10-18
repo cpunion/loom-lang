@@ -98,6 +98,12 @@ proved length relations, not handle identity. Loops that combine rebinding with
 resizing conservatively forget heap facts before induction. One buffer is the
 input: later passes may update it, and the result is not promised to be fresh.
 
+[`loop_buffers.loom`](loop_buffers.loom) instead rotates two private buffers and
+publishes the returned shape. Unpublished provenance is proved at entry and every
+backedge, independently of identity or allocation separation. A callback may
+retain an old buffer when the loop replaces it with a new private one; previously
+exposed aliases cannot be recovered as private on a later iteration.
+
 The sorting example proves only its stated length contract. Its concrete order
 and element checks are runtime tests, not sortedness/permutation proofs. General
 content induction beyond the supported array/scan rules remains open; bounded indexed reads/writes and immutable

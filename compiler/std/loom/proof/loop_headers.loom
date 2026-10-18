@@ -8,6 +8,9 @@ fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local In
         Value.List(identity) => {
             discard loop_step(proof)?
             discard add_loop_candidate(candidates, LoopCandidate.Header(local, path, identity), entry)?
+            if length(candidates) < 64 && list_state(identity, entry)?.private_storage {
+                discard add_loop_candidate(candidates, LoopCandidate.Unpublished(local, path), entry)?
+            }
             var index = 0
             while index < length(entry.extents) && length(candidates) < 64 {
                 let target = get(entry.extents, index)
@@ -69,6 +72,9 @@ fn loop_header_count(candidates List[LoopCandidate]) Int {
             LoopCandidate.Header(_, _, _) => {
                 count = count + 1
             }
+            LoopCandidate.Unpublished(_, _) => {
+                count = count + 1
+            }
             LoopCandidate.Unreachable(_, _, _) => {
                 count = count + 1
             }
@@ -87,12 +93,19 @@ fn loop_frame_target(candidate LoopCandidate) Int {
     }
 }
 
-fn loop_publications(head State, backedges List[Outcome]) List[Int] {
+fn loop_publications(entry State, head State, backedges List[Outcome]) List[Int] {
     let published = new[Int]()
     var index = 0
     while index < length(head.extents) {
         let extent = get(head.extents, index)
-        if extent.private_storage {
+        // Sampled local headers represent the next iteration's current value,
+        // not a persistent allocation. Their properties are checked through
+        // local candidates; only entry handles retain identity across iterations.
+        let persistent = match list_state(extent.identity, entry) {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        }
+        if persistent && extent.private_storage {
             var edge = 0
             while edge < length(backedges) {
                 let state = get(backedges, edge).state
@@ -116,11 +129,19 @@ fn loop_publications(head State, backedges List[Outcome]) List[Int] {
 
 // Heap edges change even without rebinding a source local. Check retained
 // graph exclusions too, including ancestors widened by a descendant store.
-fn loop_graph_losses(proof Verification, head State, backedges List[Outcome]) Result[List[Int], Text] {
+fn loop_graph_losses(proof Verification, entry State, head State, backedges List[Outcome]) Result[List[Int], Text] {
     let lost = new[Int]()
     var root = 0
     while root < length(head.extents) {
         let before = get(head.extents, root)
+        match list_state(before.identity, entry) {
+            Result.Ok(_) => {
+            }
+            Result.Err(_) => {
+                root = root + 1
+                continue
+            }
+        }
         var failed = false
         var edge = 0
         while edge < length(backedges) && !failed {
@@ -249,6 +270,13 @@ fn loop_separated_head(local Int, value Value, candidates List[LoopCandidate], s
     var index = 0
     while index < length(candidates) {
         match get(candidates, index) {
+            LoopCandidate.Unpublished(target, path) => {
+                if target == local {
+                    // An entry/all-backedge property, not a new allocation or
+                    // separation promise. Keep the sampled header's aliasing.
+                    current = framed_completion_storage(loop_local_value(value, path)?, current)
+                }
+            }
             LoopCandidate.Unreachable(target, path, excluded) => {
                 if target == local {
                     match loop_local_value(value, path)? {

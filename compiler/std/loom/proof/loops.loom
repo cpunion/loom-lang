@@ -12,6 +12,7 @@ enum LoopCandidate {
     Entry(Int, List[Int], Text, Value)
     Guard(Expr)
     Header(Int, List[Int], Int)
+    Unpublished(Int, List[Int])
     Unreachable(Int, List[Int], Int)
     EntryExtent(Int, List[Int], Text, Linear)
     Element(Int, Linear, Text, Value)
@@ -226,6 +227,10 @@ fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] 
         LoopCandidate.Header(local, path, identity) => match loop_local_value(get(state.locals, local), path)? {
             Value.List(current) => Result.Ok(Predicate.Constant(current == identity))
             _ => Result.Err("loop header invariant needs a tracked List")
+        }
+        LoopCandidate.Unpublished(local, path) => match loop_local_value(get(state.locals, local), path)? {
+            Value.List(identity) => Result.Ok(Predicate.Constant(list_state(identity, state)?.private_storage))
+            _ => Result.Err("loop storage invariant needs a tracked sequence")
         }
         LoopCandidate.Unreachable(local, path, identity) => Result.Ok(Predicate.Constant(
                 storage_frame(loop_local_value(get(state.locals, local), path)?, list_state(identity, state)?, state)))
@@ -608,8 +613,8 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             }
             index = index + 1
         }
-        let published = loop_publications(head, backedges)
-        let graph_losses = loop_graph_losses(proof, head, backedges)?
+        let published = loop_publications(observed, head, backedges)
+        let graph_losses = loop_graph_losses(proof, observed, head, backedges)?
         if length(survivors) == length(candidates) && length(published) == 0 && length(graph_losses) == 0 {
             if proof.capture_returns {
                 discard append(proof.returns, iteration.returns)?

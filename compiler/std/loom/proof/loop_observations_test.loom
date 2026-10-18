@@ -30,3 +30,29 @@ test fn affine_observations_follow_current_inline_values_not_initial_headers() {
         _ => false
     }
 }
+
+test fn unpublished_loop_headers_retain_alias_overlap_and_require_every_backedge() {
+    let entry = with_extent(10, constant(integer(1)), true,
+        list_bounds(Value.List(20), State {
+                locals = [Value.Record([Value.List(20)])]
+                facts = []
+                extents = []
+                observations = []
+            }))
+    let candidate = LoopCandidate.Unpublished(0, [0])
+    let proof = verification(fixture(literal("0"), [], literal("true")), empty_proof_program())
+    assert !loop_candidate_preserved(proof, candidate, entry)
+    let head = match loop_separated_head(0, get(entry.locals, 0), [candidate], entry) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert loop_candidate_preserved(proof, candidate, head)
+    assert loop_header_count([candidate]) == 1
+    let sampled = get(head.extents, 0)
+    assert sampled.private_storage && !sampled.allocated
+    assert extent_overlap(sampled, get(head.extents, 1))
+    assert !loop_candidate_preserved(proof, candidate, published_storage(head))
+}
