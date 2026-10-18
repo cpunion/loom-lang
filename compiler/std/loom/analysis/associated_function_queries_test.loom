@@ -1,0 +1,28 @@
+test fn associated_function_queries_select_an_explicit_dyn_wrapper_impl() {
+    let text = """
+        concept View {
+            fn value(self Self) Int
+        }
+        impl View for Int {
+            fn value(self Int) Int {
+                self
+            }
+        }
+        concept Factory {
+            fn make(value Int) Self
+        }
+        impl Factory for dyn View {
+            fn make(value Int) dyn View {
+                value
+            }
+        }
+        fn main() {
+            let value = Factory.make[dyn View](3)
+            assert value.value() == 3
+        }
+        """
+    let analysis = accepted(input(text))
+    let declared = query_offset(text, "make(value Int) dyn View")
+    only_definition(inspection(analysis, text, "make[dyn View]"), declared, declared + 4)
+    only_definition(independent_found(query_bindings(input(text)), text, "make[dyn View]"), declared, declared + 4)
+}
