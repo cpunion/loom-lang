@@ -1,5 +1,7 @@
 import std.net.tcp.Stream
 import std.net.tcp.Listener
+import std.net.tcp.ListenerHandle
+import std.net.tcp.Connection
 import std.net.tcp.TcpError
 import std.net.tcp.open
 import std.net.tcp.accept_owned
@@ -119,7 +121,7 @@ fn protocol_error(code Int) TlsError {
     }
 }
 
-fn claim(stream Connection, slot Int) Result[Int, TlsError] {
+fn claim(stream std.net.tls.Connection, slot Int) Result[Int, TlsError] {
     let state = get(stream.state.flags, 0)
     if state == 2 {
         return Result.Err(TlsError.Closed)
@@ -133,7 +135,7 @@ fn claim(stream Connection, slot Int) Result[Int, TlsError] {
 
 // Immediate transport close, suitable for defer. Graceful TLS EOF is the
 // separate async shutdown_write operation. Active operations must drain first.
-pub fn close(stream Connection) Result[Int, TlsError] {
+pub fn close(stream std.net.tls.Connection) Result[Int, TlsError] {
     if get(stream.state.flags, 0) == 2 {
         return Result.Err(TlsError.Closed)
     }
@@ -153,7 +155,7 @@ pub fn close(stream Connection) Result[Int, TlsError] {
     outcome
 }
 
-fn finish_operation(stream Connection, slot Int, success Bool) {
+fn finish_operation(stream std.net.tls.Connection, slot Int, success Bool) {
     if slot == 0 {
         set(stream.state.flags, 2, 0)
         set(stream.state.flags, 3, 0)
@@ -169,7 +171,7 @@ fn finish_operation(stream Connection, slot Int, success Bool) {
     }
 }
 
-async fn flush(stream Connection, drain Bool) Result[Int, TlsError] {
+async fn flush(stream std.net.tls.Connection, drain Bool) Result[Int, TlsError] {
     while get(stream.state.flags, 4) != 0 {
         if !drain && get(stream.state.flags, 3) != 0 {
             return Result.Ok(0)
@@ -213,7 +215,7 @@ async fn flush(stream Connection, drain Bool) Result[Int, TlsError] {
     Result.Err(TlsError.Protocol)
 }
 
-async fn receive(stream Connection) Result[Int, TlsError] {
+async fn receive(stream std.net.tls.Connection) Result[Int, TlsError] {
     let bytes = std.bytes.new()
     let count = transport(std.net.tcp.read(stream.state.transport, bytes, 16384).await)?
     let status = tls_receive(stream.state.token, bytes, if count == 0 {
@@ -227,8 +229,8 @@ async fn receive(stream Connection) Result[Int, TlsError] {
     Result.Ok(0)
 }
 
-async fn handshake(raw std.net.tcp.Stream, token Int) Result[Connection, TlsError] {
-    let stream = Connection {
+async fn handshake(raw std.net.tcp.Stream, token Int) Result[std.net.tls.Connection, TlsError] {
+    let stream = std.net.tls.Connection {
         state = State {
             transport = raw
             token = token
@@ -273,11 +275,11 @@ fn client_engine(name Text, options ClientOptions) Int {
     }
 }
 
-pub fn connect(host Text, port Int) Task[Result[Connection, TlsError]] {
+pub fn connect(host Text, port Int) Task[Result[std.net.tls.Connection, TlsError]] {
     connect(host, port, default_client())
 }
 
-pub async fn connect(host Text, port Int, options ClientOptions) Result[Connection, TlsError] {
+pub async fn connect(host Text, port Int, options ClientOptions) Result[std.net.tls.Connection, TlsError] {
     let token = client_engine(host, options)
     if token < 0 {
         return Result.Err(TlsError.Configuration)
@@ -309,7 +311,7 @@ pub async fn connect(host Text, port Int, options ClientOptions) Result[Connecti
 }
 
 // Select a numeric transport endpoint separately from the verified DNS/IP name.
-pub async fn connect(address Text, name Text, options ClientOptions) Result[Connection, TlsError] {
+pub async fn connect(address Text, name Text, options ClientOptions) Result[std.net.tls.Connection, TlsError] {
     let token = client_engine(name, options)
     if token < 0 {
         return Result.Err(TlsError.Configuration)
@@ -340,7 +342,16 @@ pub async fn connect(address Text, name Text, options ClientOptions) Result[Conn
     outcome
 }
 
-pub async fn accept(listener Listener, options ServerOptions) Result[Connection, TlsError] {
+pub async fn accept(listener Listener, options ServerOptions) Result[std.net.tls.Connection, TlsError] {
+    accept_transport(listener, options, accept_owned).await
+}
+
+pub async fn accept(listener ListenerHandle, options ServerOptions) Result[std.net.tls.Connection, TlsError] {
+    accept_transport(listener, options, accept_owned).await
+}
+
+async fn accept_transport[L](listener L, options ServerOptions,
+    acquire fn(L) Task[Result[std.net.tcp.Connection, TcpError]]) Result[std.net.tls.Connection, TlsError] {
     let token = match options.client_auth {
         ClientAuth.Anonymous => tls_server(options.identity.certificates, options.identity.private_key, std.bytes.new(), 0, options.protocols)
         ClientAuth.Required(roots) => tls_server(options.identity.certificates, options.identity.private_key, roots, 1, options.protocols)
@@ -354,7 +365,7 @@ pub async fn accept(listener Listener, options ServerOptions) Result[Connection,
             discard tls_release(token)
         }
     }
-    scoped acquired = match accept_owned(listener).await {
+    scoped acquired = match acquire(listener).await {
         Result.Ok(value) => value
         Result.Err(_) => {
             return Result.Err(TlsError.Transport)
@@ -376,7 +387,7 @@ pub async fn accept(listener Listener, options ServerOptions) Result[Connection,
 
 // One reader and one writer may run together, including through aliases.
 // Same-direction overlap still returns Busy. Encrypted writes retain order.
-pub async fn read(stream Connection, output Bytes, limit Int) Result[Int, TlsError] {
+pub async fn read(stream std.net.tls.Connection, output Bytes, limit Int) Result[Int, TlsError] {
     if limit <= 0 {
         return Result.Err(TlsError.Argument)
     }
@@ -404,7 +415,7 @@ pub async fn read(stream Connection, output Bytes, limit Int) Result[Int, TlsErr
     Result.Err(TlsError.Protocol)
 }
 
-pub async fn write_bytes(stream Connection, input Bytes) Result[Int, TlsError] {
+pub async fn write_bytes(stream std.net.tls.Connection, input Bytes) Result[Int, TlsError] {
     if get(stream.state.flags, 1) != 0 {
         return Result.Err(TlsError.Closed)
     }
@@ -427,7 +438,7 @@ pub async fn write_bytes(stream Connection, input Bytes) Result[Int, TlsError] {
     Result.Ok(offset)
 }
 
-pub async fn shutdown_write(stream Connection) Result[Int, TlsError] {
+pub async fn shutdown_write(stream std.net.tls.Connection) Result[Int, TlsError] {
     discard claim(stream, 3)?
     var success = false
     defer {
@@ -443,21 +454,21 @@ pub async fn shutdown_write(stream Connection) Result[Int, TlsError] {
     Result.Ok(0)
 }
 
-pub fn local_address(stream Connection) Result[Text, TlsError] {
+pub fn local_address(stream std.net.tls.Connection) Result[Text, TlsError] {
     if get(stream.state.flags, 0) == 2 {
         return Result.Err(TlsError.Closed)
     }
     transport(std.net.tcp.local_address(stream.state.transport))
 }
 
-pub fn peer_address(stream Connection) Result[Text, TlsError] {
+pub fn peer_address(stream std.net.tls.Connection) Result[Text, TlsError] {
     if get(stream.state.flags, 0) == 2 {
         return Result.Err(TlsError.Closed)
     }
     transport(std.net.tcp.peer_address(stream.state.transport))
 }
 
-pub fn protocol(stream Connection) Result[Option[Text], TlsError] {
+pub fn protocol(stream std.net.tls.Connection) Result[Option[Text], TlsError] {
     if get(stream.state.flags, 0) == 2 {
         return Result.Err(TlsError.Closed)
     }
@@ -470,7 +481,7 @@ pub fn protocol(stream Connection) Result[Option[Text], TlsError] {
 }
 
 // A fresh DER copy of the verified leaf, not an application authorization rule.
-pub fn peer_certificate(stream Connection) Result[Option[Bytes], TlsError] {
+pub fn peer_certificate(stream std.net.tls.Connection) Result[Option[Bytes], TlsError] {
     if get(stream.state.flags, 0) == 2 {
         return Result.Err(TlsError.Closed)
     }

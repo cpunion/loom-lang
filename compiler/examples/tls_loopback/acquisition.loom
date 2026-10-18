@@ -5,7 +5,7 @@ import std.task.cancel
 import std.task.deadline.after_ns
 import std.task.Outcome
 
-async fn cancelled_accept(listener Listener, options ServerOptions, address Text) {
+async fn cancelled_accept(listener ListenerHandle, options ServerOptions, address Text) {
     let pending = accept(listener, options)
     let connected = std.net.tcp.connect(address).await
     assert match cancel(pending) {

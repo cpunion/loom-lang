@@ -14,9 +14,10 @@ import std.net.tls.close
 import std.net.tls.protocol
 import std.net.tls.peer_address
 import std.net.tls.peer_certificate
-import std.net.tcp.Listener
+import std.net.tcp.ListenerHandle
 import std.net.tcp.listen
 import std.net.tcp.local_address
+import std.net.tcp.detach
 import std.net.tcp.close_listener
 import std.bytes.new
 import std.bytes.length
@@ -67,7 +68,7 @@ async fn exchange(stream Connection, payload Bytes) Result[Int, TlsError] {
     Result.Ok(count)
 }
 
-async fn serve(listener Listener, options ServerOptions, payload Bytes, duplex Bool) Result[Int, TlsError] {
+async fn serve(listener ListenerHandle, options ServerOptions, payload Bytes, duplex Bool) Result[Int, TlsError] {
     let stream = accept(listener, options).await?
     defer {
         discard close(stream)
@@ -185,7 +186,14 @@ async fn main() {
         }
         protocols = ["loom-echo"]
     }
-    let listener = match listen("127.0.0.1:0").await {
+    scoped owner = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let listener = match detach(owner) {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false

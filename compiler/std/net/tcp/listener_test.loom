@@ -1,0 +1,122 @@
+import std.task.any
+
+async fn listener_lifecycle() Result[Bool, TcpError] {
+    var token = -1
+    {
+        scoped listener = listen("127.0.0.1:0").await?
+        token = listener.state.token
+        assert local_port(listener)? > 0
+    }
+    assert socket_local_port(token) < 0
+    scoped listener = listen("127.0.0.1:0").await?
+    discard close_listener(listener)?
+    discard close_listener(listener)?
+    assert match local_address(listener) {
+        Result.Err(error) => error == TcpError.Close
+        _ => false
+    }
+    scoped attempted = accept_owned(listener).await
+    assert match attempted {
+        Result.Err(error) => error == TcpError.Close
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+test async fn listeners_close_at_block_exit_and_allow_idempotent_early_close() {
+    assert match listener_lifecycle().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+async fn listener_handoff() Result[Bool, TcpError] {
+    let handle = {
+        scoped listener = listen("127.0.0.1:0").await?
+        let handle = detach(listener)?
+        assert match detach(listener) {
+            Result.Err(error) => error == TcpError.Close
+            _ => false
+        }
+        assert match local_port(listener) {
+            Result.Err(error) => error == TcpError.Close
+            _ => false
+        }
+        assert match set_send_buffer_size(listener, 32768) {
+            Result.Err(error) => error == TcpError.Close
+            _ => false
+        }
+        discard close_listener(listener)?
+        handle
+    }
+    defer {
+        discard close_listener(handle)
+    }
+    assert local_port(handle)? > 0
+    discard set_receive_buffer_size(handle, 32768)?
+    discard set_send_buffer_size(handle, 32768)?
+    assert receive_buffer_size(handle)? > 0 && send_buffer_size(handle)? > 0
+    scoped client = open(local_address(handle)?).await?
+    scoped server = accept_owned(handle).await?
+    discard write_bytes(client, to_bytes("handoff")).await?
+    let bytes = new()
+    while length(bytes) < 7 {
+        assert read(server, bytes, 7).await? > 0
+    }
+    assert to_text(bytes) == "handoff"
+    discard close_listener(handle)?
+    Result.Ok(socket_local_port(handle.state.token) < 0)
+}
+
+test async fn detached_listener_handles_remain_explicitly_managed() {
+    assert match listener_handoff().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+async fn observed_listener(tokens List[Int]) Listener {
+    let token = socket_listen("127.0.0.1:0")
+    assert token >= 0
+    tokens[0] = token
+    owned_listener(token)
+}
+
+test async fn completed_listener_tasks_keep_cleanup_in_their_unclaimed_payloads() {
+    let pending = listen("127.0.0.1:0")
+    tick().await
+    var token = -1
+    {
+        scoped outcome = cancel(pending)
+        match outcome {
+            Outcome.Completed(Result.Ok(listener)) => {
+                token = listener.state.token
+                assert match local_port(listener) {
+                    Result.Ok(port) => port > 0
+                    _ => false
+                }
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert token >= 0 && socket_local_port(token) < 0
+
+    let retained = [-1]
+    let winning = observed_listener(retained)
+    tick().await
+    let observed = [-1]
+    let abandoned = observed_listener(observed)
+    tick().await
+    assert observed[0] >= 0 && socket_local_port(observed[0]) > 0
+    {
+        scoped selected = any([winning, abandoned]).await
+        assert match local_port(selected) {
+            Result.Ok(port) => port == socket_local_port(retained[0])
+            _ => false
+        }
+        assert socket_local_port(observed[0]) < 0
+    }
+    assert socket_local_port(retained[0]) < 0
+}

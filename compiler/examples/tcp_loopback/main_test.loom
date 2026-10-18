@@ -7,7 +7,8 @@ import std.net.tcp.local_port
 import std.net.tcp.close_listener
 import std.net.tcp.close_stream
 import std.net.tcp.TcpError
-import std.net.tcp.Listener
+import std.net.tcp.ListenerHandle
+import std.net.tcp.detach
 import std.net.tcp.Stream
 import std.result.Result
 import std.bytes.new
@@ -21,7 +22,7 @@ import std.task.deadline.after_ns
 import std.task.Outcome
 import std.time.sleep_ms
 
-async fn blocked(listener Listener) {
+async fn blocked(listener ListenerHandle) {
     discard accept(listener).await
 }
 
@@ -29,7 +30,7 @@ async fn blocked_read(stream Stream) {
     discard read(stream, new(), 1).await
 }
 
-async fn echo_once(listener Listener) Result[Int, TcpError] {
+async fn echo_once(listener ListenerHandle) Result[Int, TcpError] {
     let stream = accept(listener).await?
     defer {
         discard close_stream(stream)
@@ -43,8 +44,13 @@ async fn echo_once(listener Listener) Result[Int, TcpError] {
     write_bytes(stream, incoming).await
 }
 
+async fn detached_listener() Result[ListenerHandle, TcpError] {
+    scoped listener = listen("127.0.0.1:0").await?
+    detach(listener)
+}
+
 test async fn numeric_client_connect_roundtrips_with_server_task() {
-    let listener = match listen("127.0.0.1:0").await {
+    let listener = match detached_listener().await {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
@@ -103,7 +109,7 @@ test async fn numeric_client_connect_roundtrips_with_server_task() {
 }
 
 test async fn deadline_cancels_client_read_and_releases_lease_before_close() {
-    let listener = match listen("127.0.0.1:0").await {
+    let listener = match detached_listener().await {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
@@ -144,12 +150,15 @@ test async fn deadline_cancels_client_read_and_releases_lease_before_close() {
 }
 
 test async fn cancellation_releases_wait_lease_before_close() {
-    let listener = match listen("127.0.0.1:0").await {
+    let listener = match detached_listener().await {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
             return
         }
+    }
+    defer {
+        discard close_listener(listener)
     }
     let pending = blocked(listener)
     sleep_ms(1).await
@@ -176,7 +185,8 @@ test async fn cancellation_releases_wait_lease_before_close() {
 }
 
 test async fn names_cannot_block_the_owner_in_address_resolution() {
-    assert match listen("localhost:0").await {
+    scoped attempted = listen("localhost:0").await
+    assert match attempted {
         Result.Err(error) => error == TcpError.Listen
         Result.Ok(listener) => {
             discard close_listener(listener)

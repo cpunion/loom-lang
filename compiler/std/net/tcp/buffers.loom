@@ -38,17 +38,45 @@ pub fn set_send_buffer_size(stream Stream, size Int) Result[Int, TcpError] {
 // Listener configuration applies before accept. Inheritance and subsequent
 // autotuning are OS policy; query/configure accepted streams when required.
 pub fn receive_buffer_size(listener Listener) Result[Int, TcpError] {
+    if listener.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
     buffer_result(listener.state.token, 0, -1)
 }
 
 pub fn send_buffer_size(listener Listener) Result[Int, TcpError] {
+    if listener.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
     buffer_result(listener.state.token, 1, -1)
 }
 
 pub fn set_receive_buffer_size(listener Listener, size Int) Result[Int, TcpError] {
+    if listener.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
     set_buffer_size(listener.state.token, 0, size)
 }
 
 pub fn set_send_buffer_size(listener Listener, size Int) Result[Int, TcpError] {
+    if listener.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    set_buffer_size(listener.state.token, 1, size)
+}
+
+pub fn receive_buffer_size(listener ListenerHandle) Result[Int, TcpError] {
+    buffer_result(listener.state.token, 0, -1)
+}
+
+pub fn send_buffer_size(listener ListenerHandle) Result[Int, TcpError] {
+    buffer_result(listener.state.token, 1, -1)
+}
+
+pub fn set_receive_buffer_size(listener ListenerHandle, size Int) Result[Int, TcpError] {
+    set_buffer_size(listener.state.token, 0, size)
+}
+
+pub fn set_send_buffer_size(listener ListenerHandle, size Int) Result[Int, TcpError] {
     set_buffer_size(listener.state.token, 1, size)
 }

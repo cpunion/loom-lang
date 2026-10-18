@@ -1,10 +1,7 @@
 import std.stream.take
 
 async fn accepted_chunks_fixture() Result[Bool, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let client = connect(local_address(listener)?).await?
     defer {
         discard close_stream(client)
@@ -44,10 +41,7 @@ async fn consume_nothing(address Text) Result[Bool, TcpError] {
 }
 
 async fn zero_limit_fixture() Result[Bool, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let pending = consume_nothing(local_address(listener)?)
     let server = std.net.tcp.accept(listener).await
     // Consume the Task even if accepting failed.

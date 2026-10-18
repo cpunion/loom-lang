@@ -66,6 +66,22 @@ pub async fn open(host Text, port Int, options ConnectOptions) Result[Connection
 }
 
 pub async fn accept_owned(listener Listener) Result[Connection, TcpError] {
+    if listener.state.closed[0] {
+        return Result.Err(TcpError.Close)
+    }
+    while true {
+        let token = socket_accept(listener.state.token)
+        if token >= 0 {
+            return Result.Ok(owned_connection(token))
+        }
+        if token != -2 {
+            return Result.Err(TcpError.Accept)
+        }
+        socket_wait(listener.state.token, 1).await
+    }
+}
+
+pub async fn accept_owned(listener ListenerHandle) Result[Connection, TcpError] {
     while true {
         let token = socket_accept(listener.state.token)
         if token >= 0 {
@@ -79,13 +95,17 @@ pub async fn accept_owned(listener Listener) Result[Connection, TcpError] {
 }
 
 pub fn close(connection Connection) Result[Int, TcpError] {
-    if connection.state.closed[0] {
+    close_connection_state(connection.state)
+}
+
+fn close_connection_state(state ConnectionState) Result[Int, TcpError] {
+    if state.closed[0] {
         return Result.Ok(0)
     }
-    let status = close_stream(connection.state.socket)
+    let status = close_stream(state.socket)
     match status {
         Result.Ok(_) => {
-            connection.state.closed[0] = true
+            state.closed[0] = true
         }
         Result.Err(_) => {
         }
@@ -150,6 +170,14 @@ impl MustScope for Connection {
 
 impl Dispose for Connection {
     fn dispose(self Connection) {
-        discard close(self)
+    }
+}
+
+impl MustScope for ConnectionState {
+}
+
+impl Dispose for ConnectionState {
+    fn dispose(self ConnectionState) {
+        discard close_connection_state(self)
     }
 }

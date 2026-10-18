@@ -182,10 +182,94 @@ fn half_close_preserves_pending_reads_and_address_queries_under_moving_gc() {
 }
 
 #[test]
+fn listener_ownership_requires_scope_and_directly_awaited_borrows() {
+    let directory = tempfile::tempdir().unwrap();
+    for (body, diagnostic) in [
+        (
+            r#"
+async fn main() {
+    let listener = listen("127.0.0.1:0").await
+    discard listener
+}
+"#,
+            "MustScope values require scoped",
+        ),
+        (
+            r#"
+async fn main() {
+    scoped listener = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return
+        }
+    }
+    let pending = accept(listener)
+    discard pending.await
+}
+"#,
+            "a Task borrowing a scoped resource must be awaited directly",
+        ),
+    ] {
+        std::fs::write(
+            directory.path().join("main.loom"),
+            format!("import std.net.tcp.listen\nimport std.net.tcp.accept\nimport std.result.Result\n{body}"),
+        )
+        .unwrap();
+        let output = common::loom(&["check", directory.path().to_str().unwrap()]);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(diagnostic),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn scoped_socket_headers_cannot_be_reboxed_from_borrowed_private_state() {
+    let directory = tempfile::tempdir().unwrap();
+    for (kind, acquire) in [("Listener", "listen"), ("Connection", "open")] {
+        let source = format!(
+            r#"
+import std.net.tcp.{kind}
+import std.net.tcp.{acquire}
+import std.result.Result
+
+fn copied(value {kind}) {kind} {{
+    {kind} {{
+        state = value.state
+    }}
+}}
+
+async fn main() {{
+    scoped original = match {acquire}("127.0.0.1:0").await {{
+        Result.Ok(value) => value
+        Result.Err(_) => {{
+            return
+        }}
+    }}
+    scoped alias = copied(original)
+}}
+"#
+        );
+        std::fs::write(directory.path().join("main.loom"), source).unwrap();
+        let output = common::loom(&["check", directory.path().to_str().unwrap()]);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("resource aggregates require a fresh transferred payload"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn source_cannot_extract_native_token_from_public_wrapper() {
     let directory = tempfile::tempdir().unwrap();
     for source in [
         "import std.net.tcp.Listener\nfn token(listener Listener) Int { listener.state.token }\nfn main() {}\n",
+        "import std.net.tcp.ListenerHandle\nfn token(listener ListenerHandle) Int { listener.state.token }\nfn main() {}\n",
         "import std.net.tcp.Connection\nfn token(connection Connection) Int { connection.state.socket.state.token }\nfn main() {}\n",
     ] {
         std::fs::write(directory.path().join("main.loom"), source).unwrap();

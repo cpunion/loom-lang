@@ -2,10 +2,7 @@ import std.task.cancel
 import std.task.Outcome
 
 async fn scoped_roundtrip() Result[Bool, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     scoped client = open(local_address(listener)?).await?
     scoped server = accept_owned(listener).await?
     discard set_nodelay(client, true)?
@@ -37,7 +34,8 @@ async fn tick() {
 }
 
 async fn completed_accept_closes() Result[Bool, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
+    scoped owner = listen("127.0.0.1:0").await?
+    let listener = detach(owner)?
     defer {
         discard close_listener(listener)
     }
@@ -83,10 +81,7 @@ async fn forwarded_connection(token Int, ready List[Bool]) Connection {
 }
 
 async fn cancelled_handoff_closes() Result[Bool, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let client = connect(local_address(listener)?).await?
     defer {
         // The owner should already have closed it; retain fallback cleanup if
@@ -120,10 +115,7 @@ test async fn cancellation_between_child_completion_and_handoff_closes_the_socke
 }
 
 async fn detached_hostname_connection() Result[Bool, TcpError] {
-    let listener = listen("127.0.0.1:0").await?
-    defer {
-        discard close_listener(listener)
-    }
+    scoped listener = listen("127.0.0.1:0").await?
     let raw = {
         scoped connection = open("localhost", local_port(listener)?).await?
         let identity = detach(connection)?
