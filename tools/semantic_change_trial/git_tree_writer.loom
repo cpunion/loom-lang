@@ -83,7 +83,7 @@ fn git_module_writes(review ModuleReview, prefix Text, base GitTree, left GitTre
             discard add_git_write(writes, concat(directory, source.path), to_bytes(source.text), base, left, right)?
             file = file + 1
         }
-        discard add_git_write(writes, concat(directory, ".loom-ids"), to_bytes(sidecar(package.merged, package.next)), base, left, right)?
+        discard add_git_write(writes, concat(directory, ".loom-ids"), to_bytes(sidecar(package.merged, package.next, package.lineage)), base, left, right)?
         index = index + 1
     }
     Result.Ok(writes)

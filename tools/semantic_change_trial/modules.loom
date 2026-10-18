@@ -302,14 +302,16 @@ fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
         let revision = selected.revision
         let next = std.int.maximum(module_next(base, package.relative),
             std.int.maximum(module_next(left, package.relative), module_next(right, package.relative)))
+        let lineage = module_review_lineage(base, left, right, package.relative)?
         push(relative, package.relative)
         push(packages, Review {
                 merged = revision
                 token = ""
                 next = next
+                lineage = lineage
             })
         frame(bytes, package.relative)
-        frame(bytes, sidecar(revision, next))
+        frame(bytes, sidecar(revision, next, lineage))
         frame_files(bytes, revision.files)
         index = index + 1
     }
@@ -317,6 +319,11 @@ fn review_module(base ModuleSnapshot, left ModuleSnapshot, right ModuleSnapshot,
     while index < length(base.packages) {
         let package = get(base.packages, index)
         if !module_relative_present(relative, package.relative) {
+            if length(module_lineage(base, package.relative)?) != 0 ||
+            length(module_lineage(left, package.relative)?) != 0 ||
+            length(module_lineage(right, package.relative)?) != 0 {
+                return Result.Err("package deletion cannot discard derivation history; explicit relocation required")
+            }
             push(removed, package.relative)
             frame(bytes, "removed package")
             frame(bytes, package.relative)

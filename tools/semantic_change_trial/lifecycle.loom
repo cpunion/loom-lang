@@ -251,8 +251,9 @@ fn initialize(package_name Text, directory Text) Result[Text, Text] {
     Result.Ok(concat(publish_sidecar(directory, "", updated, files, false)?, changes))
 }
 
-fn resolutions(args List[Text], start Int) Result[(List[Resolution], Bool), Text] {
+fn resolutions(args List[Text], start Int) Result[(List[Resolution], Bool, List[Derivation]), Text] {
     let output = new[Resolution]()
+    let derivations = new[Derivation]()
     var draft = false
     var index = start
     while index < length(args) {
@@ -262,13 +263,26 @@ fn resolutions(args List[Text], start Int) Result[(List[Resolution], Bool), Text
             index = index + 1
             continue
         }
+        if option == "--derive" {
+            if index + 4 >= length(args) {
+                return Result.Err("--derive needs PARENT_ID NEW_FILE NEW_NAME KEY; repeat a target for multiple parents")
+            }
+            push(derivations, Derivation {
+                    parent = get(args, index + 1)
+                    path = get(args, index + 2)
+                    name = get(args, index + 3)
+                    key = get(args, index + 4)
+                })
+            index = index + 5
+            continue
+        }
         let deletion = option == "--delete"
         if (!deletion && option != "--move") || index + if deletion {
             1
         } else {
             4
         } >= length(args) {
-            return Result.Err("refresh options are --draft, --move ID NEW_FILE NEW_NAME KEY or --delete ID; scan DIR lists keys")
+            return Result.Err("refresh options are --draft, --move ID FILE NAME KEY, --derive PARENT FILE NAME KEY or --delete ID; scan DIR lists keys")
         }
         let id = get(args, index + 1)
         var previous = 0
@@ -303,10 +317,15 @@ fn resolutions(args List[Text], start Int) Result[(List[Resolution], Bool), Text
             5
         }
     }
-    Result.Ok((output, draft))
+    Result.Ok((output, draft, derivations))
 }
 
 fn refresh(directory Text, options List[Resolution], save_draft Bool) Result[Text, Text] {
+    refresh(directory, options, save_draft, new[Derivation]())
+}
+
+fn refresh(directory Text, options List[Resolution], save_draft Bool,
+    derivations List[Derivation]) Result[Text, Text] {
     let state = read_state(directory)?
     let loaded = state.0
     if state.1.draft != "" && state.1.draft != files_stamp(loaded.revision.files) && !save_draft {
@@ -388,6 +407,8 @@ fn refresh(directory Text, options List[Resolution], save_draft Bool) Result[Tex
         set(old_used, prior_index, true)
         index = index + 1
     }
+    let history = std.list.clone(state.1.lineage)
+    let derived_targets = derivation_candidates(previous, history, candidates, selected, derivations)?
     var remaining_old = 0
     var unresolved = false
     index = 0
@@ -407,7 +428,10 @@ fn refresh(directory Text, options List[Resolution], save_draft Bool) Result[Tex
         index = index + 1
     }
     if remaining_old > 0 && save_draft {
-        let updated = draft_sidecar(loaded, previous, candidates, selected, old_used)
+        if length(derivations) != 0 {
+            return Result.Err("resolve pending identities before recording derivation choices")
+        }
+        let updated = draft_sidecar(loaded, previous, candidates, selected, old_used, history)
         let notice = concat("identity draft retained; unresolved declarations: ", concat(to_text(remaining_old), "\n"))
         if updated == loaded.sidecar {
             return Result.Ok(notice)
@@ -439,7 +463,7 @@ fn refresh(directory Text, options List[Resolution], save_draft Bool) Result[Tex
                 }
                 id = fresh_id(loaded.revision.package_name, candidate, next)
                 next = next + 1
-                allocated = identity_at(previous, id) < 0 && identity_at(identities, id) < 0
+                allocated = !lineage_known(previous, history, id) && identity_at(identities, id) < 0
             }
             changes = concat(changes, concat("added ", concat(id, concat(" ",
                             concat(candidate.path, concat(" ", concat(candidate.name, "\n")))))))
@@ -451,6 +475,21 @@ fn refresh(directory Text, options List[Resolution], save_draft Bool) Result[Tex
                 name = candidate.name
                 key = candidate.key
             })
+        let parents = new[Text]()
+        var derivation = 0
+        while derivation < length(derivations) {
+            if get(derived_targets, derivation) == index {
+                push(parents, get(derivations, derivation).parent)
+            }
+            derivation = derivation + 1
+        }
+        if length(parents) != 0 {
+            push(history, Lineage {
+                    id = id
+                    parents = parents
+                })
+            changes = concat(changes, concat("derived ", concat(id, concat(" from ", concat(join(parents, " "), "\n")))))
+        }
         index = index + 1
     }
     let revised = Revision {
@@ -458,7 +497,7 @@ fn refresh(directory Text, options List[Resolution], save_draft Bool) Result[Tex
         files = loaded.revision.files
         identities = identities
     }
-    let updated = sidecar(revised, next)
+    let updated = sidecar(revised, next, normalized_lineage(history)?)
     if updated == loaded.sidecar {
         return Result.Ok("identities unchanged\n")
     }
@@ -468,7 +507,7 @@ fn refresh(directory Text, options List[Resolution], save_draft Bool) Result[Tex
 
 fn refresh_command(args List[Text]) Result[Text, Text] {
     let options = resolutions(args, 3)?
-    refresh(get(args, 2), options.0, options.1)
+    refresh(get(args, 2), options.0, options.1, options.2)
 }
 
 fn scan(directory Text) Result[Text, Text] {

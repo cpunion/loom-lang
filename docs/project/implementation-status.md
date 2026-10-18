@@ -382,6 +382,11 @@ within one file to join without reformatting. Stable-ID placement is checked
 separately and rendered source is re-indexed before ordinary checking; competing
 destinations, disagreeing gap/layout edits and incomplete binding evidence still
 require resolution.
+Explicit `refresh --derive` records copy/split/merge provenance within a package,
+allocating fresh child identities rather than equating them with their parents.
+Canonical acyclic origin records survive refresh, drafts and reviewed directory/
+Git output. Changed or removed history and conflicting concurrent origins reject;
+cross-package derivation/history relocation remains open.
 Complete module batches can rename public functions, records, enums, refined
 types and concepts across checked imports,
 calls and independent private tests, including partial overload-group renames

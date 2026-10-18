@@ -43,6 +43,36 @@ require explicit resolution; an unsuccessful review exits nonzero.
 
 ## Module snapshots
 
+### Explicit derivation
+
+Edit ordinary source first, then use `scan DIR` for declaration keys. `refresh`
+can distinguish derivation from a move without inferring intent from similarity:
+
+```sh
+# Copy: keep SOURCE and allocate a new identity for copied.
+semantic_change_trial refresh DIR --derive SOURCE copied.loom copied KEY
+# Split: retire SOURCE; each destination receives its own new identity.
+semantic_change_trial refresh DIR --delete SOURCE \
+  --derive SOURCE parts.loom first KEY1 --derive SOURCE parts.loom second KEY2
+# Merge: retire A and B; repeating the destination records both parents.
+semantic_change_trial refresh DIR --delete A --delete B \
+  --derive A joined.loom joined KEY --derive B joined.loom joined KEY
+```
+
+Parents must be known identities in that package; targets must be unmatched new
+declarations. Replacing an existing same-locator definition requires explicit
+`--delete` too. `--move` instead preserves identity. An `origin CHILD PARENT...`
+sidecar row records provenance, not identity equality, preserved behavior or
+permission to retarget references. Parent sets are canonical; cycles, duplicate
+rows and incompatible concurrent origins reject. History survives declaration
+deletion, later refresh/drafts and reviewed directory/Git output. Existing
+origins cannot be removed or rewritten by a merge. Derivation choices require
+resolved identities; save an ambiguous draft separately before resolving it.
+Cross-package derivation and automatic relocation of a deleted package's history
+remain unsupported; whole-package deletion cannot silently discard that history.
+
+### Reviewed module merge
+
 For a complete named module, use:
 
 ```sh
