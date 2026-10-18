@@ -48,6 +48,9 @@ An execution failure returns `WriteOutcomeUnknown`, even when a particular SQL
 error would roll back: the process may instead have committed and lost its
 acknowledgement. Inspect authoritative state; the API never retries automatically.
 Success acknowledges the SQL command, not a deployment or compatibility proof.
+Database arguments are literal filesystem filenames, not SQLite URI options or
+`:memory:` connections. Transport selects URI `mode=ro`, `rw` or `rwc` itself,
+escaping filename delimiters; an insertion never creates a missing database.
 
 The trial also tests real batch insertion, constraint rollback, pre-execution
 codec/NaN rejection, and a real commit with lost acknowledgement. The latter

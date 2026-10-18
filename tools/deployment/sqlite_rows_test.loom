@@ -1,6 +1,23 @@
 import std.float.is_finite
 import std.bytes.get
 import std.bytes.length
+import std.build.target
+
+test fn sqlite_database_filenames_preserve_literal_paths_and_access_mode() {
+    assert database_filename("data?mode=rwc#fragment%20.sqlite", "rw") ==
+    "file:data%3fmode=rwc%23fragment%2520.sqlite?mode=rw"
+    assert database_filename("/tmp/数据库 with space.sqlite", "ro") ==
+    "file:/tmp/数据库 with space.sqlite?mode=ro"
+    assert database_filename("file:name.sqlite", "rwc") == "file:file:name.sqlite?mode=rwc"
+    assert database_filename("//host/share/data.sqlite", "rw") == "file:////host/share/data.sqlite?mode=rw"
+    comptime if target("os") == "windows" {
+        assert database_filename("C:\\data\\db.sqlite", "rw") == "file:/C:/data/db.sqlite?mode=rw"
+        assert database_filename("\\\\?\\C:\\data\\db.sqlite", "rw") == "file:/C:/data/db.sqlite?mode=rw"
+        assert database_filename("\\\\?\\UNC\\host\\share\\db.sqlite", "rw") == "file:////host/share/db.sqlite?mode=rw"
+    } else {
+        assert database_filename("a\\b.sqlite", "rw") == "file:a\\b.sqlite?mode=rw"
+    }
+}
 
 fn float_cell(encoded Text) Float {
     match row_value(encoded) {
