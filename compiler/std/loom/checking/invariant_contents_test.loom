@@ -1,0 +1,182 @@
+test fn invariant_contents_require_a_proved_unique_child_representation() {
+    list_constraint_accept("""
+        import std.list.length
+        fn opaque(values List[Int]) Bool {
+            (values[0] & 1) == 1
+        }
+        type Table = List[Int] where length(self) == 1 && self[0] == 7 && opaque(self)
+        record Snapshot {
+            table Table
+            count Int
+            notes List[Int]
+        }
+        type Bound = Snapshot where self.count == self.table[0]
+        pub fn observed(value Bound) Int
+        ensures result == value.table[0]
+        {
+            value.count
+        }
+        fn main() {
+            let table = Table([7])
+            let snapshot = Bound(Snapshot {
+                table = table
+                count = 7
+                notes = [1]
+            })
+            table[0] = 7
+            snapshot.notes[0] = 2
+            assert observed(snapshot) == 7
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Positive = List[Int] where length(self) == 1 && self[0] > 0
+        record Snapshot {
+            table Positive
+            count Int
+        }
+        type Invalid = Snapshot where self.count == self.table[0]
+        """)
+    // A helper's immutable argument cannot grant element reads on another,
+    // merely fixed-length argument.
+    list_constraint_reject("""
+        import std.list.length
+        type Table = List[Int] where length(self) == 1 && self[0] == 7
+        type Fixed = List[Int] where length(self) == 1
+        record Snapshot {
+            table Table
+            changing Fixed
+        }
+        fn same(first List[Int], second List[Int]) Bool {
+            first[0] == second[0]
+        }
+        type Invalid = Snapshot where same(self.table, self.changing)
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Table = List[Int] where length(self) == 1 && self[0] == 7
+        record Snapshot {
+            table Table
+            count Int
+        }
+        type Bound = Snapshot where self.count == self.table[0]
+        pub fn invalid(values Table) {
+            values[0] = 8
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Table = List[Int] where length(self) == 1 && self[0] == 7
+        record Snapshot {
+            table Table
+            count Int
+        }
+        type Bound = Snapshot where self.count == self.table[0]
+        pub fn invalid(values Table) List[Int] {
+            values
+        }
+        """)
+}
+
+test fn invariant_contents_compose_immutable_columns_not_unobserved_heap_graphs() {
+    byte_constraint_accept("""
+        import std.bytes.length
+        type Header = Bytes where length(self) == 1 && self[0] == 35
+        record Snapshot {
+            header Header
+            count Int
+        }
+        type Bound = Snapshot where self.count == self.header[0]
+        pub fn read(value Bound) Int {
+            value.count
+        }
+        """)
+    list_constraint_accept("""
+        import std.list.length
+        type Seven = Int where self == 7
+        type Label = Text where self == "ok"
+        record Cell {
+            number Seven
+            label Label
+        }
+        type Table = List[Cell] where length(self) == 1
+        record Snapshot {
+            table Table
+            count Int
+        }
+        type Bound = Snapshot where self.count == self.table[0].number
+        pub fn read(value Bound) Int {
+            value.count
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        record Cell {
+            number Int
+            notes List[Int]
+        }
+        type Table = List[Cell] where length(self) == 1 && self[0].number == 7
+        record Snapshot {
+            table Table
+            count Int
+        }
+        type Invalid = Snapshot where self.count == self.table[0].notes[0]
+        """)
+    // Numerical equality with zero does not fix the binary64 representation.
+    list_constraint_reject("""
+        import std.list.length
+        type Zeros = List[Float] where length(self) == 1 && self[0] == 0.0
+        record Snapshot {
+            values Zeros
+            count Float
+        }
+        type Invalid = Snapshot where self.count == 1.0 / self.values[0]
+        """)
+}
+
+test fn invariant_contents_recheck_the_actual_child_helper_after_cache_restore() {
+    let app = """
+        import values.Table
+        record Snapshot {
+            table Table
+            count Int
+        }
+        type Bound = Snapshot where self.count == self.table[0]
+        pub fn read(value Bound) Int {
+            value.count
+        }
+        fn unchanged() Int {
+            7
+        }
+        """
+    let provider = """
+        import std.list.length
+        fn valid(values List[Int]) Bool {
+            length(values) == 1 && values[0] == 7
+        }
+        pub type Table = List[Int] where valid(self)
+        """
+    let files = list_constraint_files(app)
+    push(files, source_file("values", provider, false))
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    set(files, 0, source_file("app", concat(app, "\nfn unrelated() {}\n"), false))
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let changed = std.text.join(std.text.split(provider, "values[0] == 7"), "values[0] > 0")
+    set(files, length(files) - 1, source_file("values", changed, false))
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), restored) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

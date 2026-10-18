@@ -1,0 +1,101 @@
+import std.bytes.length
+import std.text.to_bytes
+import std.list.length
+import std.result.Result
+import std.result.ConstraintError
+
+record Cell {
+    number Int
+    label Text
+}
+
+type Cells = List[Cell] where length(self) == 1 && self[0].number == 7 && self[0].label == "ok"
+
+record CellDraft {
+    cells Cells
+    number Int
+}
+
+type CellSnapshot = CellDraft where self.number == self.cells[0].number
+
+enum Entry {
+    Value(Int)
+    Absent
+}
+
+fn is_seven(value Entry) Bool {
+    match value {
+        Entry.Value(number) => number == 7
+        Entry.Absent => false
+    }
+}
+
+type Entries = List[Entry] where length(self) == 1 && is_seven(self[0])
+
+record EntryDraft {
+    entries Entries
+    number Int
+}
+
+fn entry_number(entries List[Entry]) Int {
+    match entries[0] {
+        Entry.Value(number) => number
+        Entry.Absent => 0
+    }
+}
+
+type EntrySnapshot = EntryDraft where self.number == entry_number(self.entries)
+
+type Header = Bytes where length(self) == 1 && self[0] == 35
+
+record HeaderDraft {
+    header Header
+    number Int
+}
+
+type HeaderSnapshot = HeaderDraft where self.number == self.header[0]
+
+fn cell_snapshot(cells Cells, number Int) Result[CellSnapshot, ConstraintError] {
+    CellSnapshot(CellDraft {
+            cells = cells
+            number = number
+        })
+}
+
+fn entry_snapshot(entries Entries, number Int) Result[EntrySnapshot, ConstraintError] {
+    EntrySnapshot(EntryDraft {
+            entries = entries
+            number = number
+        })
+}
+
+fn header_snapshot(header Header, number Int) Result[HeaderSnapshot, ConstraintError] {
+    HeaderSnapshot(HeaderDraft {
+            header = header
+            number = number
+        })
+}
+
+fn inline_representations() Bool {
+    let cells = Cells([Cell {
+                number = 7
+                label = "ok"
+            }])
+    let cell = cell_snapshot(cells, 7)
+    let entries = Entries([Entry.Value(7)])
+    let entry = entry_snapshot(entries, 7)
+    let header = match Header(to_bytes("#")) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let bytes = header_snapshot(header, 35)
+    header[0] = 35
+    match (cell, entry, bytes) {
+        (Result.Ok(cell), Result.Ok(entry), Result.Ok(bytes)) => {
+            cell.number == 7 && entry.number == 7 && bytes.number == 35
+        }
+        _ => false
+    }
+}

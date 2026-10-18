@@ -110,7 +110,7 @@ fn prepared_contract_group(stage Context, root Function, body_calls Bool) Result
             // coherent private type snapshot for every member of the group.
             match expanded_invariant_types(stage.env, functions) {
                 Result.Ok(types) => match verify_contract_group(proof_types(program, types), members,
-                    get(stage.env.inputs, 0).build.proof_backend, stable_extent_guarantees(stage.env)) {
+                    get(stage.env.inputs, 0).build.proof_backend, stable_sequence_guarantees(stage.env)) {
                     Result.Ok(conditions) => {
                         retain_group_contracts(stage, functions, contexts, conditions)
                         return Result.Ok(proof_types(program, types))

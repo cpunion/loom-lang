@@ -3,6 +3,51 @@ mod common;
 use common::success;
 
 #[test]
+fn unique_contents_compose_without_freezing_unobserved_siblings() {
+    let package = "compiler/examples/constant_contents";
+    success(&common::loom(&["check", package]));
+    let directory = tempfile::tempdir().unwrap();
+    for level in ["0", "2"] {
+        for mode in ["test", "build"] {
+            let artifact = common::executable(directory.path(), mode);
+            let mut command = common::command(&[mode, package]);
+            if mode == "test" {
+                command.arg("--no-run");
+            }
+            success(
+                &command
+                    .arg("--output")
+                    .arg(&artifact)
+                    .env("LOOM_OPT_LEVEL", level)
+                    .output()
+                    .unwrap(),
+            );
+            success(&common::run_tasks(&artifact));
+        }
+    }
+
+    // Run against the real proof backend: numerical equality is insufficient
+    // evidence that a Float's representation cannot change.
+    let main = directory.path().join("main.loom");
+    fs::write(
+        &main,
+        r#"
+import std.list.length
+type Zeros = List[Float] where length(self) == 1 && self[0] == 0.0
+record Snapshot {
+    values Zeros
+    number Float
+}
+type Invalid = Snapshot where self.number == 1.0 / self.values[0]
+"#,
+    )
+    .unwrap();
+    let rejected = common::loom(&["check", directory.path().to_str().unwrap()]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("shared mutable contents"));
+}
+
+#[test]
 fn invariant_effects_separate_fresh_scratch_from_shared_inputs() {
     let package = "compiler/examples/record_refinement";
     success(&common::loom(&["check", package]));

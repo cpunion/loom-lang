@@ -207,6 +207,12 @@ fn validate_refinement(env Environment, ty Int, checking Option[List[Int]]) Resu
             if length(stable) > 0 {
                 reads = invariant_observation(env, program, value, length(stage.locals), root, Option.Some(stable))
             }
+            if !get(reads.valid, 0) {
+                let stable = invariant_header_types(env, base, active, true)
+                if length(stable) > 0 {
+                    reads = invariant_observation(env, program, value, length(stage.locals), root, Option.Some(stable))
+                }
+            }
         }
         if !get(reads.valid, 0) {
             return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
@@ -226,8 +232,13 @@ fn validate_refinement(env Environment, ty Int, checking Option[List[Int]]) Resu
             return Result.Err(failure(env, owner, predicate, concat("type constraint: ", failed.message)))
         }
     }
-    if sequence_dependency(get(env.type_states, ty).sequence) && writes != 1 {
+    let policy = get(env.type_states, ty).sequence
+    if policy == SequencePolicy.StableExtent && writes != 1 {
         return Result.Err(failure(env, owner, predicate, "a persistent constraint requires an unchanged sequence extent policy"))
+    }
+    if policy == SequencePolicy.StableContents && !std.loom.proof.sequence_value_unique(
+        program, base, value, get(env.inputs, 0).build.proof_backend) {
+        return Result.Err(failure(env, owner, predicate, "a persistent constraint requires unique sequence contents"))
     }
     Result.Ok(writes)
 }

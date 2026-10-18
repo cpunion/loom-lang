@@ -1,0 +1,57 @@
+import std.loom.eval.scalar
+import std.loom.eval.unknown
+
+fn unique_scalar_sequence(first Expr, size Text) Program {
+    let program = atomic_pair_program()
+    let original = get(program.types, 7)
+    let raw = expression(ExprKind.Local, 6, "", 0, [])
+    let count = expression(ExprKind.Intrinsic, 1, "list_len", -1, [raw])
+    let value = expression(ExprKind.Intrinsic, 1, "list_get", -1, [raw, literal("0")])
+    std.list.set(program.types, 7, Type {
+            constraint = [operation("&&", operation("==", count, literal(size)),
+                    operation("==", value, first))]
+            ..original
+        })
+    program
+}
+
+test fn sequence_uniqueness_compares_arbitrary_valid_values_not_samples() {
+    let unique = unique_scalar_sequence(literal("7"), "1")
+    let partial = unique_scalar_sequence(literal("7"), "2")
+    let positive = atomic_pair_program()
+    assert sequence_value_unique(unique, 6, get(get(unique.types, 7).constraint, 0), no_proof_backend())
+    assert !sequence_value_unique(partial, 6, get(get(partial.types, 7).constraint, 0), no_proof_backend())
+    assert !sequence_value_unique(positive, 6, get(get(positive.types, 7).constraint, 0), no_proof_backend())
+    assert !sequence_value_unique(positive, 6, proof_bool(literal("0"), true), no_proof_backend())
+    let self_value = expression(ExprKind.Local, 6, "", 0, [])
+    let size = expression(ExprKind.Intrinsic, 1, "list_len", 42, [self_value])
+    let value = expression(ExprKind.Intrinsic, 1, "list_get", 43, [self_value, literal("0")])
+    let positive_single = operation("&&", operation("==", size, literal("1")), operation(">", value, literal("0")))
+    assert !sequence_value_unique(positive, 6, positive_single, no_proof_backend())
+}
+
+test fn derived_guard_truth_prunes_only_the_proved_branch() {
+    let first = expression(ExprKind.Local, 3, "", 0, [])
+    let second = expression(ExprKind.Local, 3, "", 1, [])
+    let same = operation("==", first, second)
+    let text = expression(ExprKind.Text, 3, "ok", -1, [])
+    let condition = operation("!=", first, second)
+    let body = expression(ExprKind.If, 1, "", -1, [condition, literal("0"), literal("1")])
+    let known = [operation("==", first, text), operation("==", second, text)]
+    let goal = operation("==", local(2), literal("1"))
+    assert verified(contract_fixture([3, 3], 1, body, known, [goal]))
+    assert !verified(contract_fixture([3, 3], 1, body, [], [goal]))
+    assert !verified(contract_fixture([3, 3], 1, body, [same], [operation("==", local(2), literal("0"))]))
+}
+
+test fn uniqueness_comparison_does_not_confuse_float_signed_zeros() {
+    let program = atomic_pair_program()
+    std.list.set(program.types, 5, publication_shape(TypeKind.Float, []))
+    let positive = expression(ExprKind.Float, 5, "0.0", -1, [])
+    let negative = expression(ExprKind.Unary, 5, "-", -1, [positive])
+    let equal = uniqueness_equal(program, positive, negative, [], [32], 0)
+    assert match std.loom.eval.scalar(equal, std.loom.eval.unknown()) {
+        Result.Ok(value) => value.ty == 2 && value.number == 0
+        Result.Err(_) => false
+    }
+}
