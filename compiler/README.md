@@ -4285,8 +4285,11 @@ borrow the scoped container; they cannot copy, return, capture, re-scope, mutate
 or manually dispose resource elements. MustScope parameters are checked borrows,
 including indirect calls; callers must scope fresh arguments first. Async borrows
 require a directly awaited call, so the owner outlives its child Tasks and their
-cleanup. The borrowing Task cannot be saved, forwarded or returned. No borrowing
-syntax is required. See the
+cleanup. A synchronous `fn ... Task[T]` may return a Task borrowing only its own
+caller's resources; callers still directly await that forwarding call. Field and
+pattern projections retain that origin. Tasks borrowing a locally owned resource,
+async returns exposing an inner borrowing Task, saved handles and nested Task
+arguments reject. No borrowing syntax or extra async wrapper is required. See the
 [List cleanup tests](examples/cleanup/resource_list_test.loom).
 Inline scoped records, tuples and enums may also contain Task fields. The owning
 scope must explicitly consume those fields; resource parameters borrow them and
