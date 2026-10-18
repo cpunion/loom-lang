@@ -148,3 +148,190 @@ test fn resize_targets_cannot_be_resolved_from_pre_loop_bindings() {
         }
         """, true)
 }
+
+test fn loop_rebindings_preserve_unpublished_headers_not_new_allocation_identity() {
+    list_constraint_accept("""
+        import std.list.length
+        type Pair = List[Int] where length(self) == 2
+        record Buffers {
+            current List[Int]
+            next List[Int]
+            turn Int
+        }
+        fn rotated(shared List[Int], turns Int) List[Int]
+        ensures length(result) == 2
+        {
+            discard length(shared)
+            var buffers = Buffers {
+                current = [1, 2]
+                next = [3, 4]
+                turn = 0
+            }
+            while buffers.turn < turns {
+                buffers = Buffers {
+                    current = buffers.next
+                    next = buffers.current
+                    turn = buffers.turn + 1
+                }
+                if buffers.turn == 2 {
+                    continue
+                }
+                if buffers.turn >= 5 {
+                    break
+                }
+            }
+            buffers.current
+        }
+        fn constrained(shared List[Int], turns Int) Pair {
+            Pair(rotated(shared, turns))
+        }
+        """)
+    byte_constraint_accept("""
+        import std.bytes.new
+        import std.bytes.length
+        import std.bytes.push
+        type Single = Bytes where length(self) == 1
+        fn rotated(shared Bytes, turns Int) Bytes
+        ensures length(result) == 1
+        {
+            discard length(shared)
+            var current = new()
+            push(current, 1)
+            var other = new()
+            push(other, 2)
+            var turn = 0
+            while turn < turns {
+                let previous = current
+                current = other
+                other = previous
+                turn = turn + 1
+            }
+            current
+        }
+        fn constrained(shared Bytes, turns Int) Single {
+            Single(rotated(shared, turns))
+        }
+        """)
+}
+
+test fn loop_storage_can_publish_previous_headers_and_return_a_new_private_one() {
+    list_constraint_accept("""
+        import std.list.length
+        type Single = List[Int] where length(self) == 1
+        fn replaced(effect fn(List[Int]), turns Int) List[Int]
+        ensures length(result) == 1
+        {
+            var current = [1]
+            var turn = 0
+            while turn < turns {
+                effect(current)
+                current = [1]
+                turn = turn + 1
+            }
+            current
+        }
+        fn constrained(effect fn(List[Int]), turns Int) Single {
+            Single(replaced(effect, turns))
+        }
+        """)
+    assert match checked(list_length_files("""
+        fn invalid(effect fn(List[Int]), turns Int) Int
+        requires turns > 0
+        ensures result == 19
+        {
+            var current = [1]
+            var turn = 0
+            while turn < turns {
+                effect(current)
+                current = [1]
+                turn = turn + 1
+            }
+            0
+        }
+        """)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+        Result.Ok(_) => false
+    }
+}
+
+test fn loop_privacy_cannot_hide_input_aliases_or_prior_iteration_publication() {
+    let cases = ["""
+        import std.list.length
+        type Pair = List[Int] where length(self) == 2
+        fn changed(shared List[Int], turns Int) List[Int]
+        requires length(shared) == 2
+        {
+            var current = [1, 2]
+            var turn = 0
+            while turn < turns {
+                current = shared
+                turn = turn + 1
+            }
+            current
+        }
+        fn invalid(shared List[Int])
+        requires length(shared) == 2
+        {
+            discard Pair(changed(shared, 2))
+        }
+        """, """
+        import std.list.length
+        import std.list.push
+        type Pair = List[Int] where length(self) == 2
+        fn exposed(shared List[List[Int]], turns Int) List[Int] {
+            var current = [1, 2]
+            var other = [3, 4]
+            var turn = 0
+            while turn < turns {
+                push(shared, current)
+                let previous = current
+                current = other
+                other = previous
+                turn = turn + 1
+            }
+            current
+        }
+        fn invalid(shared List[List[Int]]) {
+            discard Pair(exposed(shared, 2))
+        }
+        """]
+    var index = 0
+    while index < length(cases) {
+        let files = list_constraint_files(get(cases, index))
+        assert match checked(files) {
+            Result.Err(failed) => {
+                let rejected = std.text.contains(failed.diagnostic.message, "fresh unpublished")
+                if !rejected {
+                    show_failure(fixture_project(files), failed)
+                }
+                rejected
+            }
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+    assert match checked(list_length_files("""
+        import std.list.length
+        import std.list.push
+        fn invalid(shared List[Int], turns Int) Int
+        ensures result == 1
+        {
+            discard length(shared)
+            let original = [1]
+            var current = original
+            var other = [2]
+            var turn = 0
+            while turn < turns {
+                let previous = current
+                current = other
+                other = previous
+                turn = turn + 1
+            }
+            push(current, 9)
+            length(original)
+        }
+        """)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "required postcondition is not proved")
+        Result.Ok(_) => false
+    }
+}

@@ -231,8 +231,10 @@ supported theories and boundaries. The central rules are:
   that cannot reach the fresh output, including successful source Task results,
   without trusting pending postconditions. Saved known Tasks can yield local
   drafts without making arbitrary Task results fresh or permitting raw escapes.
-  General nested-graph publication and changing loop-carried identities remain
-  conservative.
+  Loop-carried headers retain unpublished provenance only after entry/all-backedge
+  induction, including replacement after publishing an old buffer. This supplies
+  neither a new allocation identity nor separation from other private headers.
+  General nested-graph publication and content preservation remain conservative.
 
 Representative native trials include
 [constrained shared views](../../compiler/examples/shared_views),

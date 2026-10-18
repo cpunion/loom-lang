@@ -93,6 +93,7 @@ async fn main() {
     exercise_generated().await
     exercise_transforms().await
     exercise_call_frames().await
+    exercise_loop_buffers().await
 }
 
 test async fn shared_lengths_survive_updates_loops_and_suspension() {

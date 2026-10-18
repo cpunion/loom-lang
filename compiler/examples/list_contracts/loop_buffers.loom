@@ -1,0 +1,80 @@
+type FreshSingle = List[Int] where length(self) == 1
+
+record RotatingBuffers {
+    current List[Int]
+    next List[Int]
+    turn Int
+}
+
+fn rotated_buffers(shared List[Int], turns Int) List[Int]
+ensures length(result) == 2
+{
+    discard length(shared)
+    var buffers = RotatingBuffers {
+        current = [1, 2]
+        next = [3, 4]
+        turn = 0
+    }
+    while buffers.turn < turns {
+        buffers = RotatingBuffers {
+            current = buffers.next
+            next = buffers.current
+            turn = buffers.turn + 1
+        }
+        if buffers.turn == 2 {
+            continue
+        }
+        if buffers.turn >= 5 {
+            break
+        }
+    }
+    buffers.current
+}
+
+fn replaced_buffers(effect fn(List[Int]), turns Int) List[Int]
+ensures length(result) == 1
+{
+    var current = [1]
+    var turn = 0
+    while turn < turns {
+        effect(current)
+        current = [1]
+        turn = turn + 1
+    }
+    current
+}
+
+async fn exercise_loop_buffers() {
+    let shared = [9]
+    var turns = 0
+    while turns < 8 {
+        let pair = FramePair(rotated_buffers(shared, turns))
+        let swaps = if turns > 5 {
+            5
+        } else {
+            turns
+        }
+        assert pair[0] == (if swaps % 2 == 0 {
+                1
+            } else {
+                3
+            })
+        assert pair[1] == pair[0] + 1
+        turns = turns + 1
+    }
+    let previous = new[List[Int]]()
+    let current = FreshSingle(replaced_buffers(fn(value List[Int]) {
+                push(previous, value)
+                push(value, 8)
+            }, 3))
+    assert length(previous) == 3 && length(current) == 1
+    push(previous[2], 9)
+    sleep_ms(1).await
+    assert current[0] == 1 && length(current) == 1
+    assert length(previous[0]) == 2 && length(previous[2]) == 3
+    assert length(shared) == 1 && shared[0] == 9
+}
+
+test async fn rebound_private_buffers_publish_checked_shapes_after_real_effects() {
+    exercise_loop_buffers().await
+}
