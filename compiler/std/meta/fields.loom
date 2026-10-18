@@ -1,0 +1,57 @@
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+import std.option.Option
+import std.reflect.describe
+import std.reflect.Kind
+
+// Compile-time identities, not indices into a runtime reflection descriptor.
+// Names are source spellings, not persistent storage identities.
+pub record FieldType {
+    name Text
+    ty type
+}
+
+fn visible_record[T]() Bool {
+    let schema = describe[T]()
+    let root = schema.types[0]
+    if root.kind == Kind.Refined {
+        return schema.types[root.arguments[0]].kind == Kind.Record
+    }
+    root.kind == Kind.Record
+}
+
+// Declaration order, including the visible fields of a refined record.
+// None distinguishes an opaque/non-record type from an empty record.
+pub fn record_fields[T]() Option[List[FieldType]] {
+    comptime if visible_record[T]() {
+        let fields = new[FieldType]()
+        comptime for name, Field in T {
+            push(fields, FieldType {
+                    name = name
+                    ty = Field
+                })
+        }
+        Option.Some(fields)
+    } else {
+        Option.None
+    }
+}
+
+pub fn field_type[T](name Text) Option[type] {
+    match record_fields[T]() {
+        Option.Some(fields) => {
+            var index = 0
+            while index < length(fields) {
+                let field = get(fields, index)
+                if field.name == name {
+                    return Option.Some(field.ty)
+                }
+                index = index + 1
+            }
+            Option.None
+        }
+        Option.None => Option.None
+    }
+}

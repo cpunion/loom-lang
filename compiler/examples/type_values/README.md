@@ -20,6 +20,16 @@ Loom helpers use structural function packs and never execute the callback.
 Their results stay inside compile-time execution; see
 [signatures.loom](signatures.loom).
 
+`std.meta.record_fields[T]()` returns `Option[List[FieldType]]` with declaration
+names and actual compile-time `type` values; `field_type[T](name)` selects one.
+Visible refined records expose their base fields without removing construction
+checks. Empty records return `Some([])`; non-record and opaque types return
+`None`. Library helpers keep their own lexical visibility, so a record used
+from another package must be `pub`. Each call returns fresh metadata Lists.
+Obtaining a private field's type identity grants no construction or inspection rights.
+See [selected_fields.loom](selected_fields.loom); descriptor indices never become
+type identities.
+
 `std.meta.tuple(elements)` and `std.meta.function(parameters, output)` build
 ordinary tuple/function types from computed `List[type]` inputs. The optional
 output is `None` for no result. Loops may select the elements; the result has

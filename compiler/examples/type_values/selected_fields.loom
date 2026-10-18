@@ -1,11 +1,31 @@
 import std.reflect.from_fields
+import std.meta.field_type
+import std.meta.record_fields
 
-record SelectedFields[T] {
+pub record SelectedFields[T] {
     active Bool
     data T
 }
 
+record PrivateMetadata {
+    secret Text
+}
+
 fn selected_field_types() {
+    let Payload = comptime {
+        match std.meta.field_type[SelectedFields[List[Int]]]("data") {
+            std.option.Option.Some(ty) => ty
+            std.option.Option.None => Int
+        }
+    }
+    let payload Payload = [3, 5]
+    assert payload[0] + payload[1] == 8
+    assert comptime {
+        match std.meta.record_fields[PrivateMetadata]() {
+            std.option.Option.None => true
+            std.option.Option.Some(_) => false
+        }
+    }
     let Shape = comptime {
         choose(true, of[SelectedFields[List[Int]]](), Int)
     }
