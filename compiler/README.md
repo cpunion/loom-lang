@@ -1827,6 +1827,47 @@ in closed executable builds. Concept-declared contracts are inherited by default
 and implementations, which must prove their postconditions. An implementation
 cannot add an undeclared precondition.
 
+### Receiver-free associated functions
+
+A first parameter written with type `Self` is the receiver. A function without that
+receiver belongs to the implementing type instead:
+
+```loom
+concept Factory {
+    fn make(number Int) Self
+}
+
+record Product {
+    number Int
+}
+
+impl Factory for Product {
+    fn make(number Int) Product {
+        Product {
+            number = number
+        }
+    }
+}
+
+fn construct[T Factory](number Int) T {
+    Factory.make[T](number)
+}
+```
+
+Call through the concept name. The first type argument selects `Self`, followed
+by the function's own type arguments. Ordinary input/result inference applies
+when the type-argument list is omitted. Defaults, overloads, variadic parameters,
+`comptime` parameters, async results and inherited contracts use the ordinary
+function rules. Receiver-free functions can also supply ordinary function values;
+this does not expose unbound receiver methods such as `Dispose.dispose`.
+
+These functions never become dyn witness slots or select the boxed payload's
+erased implementation. An explicitly declared conformance for a known dyn wrapper
+type can be selected statically; that does not recover its payload type.
+See the [factory example](examples/associated_functions/README.md).
+
+### Generic implementations
+
 Implementation headers can declare type parameters and prerequisites:
 
 ```loom
@@ -2149,11 +2190,13 @@ need no boxes. The [dynamic example](examples/dynamic/main.loom) covers escaping
 receivers, heterogeneous lists, records/enums/tuples and allocating call arguments.
 
 Closed native builds retain reachable witnesses and used method slots. Library
-exports retain complete callable tables. No runtime type lookup or `any`
+exports retain complete callable receiver tables. No runtime type lookup or `any`
 conversion supplies evidence. Cross-dyn conversion and concrete recovery
 currently reject. A dyn-compatible method can use
 bare `Self` only as its first receiver parameter; bound `Self.Item` projections
-are allowed elsewhere. Static-only concepts may also use bare `Self` elsewhere.
+are allowed elsewhere. Receiver-free functions are excluded from this dyn
+compatibility check. Methods used only with static dispatch may also use bare
+`Self` elsewhere.
 
 Pure `comptime` code can construct, call and return dyn values, including methods
 with associated bindings, generic parameters, defaults and static arguments.

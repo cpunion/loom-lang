@@ -54,7 +54,7 @@ fn supplied(context Context, node Node, values List[Node], count Int) Result[Lis
 // Method calls infer Self from the receiver; explicit arguments describe only
 // the method's own parameters, independent of the selected implementation.
 fn supplied_call(context Context, node Node, values List[Node], current Signature) Result[List[Int], Failure] {
-    if !prototype(context.env, current.symbol) {
+    if !method_receiver(context.env, current.symbol) {
         return supplied(context, node, values, current.parameters)
     }
     Result.Ok(member_arguments(ints(-1), supplied(context, node, values, current.parameters - 1)?))
@@ -529,11 +529,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     if length(context.env.concepts) != 0 && package(node.value) != "" {
         let capability = referenced_concept(context.env, context.signature.symbol, node, package(node.value), 0)?
         if capability >= 0 {
-            if length(inputs.nodes) == 0 {
-                return Result.Err(error(context, node, "a concept method call needs a receiver"))
-            }
-            return method_call_checked(context, node, get(inputs.nodes, 0), input_value(context, inputs, 0, -1, false)?,
-                name(node.value), types, input_tail(inputs), capability, expected)
+            return functions_call(context, node, concept_functions(context.env, capability, name(node.value)), types, inputs, expected)
         }
     }
     let current = symbol(context.env, context.signature.symbol)
@@ -558,6 +554,10 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
             return Result.Err(error(context, node, message))
         }
     }
+    functions_call(context, node, available, types, inputs, expected)
+}
+
+fn functions_call(context Context, node Node, available List[Int], types List[Node], inputs CallInputs, expected Int) Result[Expr, Failure] {
     let type_count = call_type_count(node, types)
     let options = call_signature_options(context.env, available, length(inputs.nodes), type_count)
     var index = 0
@@ -566,10 +566,15 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         let declaration = symbol(context.env, owner).node
         let pack = pack_parameter(declaration)
         if declaration.kind == NodeKind.Function && pack >= 0 {
+            let pack_type_count = if prototype(context.env, owner) && !method_receiver(context.env, owner) && type_count >= 0 {
+                type_count - 1
+            } else {
+                type_count
+            }
             if !one_type_pack(declaration) {
-                let widths = structural_call_shapes(context, inputs, declaration, type_count, expected)
+                let widths = structural_call_shapes(context, inputs, declaration, pack_type_count, expected)
                 if length(widths) != 0 {
-                    push(options, pack_signature(context.env, owner, widths)?)
+                    push(options, selected_pack_signature(context.env, owner, widths)?)
                 }
                 index = index + 1
                 continue
@@ -580,16 +585,16 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
             if !variadic_parameters(parameters) {
                 arity = -1
                 if length(inputs.nodes) == length(parameters) {
-                    if type_count >= 0 {
+                    if pack_type_count >= 0 {
                         if length(options) == 0 || structural_pack_position(parameters) < 0 {
-                            arity = type_count - fixed
+                            arity = pack_type_count - fixed
                         } else {
                             // A fixed overload may supply a needed contextual
                             // hint, such as List[T] for an empty list inside a
                             // block. Probe privately before adding a structural
                             // contender that would remove that single hint.
                             if structural_call_arity(context, inputs, parameters) >= 0 {
-                                arity = type_count - fixed
+                                arity = pack_type_count - fixed
                             }
                         }
                     } else {
@@ -600,8 +605,8 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                     }
                 }
             }
-            if arity >= 0 && (type_count < 0 || type_count == fixed + arity) {
-                push(options, pack_signature(context.env, owner, ints(arity))?)
+            if arity >= 0 && (pack_type_count < 0 || pack_type_count == fixed + arity) {
+                push(options, selected_pack_signature(context.env, owner, ints(arity))?)
             }
         }
         index = index + 1
@@ -897,7 +902,8 @@ fn invoke_ready(context Context, node Node, instance Instance, signature Signatu
             // A nominal receiver can select an implementation even while its
             // arguments remain abstract. Do not guess for evidence-only types,
             // or validate a default body that an implementation overrides.
-            if kind != TypeKind.Parameter && kind != TypeKind.Associated && kind != TypeKind.Rigid && kind != TypeKind.Dyn &&
+            if kind != TypeKind.Parameter && kind != TypeKind.Associated && kind != TypeKind.Rigid &&
+            (kind != TypeKind.Dyn || !method_receiver(context.env, signature.symbol)) &&
             conformance(context.env, receiver, symbol(context.env, signature.symbol).owner).implementation >= 0 {
                 let target = method_target(context.env, instance.signature, instance.arguments, constants)?
                 discard validate_static(context.env, target.signature, constants, symbol(context.env, get(context.env.signatures, target.signature).symbol).node)?
@@ -917,7 +923,12 @@ fn invoke_ready(context Context, node Node, instance Instance, signature Signatu
     if get(context.env.inputs, 0).declaration_queries {
         discard record_function_reference(context.env, context.signature.symbol, node, instance.signature, instance.arguments)?
     }
-    let dynamic = prototype(context.env, signature.symbol) && length(runtime_values) != 0 && get(context.env.types, get(runtime_values, 0).ty).kind == TypeKind.Dyn
+    if prototype(context.env, signature.symbol) && !method_receiver(context.env, signature.symbol) &&
+    get(context.env.types, get(instance.arguments, 0)).kind == TypeKind.Dyn &&
+    conformance(context.env, get(instance.arguments, 0), symbol(context.env, signature.symbol).owner).implementation < 0 {
+        return Result.Err(error(context, node, "a receiver-free concept function needs an explicit type implementation, not an erased witness"))
+    }
+    let dynamic = method_receiver(context.env, signature.symbol) && length(runtime_values) != 0 && get(context.env.types, get(runtime_values, 0).ty).kind == TypeKind.Dyn
     discard task_call_context(context, node, runtime_values, output, asynchronous)?
     if !context.emit && !known_constants(constants) {
         return Result.Ok(expression(ExprKind.Deferred, output, node, "", -1, runtime_values, all_fall(runtime_values)))

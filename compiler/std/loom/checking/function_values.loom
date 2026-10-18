@@ -9,17 +9,30 @@ import std.list.push
 import std.list.length
 import std.result.Result
 
-fn referenced_functions(context Context, path Text) List[Int] {
+fn referenced_functions(context Context, node Node) Result[List[Int], Failure] {
+    let path = node.value
     let options = new[Int]()
     if lookup(context, slice(path, 0, first_dot(path))) >= 0 {
-        return options
+        return Result.Ok(options)
     }
     let here = symbol(context.env, context.signature.symbol)
-    let available = candidates(context.env.source, here.file, here.test_only, path)
+    let ordinary = candidates(context.env.source, here.file, here.test_only, path)
+    let qualifier = package(path)
+    let capability = if length(ordinary) != 0 || qualifier == "" || length(context.env.concepts) == 0 { -1 } else {
+        referenced_concept(context.env, context.signature.symbol, node, qualifier, 0)?
+    }
+    let available = if capability >= 0 {
+        concept_functions(context.env, capability, name(path))
+    } else {
+        ordinary
+    }
     var index = 0
     while index < length(available) {
         let declaration = get(available, index)
-        if symbol(context.env, declaration).node.kind == NodeKind.Function {
+        // The concept-qualified extension exposes associated functions, not
+        // unbound receiver methods (which could erase scoped cleanup rules).
+        if symbol(context.env, declaration).node.kind == NodeKind.Function &&
+        (capability < 0 || !method_receiver(context.env, declaration)) {
             if length(context.env.packs) != 0 && pack_parameter(symbol(context.env, declaration).node) >= 0 {
                 push(options, -1 - declaration)
             }
@@ -33,7 +46,10 @@ fn referenced_functions(context Context, path Text) List[Int] {
         }
         index = index + 1
     }
-    options
+    if capability >= 0 && length(available) != 0 && length(options) == 0 {
+        return Result.Err(error(context, node, "a receiver method needs a value to form a bound method"))
+    }
+    Result.Ok(options)
 }
 
 fn function_shape(env Environment, current Signature) Int {
@@ -88,7 +104,11 @@ fn function_reference(context Context, node Node, options List[Int], supplied_ty
         let id = get(choices, index)
         let candidate = get(context.env.signatures, id)
         static_only = static_only || has_static(candidate)
-        let count = candidate.parameters - parameter_offset(context.env, candidate.symbol)
+        let count = if prototype(context.env, candidate.symbol) {
+            explicit_call_parameters(context.env, candidate)
+        } else {
+            candidate.parameters - parameter_offset(context.env, candidate.symbol)
+        }
         if (arity < 0 || length(candidate.params) == arity) &&
         !has_static(candidate) && (type_count < 0 || type_count == count) {
             let inferred = supplied_call(context, node, supplied_types, candidate)?

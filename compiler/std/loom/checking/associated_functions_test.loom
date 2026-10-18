@@ -1,0 +1,230 @@
+test fn receiver_free_functions_use_explicit_self_and_ordinary_calls() {
+    let program = accepted("""
+        concept Factory {
+            fn make(value Int) Self
+            fn label() Text {
+                "factory"
+            }
+            fn keep[T](value T) T {
+                value
+            }
+        }
+        impl Factory for Int {
+            fn make(value Int) Int {
+                value
+            }
+        }
+        impl Factory for Bool {
+            fn make(value Int) Bool {
+                value != 0
+            }
+        }
+        fn construct[T Factory](value Int) T {
+            Factory.make[T](value)
+        }
+        fn main() {
+            assert construct[Int](7) == 7
+            assert construct[Bool](1)
+            assert Factory.label[Int]() == "factory"
+            assert Factory.keep[Bool, Text]("kept") == "kept"
+            assert comptime { Factory.make[Int](9) } == 9
+            let create fn(Int) Int = Factory.make[Int]
+            assert create(11) == 11
+        }
+        """)
+    assert length(program.interfaces) == 0 && length(program.witnesses) == 0
+    rejects("""
+        concept Factory {
+            fn make(value Int) Self
+        }
+        fn missing[T](value Int) T {
+            Factory.make[T](value)
+        }
+        """)
+    rejects("""
+        concept Factory {
+            fn make(value Int) Self
+        }
+        impl Factory for Bool {
+            fn make(value Int) Bool {
+                value != 0
+            }
+        }
+        fn main() {
+            discard true.make(1)
+        }
+        """)
+    resource_reject(concat(resource_header(), """
+        fn main() {
+            let release fn(Handle) = Dispose.dispose
+            scoped value = make([0])
+            release(value)
+        }
+        """))
+    resource_accept(concat(resource_header(), """
+        concept Factory {
+            fn create(log List[Int]) Self
+        }
+        impl Factory for Handle {
+            fn create(log List[Int]) Handle {
+                make(log)
+            }
+        }
+        fn main() {
+            let create fn(List[Int]) Handle = Factory.create[Handle]
+            scoped value = create([0])
+            assert value.use() == 7
+        }
+        """))
+}
+
+test fn receiver_free_contracts_use_the_impl_self_not_the_first_value() {
+    discard flow_program("""
+        fn offset[T]() Int {
+            comptime if T == Bool {
+                7
+            } else {
+                8
+            }
+        }
+        concept Factory {
+            fn constant() Int ensures result == 7
+            fn add(number Int) Int ensures result == number + offset[Self]()
+        }
+        impl Factory for Bool {
+            fn constant() Int {
+                7
+            }
+            fn add(value Int) Int {
+                value + 7
+            }
+        }
+        fn main() {
+            assert Factory.constant[Bool]() == 7
+            assert Factory.add[Bool](2) == 9
+        }
+        """)
+    rejects_result("""
+        concept Factory {
+            fn constant() Int ensures result == 7
+        }
+        impl Factory for Bool {
+            fn constant() Int {
+                8
+            }
+        }
+        """)
+    rejects("""
+        concept Factory {
+            fn make(value Int) Self
+        }
+        impl Factory for Bool {
+            fn make(value Int) Int {
+                value
+            }
+        }
+        """)
+}
+
+test fn dyn_witnesses_exclude_receiver_free_functions_and_cannot_select_them() {
+    let program = accepted("""
+        concept Factory {
+            fn make(value Int) Self
+            fn value(self Self) Int
+        }
+        impl Factory for Int {
+            fn make(value Int) Int {
+                value
+            }
+            fn value(self Int) Int {
+                self
+            }
+        }
+        fn main() {
+            let erased dyn Factory = 3
+            assert erased.value() == 3
+        }
+        """)
+    assert length(program.interfaces) == 1 && length(get(program.interfaces, 0).methods) == 1
+    // Main and the one demanded receiver method; no constructor is emitted.
+    assert length(program.functions) == 2
+    rejects("""
+        concept Factory {
+            fn make(value Int) Self
+        }
+        impl Factory for Int {
+            fn make(value Int) Int {
+                value
+            }
+        }
+        fn main() {
+            discard Factory.make[dyn Factory](1)
+        }
+        """)
+    discard accepted("""
+        concept View {
+            fn value(self Self) Int
+        }
+        impl View for Int {
+            fn value(self Int) Int {
+                self
+            }
+        }
+        concept Factory {
+            fn read(value dyn View) Int
+        }
+        impl Factory for Bool {
+            fn read(value dyn View) Int {
+                value.value()
+            }
+        }
+        fn main() {
+            let view dyn View = 7
+            assert Factory.read[Bool](view) == 7
+        }
+        """)
+    discard accepted("""
+        concept View {
+            fn value(self Self) Int
+        }
+        impl View for Int {
+            fn value(self Int) Int {
+                self
+            }
+        }
+        concept Factory {
+            fn make(value Int) Self
+        }
+        impl Factory for dyn View {
+            fn make(value Int) dyn View {
+                value
+            }
+        }
+        fn main() {
+            let value = Factory.make[dyn View](3)
+            assert value.value() == 3
+        }
+        """)
+}
+
+test fn receiver_free_functions_share_variadic_and_comptime_selection() {
+    discard accepted("""
+        concept Factory {
+            fn tuple[Ts...](values Ts...) (Ts...) {
+                (values...)
+            }
+            fn tag(comptime name Text) Text {
+                name
+            }
+        }
+        impl Factory for Bool {
+        }
+        fn main() {
+            let pair = Factory.tuple[Bool, Int, Text](1, "two")
+            assert pair.0 == 1 && pair.1 == "two"
+            let create fn(Int, Text) (Int, Text) = Factory.tuple[Bool, Int, Text]
+            assert create(3, "four").0 == 3
+            assert Factory.tag[Bool]("tag") == "tag"
+        }
+        """)
+}

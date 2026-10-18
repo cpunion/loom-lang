@@ -68,6 +68,30 @@ fn query_template_rejected(source Text) {
     }
 }
 
+test fn static_dyn_factory_queries_check_the_selected_abstract_impl() {
+    query_template_rejected("""
+        concept View {
+            fn value(self Self) Int
+        }
+        impl View for Int {
+            fn value(self Int) Int {
+                self
+            }
+        }
+        concept Factory {
+            fn make[T](value T) Self
+        }
+        impl Factory for dyn View {
+            fn make[T](value T) dyn View {
+                value + 1
+            }
+        }
+        fn good() dyn View {
+            Factory.make[dyn View, Int](3)
+        }
+        """)
+}
+
 test fn selected_template_closures_cover_abstract_callbacks_methods_and_ctfe() {
     query_template_rejected("""
         fn invalid[T](value T) Int {

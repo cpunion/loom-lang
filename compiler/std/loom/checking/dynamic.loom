@@ -74,6 +74,10 @@ fn fill_interface_methods(env Environment, receiver Int, capability Concept, met
     var method = 0
     while method < length(capability.methods) {
         let current = get(env.signatures, get(capability.methods, method))
+        if !method_receiver(env, current.symbol) {
+            method = method + 1
+            continue
+        }
         let node = symbol(env, current.symbol).node
         var parameter = 1
         while parameter < length(current.params) {

@@ -50,7 +50,7 @@ fn function_input_arity(context Context, inputs CallInputs, index Int, arity Int
         return input_value(context, inputs, index, -1, probe)
     }
     if receiver.kind == NodeKind.Name && first_dot(receiver.value) == std.text.length(receiver.value) &&
-    length(referenced_functions(context, receiver.value)) == 0 {
+    length(referenced_functions(context, receiver)?) == 0 {
         return input_value(context, inputs, index, -1, probe)
     }
     let selected = if probe {

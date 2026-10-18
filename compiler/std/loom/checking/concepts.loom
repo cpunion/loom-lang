@@ -50,6 +50,44 @@ fn prototype(env Environment, owner Int) Bool {
     let parent = symbol(env, owner).owner
     parent >= 0 && symbol(env, parent).node.kind == NodeKind.Concept
 }
+// Self is a type parameter even when no runtime receiver is declared.
+// Keep the distinction in source headers, before concrete Self can equal an
+// ordinary first argument type.
+fn method_receiver(env Environment, owner Int) Bool {
+    if !prototype(env, owner) { return false }
+    let parameters = group(symbol(env, owner).node, NodeKind.Parameters)
+    if length(parameters) == 0 { return false }
+    let first = child(get(parameters, 0), 0)
+    first.kind == NodeKind.Type && first.value == "Self" && length(first.children) == 0
+}
+
+fn explicit_call_parameters(env Environment, current Signature) Int {
+    current.parameters - if method_receiver(env, current.symbol) { 1 } else { 0 }
+}
+
+fn concept_functions(env Environment, capability Int, name Text) List[Int] {
+    let functions = new[Int]()
+    let methods = get(env.concepts, concept_index(env, capability)).methods
+    var index = 0
+    while index < length(methods) {
+        let id = get(methods, index)
+        let owner = get(env.signatures, id).symbol
+        if symbol(env, owner).name == name && pack_instance(env, id) < 0 {
+            push(functions, owner)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        let item = symbol(env, pack.source)
+        if pack_family(pack) && item.owner == capability && item.name == name && !resource_seen(functions, pack.source) {
+            push(functions, pack.source)
+        }
+        index = index + 1
+    }
+    functions
+}
 fn concept_named(env Environment, owner Int, node Node, path Text) Result[Int, Failure] {
     let here = symbol(env, owner)
     let options = candidates(env.source, here.file, here.test_only, path)
@@ -174,14 +212,6 @@ fn conformances(env Environment) Result[Bool, Failure] {
         let item = symbol(env, owner)
         if item.node.kind == NodeKind.Concept {
             let methods = owned_signatures(env, owner)
-            var index = 0
-            while index < length(methods) {
-                let method = get(env.signatures, get(methods, index))
-                if length(method.params) == 0 || get(method.params, 0) != get(abstract_arguments(env, 1), 0) {
-                    return Result.Err(failure(env, method.symbol, symbol(env, method.symbol).node, "a concept method's first parameter must have type Self"))
-                }
-                index = index + 1
-            }
             let position = concept_index(env, owner)
             let previous = get(env.concepts, position)
             discard validate_method_pack_declarations(env, owner)?

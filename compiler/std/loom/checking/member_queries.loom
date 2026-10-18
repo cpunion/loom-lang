@@ -265,7 +265,7 @@ fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCand
                 let id = get(capability.methods, method)
                 let signature = get(env.signatures, id)
                 let item = symbol(env, signature.symbol)
-                if pack_instance(env, id) < 0 && starts_with(item.name, prefix) {
+                if method_receiver(env, signature.symbol) && pack_instance(env, id) < 0 && starts_with(item.name, prefix) {
                     push(hints, MemberCandidate {
                             name = item.name
                             ty = ""
@@ -280,7 +280,7 @@ fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCand
             while method < length(env.packs) {
                 let pack = get(env.packs, method)
                 let item = symbol(env, pack.source)
-                if pack_family(pack) && item.owner == capability.symbol && starts_with(item.name, prefix) {
+                if pack_family(pack) && item.owner == capability.symbol && method_receiver(env, pack.source) && starts_with(item.name, prefix) {
                     push(hints, MemberCandidate {
                             name = item.name
                             ty = ""
