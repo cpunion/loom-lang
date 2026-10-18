@@ -187,8 +187,11 @@ fn static_argument(context Context, node Node, checked Expr, expected Int, ident
     if !static_parameter_type(context.env, expected) {
         return Result.Err(error(context, node, "comptime parameters require immutable stored values or a function type after specialization"))
     }
+    // A symbolic type identity is still an exact static operand. Passing it
+    // does not make its shape concrete or grant capabilities to the callee.
+    let type_identity = get(context.env.types, expected).kind == TypeKind.Meta && checked.kind == ExprKind.TypeValue
     if contains_deferred(checked) || !concrete(context.env, expected) ||
-        (abstract_context(context) && depends_on_type(context, node)) {
+        (!type_identity && abstract_context(context) && depends_on_type(context, node)) {
         // Later runtime arguments may have appended block locals since the
         // overload probe. Check isolation against this fresh staging boundary.
         // Unlike overload probing, a selected static argument cannot use an

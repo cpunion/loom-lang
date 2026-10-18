@@ -151,8 +151,11 @@ fn meta_type_node(context Context, node Node) Result[Node, Failure] {
         return meta_family_node(context, node, new[Node]())
     }
     if node.kind == NodeKind.Comptime {
-        let value = computed(context, node, child(node, 0), meta_type(context.env))?
-        return Result.Ok(meta_reference(node, value.number))
+        let value = compile_time(context, node, meta_type(context.env), false)?
+        if value.kind != ExprKind.TypeValue {
+            return Result.Err(error(context, node, "type expression must have a compile-time identity"))
+        }
+        return Result.Ok(meta_reference(node, value.index))
     }
     if node.kind == NodeKind.Name || node.kind == NodeKind.Type {
         let end = first_dot(node.value)

@@ -21,12 +21,21 @@ fn abstract_context(context Context) Bool {
         if !concrete(context.env, get(context.arguments, index)) { return true }
         index = index + 1
     }
+    index = 0
+    while index < length(context.constants) {
+        let value = get(context.constants, index)
+        if value.known && get(context.env.types, value.ty).kind == TypeKind.Meta &&
+        !concrete(context.env, value.number) { return true }
+        index = index + 1
+    }
     !known_constants(context.constants)
 }
 fn parameter_name(context Context, name Text) Bool {
     if std.text.starts_with(name, "$type#") {
         return true
     }
+    let selected = meta_binding(context, name)
+    if selected >= 0 && !concrete(context.env, selected) { return true }
     if name == "Self" && enclosing(context.env, context.signature.symbol) >= 0 { return true }
     let parameters = type_parameters(context.env, context.signature.symbol)
     var index = 0
@@ -68,7 +77,9 @@ fn depends_on_type(context Context, node Node) Bool {
 // This is an unknown check-only obligation, never an invented constant or an
 // unreachable branch. The prover rejects it when a required proof needs it.
 fn deferred(context Context, node Node, expected Int) Result[Expr, Failure] {
-    if context.emit { return Result.Err(error(context, node, "compile-time selection must be determined for this instance")) }
+    if context.emit && (context.env.stage_depth == 0 || !abstract_context(context)) {
+        return Result.Err(error(context, node, "compile-time selection must be determined for this instance"))
+    }
     if expected < 0 { return Result.Err(error(context, node, "type-dependent comptime expression needs an explicit result type")) }
     Result.Ok(expression(ExprKind.Deferred, expected, node, "", -1, new[Expr](), true))
 }
@@ -311,6 +322,9 @@ fn compile_time(context Context, node Node, expected Int, enforce Bool) Result[E
         }
         let value = block(validation, source, expected, enforce)?
         discard isolated(context, node, value, length(context.locals))?
+        if get(context.env.types, value.ty).kind == TypeKind.Meta {
+            return computed_type(context, node, source)
+        }
         // Syntax may mention a shadowed static name. Only checked IR can show
         // that this computation still depends on its unknown value.
         if contains_deferred(value) || (type_dependent && get(context.env.types, value.ty).kind != TypeKind.Meta) {

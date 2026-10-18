@@ -4100,9 +4100,14 @@ The public signature still declares its result and required concepts. A computed
 alias grants no additional methods, constraints or resource permissions. Type
 comparison composes over structure: `(T, Text)` differs from `(Int, Bool)`, but
 `T == Int` remains unknown until specialization. Unknown comparisons cannot select
-a branch or discharge a proof. Shape-changing computations that cannot produce
-an abstract type still reject rather than infer a public requirement from one
-concrete call. See [symbolic.loom](examples/type_values/symbolic.loom).
+a branch or discharge a proof. When a pure type computation needs an unknown
+decision, its local result remains an opaque identity. A `comptime if` can defer
+its selected branch until concrete specialization; unconditional uses must work
+without assuming the result's shape or relationship to its inputs. Specialization
+reruns the computation and checks the selected branch. Neither deferral nor a
+single concrete call infers public requirements or discharges required proofs.
+See [symbolic.loom](examples/type_values/symbolic.loom) and
+[dependent.loom](examples/type_values/dependent.loom).
 
 Declared associated types are type values too: `S.Item[T]`, qualified
 `S.Concept.Item[T]`, and `Self.Item[T]` in methods. An immutable selected receiver

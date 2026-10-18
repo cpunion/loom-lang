@@ -3,3 +3,120 @@ test fn static_computations_keep_distinct_values_and_respect_shadowing() {
     // An unknown static operand cannot hide an actual runtime capture.
     rejects("fn capture(value Int, comptime extra Int) Int { comptime { value + extra } }")
 }
+
+test fn dependent_type_computations_wait_for_specialization() {
+    discard accepted("""
+        fn selected[T]() type {
+            if T == Int {
+                Text
+            } else {
+                Int
+            }
+        }
+        fn forwarded(comptime item type) type {
+            comptime if item == Int {
+                Text
+            } else {
+                Int
+            }
+        }
+        pub fn choose[T](value T) Int {
+            let Output = comptime { selected[T]() }
+            let Forwarded = comptime { forwarded(T) }
+            discard value
+            comptime if Output == Text {
+                let label Output = "int"
+                let second Forwarded = label
+                discard second
+                discard label
+                1
+            } else {
+                let count Output = 2
+                let second Forwarded = count
+                discard second
+                count
+            }
+        }
+        fn main() {
+            assert choose(7) == 1 && choose(true) == 2
+        }
+        """)
+    rejects("""
+        fn selected[T]() type {
+            if T == Int { Text } else { Int }
+        }
+        pub fn invalid[T](value T) {
+            let Output = comptime { selected[T]() }
+            let output Output = value
+            discard output
+        }
+        """)
+    rejects("""
+        concept Display {
+            fn display(self Self) Text
+        }
+        fn selected[T]() type {
+            if T == Int { Int } else { Bool }
+        }
+        pub fn invalid[T](value T) Text {
+            let Output = comptime { selected[T]() }
+            value.display()
+        }
+        """)
+    rejects("""
+        fn selected[T]() type {
+            if T == Int { Int } else { Bool }
+        }
+        pub fn invalid[T]() Int
+        ensures result > 0
+        {
+            let Output = comptime { selected[T]() }
+            comptime if Output == Int { 0 } else { 1 }
+        }
+        """)
+}
+
+test fn dependent_type_computations_recheck_changed_helpers_after_cache_restore() {
+    let app = """
+        import choices.selected
+        pub fn pick[T](value T) Int {
+            let Output = comptime { selected[T]() }
+            discard value
+            comptime if T == Int {
+                let output Output = 1
+                output
+            } else {
+                0
+            }
+        }
+        fn main() {
+            assert pick(7) == 1
+        }
+        """
+    let helper = """
+        pub fn selected[T]() type {
+            if T == Int { Int } else { Bool }
+        }
+        """
+    let files = source_files(app)
+    push(files, source_file("choices", helper, false))
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    set(files, 1, source_file("choices", """
+        pub fn selected[T]() type {
+            if T == Int { Text } else { Bool }
+        }
+        """, false))
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), restored) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
