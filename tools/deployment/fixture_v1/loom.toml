@@ -1,2 +1,5 @@
 [module]
 name = "migration_v1"
+
+[dependencies.deployment]
+path = ".."

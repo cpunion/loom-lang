@@ -412,6 +412,8 @@ and arbitrary package/import-graph changes remain open.
 
 The [SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md)
 executes an offline orders upgrade, data-preserving downgrade and re-upgrade.
+Receipt-verified v1/v2 clients now read/write SQLite through derived codecs;
+the trial checks constraint rejection and resumed v1 writes across those transitions.
 Append-only events distinguish assumptions from observations; plans bind retry
 inputs, transactional preflights and rehashed artifact receipts.
 Unstarted plans can be explicitly replaced or cancelled without creating a

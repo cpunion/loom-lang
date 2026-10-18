@@ -1,14 +1,5 @@
-type Amount = Int where self >= 0
-
-record Order {
-    id Int
-    amount Amount
-}
+import migration_v1.cli
 
 fn main() {
-    let order = Order {
-        id = 2
-        amount = Amount(1)
-    }
-    assert order.amount >= 0 && order.id == 2
+    cli()
 }

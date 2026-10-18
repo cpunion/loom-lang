@@ -1,0 +1,33 @@
+// Run the exact source application whose artifact the receipt verifies.
+// Exit status plus a count/error checks real typed access, not a schema claim.
+fn application(receipt_path Text, database Text, values List[Text],
+    expected Text, error Text) Result[Bool, Text] {
+    let receipt = read_build_receipt(receipt_path)?
+    let args = [receipt.artifact_path, "/usr/bin/sqlite3", database]
+    var index = 0
+    while index < length(values) {
+        push(args, get(values, index))
+        index = index + 1
+    }
+    match capture_input(args, std.bytes.new()) {
+        Result.Ok(output) => {
+            let success = error == ""
+            assert match output.status {
+                ExitStatus.Exited(code) => code == (if success {
+                        0
+                    } else {
+                        1
+                    })
+                _ => false
+            }
+            assert to_text(output.stdout) == expected
+            assert to_text(output.stderr) == (if success {
+                    ""
+                } else {
+                    concat(error, "\n")
+                })
+            Result.Ok(true)
+        }
+        Result.Err(_) => Result.Err("cannot start built application")
+    }
+}

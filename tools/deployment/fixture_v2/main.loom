@@ -1,23 +1,55 @@
-type Amount = Int where self > 0
+import deployment.fixture.orders
+import deployment.fixture.notes
+import deployment.fixture.report
+import std.process.arguments
+import std.result.Result
+import std.storage.Value
+import std.storage.ValueKind
+import std.storage.ColumnValue
+import std.storage.CodecError
 
-record Order {
+pub type Amount = Int where self > 0
+
+pub record Order {
     id Int
     amount Amount
 }
 
-record Note {
+pub record Note {
     id Int
     body Text
 }
 
+impl ColumnValue for Amount {
+    fn column_kind() ValueKind {
+        ValueKind.Int
+    }
+
+    fn to_column(self Amount) Result[Value, CodecError] {
+        Result.Ok(Value.Int(self))
+    }
+
+    fn from_column(value Value) Result[Amount, CodecError] {
+        match value {
+            Value.Int(number) => match Amount(number) {
+                Result.Ok(checked) => Result.Ok(checked)
+                Result.Err(_) => Result.Err(CodecError.Rejected)
+            }
+            _ => Result.Err(CodecError.Rejected)
+        }
+    }
+}
+
+fn make(id Int, amount Int) Result[Order, Text] {
+    match Amount(amount) {
+        Result.Ok(checked) => Result.Ok(Order {
+                id = id
+                amount = checked
+            })
+        Result.Err(_) => Result.Err("amount must be positive")
+    }
+}
+
 fn main() {
-    let order = Order {
-        id = 1
-        amount = Amount(1)
-    }
-    let note = Note {
-        id = order.id
-        body = "retained"
-    }
-    assert order.amount > 0 && note.id == 1
+    report(orders(arguments(), make, notes[Note]))
 }

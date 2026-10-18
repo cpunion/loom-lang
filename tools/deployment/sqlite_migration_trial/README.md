@@ -24,6 +24,29 @@ resume. The successful retry preserves the v1 positive edit and note, while
 replacing and archiving only the new zero. These are exact assertions for this
 fixed schema and sample rows, not a proof for arbitrary migrations or writers.
 
+The built v1/v2 clients use source-derived `std.storage` codecs and the typed
+SQLite reader/writer; each version's explicit `ColumnValue` implementation checks its
+own Amount constructor. The trial runs the exact receipt-verified executables:
+v1 inserts the original zero amounts, v2 refuses those rows, migration permits
+v2 reads, and both the v2 constructor and migrated database reject zero writes.
+After downgrade, v1 reads and inserts a new zero; v2 refuses it until re-upgrade.
+Retained notes and intervening writes are still checked by the existing trial.
+The hotfix client reuses v1's actual entry point, but hotfix inspection remains
+`Unproven`; neither shared source nor these samples grant compatibility proof.
+
+Each client prints the number of orders, with optional insertion arguments:
+
+```sh
+"$migration_dir/v1" /usr/bin/sqlite3 "$migration_dir/success.sqlite"
+"$migration_dir/v2" /usr/bin/sqlite3 "$migration_dir/success.sqlite"
+# On this disposable database, insert a positive order and print the new count:
+"$migration_dir/v2" /usr/bin/sqlite3 "$migration_dir/success.sqlite" 10 5
+```
+
+These are explicit single-process fixture operations; writers must stop while
+the deployment tool changes versions. Typed reads and preflight queries are not
+an online coexistence protocol, a schema proof, or permission to deploy.
+
 The ordinary [`orders_migration`](../orders_migration/plan.loom) Loom module
 declares a typed `SqliteMigrationPackage`; the trial instantiates it twice with
 different package IDs and replacement values; the second reuses retained data
