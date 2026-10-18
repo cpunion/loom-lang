@@ -1,0 +1,234 @@
+import std.result.Result
+import std.option.Option
+import std.net.http.Header
+import std.net.http.Response
+import std.net.http.Limits
+import std.net.http.ProtocolError
+import std.net.http.header_named
+import std.net.http.url.Url
+import std.net.http.url.ParseError
+import std.net.http.url.parse
+import std.net.tcp.TcpError
+import std.net.tls.TlsError
+import std.net.tls.Trust
+import std.net.tls.Identity
+import std.net.tls.ClientOptions
+import std.net.http.encode_request
+import std.net.http.reader
+import std.net.http.read_response
+import std.net.http.ReadError
+import std.net.tcp.open
+import std.net.tcp.detach
+import std.net.tcp.close_stream
+import std.net.tcp.abort
+import std.net.tcp.read
+import std.net.tcp.write_bytes
+import std.net.tls.open
+import std.net.tls.detach
+import std.net.tls.close
+import std.net.tls.read
+import std.net.tls.write_bytes
+import std.net.tls.protocol
+import std.net.http.Request
+import std.net.http.limits
+import std.bytes.new
+import std.bytes.clone
+import std.text.to_bytes
+import std.list.new
+import std.list.length
+import std.list.push
+import std.task.Outcome
+import std.task.cancel
+import std.task.deadline.at
+import std.time.monotonic_ns
+
+pub enum TransportError {
+    Tcp(TcpError)
+    Tls(TlsError)
+}
+
+pub enum Error {
+    Options
+    Url(ParseError)
+    Insecure
+    Unsupported
+    Protocol(ProtocolError)
+    Transport(TransportError)
+    Timeout
+}
+
+pub record Request {
+    method Text
+    url Text
+    headers List[Header]
+    body Bytes
+}
+
+pub record Options {
+    trust Trust
+    identity Option[Identity]
+    limits Limits
+    timeout_ns Int
+    max_informational Int
+    allow_http Bool
+}
+
+pub fn options() Options {
+    Options {
+        trust = Trust.Builtin
+        identity = Option.None
+        limits = std.net.http.limits()
+        timeout_ns = 30000000000
+        max_informational = 8
+        allow_http = false
+    }
+}
+
+pub fn request(method Text, url Text) std.net.http.client.Request {
+    std.net.http.client.Request {
+        method = method
+        url = url
+        headers = std.list.new[Header]()
+        body = std.bytes.new()
+    }
+}
+
+pub fn get(url Text) Task[Result[Response, Error]] {
+    send(request("GET", url), options())
+}
+
+pub fn get(url Text, configuration Options) Task[Result[Response, Error]] {
+    send(request("GET", url), configuration)
+}
+
+record Prepared {
+    endpoint Url
+    method Text
+    wire Bytes
+    limits Limits
+    tls ClientOptions
+    max_informational Int
+}
+
+fn tls_options(configuration Options) ClientOptions {
+    ClientOptions {
+        trust = match configuration.trust {
+            Trust.Builtin => Trust.Builtin
+            Trust.Certificates(bytes) => Trust.Certificates(clone(bytes))
+        }
+        identity = match configuration.identity {
+            Option.None => Option.None
+            Option.Some(value) => Option.Some(Identity {
+                    certificates = clone(value.certificates)
+                    private_key = clone(value.private_key)
+                })
+        }
+        protocols = ["http/1.1"]
+    }
+}
+
+fn prepare(value std.net.http.client.Request, configuration Options) Result[Prepared, Error] {
+    let maximum = configuration.limits
+    if configuration.timeout_ns < 0 || configuration.max_informational < 0 ||
+    maximum.line_bytes < 0 || maximum.metadata_bytes < 0 || maximum.body_bytes < 0 {
+        return Result.Err(Error.Options)
+    }
+    let endpoint = match parse(value.url) {
+        Result.Ok(parsed) => parsed
+        Result.Err(error) => {
+            return Result.Err(Error.Url(error))
+        }
+    }
+    if !endpoint.secure && !configuration.allow_http {
+        return Result.Err(Error.Insecure)
+    }
+    if value.method == "CONNECT" {
+        return Result.Err(Error.Unsupported)
+    }
+    let headers = std.list.new[Header]()
+    var index = 0
+    while index < length(value.headers) {
+        let entry = value.headers[index]
+        if header_named(entry, "Host") || header_named(entry, "Connection") ||
+        header_named(entry, "Upgrade") || header_named(entry, "Proxy-Authorization") {
+            return Result.Err(Error.Unsupported)
+        }
+        if !endpoint.secure && (header_named(entry, "Authorization") || header_named(entry, "Cookie")) {
+            return Result.Err(Error.Insecure)
+        }
+        push(headers, entry)
+        index = index + 1
+    }
+    push(headers, Header {
+            name = "Host"
+            value = to_bytes(endpoint.authority)
+        })
+    push(headers, Header {
+            name = "Connection"
+            value = to_bytes("close")
+        })
+    let wire = match encode_request(std.net.http.Request {
+            method = value.method
+            target = endpoint.target
+            headers = headers
+            body = value.body
+            trailers = std.list.new[Header]()
+        }, maximum) {
+        Result.Ok(bytes) => bytes
+        Result.Err(error) => {
+            return Result.Err(Error.Protocol(error))
+        }
+    }
+    Result.Ok(Prepared {
+            endpoint = endpoint
+            method = value.method
+            wire = wire
+            limits = maximum
+            tls = tls_options(configuration)
+            max_informational = configuration.max_informational
+        })
+}
+
+async fn failed(error Error) Result[Response, Error] {
+    Result.Err(error)
+}
+
+intrinsic fn fault_text(message Text)
+
+async fn bounded(prepared Prepared, deadline Int) Result[Response, Error] {
+    if monotonic_ns() >= deadline {
+        return Result.Err(Error.Timeout)
+    }
+    match at(exchange(prepared), deadline).await {
+        Outcome.Completed(value) => value
+        Outcome.Cancelled => Result.Err(Error.Timeout)
+        Outcome.Faulted(error) => {
+            fault_text(error.message)
+        }
+    }
+}
+
+pub fn send(value std.net.http.client.Request) Task[Result[Response, Error]] {
+    send(value, options())
+}
+
+// Encode and detach caller buffers before creating the hot network Task.
+pub fn send(value std.net.http.client.Request, configuration Options) Task[Result[Response, Error]] {
+    let prepared = match prepare(value, configuration) {
+        Result.Ok(value) => value
+        Result.Err(error) => {
+            return failed(error)
+        }
+    }
+    if configuration.timeout_ns == 0 {
+        return failed(Error.Timeout)
+    }
+    let now = monotonic_ns()
+    let remaining = 9223372036854775807 - now
+    let deadline = if configuration.timeout_ns > remaining {
+        9223372036854775807
+    } else {
+        now + configuration.timeout_ns
+    }
+    bounded(prepared, deadline)
+}

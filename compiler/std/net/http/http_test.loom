@@ -360,3 +360,12 @@ test async fn http_encoders_snapshot_payloads_and_roundtrip_chunked_trailers() {
         _ => false
     }
 }
+
+test fn public_header_name_comparison_folds_both_arguments() {
+    let entry = Header {
+        name = "hOsT"
+        value = std.bytes.new()
+    }
+    assert header_named(entry, "HOST") && header_named(entry, "host") && header_named(entry, "Host")
+    assert !header_named(entry, "Hosts")
+}

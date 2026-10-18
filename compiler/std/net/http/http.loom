@@ -103,7 +103,7 @@ fn named(value Text, expected Text) Bool {
     }
     var index = 0
     while index < std.text.length(value) {
-        if lower(byte(value, index)) != byte(expected, index) {
+        if lower(byte(value, index)) != lower(byte(expected, index)) {
             return false
         }
         index = index + 1
@@ -146,6 +146,11 @@ fn valid_field(value Bytes) Bool {
         index = index + 1
     }
     true
+}
+
+// ASCII case-insensitive comparison, including a caller-provided expected name.
+pub fn header_named(value Header, expected Text) Bool {
+    named(value.name, expected)
 }
 
 // This codec does not interpret field-specific syntax, authorities or URIs.
