@@ -1,0 +1,32 @@
+import std.net.tcp.connect
+import std.net.tcp.close_stream
+import std.net.tcp.read
+import std.task.cancel
+import std.task.deadline.after_ns
+import std.task.Outcome
+
+async fn cancelled_accept(listener Listener, options ServerOptions, address Text) {
+    let pending = accept(listener, options)
+    let connected = std.net.tcp.connect(address).await
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    let peer = match connected {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close_stream(peer)
+    }
+    // No ClientHello is sent. The accepting task must close any socket acquired
+    // by its child, even when the handshake has not claimed that result yet.
+    assert match after_ns(std.net.tcp.read(peer, new(), 1), 1000000000).await {
+        Outcome.Completed(Result.Ok(count)) => count == 0
+        Outcome.Completed(Result.Err(_)) => true
+        _ => false
+    }
+}

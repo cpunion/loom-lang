@@ -2,6 +2,9 @@ import std.task.cancel
 import std.task.Outcome
 import std.net.tcp.listen
 import std.net.tcp.close_listener
+import std.net.tcp.local_port
+import std.net.tcp.accept
+import std.task.deadline.after_ns
 
 test async fn configuration_errors_do_not_open_a_transport() {
     let options = ClientOptions {
@@ -72,4 +75,72 @@ test async fn cancellation_drains_handshake_and_closes_the_transport() {
         Result.Ok(count) => count == 0
         Result.Err(_) => false
     }
+}
+
+async fn cancelled_acquisition(hostname Bool) {
+    let listener = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close_listener(listener)
+    }
+    let address = match std.net.tcp.local_address(listener) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    let port = match std.net.tcp.local_port(listener) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    let connecting = if hostname {
+        connect("localhost", port, default_client())
+    } else {
+        connect(address, "localhost", default_client())
+    }
+    let accepted = std.net.tcp.accept(listener).await
+    assert match cancel(connecting) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    let peer = match accepted {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard std.net.tcp.close_stream(peer)
+    }
+    // Cancel without first receiving ClientHello: the transport may be in a
+    // completed child payload, not yet registered by the handshake Task.
+    var ended = false
+    while !ended {
+        match after_ns(std.net.tcp.read(peer, std.bytes.new(), 16384), 1000000000).await {
+            Outcome.Completed(Result.Ok(count)) => {
+                ended = count == 0
+            }
+            Outcome.Completed(Result.Err(_)) => {
+                ended = true
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+}
+
+test async fn cancellation_before_handshake_registration_closes_numeric_and_hostname_transports() {
+    cancelled_acquisition(false).await
+    cancelled_acquisition(true).await
 }

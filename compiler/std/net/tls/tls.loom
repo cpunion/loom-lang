@@ -1,8 +1,9 @@
 import std.net.tcp.Stream
 import std.net.tcp.Listener
 import std.net.tcp.TcpError
-import std.net.tcp.connect
-import std.net.tcp.accept
+import std.net.tcp.open
+import std.net.tcp.accept_owned
+import std.net.tcp.detach
 import std.net.tcp.read
 import std.net.tcp.write_bytes
 import std.net.tcp.close_stream
@@ -287,7 +288,18 @@ pub async fn connect(host Text, port Int, options ClientOptions) Result[Connecti
             discard tls_release(token)
         }
     }
-    let raw = transport(std.net.tcp.connect(host, port).await)?
+    scoped acquired = match std.net.tcp.open(host, port).await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(TlsError.Transport)
+        }
+    }
+    let raw = transport(detach(acquired))?
+    defer {
+        if !published {
+            discard close_stream(raw)
+        }
+    }
     let outcome = handshake(raw, token).await
     published = match outcome {
         Result.Ok(_) => true
@@ -308,7 +320,18 @@ pub async fn connect(address Text, name Text, options ClientOptions) Result[Conn
             discard tls_release(token)
         }
     }
-    let raw = transport(std.net.tcp.connect(address).await)?
+    scoped acquired = match std.net.tcp.open(address).await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(TlsError.Transport)
+        }
+    }
+    let raw = transport(detach(acquired))?
+    defer {
+        if !published {
+            discard close_stream(raw)
+        }
+    }
     let outcome = handshake(raw, token).await
     published = match outcome {
         Result.Ok(_) => true
@@ -331,7 +354,18 @@ pub async fn accept(listener Listener, options ServerOptions) Result[Connection,
             discard tls_release(token)
         }
     }
-    let raw = transport(std.net.tcp.accept(listener).await)?
+    scoped acquired = match accept_owned(listener).await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(TlsError.Transport)
+        }
+    }
+    let raw = transport(detach(acquired))?
+    defer {
+        if !published {
+            discard close_stream(raw)
+        }
+    }
     let outcome = handshake(raw, token).await
     published = match outcome {
         Result.Ok(_) => true

@@ -118,3 +118,44 @@ test async fn cancellation_between_child_completion_and_handoff_closes_the_socke
         _ => false
     }
 }
+
+async fn detached_hostname_connection() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let raw = {
+        scoped connection = open("localhost", local_port(listener)?).await?
+        let identity = detach(connection)?
+        assert match detach(connection) {
+            Result.Err(error) => error == TcpError.Close
+            _ => false
+        }
+        assert match write_bytes(connection, to_bytes("inactive")).await {
+            Result.Err(error) => error == TcpError.Close
+            _ => false
+        }
+        discard close(connection)?
+        identity
+    }
+    defer {
+        discard close_stream(raw)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    assert write_bytes(raw, to_bytes("manual")).await? == 6
+    discard shutdown_write(raw)?
+    let bytes = new()
+    while read(server, bytes, 8).await? > 0 {
+    }
+    Result.Ok(to_text(bytes) == "manual")
+}
+
+test async fn hostname_connections_can_explicitly_transfer_to_manual_management() {
+    assert match detached_hostname_connection().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}

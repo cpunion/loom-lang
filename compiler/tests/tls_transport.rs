@@ -92,23 +92,35 @@ fn tls_roundtrip_verifies_peers_and_survives_moving_gc() {
     let executable = common::executable(directory.path(), "tls");
     let tests = common::executable(directory.path(), "tls-tests");
     success(&common::loom(&["check", PACKAGE]));
-    success(&common::loom(&[
-        "test",
-        "compiler/std/net/tls",
-        "--no-run",
-        "--output",
-        tests.to_str().unwrap(),
-    ]));
-    success(&Command::new(&tests).output().unwrap());
-    success(&common::run_tasks(&tests));
     for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "test",
+                "compiler/std/net/tls",
+                "--no-run",
+                "--output",
+                tests.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        success(&common::run_task_command(&mut Command::new(&tests)));
+        success(&common::run_tasks(&tests));
         success(
             &common::command(&["build", PACKAGE, "--output", executable.to_str().unwrap()])
                 .env("LOOM_OPT_LEVEL", level)
                 .output()
                 .unwrap(),
         );
-        for mode in ["ok", "duplex", "wrong-name", "untrusted", "expired"] {
+        for mode in [
+            "ok",
+            "duplex",
+            "wrong-name",
+            "untrusted",
+            "expired",
+            "cancel-accept",
+        ] {
             let output = common::run_task_command(
                 Command::new(&executable)
                     .current_dir(directory.path())
@@ -128,10 +140,10 @@ fn tls_roundtrip_verifies_peers_and_survives_moving_gc() {
             success(&output);
             assert_eq!(
                 output.stdout,
-                if mode == "ok" || mode == "duplex" {
-                    b"TLS roundtrip\n".as_slice()
-                } else {
-                    b"peer rejected\n".as_slice()
+                match mode {
+                    "ok" | "duplex" => b"TLS roundtrip\n".as_slice(),
+                    "cancel-accept" => b"transport closed\n".as_slice(),
+                    _ => b"peer rejected\n".as_slice(),
                 }
             );
         }

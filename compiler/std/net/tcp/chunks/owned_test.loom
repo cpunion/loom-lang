@@ -35,7 +35,7 @@ test async fn accepted_owned_chunks_keep_buffers_and_close_at_scope_exit() {
 }
 
 async fn open_short(address Text) Result[OwnedChunks, TcpError] {
-    open(address, 2).await
+    std.net.tcp.chunks.open(address, 2).await
 }
 
 async fn consume_nothing(address Text) Result[Bool, TcpError] {

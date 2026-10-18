@@ -202,6 +202,11 @@ async fn main() {
             return
         }
     }
+    if mode == "cancel-accept" {
+        cancelled_accept(listener, server_options, address).await
+        discard write_text("transport closed\n")
+        return
+    }
     let payload = loaded(args[4])
     let duplex = mode == "duplex"
     let server = serve(listener, server_options, payload, duplex)
