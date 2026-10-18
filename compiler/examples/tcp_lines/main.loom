@@ -95,4 +95,8 @@ async fn main() {
         Result.Ok(value) => value,
         _ => false
     }
+    assert match owned_trial().await {
+        Result.Ok(value) => value,
+        _ => false
+    }
 }

@@ -74,8 +74,9 @@ An unpulled producer never opens the file, including a zero-item limit. Normal
 EOF and explicit close await worker completion. Early exit, errors, cancellation
 and faults use synchronous fallback close after pending child operations drain;
 cleanup itself cannot suspend. Cancellation of a running OS call still waits
-for completion. This does not add general async acquisition returning MustScope
-values or borrowing Tasks that outlive their call expression.
+for completion. Borrowing Tasks still cannot outlive their call expression.
+For eager asynchronous acquisition, use the
+[owned stream factory overloads](../../stream/README.md#scoped-producers).
 See the [async pipeline](../../../examples/stream_lines/README.md).
 
 See the [line-counting application](../../../examples/file_lines/README.md).

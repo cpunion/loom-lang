@@ -60,6 +60,16 @@ let lines = collect(source).await
 
 `from_iter(create, input)` instead accepts an Iterator factory with the same
 resource bounds. Lifting it does not make synchronous I/O nonblocking.
+Factories can also return `Task[S]` or `Task[Result[S, E]]`, enabling asynchronous
+acquisition and composition through the same adapters:
+
+```loom
+scoped source = take(connect_stream, address, 2).await?
+let values = collect(source).await
+```
+
+Await acquisition before using the adapter. Cancellation drains an in-flight
+factory before consumer cleanup; acquisition itself does not pull the source.
 Wrappers retain MustScope and ordinary nested disposal, allowing further factory
 composition. A factory error creates no owner; `take(..., 0)` still constructs
 and disposes the source without pulling. An eager file factory opens/closes it;
@@ -70,8 +80,8 @@ calls must be directly awaited: `source.next().await` and `collect(source).await
 keep the owner alive until children drain, including cancellation and faults.
 Storing, returning, joining or forwarding a borrowing Task rejects. An existing
 scoped producer also cannot be copied into a returned adapter; use a factory.
-NoSuspend resources still cannot cross suspension. Async acquisition returning
-a MustScope value and general borrow-retaining adapters remain unsupported.
+NoSuspend resources still cannot cross suspension. General borrow-retaining
+adapters remain unsupported.
 See the [file pipeline](../../examples/stream_lines/README.md).
 
 [TCP chunks](../net/tcp/chunks/README.md) borrow an explicitly closed socket.
@@ -80,6 +90,10 @@ messages with a four-byte length prefix, including scoped producer factories.
 [`lines`](lines/README.md) assembles bounded UTF-8 lines from arbitrary byte
 chunks, including CRLF and code points split across chunks. It stops at each
 line boundary and exhausts on errors or cancellation rather than replaying input.
+Both framing adapters accept asynchronous owned factories; the
+[TCP lines example](../../examples/tcp_lines/README.md) composes connection
+acquisition, framing and an early-stop limit without manual socket cleanup in
+the consumer.
 [File chunks](../file/chunks/README.md) own a lazy file and yield bounded binary
 buffers without text decoding or prefetching.
 Synchronous algorithms should keep using `std.iter`, avoiding a Task per item.
