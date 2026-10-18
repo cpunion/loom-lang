@@ -14,3 +14,27 @@ pub record Predicate {
 // types return None. Only the direct predicate is described, not helper bodies
 // or inherited/base constraints; use std.reflect.describe for the base shape.
 pub intrinsic fn describe[T]() Option[Predicate]
+
+// Compile-time type weakening, using the ordinary checked-construction rules.
+// False means unproved, including unsupported reasoning, not incompatibility.
+pub intrinsic fn implies[From, To]() Bool
+
+pub record Weakening[From, To] {
+    state Checked[From, To]
+}
+
+record Checked[From, To] {
+}
+
+// Both endpoints are part of the private state's nominal identity. A witness
+// from another pair cannot manufacture evidence for an unproved conversion.
+pub fn weakening[From, To]() Option[Weakening[From, To]] {
+    comptime if implies[From, To]() {
+        Option.Some(Weakening[From, To] {
+                state = Checked[From, To] {
+                }
+            })
+    } else {
+        Option.None
+    }
+}

@@ -1,0 +1,42 @@
+import std.reflect.predicates.implies
+import std.reflect.predicates.weakening
+import std.option.Option
+
+type Nonnegative = Int where self >= 0
+
+type SmallPositive = Int where self > 0 && self < 100
+
+type AllIntegers = Int where true
+
+type ReflexiveFloat = Float where self == self
+
+fn relation[From, To]() Bool {
+    implies[From, To]()
+}
+
+fn weakening_trial() {
+    assert implies[Positive, Nonnegative]()
+    assert implies[SmallPositive, Positive]()
+    assert implies[Positive, Int]() && implies[Int, AllIntegers]()
+    assert !implies[Nonnegative, Positive]() && !implies[Int, Float]()
+    assert !implies[Float, ReflexiveFloat]()
+    assert match weakening[Positive, Nonnegative]() {
+        Option.Some(proof) => {
+            discard proof
+            true
+        }
+        Option.None => false
+    }
+    assert match weakening[Nonnegative, Positive]() {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert comptime {
+        relation[SmallPositive, Nonnegative]()
+    }
+    comptime if implies[Nonnegative, Positive]() {
+        unselected_migration_branch()
+    } else {
+        assert true
+    }
+}

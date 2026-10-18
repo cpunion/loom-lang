@@ -110,3 +110,60 @@ fn main() {
     assert!(!lowered.contains("@loom_rt_"));
     success(&Command::new(&executable).output().unwrap());
 }
+
+#[test]
+fn weakening_witnesses_cannot_be_forged_or_rebound() {
+    let temporary = tempfile::tempdir().unwrap();
+    let package = temporary.path();
+    let prefix = r#"
+import std.reflect.predicates.Weakening
+import std.reflect.predicates.weakening
+import std.reflect.from_fields
+import std.option.Option
+
+type Positive = Int where self > 0
+type Nonnegative = Int where self >= 0
+
+"#;
+    for (body, expected) in [
+        (
+            "fn main() { let forged = Weakening[Nonnegative, Positive] {} }",
+            "initialize every record field",
+        ),
+        (
+            r#"
+fn main() {
+    match weakening[Positive, Nonnegative]() {
+        Option.Some(genuine) => {
+            let forged = Weakening[Nonnegative, Positive] { state = genuine.state }
+        }
+        Option.None => {}
+    }
+}
+"#,
+            "expected std.reflect.predicates.Checked[Nonnegative, Positive], found std.reflect.predicates.Checked[Positive, Nonnegative]",
+        ),
+        (
+            r#"
+fn main() {
+    match weakening[Positive, Nonnegative]() {
+        Option.Some(genuine) => {
+            let forged Weakening[Nonnegative, Positive] = from_fields((genuine.state,))
+        }
+        Option.None => {}
+    }
+}
+"#,
+            "expected std.reflect.predicates.Checked[Nonnegative, Positive], found std.reflect.predicates.Checked[Positive, Nonnegative]",
+        ),
+    ] {
+        fs::write(package.join("main.loom"), format!("{prefix}{body}\n")).unwrap();
+        let output = common::command(&["check"]).arg(package).output().unwrap();
+        assert!(!output.status.success(), "forged witness accepted: {body}");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.contains(expected),
+            "unexpected rejection: {diagnostic}"
+        );
+    }
+}

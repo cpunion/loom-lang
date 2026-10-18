@@ -4126,6 +4126,12 @@ scope, not new access permissions. Helper bodies and inherited predicates are no
 expanded, and syntax data is not proof evidence. Generated refinements use the
 same path. Mutating a returned AST cannot change a type's constraint.
 
+`std.reflect.predicates.implies[From, To]()` reuses checked-construction proof
+rules to query refinement weakening over the same base type. True proves the
+conversion needs no target check; false means unproved, not incompatible.
+`weakening[From, To]()` optionally returns an opaque source-written witness bound
+to both endpoint types. Neither query is a database/application compatibility proof.
+
 Descriptors have fresh mutable Lists on each runtime evaluation; ordinary
 copies share those Lists. `comptime` can consume or return them, and a fully
 compile-time query leaves no descriptor allocation in native code. There is no

@@ -1,7 +1,7 @@
 fn predicate_intrinsic(env Environment, owner Int) Bool {
     let item = symbol(env, owner)
     let file = get(env.source.files, item.file)
-    item.name == "describe" && has(item.node, NodeKind.Intrinsic) && file.trusted_std &&
+    (item.name == "describe" || item.name == "implies") && has(item.node, NodeKind.Intrinsic) && file.trusted_std &&
     package_label(env.source.modules, env.source.packages, file.package) == "std.reflect.predicates"
 }
 

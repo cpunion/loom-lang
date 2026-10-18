@@ -1,0 +1,126 @@
+fn implication_program(text Text) Result[std.loom.typed.Program, Failure] {
+    let files = source_files(concat("""
+        import std.reflect.predicates.implies
+        import std.result.Result
+        import std.result.ConstraintError
+
+        """, text))
+    push(files, source_file("std.reflect.predicates", "pub intrinsic fn implies[From, To]() Bool", true))
+    push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }\npub enum ConstraintError { Rejected }", true))
+    checked(files)
+}
+
+fn implication_accepts(text Text) {
+    match implication_program(text) {
+        Result.Ok(_) => {
+        }
+        Result.Err(failed) => {
+            discard std.io.write_error(failed.diagnostic.message)
+            assert false
+        }
+    }
+}
+
+test fn implication_queries_use_type_guarantees_not_caller_value_facts() {
+    implication_accepts("""
+        type Positive = Int where self > 0
+        type Nonnegative = Int where self >= 0
+        type Bounded = Int where self >= 1 && self <= 10
+        type Whole = Int where true
+        type Reflexive = Float where self == self
+
+        fn relation[From, To]() Bool {
+            implies[From, To]()
+        }
+
+        fn guarded(value Int) {
+            if value > 0 {
+                discard comptime {
+                    assert !implies[Int, Positive]()
+                    true
+                }
+            }
+        }
+
+        fn main() {
+            discard comptime {
+                assert relation[Positive, Nonnegative]()
+                assert implies[Bounded, Positive]()
+                assert implies[Positive, Int]() && implies[Int, Whole]()
+                assert !implies[Nonnegative, Positive]() && !implies[Int, Float]()
+                assert !implies[Float, Reflexive]()
+                true
+            }
+            guarded(1)
+        }
+        """)
+}
+
+test fn implication_queries_keep_overflow_eager_evaluation_and_termination_obligations() {
+    implication_accepts("""
+        fn admitted(value Int) Bool requires value > 0 { true }
+        fn eager(first Bool, second Bool) Bool { first || second }
+        fn recursive(value Int) Bool ensures result { recursive(value) }
+        type Whole = Int where true
+        type Zero = Int where self == 0
+        type Requirement = Int where admitted(self)
+        type Overflow = Int where self + 1 > self
+        type Eager = Int where eager(self == 0, 10 / self > 0)
+        type Recursive = Int where recursive(self)
+
+        fn main() {
+            discard comptime {
+                assert !implies[Whole, Requirement]()
+                assert !implies[Whole, Overflow]()
+                assert !implies[Zero, Eager]()
+                assert !implies[Whole, Recursive]()
+                true
+            }
+        }
+        """)
+}
+
+test fn implication_queries_reject_recursive_type_definitions_and_forged_signatures() {
+    assert match implication_program("""
+        type Cycle = Int where implies[Cycle, Int]()
+        fn main() {}
+        """) {
+        Result.Err(_) => true
+        _ => false
+    }
+    let files = source_files("import std.reflect.predicates.implies\nfn main() { discard implies[Int, Int]() }")
+    push(files, source_file("std.reflect.predicates", "pub intrinsic fn implies[A, B]() Int", true))
+    assert match checked(files) {
+        Result.Err(_) => true
+        _ => false
+    }
+}
+
+test fn implication_queries_bind_private_helpers_without_retaining_native_roots() {
+    let files = source_files("""
+        import source.Left
+        import target.Right
+        import std.reflect.predicates.implies
+        fn valid(value Int) Bool { false }
+        fn main() {
+            discard comptime {
+                assert implies[Left, Right]()
+                assert !implies[Right, Left]()
+                true
+            }
+        }
+        """)
+    push(files, source_file("source", "pub type Left = Int where valid(self)\nfn valid(value Int) Bool { value > 0 }", false))
+    push(files, source_file("target", "pub type Right = Int where valid(self)\nfn valid(value Int) Bool { value >= 0 }", false))
+    push(files, source_file("std.reflect.predicates", "pub intrinsic fn implies[From, To]() Bool", true))
+    push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }\npub enum ConstraintError { Rejected }", true))
+    match checked(files) {
+        Result.Ok(program) => {
+            assert length(program.functions) == 1
+        }
+        Result.Err(failed) => {
+            show_failure(fixture_project(files), failed)
+            assert false
+        }
+    }
+}

@@ -485,8 +485,12 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
             })
     } else if reflection_intrinsic(env, current.symbol) {
         if predicate_intrinsic(env, current.symbol) {
-            discard predicate_model(env, current.symbol, current.result, item.node)?
-            runtime(1, new[Int](), current.result)
+            if item.name == "implies" {
+                runtime(2, new[Int](), 2)
+            } else {
+                discard predicate_model(env, current.symbol, current.result, item.node)?
+                runtime(1, new[Int](), current.result)
+            }
         } else if item.name == "from_fields" {
             if length(current.compile_time) != 0 {
                 return Result.Err(failure(env, current.symbol, item.node, "from_fields requires one runtime tuple argument"))
