@@ -1,0 +1,130 @@
+import deployment.read_sqlite_rows
+import deployment.insert_sqlite_rows
+import deployment.SqliteRowError
+import std.int.parse
+import std.int.to_text
+import std.io.write_text
+import std.io.write_error
+import std.list.get
+import std.list.length
+import std.process.exit_code
+import std.result.Result
+import std.storage.Column
+import std.storage.Table
+import std.storage.ValueKind
+import std.storage.CodecError
+import std.storage.PreparedRowCodec
+import std.storage.record_codec
+import std.text.concat
+
+fn column(id Text, kind ValueKind) Column {
+    Column {
+        id = id
+        physical_name = id
+        kind = kind
+        nullable = false
+    }
+}
+
+fn order_codec[T]() Result[PreparedRowCodec[T], CodecError] {
+    record_codec[T](Table {
+            id = "orders"
+            physical_name = "orders"
+            columns = [column("id", ValueKind.Int), column("amount", ValueKind.Int)]
+        })
+}
+
+fn valid_args(args List[Text]) Bool {
+    length(args) == 3 || length(args) == 5
+}
+
+// Real fixture clients share transport, not nominal types or constraints.
+// Writers are stopped during migration; these reads cannot authorize one.
+pub fn orders[T](args List[Text], make fn(Int, Int) Result[T, Text]) Result[Int, Text] {
+    orders(args, make, fn(args List[Text]) Result[Bool, Text] {
+            discard args
+            Result.Ok(true)
+        })
+}
+
+pub fn orders[T](args List[Text], make fn(Int, Int) Result[T, Text],
+    inspect fn(List[Text]) Result[Bool, Text]) Result[Int, Text] {
+    if !valid_args(args) {
+        return Result.Err("usage: app <sqlite-tool> <database> [id amount]")
+    }
+    let codec = match order_codec[T]() {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("invalid application storage mapping")
+        }
+    }
+    let before = match read_sqlite_rows(get(args, 1), get(args, 2), codec) {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            return Result.Err("stored orders do not match this application")
+        }
+    }
+    if !inspect(args)? {
+        return Result.Err("application inspection rejected")
+    }
+    if length(args) == 3 {
+        return Result.Ok(length(before))
+    }
+    let id, amount = match (parse(get(args, 3)), parse(get(args, 4))) {
+        (Result.Ok(id), Result.Ok(amount)) => (id, amount)
+        _ => {
+            return Result.Err("id and amount must be integers")
+        }
+    }
+    let value = make(id, amount)?
+    match insert_sqlite_rows(get(args, 1), get(args, 2), codec, [value]) {
+        Result.Err(SqliteRowError.WriteOutcomeUnknown) => {
+            return Result.Err("write not acknowledged; inspect the database before retrying")
+        }
+        Result.Err(_) => {
+            return Result.Err("order encoding failed")
+        }
+        Result.Ok(_) => {
+        }
+    }
+    match read_sqlite_rows(get(args, 1), get(args, 2), codec) {
+        Result.Ok(values) => Result.Ok(length(values))
+        Result.Err(_) => Result.Err("stored orders do not match this application")
+    }
+}
+
+pub fn notes[T](args List[Text]) Result[Bool, Text] {
+    if !valid_args(args) {
+        return Result.Err("usage: app <sqlite-tool> <database> [id amount]")
+    }
+    let codec = match record_codec[T](Table {
+            id = "notes"
+            physical_name = "notes"
+            columns = [column("id", ValueKind.Int), column("body", ValueKind.Text)]
+        }) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("invalid application notes mapping")
+        }
+    }
+    match read_sqlite_rows(get(args, 1), get(args, 2), codec) {
+        Result.Ok(_) => Result.Ok(true)
+        Result.Err(_) => Result.Err("stored notes do not match this application")
+    }
+}
+
+pub fn report(outcome Result[Int, Text]) {
+    match outcome {
+        Result.Ok(count) => match write_text(concat(to_text(count), "\n")) {
+            Result.Ok(_) => {
+            }
+            Result.Err(_) => {
+                exit_code(1)
+            }
+        }
+        Result.Err(message) => {
+            discard write_error(concat(message, "\n"))
+            exit_code(1)
+        }
+    }
+}

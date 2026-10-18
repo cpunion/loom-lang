@@ -1,2 +1,5 @@
 [module]
 name = "migration_v1_hotfix"
+
+[dependencies.migration_v1]
+path = "../fixture_v1"
