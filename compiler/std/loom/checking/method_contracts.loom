@@ -43,20 +43,10 @@ fn method_contract_context(context Context, declaration Int) Result[Context, Fai
         requirements = current.requirements
     }
     var aliases = Context {
-        lexical = context.lexical
-        env = context.env
         signature = declared
         arguments = arguments
-        constants = context.constants
-        locals = context.locals
-        bindings = context.bindings
         head = -1
-        cleanups = context.cleanups
-        cleanup_head = context.cleanup_head
-        loop_boundary = context.loop_boundary
-        facts = context.facts
-        fact_head = context.fact_head
-        emit = context.emit
+        ..context
     }
     let source = group(implementation, NodeKind.Parameters)
     let target = group(prototype, NodeKind.Parameters)

@@ -77,15 +77,14 @@ fn staging(context Context, node Node) Result[Context, Failure] {
         return Result.Err(error(context, node, "compile-time staging depth exceeded; check for a dependency cycle"))
     }
     // Compile-time call targets never enter the runtime reachability queue.
-    let env = Environment { inputs = context.env.inputs static_aliases = context.env.static_aliases packs = context.env.packs closures = context.env.closures source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true
-        has_refinements = context.env.has_refinements expanding_helpers = context.env.expanding_helpers signatures = context.env.signatures
-        pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations
-        validations = context.env.validations
-        concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
-        associations = context.env.associations association_depth = context.env.association_depth
-        family_applications = context.env.family_applications promise_path = context.env.promise_path promise_depth = context.env.promise_depth
-        dynamic_interfaces = context.env.dynamic_interfaces
-        witnesses = new[Witness]() uses = new[SlotUse]() }
+    let env = Environment {
+        expand_data = true
+        pending = new[Instance]()
+        stage_depth = context.env.stage_depth + 1
+        witnesses = new[Witness]()
+        uses = new[SlotUse]()
+        ..context.env
+    }
     let locals = new[Local]()
     var index = 0
     while index < length(context.locals) { push(locals, get(context.locals, index))
@@ -305,10 +304,10 @@ fn compile_time(context Context, node Node, expected Int, enforce Bool) Result[E
     let type_dependent = abstract_context(context) && depends_on_type(context, source)
     if type_dependent || unknown_static(context, source) {
         let stage = staging(context, node)?
-        let validation = Context { lexical = stage.lexical env = stage.env signature = stage.signature arguments = stage.arguments
-            constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head
-            cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
-            facts = stage.facts fact_head = stage.fact_head emit = false }
+        let validation = Context {
+            emit = false
+            ..stage
+        }
         let value = block(validation, source, expected, enforce)?
         discard isolated(context, node, value, length(context.locals))?
         // Syntax may mention a shadowed static name. Only checked IR can show
