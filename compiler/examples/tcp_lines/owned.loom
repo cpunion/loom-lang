@@ -4,19 +4,20 @@ import std.stream.take
 import std.stream.collect
 import std.task.all
 import std.net.tcp.Listener
-import std.net.tcp.chunks.Chunks
+import std.net.tcp.chunks.OwnedChunks
+import std.net.tcp.chunks.open
+import std.net.tcp.read
 import std.stream.lines.Lines
 import std.list.length
 
 record ConnectionInput {
     address Text
-    // Successful acquisitions, closes, and bytes delivered to the adapter.
+    // Factory starts, adapter disposals, and delivered bytes (test observations).
     counts List[Int]
 }
 
 record ConnectedChunks {
-    connection std.net.tcp.Stream
-    chunks std.net.tcp.chunks.Chunks
+    source OwnedChunks
     counts List[Int]
 }
 
@@ -25,10 +26,7 @@ impl MustScope for ConnectedChunks {
 
 impl Dispose for ConnectedChunks {
     fn dispose(self ConnectedChunks) {
-        assert match close_stream(self.connection) {
-            Result.Ok(_) => true
-            Result.Err(_) => false
-        }
+        // Nested disposal closes source after this observation hook.
         self.counts[1] = self.counts[1] + 1
     }
 }
@@ -37,7 +35,7 @@ impl std.stream.Stream for ConnectedChunks {
     type Item = Result[Bytes, TcpError]
 
     async fn next(self ConnectedChunks) Option[Result[Bytes, TcpError]] {
-        let item = self.chunks.next().await
+        let item = self.source.next().await
         match item {
             Option.Some(Result.Ok(bytes)) => {
                 self.counts[2] = self.counts[2] + length(bytes)
@@ -50,11 +48,9 @@ impl std.stream.Stream for ConnectedChunks {
 }
 
 async fn open_connection(input ConnectionInput) Result[ConnectedChunks, TcpError] {
-    let connection = connect(input.address).await?
     input.counts[0] = input.counts[0] + 1
     Result.Ok(ConnectedChunks {
-            connection = connection
-            chunks = read(connection, 2)
+            source = open(input.address, 2).await?
             counts = input.counts
         })
 }
@@ -83,7 +79,14 @@ async fn send_owned(listener std.net.tcp.Listener) Result[Int, TcpError] {
     let wire = to_bytes("first\r\nsecond\n")
     push(wire, 255)
     push(wire, 10)
-    write_bytes(connection, wire).await
+    let sent = write_bytes(connection, wire).await?
+    // EOF or a reset from the unread suffix both confirm that the consumer
+    // closed its connection. A leaked owner would leave this read pending.
+    assert match std.net.tcp.read(connection, new(), 1).await {
+        Result.Ok(count) => count == 0
+        Result.Err(_) => true
+    }
+    Result.Ok(sent)
 }
 
 async fn owned_trial() Result[Bool, TcpError] {

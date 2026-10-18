@@ -1,0 +1,120 @@
+import std.task.cancel
+import std.task.Outcome
+
+async fn scoped_roundtrip() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    scoped client = open(local_address(listener)?).await?
+    scoped server = accept_owned(listener).await?
+    discard set_nodelay(client, true)?
+    assert peer_address(client)? == local_address(server)?
+    assert local_address(client)? == peer_address(server)?
+    assert write_bytes(client, to_bytes("request")).await? == 7
+    discard shutdown_write(client)?
+    let request = new()
+    while read(server, request, 2).await? > 0 {
+    }
+    assert to_text(request) == "request"
+    assert write_bytes(server, to_bytes("reply")).await? == 5
+    discard close(server)?
+    discard close(server)?
+    let reply = new()
+    while read(client, reply, 2).await? > 0 {
+    }
+    Result.Ok(to_text(reply) == "reply")
+}
+
+test async fn scoped_connections_roundtrip_half_close_and_close_idempotently() {
+    assert match scoped_roundtrip().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+async fn tick() {
+}
+
+async fn completed_accept_closes() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    {
+        let pending = accept_owned(listener)
+        tick().await
+        scoped finished = cancel(pending)
+        assert match finished {
+            Outcome.Cancelled => true
+            _ => false
+        }
+    }
+    let client = connect(local_address(listener)?).await?
+    defer {
+        discard close_stream(client)
+    }
+    {
+        let pending = accept_owned(listener)
+        tick().await
+        scoped finished = cancel(pending)
+        assert match finished {
+            Outcome.Completed(Result.Ok(_)) => true
+            _ => false
+        }
+    }
+    Result.Ok(read(client, new(), 1).await? == 0)
+}
+
+test async fn an_unclaimed_accepted_connection_closes_with_its_task_payload() {
+    assert match completed_accept_closes().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+async fn produced_connection(token Int, ready List[Bool]) Connection {
+    ready[0] = true
+    owned_connection(token)
+}
+
+async fn forwarded_connection(token Int, ready List[Bool]) Connection {
+    produced_connection(token, ready).await
+}
+
+async fn cancelled_handoff_closes() Result[Bool, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let client = connect(local_address(listener)?).await?
+    defer {
+        // The owner should already have closed it; retain fallback cleanup if
+        // a regression faults before the peer verifies EOF.
+        discard close_stream(client)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    let ready = [false]
+    {
+        let pending = forwarded_connection(client.state.token, ready)
+        while !ready[0] {
+            tick().await
+        }
+        scoped finished = cancel(pending)
+        assert match finished {
+            Outcome.Cancelled => true
+            _ => false
+        }
+    }
+    Result.Ok(read(server, new(), 1).await? == 0)
+}
+
+test async fn cancellation_between_child_completion_and_handoff_closes_the_socket() {
+    assert match cancelled_handoff_closes().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}

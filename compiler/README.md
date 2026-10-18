@@ -4595,6 +4595,14 @@ the socket. Use `defer` to close after suspension, and cancel/drain child waits
 before closing a shared socket. The [loopback example](examples/tcp_loopback/main.loom)
 exercises O0/O2, forced GC, close, and cancellation.
 
+For scoped numeric connections, `open(address).await` and
+`accept_owned(listener).await` return `Connection` resources. Enter them through
+`scoped`; typed Task results retain cleanup even before the caller extracts them.
+Connection overloads expose ordinary reads/writes, half-close and address queries;
+scope exit closes after child borrows drain. See the
+[TCP guide](std/net/tcp/README.md) and
+[owned chunk streams](std/net/tcp/chunks/README.md).
+
 `std.net.udp` provides numeric IPv4/IPv6 `bind`, `local_address`, `receive` and
 `send`. Each received `Datagram` contains fresh Bytes and the numeric sender;
 empty packets are data, not EOF. `receive(socket, limit)` consumes one packet

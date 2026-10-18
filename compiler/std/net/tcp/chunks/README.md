@@ -18,3 +18,25 @@ read. A canceled pull does not mark an otherwise open socket ended.
 Use `try_fold` to stop on an error without accumulating the whole input;
 `collect` buffers all yielded items. Library tests use loopback sockets and
 exercise EOF, errors, preserved buffers and cancellation followed by another read.
+
+## Owned connections
+
+`open(numeric_address, limit).await` or `accept(listener, limit).await` returns
+`Result[OwnedChunks, TcpError]`. Both require a positive limit. Unlike `read`,
+these acquire and retain a [scoped connection](../README.md); no custom socket
+resource wrapper is needed:
+
+```loom
+async fn incoming(address Text) Result[OwnedChunks, TcpError] {
+    open(address, 8192).await
+}
+
+// Inside an async function, with the usual stream imports:
+scoped source = take(incoming, address, 2).await?
+let values = collect(source).await
+```
+
+Acquisition performs no read. EOF/errors end the cursor but retain the socket
+until scope exit. Pending pulls drain before nested disposal closes it.
+Cancellation and unclaimed acquisition results carry the same typed cleanup;
+a zero-item limit still connects and closes without reading.

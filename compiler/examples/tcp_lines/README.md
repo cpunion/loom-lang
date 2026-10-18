@@ -16,6 +16,7 @@ use the still-open transport after the cancelled socket wait drains.
 The first trial closes sockets through lexical `defer`. `owned.loom` shows the
 owned alternative: an async connection factory composes with `lines` and `take`,
 and a scoped consumer receives two lines before closing the connection exactly
-once. A deliberately invalid UTF-8 suffix is not decoded. Framing and ownership
-composition are ordinary Loom library code over existing byte-stream and Task
-interfaces.
+once. It uses `std.net.tcp.chunks.open`; the wrapper only records test observations.
+The sender observes closure, and a deliberately invalid UTF-8 suffix is not
+decoded. Framing and ownership composition are ordinary Loom library code over
+existing byte-stream and Task interfaces.
