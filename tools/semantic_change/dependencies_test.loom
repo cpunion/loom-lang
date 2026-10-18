@@ -1,0 +1,314 @@
+fn dependency_fixture(origin Text, api Text, tests Bool, reordered Bool) Project {
+    let owner = if reordered {
+        1
+    } else {
+        0
+    }
+    let dependency = 1 - owner
+    let root = if reordered {
+        2
+    } else {
+        0
+    }
+    let child = 1
+    let library = 2 - root
+    let own_module = ModuleInstance {
+        name = "sample"
+        source = "/module"
+    }
+    let dependency_module = ModuleInstance {
+        name = "library"
+        source = origin
+    }
+    let application = Package {
+        instance = owner
+        relative = ""
+        imports = [PackageImport {
+                spelling = "library"
+                target = library
+            }]
+    }
+    let imported = Package {
+        instance = dependency
+        relative = ""
+        imports = new[PackageImport]()
+    }
+    let packages = [application, Package {
+            instance = owner
+            relative = "child"
+            imports = application.imports
+        }, imported]
+    if reordered {
+        set(packages, 0, imported)
+        set(packages, 2, application)
+    }
+    let files = new[SourceFile]()
+    let texts = ["""
+            import library.choose
+
+            fn entry() Int {
+                choose(1)
+            }
+            """, """
+            import library.choose
+
+            fn child() Int {
+                choose(true)
+            }
+            """, api]
+    let paths = ["/module/app.loom", "/module/child/child.loom", join_path(origin, "api.loom")]
+    let owners = [root, child, library]
+    var index = 0
+    while index < length(texts) {
+        let text = get(texts, index)
+        push(files, SourceFile {
+                package = get(owners, index)
+                path = get(paths, index)
+                text = text
+                tree = package_tree(text)
+                test_only = false
+                trusted_std = false
+            })
+        index = index + 1
+    }
+    if tests {
+        let text = """
+            import library.choose
+
+            test fn checked_private_scope() {
+                assert choose(1) > 0
+            }
+            """
+        push(files, SourceFile {
+                package = child
+                path = "/module/child/child_test.loom"
+                text = text
+                tree = package_tree(text)
+                test_only = true
+                trusted_std = false
+            })
+    }
+    Project {
+        files = files
+        packages = packages
+        modules = if reordered {
+            [dependency_module, own_module]
+        } else {
+            [own_module, dependency_module]
+        }
+        root = root
+    }
+}
+
+fn dependency_api() Text {
+    """
+        pub fn choose[T](value T) Int {
+            discard value
+            1
+        }
+        """
+}
+
+fn dependency_checked_review(before Project, before_tests Project,
+    after Project, after_tests Project) DependencyReview {
+    match review_dependencies(before, before_tests, after, after_tests) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            DependencyReview {
+                before = new[DependencySource]()
+                after = new[DependencySource]()
+                bindings = new[DependencyBindingChange]()
+            }
+        }
+    }
+}
+
+test fn dependency_review_uses_module_origins_not_analysis_local_ids() {
+    let before = dependency_fixture("/cache/library", dependency_api(), false, false)
+    let before_tests = dependency_fixture("/cache/library", dependency_api(), true, false)
+    let after = dependency_fixture("/cache/library", dependency_api(), false, true)
+    let after_tests = dependency_fixture("/cache/library", dependency_api(), true, true)
+    let unchanged = dependency_checked_review(before, before_tests, after, after_tests)
+    assert length(unchanged.bindings) == 0
+    assert length(unchanged.before) == 4 && length(unchanged.after) == 4
+    let fork = dependency_checked_review(before, before_tests,
+        dependency_fixture("/cache/fork", dependency_api(), false, true),
+        dependency_fixture("/cache/fork", dependency_api(), true, true))
+    assert length(fork.bindings) > 0
+    var private_test = false
+    var index = 0
+    while index < length(fork.bindings) {
+        let change = get(fork.bindings, index)
+        assert change.before.source.module.source == "/cache/library"
+        assert change.after.source.module.source == "/cache/fork"
+        private_test = private_test || (change.tests && change.package == "child" &&
+            ends_with(change.path, "_test.loom"))
+        index = index + 1
+    }
+    assert private_test
+}
+
+fn dependency_overload_fixture(updated Bool, tests Bool) Project {
+    let api = concat(if updated {
+            "pub fn input() Bool {\n    true\n}\n"
+        } else {
+            "pub fn input() Int {\n    1\n}\n"
+        }, """
+            pub fn choose(value Int) Int {
+                value
+            }
+            """)
+    let project = dependency_fixture("/cache/library", api, tests, false)
+    let entry = get(project.files, 0)
+    let text = std.text.replace(std.text.replace(entry.text,
+            "import library.choose", "import library.choose\nimport library.input"),
+        "choose(1)", "choose(input())")
+    set(project.files, 0, SourceFile {
+            text = text
+            tree = package_tree(text)
+            ..entry
+        })
+    let child = get(project.files, 1)
+    let child_text = std.text.replace(child.text, "choose(true)", "choose(1)")
+    set(project.files, 1, SourceFile {
+            text = child_text
+            tree = package_tree(child_text)
+            ..child
+        })
+    if updated {
+        let overload = """
+            pub fn choose(value Bool) Int {
+                if value { 2 } else { 0 }
+            }
+            """
+        push(project.files, SourceFile {
+                package = 2
+                path = "/cache/library/overload.loom"
+                text = overload
+                tree = package_tree(overload)
+                test_only = false
+                trusted_std = false
+            })
+    }
+    project
+}
+
+test fn dependency_review_reports_new_overload_selection_and_same_path_edits() {
+    let before = dependency_fixture("/cache/library", dependency_api(), false, false)
+    let before_tests = dependency_fixture("/cache/library", dependency_api(), true, false)
+    let selected = dependency_checked_review(dependency_overload_fixture(false, false),
+        dependency_overload_fixture(false, true), dependency_overload_fixture(true, false),
+        dependency_overload_fixture(true, true))
+    assert length(selected.bindings) > 0
+    var root_call = false
+    var index = 0
+    while index < length(selected.bindings) {
+        let change = get(selected.bindings, index)
+        assert ends_with(change.before.source.path, "api.loom")
+        root_call = root_call || (!change.tests && change.path == "/module/app.loom" &&
+            ends_with(change.after.source.path, "overload.loom"))
+        index = index + 1
+    }
+    assert root_call
+    let edited_api = std.text.replace(dependency_api(), "    1", "    2")
+    let edited = dependency_checked_review(before, before_tests,
+        dependency_fixture("/cache/library", edited_api, false, false),
+        dependency_fixture("/cache/library", edited_api, true, false))
+    assert length(edited.bindings) > 0
+    let change = get(edited.bindings, 0)
+    assert change.before.source.path == change.after.source.path
+    assert change.before.span.start == change.after.span.start
+    assert change.before.source.digest != change.after.source.digest
+}
+
+fn dependency_private_test(project Project) Project {
+    let file = get(project.files, 3)
+    let text = """
+        import library.test_value
+
+        test fn checked_private_scope() {
+            assert test_value() > 0
+        }
+        """
+    set(project.files, 3, SourceFile {
+            text = text
+            tree = package_tree(text)
+            ..file
+        })
+    project
+}
+
+test fn dependency_review_rejects_unchecked_private_tests_and_application_edits() {
+    let before = dependency_fixture("/cache/library", dependency_api(), false, false)
+    let before_tests = dependency_fixture("/cache/library", dependency_api(), true, false)
+    let incompatible = """
+        pub fn choose(value Bool) Int {
+            discard value
+            1
+        }
+        """
+    assert match review_dependencies(before, before_tests,
+        dependency_fixture("/cache/library", incompatible, false, false),
+        dependency_fixture("/cache/library", incompatible, true, false)) {
+        Result.Err(message) => contains(message, "requires checked source")
+        Result.Ok(_) => false
+    }
+    let changed = dependency_fixture("/cache/library", dependency_api(), false, false)
+    let file = get(changed.files, 0)
+    let text = std.text.replace(file.text, "choose(1)", "choose(2)")
+    set(changed.files, 0, SourceFile {
+            text = text
+            tree = package_tree(text)
+            ..file
+        })
+    assert match review_dependencies(before, before_tests, changed, before_tests) {
+        Result.Err(message) => contains(message, "unchanged application source")
+        Result.Ok(_) => false
+    }
+    let old_api = concat(dependency_api(), "pub fn test_value() Int {\n    1\n}\n")
+    let new_api = concat(dependency_api(), "pub fn test_value() Bool {\n    true\n}\n")
+    assert match review_dependencies(
+        dependency_fixture("/cache/library", old_api, false, false),
+        dependency_private_test(dependency_fixture("/cache/library", old_api, true, false)),
+        dependency_fixture("/cache/library", new_api, false, false),
+        dependency_private_test(dependency_fixture("/cache/library", new_api, true, false))) {
+        Result.Err(message) => contains(message, "requires checked source")
+        Result.Ok(_) => false
+    }
+}
+
+test fn dependency_review_does_not_hide_unselected_source_or_stale_ast() {
+    let project = dependency_fixture("/cache/library", dependency_api(), false, false)
+    let original = get(project.files, 0)
+    let text = concat(original.text, """
+
+            fn selected[T](value T) T {
+                comptime if true {
+                    value
+                } else {
+                    value
+                }
+            }
+            """)
+    set(project.files, 0, SourceFile {
+            text = text
+            tree = package_tree(text)
+            ..original
+        })
+    assert match review_dependencies(project, project, project, project) {
+        Result.Err(message) => contains(message, "unaccounted source references")
+        Result.Ok(_) => false
+    }
+    let stale = dependency_fixture("/cache/library", dependency_api(), false, false)
+    let dependency = get(stale.files, 2)
+    set(stale.files, 2, SourceFile {
+            text = concat(dependency.text, "\n")
+            ..dependency
+        })
+    assert match review_dependencies(stale, stale, stale, stale) {
+        Result.Err(message) => contains(message, "text and AST disagree")
+        Result.Ok(_) => false
+    }
+}

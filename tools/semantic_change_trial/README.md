@@ -16,6 +16,31 @@ solver, counterexample or unknown result cannot authorize a merge. Checking can
 invoke the solver, but never launches the application or replays its effects.
 The underlying merge library remains I/O-free unless given a proof capability.
 
+## Dependency binding review
+
+Review a dependency upgrade or fork switch independently of three-way merging:
+
+```sh
+target/loom run tools/semantic_change_trial -- --dependencies compiler/std BEFORE AFTER
+```
+
+Both directories are complete named-module snapshots with the same application
+packages/source and the sidecars described below. Their manifests and locks may
+differ. The ordinary offline loader must already have every required Git source;
+this command never resolves a moving version or fetches a repository.
+
+The application presentation root is normalized for comparison, but dependency
+origins are not equated by name or byte equality. Separately copied local
+dependencies therefore conservatively appear as different origins. Production
+and every package's independent private test scope pass ordinary type/contract
+checks. The output inventories source origins/hashes and changed checked
+definition observations, including overload selections. File-granular hashes
+can report changes caused only by unrelated declarations or trivia; repeated
+contexts are labeled. It does not execute application code or tests, rewrite
+inputs, produce an apply token, or prove behavioral/deployment compatibility.
+Unknown/generated references, missing evidence and exported macro providers
+require explicit resolution; an unsuccessful review exits nonzero.
+
 ## Module snapshots
 
 For a complete named module, use:

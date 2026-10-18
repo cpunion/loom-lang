@@ -1,0 +1,82 @@
+fn dependency_trial_fixture(directory Text, dependency Text) Result[Text, Text] {
+    discard create_dir(directory)
+    discard std.file.write_text(path(directory, "loom.toml"), replace("""
+            [module]
+            name = "sample"
+
+            [dependencies.library]
+            path = "../DEPENDENCY"
+            """, "DEPENDENCY", dependency))
+    // Review checks these declarations; it must not run their effects.
+    discard std.file.write_text(path(directory, "main.loom"), """
+        import library.amount
+
+        fn main() {
+            assert false
+            assert amount() > 0
+        }
+
+        test fn embedded_amount() {
+            assert false
+            assert amount() > 0
+        }
+        """)
+    discard std.file.write_text(path(directory, "main_test.loom"), """
+        import library.amount
+
+        test fn private_amount() {
+            assert false
+            assert amount() > 0
+        }
+        """)
+    initialize("sample", directory)
+}
+
+fn dependency_trial_lifecycle(staging Text) Result[Text, Text] {
+    let names = ["library", "fork"]
+    var index = 0
+    while index < length(names) {
+        let directory = path(staging, get(names, index))
+        discard create_dir(directory)
+        discard std.file.write_text(path(directory, "loom.toml"), "[module]\nname = \"library\"\n")
+        discard std.file.write_text(path(directory, "api.loom"), """
+            pub fn amount() Int {
+                1
+            }
+            """)
+        index = index + 1
+    }
+    let before = path(staging, "before")
+    let after = path(staging, "after")
+    discard dependency_trial_fixture(before, "library")?
+    discard dependency_trial_fixture(after, "fork")?
+    let review = dependency_module_review("compiler/std", before, after)?
+    assert length(review.bindings) > 0
+    var private_test = false
+    index = 0
+    while index < length(review.bindings) {
+        let change = get(review.bindings, index)
+        private_test = private_test || (change.tests && ends_with(change.path, "_test.loom"))
+        assert ends_with(change.before.source.module.source, "library")
+        assert ends_with(change.after.source.module.source, "fork")
+        index = index + 1
+    }
+    assert private_test
+    let summary = preview_dependencies("compiler/std", before, after)?
+    assert contains(summary, "not behavioral compatibility")
+    assert contains(summary, "sha256:")
+    assert contains(summary, "changed binding observations:")
+    let file = path(after, "main.loom")
+    discard std.file.write_text(file, replace(text_at(file), "amount() > 0", "amount() > 1"))
+    assert match dependency_module_review("compiler/std", before, after) {
+        Result.Err(message) => contains(message, "unchanged application source")
+        Result.Ok(_) => false
+    }
+    remove_module_fixture(staging)
+    Result.Ok("dependency review completed without executing application code")
+}
+
+test fn dependency_cli_reviews_real_loaded_forks_without_rewriting_or_running_them() {
+    assert successful(dependency_trial_lifecycle(module_test_directory("dependencies"))) ==
+    "dependency review completed without executing application code"
+}

@@ -364,6 +364,14 @@ not a second performance changelog here.
 
 ## Semantic changes, deployment and delivery
 
+The [dependency review](../../tools/semantic_change_trial/README.md#dependency-binding-review)
+checks unchanged application sources against two offline dependency graphs,
+including each package's private tests. It reports source origins/hashes and
+changed explicit bindings without conflating same-named forks or project-local
+IDs. Required contracts still apply; incomplete/generated binding evidence
+rejects. It does not rewrite locks, run applications/tests, prove behavioral
+compatibility or authorize deployment.
+
 The [semantic merge trial](../../tools/semantic_change_trial/README.md) supports
 reviewed move-plus-edit, function rename-plus-edit and independent
 additions within one package or a bounded module, using explicit identities

@@ -1,0 +1,323 @@
+import std.hash.sha256.hex
+import std.loom.ast.same
+import std.loom.source.Span
+import std.loom.project.select_source
+import std.text.to_bytes
+
+// Origins and spans describe these checked snapshots, not durable declaration
+// IDs or a promise that two versions have equivalent behavior.
+pub record DependencySource {
+    module ModuleInstance
+    package Text
+    path Text
+    digest Text
+}
+
+pub record DependencyTarget {
+    source DependencySource
+    span Span
+}
+
+pub record DependencyBindingChange {
+    tests Bool
+    root Text
+    package Text
+    path Text
+    offset Int
+    before DependencyTarget
+    after DependencyTarget
+}
+
+pub record DependencyReview {
+    before List[DependencySource]
+    after List[DependencySource]
+    bindings List[DependencyBindingChange]
+}
+
+fn dependency_owner(project Project) ModuleInstance {
+    get(project.modules, get(project.packages, project.root).instance)
+}
+
+fn dependency_owned(project Project, package Int) Bool {
+    get(project.packages, package).instance == get(project.packages, project.root).instance
+}
+
+fn dependency_own_package(project Project, relative Text) Result[Int, Text] {
+    var index = 0
+    while index < length(project.packages) {
+        if dependency_owned(project, index) && get(project.packages, index).relative == relative {
+            return Result.Ok(index)
+        }
+        index = index + 1
+    }
+    Result.Err("dependency review requires the same application packages")
+}
+
+fn dependency_file(project Project, package Int, path Text) Result[SourceFile, Text] {
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        if file.package == package && file.path == path {
+            return Result.Ok(file)
+        }
+        index = index + 1
+    }
+    Result.Err("dependency review requires unchanged application source")
+}
+
+fn dependency_same_application(before Project, after Project, include_tests Bool) Result[Bool, Text] {
+    let a = dependency_owner(before)
+    let b = dependency_owner(after)
+    if a.name != b.name || a.source != b.source {
+        return Result.Err("dependency review requires the same application module origin")
+    }
+    let sides = [before, after]
+    var side = 0
+    while side < 2 {
+        let source = get(sides, side)
+        let target = get(sides, 1 - side)
+        var package = 0
+        while package < length(source.packages) {
+            if dependency_owned(source, package) {
+                discard dependency_own_package(target, get(source.packages, package).relative)?
+            }
+            package = package + 1
+        }
+        var index = 0
+        while index < length(source.files) {
+            let file = get(source.files, index)
+            if dependency_owned(source, file.package) && (include_tests || !file.test_only) {
+                let owner = dependency_own_package(target, get(source.packages, file.package).relative)?
+                let other = dependency_file(target, owner, file.path)?
+                if file.text != other.text || file.test_only != other.test_only ||
+                file.trusted_std != other.trusted_std || !same(select_source(file.tree, include_tests),
+                    select_source(other.tree, include_tests)) {
+                    return Result.Err("dependency review requires unchanged application source")
+                }
+            }
+            index = index + 1
+        }
+        side = side + 1
+    }
+    Result.Ok(true)
+}
+
+fn dependency_sources(project Project, tests Bool) Result[List[DependencySource], Text] {
+    let sources = new[DependencySource]()
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        let parsed = match parse(file.text) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("dependency review requires parseable source snapshots")
+            }
+        }
+        let full_tests = tests && dependency_owned(project, file.package)
+        if !same(parsed, file.tree) && (full_tests || !same(select_source(parsed, false), file.tree)) {
+            return Result.Err("dependency review source text and AST disagree")
+        }
+        let package = get(project.packages, file.package)
+        push(sources, DependencySource {
+                module = get(project.modules, package.instance)
+                package = package.relative
+                path = file.path
+                digest = hex(to_bytes(file.text))
+            })
+        index = index + 1
+    }
+    Result.Ok(sources)
+}
+
+fn dependency_target(analysis Analysis, sources List[DependencySource], location Location) Result[DependencyTarget, Text] {
+    if location.file < 0 || location.file >= length(analysis.bindings.files) {
+        return Result.Err("dependency reference has no source definition")
+    }
+    let file = get(analysis.bindings.files, location.file)
+    let package = get(analysis.source.packages, file.package)
+    let module = get(analysis.source.modules, package.instance)
+    var index = 0
+    while index < length(sources) {
+        let source = get(sources, index)
+        if source.module.name == module.name && source.module.source == module.source &&
+        source.package == package.relative && source.path == file.path {
+            return Result.Ok(DependencyTarget {
+                    source = source
+                    span = location.span
+                })
+        }
+        index = index + 1
+    }
+    Result.Err("generated dependency definition has no original source evidence")
+}
+
+fn dependency_same_target(before DependencyTarget, after DependencyTarget) Bool {
+    let a = before.source
+    let b = after.source
+    a.module.name == b.module.name && a.module.source == b.module.source &&
+    a.package == b.package && a.path == b.path && a.digest == b.digest &&
+    before.span.start == after.span.start && before.span.end == after.span.end
+}
+
+fn dependency_source_union(first List[DependencySource], second List[DependencySource]) List[DependencySource] {
+    let output = std.list.clone(first)
+    var index = 0
+    while index < length(second) {
+        let source = get(second, index)
+        var found = false
+        var previous = 0
+        while previous < length(output) {
+            let other = get(output, previous)
+            found = found || (source.module.name == other.module.name &&
+                source.module.source == other.module.source && source.package == other.package &&
+                source.path == other.path && source.digest == other.digest)
+            previous = previous + 1
+        }
+        if !found {
+            push(output, source)
+        }
+        index = index + 1
+    }
+    output
+}
+
+fn dependency_analysis(project Project, tests Bool, backend ProofBackend) Result[Analysis, Text] {
+    match checked_analysis(project, tests, backend) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(failed) => Result.Err(concat("dependency review requires checked source: ", failed.diagnostic.message))
+    }
+}
+
+fn dependency_checked_file(analysis Analysis, package Int, path Text) Result[Int, Text] {
+    var index = 0
+    while index < length(analysis.bindings.files) {
+        let file = get(analysis.bindings.files, index)
+        if file.package == package && file.path == path {
+            return Result.Ok(index)
+        }
+        index = index + 1
+    }
+    Result.Err("dependency reference has no matching checked source file")
+}
+
+fn dependency_bindings(before Project, after Project, tests Bool, backend ProofBackend,
+    original_sources List[DependencySource], current_sources List[DependencySource],
+    changes List[DependencyBindingChange]) Result[Bool, Text] {
+    let original = dependency_analysis(before, tests, backend)?
+    let current = dependency_analysis(after, tests, backend)?
+    var package = 0
+    while package < length(before.packages) {
+        if dependency_owned(before, package) {
+            discard checked_rename_generators(original, package, backend)?
+        }
+        package = package + 1
+    }
+    package = 0
+    while package < length(after.packages) {
+        if dependency_owned(after, package) {
+            discard checked_rename_generators(current, package, backend)?
+        }
+        package = package + 1
+    }
+    var file = 0
+    while file < length(before.files) {
+        let source = get(before.files, file)
+        if dependency_owned(before, source.package) && (!source.test_only ||
+            (tests && source.package == before.root)) {
+            let relative = get(before.packages, source.package).relative
+            let other_package = dependency_own_package(after, relative)?
+            let original_file = dependency_checked_file(original, source.package, source.path)?
+            let other = dependency_checked_file(current, other_package, source.path)?
+            let tokens = match lex(source.text) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Err("dependency review requires lexable source")
+                }
+            }
+            var declaration = 0
+            while declaration < length(source.tree.children) {
+                let node = get(source.tree.children, declaration)
+                if node.kind != NodeKind.Import && (!has(node, NodeKind.Test) ||
+                    (tests && source.package == original.bindings.root)) {
+                    let sites = reference_obligations(node, tokens)
+                    if length(sites.unknown) != 0 {
+                        return Result.Err("dependency review has unaccounted source references")
+                    }
+                    let old_evidence = inspect_references(original, original_file, sites.offsets)
+                    let new_evidence = inspect_references(current, other, sites.offsets)
+                    var site = 0
+                    while site < length(sites.offsets) {
+                        let offset = get(sites.offsets, site)
+                        let abstract_body = abstract_reference_scope(node)
+                        let previous = reference_inspection(original, original_file, offset, abstract_body,
+                            get(old_evidence, site).inspection)?
+                        let updated = reference_inspection(current, other, offset, abstract_body,
+                            get(new_evidence, site).inspection)?
+                        let a = dependency_target(original, original_sources, get(previous.definitions, 0))?
+                        let b = dependency_target(current, current_sources, get(updated.definitions, 0))?
+                        if !dependency_same_target(a, b) {
+                            push(changes, DependencyBindingChange {
+                                    tests = tests
+                                    root = get(before.packages, before.root).relative
+                                    package = relative
+                                    path = source.path
+                                    offset = offset
+                                    before = a
+                                    after = b
+                                })
+                        }
+                        site = site + 1
+                    }
+                }
+                declaration = declaration + 1
+            }
+        }
+        file = file + 1
+    }
+    Result.Ok(true)
+}
+
+// Supply separately loaded production and private-test closures. No source,
+// manifest, lock or filesystem is changed. A successful review is an inventory
+// of checked bindings, NOT behavioral compatibility or permission to deploy.
+pub fn review_dependencies(before Project, before_tests Project,
+    after Project, after_tests Project) Result[DependencyReview, Text] {
+    review_dependencies(before, before_tests, after, after_tests, no_proof_backend())
+}
+
+pub fn review_dependencies(before Project, before_tests Project,
+    after Project, after_tests Project, backend ProofBackend) Result[DependencyReview, Text] {
+    discard dependency_same_application(before, after, false)?
+    discard dependency_same_application(before_tests, after_tests, true)?
+    discard dependency_same_application(before, before_tests, false)?
+    discard dependency_same_application(after, after_tests, false)?
+    let root = get(before.packages, before.root).relative
+    if root != get(after.packages, after.root).relative {
+        return Result.Err("dependency review requires the same production root")
+    }
+    let original_sources = dependency_sources(before, false)?
+    let current_sources = dependency_sources(after, false)?
+    let original_test_sources = dependency_sources(before_tests, true)?
+    let current_test_sources = dependency_sources(after_tests, true)?
+    let changes = new[DependencyBindingChange]()
+    discard dependency_bindings(before, after, false, backend, original_sources, current_sources, changes)?
+    var package = 0
+    while package < length(before_tests.packages) {
+        if dependency_owned(before_tests, package) {
+            let other = dependency_own_package(after_tests, get(before_tests.packages, package).relative)?
+            discard dependency_bindings(Project {
+                    root = package,
+                    ..before_tests
+                }, Project {
+                    root = other,
+                    ..after_tests
+                }, true, backend, original_test_sources, current_test_sources, changes)?
+        }
+        package = package + 1
+    }
+    Result.Ok(DependencyReview {
+            before = dependency_source_union(original_sources, original_test_sources)
+            after = dependency_source_union(current_sources, current_test_sources)
+            bindings = changes
+        })
+}
