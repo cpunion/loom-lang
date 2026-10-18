@@ -38,11 +38,17 @@ fn dynamic_family_snapshots_recheck_changed_bindings_and_keep_native_captures() 
     let path = package.join("main.loom");
     let source = include_str!("../examples/dyn_families/main.loom");
     fs::write(&path, source).unwrap();
-    fs::write(
-        package.join("projection.loom"),
-        include_str!("../examples/dyn_families/projection.loom"),
-    )
-    .unwrap();
+    // Copy the package, not a hand-maintained subset of its helper files.
+    for entry in fs::read_dir(common::root().join("compiler/examples/dyn_families")).unwrap() {
+        let entry = entry.unwrap();
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|value| value == "loom")
+        {
+            fs::copy(entry.path(), package.join(entry.file_name())).unwrap();
+        }
+    }
     checked(&cached("emit-checked", &package, &cache, &[]), false);
     checked(&cached("emit-checked", &package, &cache, &[]), true);
 
