@@ -1,23 +1,10 @@
-import std.bytes.new
-import std.bytes.push
 import std.build.target
 import std.list.new
 import std.list.push
 import std.process.capture_input
 import std.process.ExitStatus
 import std.result.Result
-import std.text.byte
-import std.text.length
-
-fn bytes(value Text) Bytes {
-    let output = std.bytes.new()
-    var index = 0
-    while index < length(value) {
-        std.bytes.push(output, byte(value, index))
-        index = index + 1
-    }
-    output
-}
+import std.text.to_bytes
 
 // The SQLite executable is an explicit deployment-tool dependency, not a
 // language runtime intrinsic. Child arguments are literal; no shell is used.
@@ -49,7 +36,7 @@ fn invoke(tool Text, database Text, sql Text, read_only Bool, require_existing B
     }
     std.list.push(args, "--")
     std.list.push(args, database)
-    match capture_input(args, bytes(sql)) {
+    match capture_input(args, to_bytes(sql)) {
         Result.Ok(output) => match output.status {
             ExitStatus.Exited(code) => {
                 if code == 0 {
