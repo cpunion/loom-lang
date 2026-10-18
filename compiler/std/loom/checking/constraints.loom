@@ -137,7 +137,7 @@ fn refinement_expression(scope Context, ty Int) Result[Expr, Failure] {
     set(scope.env.type_states, ty, TypeState {
             phase = 3
             task_width = state.task_width
-            list_writes = state.list_writes
+            sequence = state.sequence
         })
     let checked = expr(scope, predicate_node(scope.env, get(scope.env.types, ty).symbol), 2)
     set(scope.env.type_states, ty, state)
@@ -155,9 +155,22 @@ fn refinement(env Environment, ty Int) Result[Expr, Failure] {
 }
 
 fn validate_refinement(env Environment, ty Int) Result[Int, Failure] {
+    validate_refinement(env, ty, Option.None)
+}
+
+fn validate_refinement(env Environment, ty Int, checking Option[List[Int]]) Result[Int, Failure] {
     let owner = get(env.types, ty).symbol
     let base = base_type(env, ty)
     let predicate = predicate_node(env, owner)
+    match checking {
+        Option.Some(parents) => {
+            if length(parents) >= 64 || resource_seen(parents, ty) {
+                return Result.Err(failure(env, owner, predicate, "recursive sequence stability query"))
+            }
+        }
+        Option.None => {
+        }
+    }
     let stage = staging(predicate_scope(env, ty)?, predicate)?
     let value = refinement_expression(stage, ty)?
     if must_scope(stage, base)? || task_value(env, base) ||
@@ -171,11 +184,30 @@ fn validate_refinement(env Environment, ty Int) Result[Int, Failure] {
     var writes = 0
     if !inline_constraint_base(env, base, 0) {
         let sequence = get(env.types, base).kind == TypeKind.List || get(env.types, base).kind == TypeKind.Bytes
-        let reads = invariant_observation(env, program, value, length(stage.locals), if sequence {
+        let root = if sequence {
                 base
             } else {
                 -1
-            })
+            }
+        var reads = invariant_observation(env, program, value, length(stage.locals), root)
+        if !get(reads.valid, 0) {
+            let active = ints(ty)
+            match checking {
+                Option.Some(parents) => {
+                    var parent = 0
+                    while parent < length(parents) {
+                        push(active, get(parents, parent))
+                        parent = parent + 1
+                    }
+                }
+                Option.None => {
+                }
+            }
+            let stable = invariant_header_types(env, base, active)
+            if length(stable) > 0 {
+                reads = invariant_observation(env, program, value, length(stage.locals), root, Option.Some(stable))
+            }
+        }
         if !get(reads.valid, 0) {
             return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
         }
@@ -193,6 +225,9 @@ fn validate_refinement(env Environment, ty Int) Result[Int, Failure] {
         Result.Err(failed) => {
             return Result.Err(failure(env, owner, predicate, concat("type constraint: ", failed.message)))
         }
+    }
+    if sequence_dependency(get(env.type_states, ty).sequence) && writes != 1 {
+        return Result.Err(failure(env, owner, predicate, "a persistent constraint requires an unchanged sequence extent policy"))
     }
     Result.Ok(writes)
 }
@@ -214,7 +249,7 @@ fn initialize_refinement(env Environment, ty Int) Result[Bool, Failure] {
     set(env.type_states, ty, TypeState {
             phase = state.phase
             task_width = state.task_width
-            list_writes = writes
+            sequence = sequence_policy(writes, state.sequence)
         })
     Result.Ok(true)
 }
@@ -253,7 +288,7 @@ fn refinements(env Environment) Result[Bool, Failure] {
             set(env.type_states, index, TypeState {
                     phase = state.phase
                     task_width = state.task_width
-                    list_writes = writes
+                    sequence = sequence_policy(writes, state.sequence)
                 })
         }
         index = index + 1

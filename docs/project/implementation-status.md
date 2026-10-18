@@ -244,7 +244,10 @@ supported theories and boundaries. The central rules are:
   Allocation-epoch lower bounds are separate inductive facts: they can frame
   those headers across older callbacks without mistaking sampled IDs for new
   allocations. Publication still invalidates the corresponding private frames.
-  General nested-graph publication and content preservation remain conservative.
+  Nested resize-protected List/Bytes extents can compose with record invariants
+  through checked read-only helpers, retaining the child's mutation-policy
+  dependency. Mutable contents and resize-capable extents remain unsupported;
+  general nested-graph publication and content preservation remain conservative.
 
 Representative native trials include
 [constrained shared views](../../compiler/examples/shared_views),

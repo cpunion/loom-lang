@@ -883,7 +883,12 @@ pub fn verify_with_types(types List[Type], function Function) Result[Bool, Text]
 }
 
 pub fn verify_with_types(types List[Type], function Function, backend ProofBackend) Result[Bool, Text] {
-    verify_body(verification(function, proof_program_with_types(types), backend))
+    verify_with_types(types, function, backend, new[InputGuarantee]())
+}
+
+pub fn verify_with_types(types List[Type], function Function, backend ProofBackend,
+    protected List[InputGuarantee]) Result[Bool, Text] {
+    verify_body(verification(function, proof_program_with_types(types), backend), protected)
 }
 
 // Contract calls belong to this checked helper closure. Expansion is symbolic,
@@ -900,9 +905,15 @@ pub fn verify_with_helpers(program Program, function Function) Result[List[Expr]
 }
 
 pub fn verify_with_helpers(program Program, function Function, backend ProofBackend) Result[List[Expr], Text] {
+    verify_with_helpers(program, function, backend, new[InputGuarantee]())
+}
+
+// The checked host must establish these construction/escape/write policies.
+pub fn verify_with_helpers(program Program, function Function, backend ProofBackend,
+    protected List[InputGuarantee]) Result[List[Expr], Text] {
     let proof = contract_verification(program, function, backend, false)?
     if length(function.postconditions) != 0 {
-        discard verify_body(proof)?
+        discard verify_body(proof, protected)?
     }
     Result.Ok(proof.function.postconditions)
 }
@@ -911,9 +922,14 @@ pub fn verify_with_helpers(program Program, function Function, backend ProofBack
 // This shares the function verifier and its helper/definedness rules. It does
 // not prove that the expression terminates, or excuse any callee obligation.
 pub fn verify_expression_with_helpers(program Program, function Function, backend ProofBackend) Result[List[Expr], Text] {
+    verify_expression_with_helpers(program, function, backend, new[InputGuarantee]())
+}
+
+pub fn verify_expression_with_helpers(program Program, function Function, backend ProofBackend,
+    protected List[InputGuarantee]) Result[List[Expr], Text] {
     let proof = contract_verification(program, function, backend, false)?
     if length(function.postconditions) != 0 {
-        discard verify_body(proof, [], [], [], true)?
+        discard verify_body(proof, protected, [], [], true)?
     }
     Result.Ok(proof.function.postconditions)
 }

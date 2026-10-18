@@ -105,6 +105,28 @@ fn protected_input(types List[Type], protected List[InputGuarantee], ty Int, val
             }
         }
     }
+    if shape.kind == TypeKind.Enum {
+        match value {
+            Value.Sum(_, _, payloads) => {
+                var current = state
+                var variant = 0
+                while variant < length(payloads) && variant < length(shape.variants) {
+                    let fields = get(payloads, variant)
+                    let types_in_variant = get(shape.variants, variant).fields
+                    var field = 0
+                    while field < length(fields) && field < length(types_in_variant) {
+                        current = protected_input(types, protected, get(types_in_variant, field),
+                            get(fields, field), current, depth + 1)
+                        field = field + 1
+                    }
+                    variant = variant + 1
+                }
+                return current
+            }
+            _ => {
+            }
+        }
+    }
     state
 }
 
@@ -114,7 +136,7 @@ fn invariant_reads_stable(value Expr, state State) Bool {
             Result.Ok(receiver) => match receiver {
                 Value.List(identity) => match list_state(identity, state) {
                     Result.Ok(extent) => {
-                        if !stable_storage(extent) {
+                        if !stable_storage(extent) && !(list_length_expression(value) && extent.fixed_extent) {
                             return false
                         }
                     }
