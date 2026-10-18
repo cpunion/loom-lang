@@ -4832,7 +4832,8 @@ These options add neither buffering in Loom nor an I/O deadline.
 wakes to fail, including a wait Task that has not started yet. Already-sent bytes
 are not rolled back; callers must still consume or cancel their child Tasks.
 
-`std.net.tls` provides `Connection`, `ClientOptions`, `ServerOptions`, `Trust`,
+`std.net.tls` provides manually managed `Stream`, scoped `Connection`,
+`ClientOptions`, `ServerOptions`, `Trust`,
 `Identity` and `ClientAuth`
 and typed errors over TLS 1.2/1.3. `connect(host, port)` verifies the host against compiled Mozilla
 roots. The options overload accepts explicit PEM trust roots and ALPN; numeric
@@ -4847,13 +4848,25 @@ not silently select anonymous access. Client and server trust roots are separate
 There is no insecure verifier or system-root lookup. Built-in roots update when
 the toolchain is rebuilt with a newer root package.
 
-Await `read`, `write_bytes` and `shutdown_write`; call `close` in `defer`.
+`open` has the same client overloads as `connect`; `accept_owned` accepts either
+listener form. They return `Connection` resources through Result/Task: use
+`scoped connection = open(...).await?`. The owner is constructed inside the
+acquisition Task, so completed unclaimed results close too. Failed/cancelled
+acquisition still drains the transport. Connection read/write/address/certificate
+overloads use the same TLS engine. `close(connection)` is idempotent.
+
+Await `read`, `write_bytes` and `shutdown_write`. Lexical cleanup closes a
+Connection's transport; it does not asynchronously send close-notify. Call
+`shutdown_write(...).await` explicitly for graceful TLS EOF.
+`connect`/`accept` return manually managed Streams; close them in `defer`.
+`detach(connection)` explicitly hands responsibility to a Stream and makes the
+owner inactive, for protocols that retain parallel read/write Tasks.
 Reads append bytes, clean TLS EOF returns zero, and truncated TCP EOF fails.
 Write shutdown sends TLS close-notify, not TCP FIN, and preserves receiving.
 This preserves the local receive side, not a promise of more peer data; TLS 1.2
 peers may close both directions. EOF-delimited request/response protocols should
 use TLS 1.3 or an explicit application message delimiter.
-Copies share one connection: one reader and one writer can run concurrently;
+Stream copies share one connection: one reader and one writer can run concurrently;
 same-direction overlap returns `Busy`. Encrypted output retains order, and an
 active writer does not block reads behind its outgoing backpressure. Drain child
 Tasks before closing; failed/cancelled operations retire the connection and wake

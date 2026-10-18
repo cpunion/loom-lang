@@ -313,8 +313,10 @@ TCP `Connection` and owned chunks construct resources inside acquisition
 Tasks, retaining cleanup for unclaimed results as well as lexical consumers.
 TCP listeners now use the same scoped lifetime; explicitly detached
 `ListenerHandle` values retain manual close responsibility for parallel accepts.
-TLS retains that transport protection until handshake handoff, without changing
-its explicitly managed, full-duplex connection API.
+TLS constructs scoped `Connection` owners inside its acquisition Tasks too,
+including completed unclaimed results. Explicitly detached `Stream` values keep
+manual close responsibility and permit retained full-duplex Tasks. Scope cleanup
+closes the transport; graceful TLS close-notify remains an explicit awaited call.
 Other framing and general borrow-retaining adapters remain open.
 
 The source-written [HTTP/1.1 message codec](../../compiler/std/net/http/README.md)

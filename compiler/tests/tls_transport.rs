@@ -116,6 +116,10 @@ fn tls_roundtrip_verifies_peers_and_survives_moving_gc() {
         for mode in [
             "ok",
             "duplex",
+            "owned",
+            "owned-detach",
+            "unclaimed-client",
+            "unclaimed-server",
             "wrong-name",
             "untrusted",
             "expired",
@@ -141,8 +145,10 @@ fn tls_roundtrip_verifies_peers_and_survives_moving_gc() {
             assert_eq!(
                 output.stdout,
                 match mode {
-                    "ok" | "duplex" => b"TLS roundtrip\n".as_slice(),
-                    "cancel-accept" => b"transport closed\n".as_slice(),
+                    "ok" | "duplex" | "owned" | "owned-detach" => b"TLS roundtrip\n".as_slice(),
+                    "cancel-accept" | "unclaimed-client" | "unclaimed-server" => {
+                        b"transport closed\n".as_slice()
+                    }
                     _ => b"peer rejected\n".as_slice(),
                 }
             );

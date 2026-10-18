@@ -1,4 +1,4 @@
-import std.net.tls.Connection
+import std.net.tls.Stream
 import std.net.tls.ClientOptions
 import std.net.tls.ServerOptions
 import std.net.tls.Trust
@@ -40,20 +40,20 @@ fn loaded(path Text) Bytes {
     }
 }
 
-async fn receive_all(stream Connection) Result[Bytes, TlsError] {
+async fn receive_all(stream Stream) Result[Bytes, TlsError] {
     let bytes = new()
     while read(stream, bytes, 16384).await? > 0 {
     }
     Result.Ok(bytes)
 }
 
-async fn send_all(stream Connection, payload Bytes) Result[Int, TlsError] {
+async fn send_all(stream Stream, payload Bytes) Result[Int, TlsError] {
     let count = write_bytes(stream, payload).await?
     discard shutdown_write(stream).await?
     Result.Ok(count)
 }
 
-async fn exchange(stream Connection, payload Bytes) Result[Int, TlsError] {
+async fn exchange(stream Stream, payload Bytes) Result[Int, TlsError] {
     let receiving = receive_all(stream)
     let sending = send_all(stream, payload)
     let outcomes = (sending, receiving).await
@@ -215,16 +215,34 @@ async fn main() {
         discard write_text("transport closed\n")
         return
     }
+    if mode == "unclaimed-client" || mode == "unclaimed-server" {
+        assert match unclaimed_connection(mode == "unclaimed-server", listener, address,
+            client_options, server_options).await {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        }
+        discard write_text("transport closed\n")
+        return
+    }
     let payload = loaded(args[4])
-    let duplex = mode == "duplex"
-    let server = serve(listener, server_options, payload, duplex)
-    let client = request(address, if mode == "wrong-name" {
-            "wrong.example"
-        } else {
-            "localhost"
-        }, client_options, payload, duplex).await
+    let duplex = mode == "duplex" || mode == "owned-detach"
+    let owned = mode == "owned" || mode == "owned-detach"
+    let server = if owned {
+        serve_owned(listener, server_options, payload, duplex)
+    } else {
+        serve(listener, server_options, payload, duplex)
+    }
+    let client = if owned {
+        request_owned(address, client_options, payload, duplex).await
+    } else {
+        request(address, if mode == "wrong-name" {
+                "wrong.example"
+            } else {
+                "localhost"
+            }, client_options, payload, duplex).await
+    }
     let served = server.await
-    if mode == "ok" || mode == "mutual" || duplex {
+    if mode == "ok" || mode == "mutual" || duplex || owned {
         assert match client {
             Result.Ok(count) => count > 65536
             Result.Err(_) => false
