@@ -1,0 +1,170 @@
+record Authority {
+    host Text
+    port Int
+    header Text
+}
+
+fn decimal(value Text, start Int, end Int, maximum Int) Result[Int, ParseError] {
+    if start == end {
+        return Result.Err(ParseError.Port)
+    }
+    var number = 0
+    var index = start
+    while index < end {
+        let digit = byte(value, index) - 48
+        if digit < 0 || digit > 9 || number > (maximum - digit) / 10 {
+            return Result.Err(ParseError.Port)
+        }
+        number = number * 10 + digit
+        index = index + 1
+    }
+    Result.Ok(number)
+}
+
+fn ipv4(value Text, start Int, end Int) Bool {
+    var index = start
+    var parts = 0
+    while index < end {
+        let begin = index
+        while index < end && byte(value, index) != 46 {
+            index = index + 1
+        }
+        if index - begin > 1 && byte(value, begin) == 48 {
+            return false
+        }
+        if match decimal(value, begin, index, 255) {
+            Result.Ok(_) => false
+            Result.Err(_) => true
+        } {
+            return false
+        }
+        parts = parts + 1
+        if index < end {
+            index = index + 1
+            if index == end {
+                return false
+            }
+        }
+    }
+    parts == 4
+}
+
+fn ipv6(value Text) Bool {
+    let size = length(value)
+    if size == 0 {
+        return false
+    }
+    var index = 0
+    var compressed = false
+    var groups = 0
+    if byte(value, 0) == 58 {
+        if size < 2 || byte(value, 1) != 58 {
+            return false
+        }
+        compressed = true
+        index = 2
+    }
+    while index < size {
+        let start = index
+        while index < size && hexadecimal(byte(value, index)) {
+            index = index + 1
+        }
+        if index < size && byte(value, index) == 46 {
+            return ipv4(value, start, size) && (if compressed {
+                    groups < 6
+                } else {
+                    groups == 6
+                })
+        }
+        if index == start || index - start > 4 {
+            return false
+        }
+        groups = groups + 1
+        if index == size {
+            break
+        }
+        if byte(value, index) != 58 {
+            return false
+        }
+        index = index + 1
+        if index == size {
+            return false
+        }
+        if byte(value, index) == 58 {
+            if compressed {
+                return false
+            }
+            compressed = true
+            index = index + 1
+        }
+    }
+    if compressed {
+        groups < 8
+    } else {
+        groups == 8
+    }
+}
+
+fn authority(value Text, start Int, end Int, default_port Int) Result[Authority, ParseError] {
+    if start == end {
+        return Result.Err(ParseError.Authority)
+    }
+    let literal = byte(value, start) == 91
+    let begin = start + if literal {
+        1
+    } else {
+        0
+    }
+    var stop = begin
+    if literal {
+        while stop < end && byte(value, stop) != 93 {
+            stop = stop + 1
+        }
+        if stop == end || !ipv6(slice(value, begin, stop)) {
+            return Result.Err(ParseError.Authority)
+        }
+    } else {
+        while stop < end && byte(value, stop) != 58 {
+            let current = byte(value, stop)
+            // Encoded/Unicode hosts need an explicit IDNA/decoding policy.
+            // Userinfo and bracket-free IPv6 are not guessed or repaired.
+            if !unreserved(current) && !subdelimiter(current) {
+                return Result.Err(ParseError.Authority)
+            }
+            stop = stop + 1
+        }
+    }
+    if stop == begin {
+        return Result.Err(ParseError.Authority)
+    }
+    var port_start = stop + if literal {
+        1
+    } else {
+        0
+    }
+    if port_start < end {
+        if byte(value, port_start) != 58 {
+            return Result.Err(ParseError.Authority)
+        }
+        port_start = port_start + 1
+    }
+    let port = if port_start == end {
+        default_port
+    } else {
+        decimal(value, port_start, end, 65535)?
+    }
+    let host = lowercase(slice(value, begin, stop))
+    var header = if literal {
+        concat("[", concat(host, "]"))
+    } else {
+        host
+    }
+    if port != default_port {
+        header = concat(header, concat(":", std.int.to_text(port)))
+    }
+    Result.Ok(Authority {
+            host = host
+            port = port
+            header = header
+        })
+}

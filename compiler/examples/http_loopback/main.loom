@@ -9,6 +9,7 @@ import std.net.http.open_response
 import std.net.http.trailers
 import std.net.http.encode_request
 import std.net.http.encode_response
+import std.net.http.url.parse
 import std.net.tcp.Stream
 import std.net.tcp.TcpError
 import std.net.tcp.listen
@@ -20,6 +21,7 @@ import std.net.tcp.write_bytes
 import std.net.tcp.chunks.read
 import std.stream.Stream
 import std.text.to_bytes
+import std.text.concat
 import std.bytes.new
 import std.bytes.push
 import std.bytes.get
@@ -93,7 +95,13 @@ async fn serve(connection std.net.tcp.Stream) Bool {
 async fn exercise() Result[Bool, TcpError] {
     scoped listener = listen("127.0.0.1:0").await?
     let address = local_address(listener)?
-    let client = connect(address).await?
+    let url = match parse(concat("http://", concat(address, "/metadata#local"))) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(TcpError.Address)
+        }
+    }
+    let client = connect(url.host, url.port).await?
     defer {
         discard close_stream(client)
     }
@@ -103,8 +111,8 @@ async fn exercise() Result[Bool, TcpError] {
     }
     let metadata = Request {
         method = "HEAD"
-        target = "/metadata"
-        headers = [field("Host", address)]
+        target = url.target
+        headers = [field("Host", url.authority)]
         body = std.bytes.new()
         trailers = std.list.new[Header]()
     }

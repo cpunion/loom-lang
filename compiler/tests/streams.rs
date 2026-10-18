@@ -13,6 +13,7 @@ fn source_framing_keeps_binary_text_boundaries_limits_and_real_tcp_cleanup() {
         "compiler/std/stream/lines",
         "compiler/examples/tcp_lines",
         "compiler/std/net/http",
+        "compiler/std/net/http/url",
         "compiler/examples/http_loopback",
     ] {
         success(&common::loom(&["check", package]));

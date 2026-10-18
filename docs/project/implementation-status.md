@@ -323,6 +323,10 @@ or cancellation retires the reader without draining the transport. Buffered
 reads collect that same stream. A real TCP application exercises a persistent
 binary pipeline without collecting its response. It is not a complete HTTP
 client/server: routing, authority validation and connection policy remain library work.
+The separate pure HTTP(S) URL parser splits connection host/port, Host authority,
+origin-form target and local fragment without decoding path escapes. It rejects
+userinfo and malformed/unsupported forms; DNS/TLS and destination policies remain
+explicit. The real TCP example uses its result, not a new runtime boundary.
 
 Stop-the-world copying GC preserves precise roots, sharing and cycles.
 Nonallocating functions stay root-free; liveness retires dead locals at checked

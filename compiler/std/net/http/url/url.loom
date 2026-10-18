@@ -1,0 +1,135 @@
+import std.result.Result
+import std.text.byte
+import std.text.length
+import std.text.slice
+import std.text.concat
+import std.text.find
+import std.int.to_text
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+
+pub enum ParseError {
+    Scheme
+    Authority
+    Port
+    Target
+}
+
+pub record Url {
+    secure Bool
+    host Text
+    port Int
+    authority Text
+    target Text
+    fragment Text
+}
+
+fn lowercase(value Text) Text {
+    let output = std.bytes.new()
+    var index = 0
+    while index < length(value) {
+        let current = byte(value, index)
+        std.bytes.push(output, if current >= 65 && current <= 90 {
+                current + 32
+            } else {
+                current
+            })
+        index = index + 1
+    }
+    std.bytes.to_text(output)
+}
+
+fn unreserved(value Int) Bool {
+    (value >= 65 && value <= 90) || (value >= 97 && value <= 122) ||
+    (value >= 48 && value <= 57) || value == 45 || value == 46 || value == 95 || value == 126
+}
+
+fn subdelimiter(value Int) Bool {
+    value == 33 || value == 36 || value == 38 || value == 39 || value == 40 ||
+    value == 41 || value == 42 || value == 43 || value == 44 || value == 59 || value == 61
+}
+
+fn hexadecimal(value Int) Bool {
+    (value >= 48 && value <= 57) || (value >= 65 && value <= 70) || (value >= 97 && value <= 102)
+}
+
+fn component(value Text, start Int, end Int) Bool {
+    var index = start
+    while index < end {
+        let current = byte(value, index)
+        if current == 37 {
+            if end - index < 3 || !hexadecimal(byte(value, index + 1)) ||
+            !hexadecimal(byte(value, index + 2)) {
+                return false
+            }
+            index = index + 3
+        } else {
+            if !unreserved(current) && !subdelimiter(current) && current != 58 &&
+            current != 64 && current != 47 && current != 63 {
+                return false
+            }
+            index = index + 1
+        }
+    }
+    true
+}
+
+// HTTP(S) URI syntax, not browser URL repair or a network/security policy.
+// Returned path/query escapes stay encoded; the fragment is never a target.
+pub fn parse(value Text) Result[Url, ParseError] {
+    var index = 0
+    while index < length(value) {
+        let current = byte(value, index)
+        if current <= 32 || current >= 127 || current == 92 {
+            return Result.Err(ParseError.Target)
+        }
+        index = index + 1
+    }
+    let separator = find(value, "://")
+    if separator < 0 {
+        return Result.Err(ParseError.Scheme)
+    }
+    let scheme = lowercase(slice(value, 0, separator))
+    if scheme != "http" && scheme != "https" {
+        return Result.Err(ParseError.Scheme)
+    }
+    let secure = scheme == "https"
+    let start = separator + 3
+    var end = start
+    while end < length(value) && byte(value, end) != 47 && byte(value, end) != 63 && byte(value, end) != 35 {
+        end = end + 1
+    }
+    let endpoint = authority(value, start, end, if secure {
+            443
+        } else {
+            80
+        })?
+    var fragment = end
+    while fragment < length(value) && byte(value, fragment) != 35 {
+        fragment = fragment + 1
+    }
+    if !component(value, end, fragment) ||
+    (fragment < length(value) && !component(value, fragment + 1, length(value))) {
+        return Result.Err(ParseError.Target)
+    }
+    let target = if end == fragment {
+        "/"
+    } else if byte(value, end) == 63 {
+        concat("/", slice(value, end, fragment))
+    } else {
+        slice(value, end, fragment)
+    }
+    Result.Ok(Url {
+            secure = secure
+            host = endpoint.host
+            port = endpoint.port
+            authority = endpoint.header
+            target = target
+            fragment = if fragment < length(value) {
+                slice(value, fragment + 1, length(value))
+            } else {
+                ""
+            }
+        })
+}
