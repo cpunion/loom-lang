@@ -39,6 +39,44 @@ fn row_identifier(value Text) Result[Text, SqliteRowError] {
     Result.Ok(concat("\"", concat(join(split(value, "\""), "\"\""), "\"")))
 }
 
+fn row_same_column(left Text, right Text) Bool {
+    if std.text.length(left) != std.text.length(right) {
+        return false
+    }
+    var index = 0
+    while index < std.text.length(left) {
+        let a = byte(left, index)
+        let b = byte(right, index)
+        if (if a >= 65 && a <= 90 {
+                a + 32
+            } else {
+                a
+            }) !=
+        (if b >= 65 && b <= 90 {
+                b + 32
+            } else {
+                b
+            }) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn row_column(name Text, seen List[Text]) Result[Text, SqliteRowError] {
+    var index = 0
+    while index < std.list.length(seen) {
+        if row_same_column(name, std.list.get(seen, index)) {
+            return Result.Err(SqliteRowError.Mapping)
+        }
+        index = index + 1
+    }
+    let quoted = row_identifier(name)?
+    std.list.push(seen, name)
+    Result.Ok(quoted)
+}
+
 fn row_expression(column Text) Text {
     var output = concat("CASE typeof(", concat(column, ") "))
     output = concat(output, "WHEN 'null' THEN 'n' ")
@@ -51,6 +89,7 @@ fn row_expression(column Text) Text {
 
 fn row_query[T](codec PreparedRowCodec[T]) Result[Text, SqliteRowError] {
     let table = codec_table(codec)
+    let seen = std.list.new[Text]()
     var output = "SELECT "
     var index = 0
     while index < std.list.length(table.columns) {
@@ -59,7 +98,7 @@ fn row_query[T](codec PreparedRowCodec[T]) Result[Text, SqliteRowError] {
         }
         // Qualified names cannot fall back to SQLite's legacy double-quoted
         // string literals when a requested column does not exist.
-        let column = concat("loom_row.", row_identifier(std.list.get(table.columns, index).physical_name)?)
+        let column = concat("loom_row.", row_column(std.list.get(table.columns, index).physical_name, seen)?)
         output = concat(output, row_expression(column))
         index = index + 1
     }

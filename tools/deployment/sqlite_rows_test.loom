@@ -72,6 +72,16 @@ test fn sqlite_binary64_cells_preserve_extremes_and_zero_sign() {
 }
 
 test fn sqlite_identifiers_are_single_quoted_identifiers_not_sql_fragments() {
+    assert row_same_column("Row ID", "row id") && !row_same_column("Ä", "ä")
+    let seen = std.list.new[Text]()
+    assert match row_column("amount", seen) {
+        Result.Ok("\"amount\"") => true
+        _ => false
+    }
+    assert match row_column("AMOUNT", seen) {
+        Result.Err(SqliteRowError.Mapping) => true
+        _ => false
+    }
     assert match row_identifier("a\"; DROP TABLE orders;--\n") {
         Result.Ok(value) => value == "\"a\"\"; DROP TABLE orders;--\n\""
         _ => false

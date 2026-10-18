@@ -28,6 +28,17 @@ fn check_inserts(tool Text, database Text, codec PreparedRowCodec[Entry]) {
     let payload = std.bytes.new()
     std.bytes.push(payload, 0)
     std.bytes.push(payload, 255)
+    let ambiguous = codec_table(codec)
+    set(ambiguous.columns, 1, column("amount", "ROW ID", ValueKind.Int, false))
+    let ambiguous_codec = prepare(ambiguous)
+    assert match read_sqlite_rows(tool, database, ambiguous_codec) {
+        Result.Err(SqliteRowError.Mapping) => true
+        _ => false
+    }
+    assert match insert_sqlite_rows(tool, database, ambiguous_codec, [entry(0, 1.5, payload)]) {
+        Result.Err(SqliteRowError.Mapping) => true
+        _ => false
+    }
     let missing = concat(database, ".missing")
     assert match entry_kind(missing) {
         Result.Err(FsError.NotFound) => true

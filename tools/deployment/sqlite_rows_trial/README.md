@@ -22,6 +22,8 @@ payloads, including SQLite CLI's
 The CLI must provide that function. No database/JSON support is added to the
 language runtime. Errors contain only categories, zero-based row/column indices
 and codec errors, not stored values, SQL or stderr.
+Physical column names colliding under SQLite's ASCII-insensitive identifier
+comparison reject as `Mapping`; stable IDs remain case-sensitive.
 
 All rows are loaded into memory, without an ordering promise. Codec callbacks
 retain their ordinary effects. Successful reads are not schema compatibility

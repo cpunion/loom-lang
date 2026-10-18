@@ -27,6 +27,7 @@ fn row_literal(value Value) Result[Text, SqliteRowError] {
 fn insert_query[T](codec PreparedRowCodec[T], values List[T]) Result[Text, SqliteRowError] {
     let table = codec_table(codec)
     let fragments = std.list.new[Text]()
+    let seen = std.list.new[Text]()
     std.list.push(fragments, "BEGIN IMMEDIATE;\nINSERT OR ABORT INTO main.")
     std.list.push(fragments, row_identifier(table.physical_name)?)
     std.list.push(fragments, "(")
@@ -35,7 +36,7 @@ fn insert_query[T](codec PreparedRowCodec[T], values List[T]) Result[Text, Sqlit
         if column != 0 {
             std.list.push(fragments, ",")
         }
-        std.list.push(fragments, row_identifier(std.list.get(table.columns, column).physical_name)?)
+        std.list.push(fragments, row_column(std.list.get(table.columns, column).physical_name, seen)?)
         column = column + 1
     }
     std.list.push(fragments, ") VALUES ")
