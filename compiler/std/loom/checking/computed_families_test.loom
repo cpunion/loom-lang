@@ -1,0 +1,195 @@
+fn computed_family_declarations() Text {
+    """
+    concept Family {
+        type Item[T]
+        fn echo[T](self Self, value Self.Item[T]) Self.Item[T]
+    }
+    impl Family for Bool {
+        type Item[T] = List[T]
+        fn echo[T](self Bool, value List[T]) List[T] {
+            value
+        }
+    }
+    fn list_type[T]() type {
+        List[T]
+    }
+    fn of[T]() type {
+        T
+    }
+    fn invoke_type(comptime factory fn() type) type {
+        factory()
+    }
+    """
+}
+
+test fn computed_families_normalize_structural_bodies_and_pure_function_calls() {
+    discard accepted(std.text.join([computed_family_declarations(), """
+        fn keep(value dyn Family[Item[T] = comptime { invoke_type(list_type[T]) }])
+            dyn Family[Item[U] = List[U]] {
+            value
+        }
+        fn main() {
+            let source dyn Family[Item[T] = comptime { List[T] }] = true
+            assert keep(source).echo[Int]([7])[0] == 7
+            assert keep(source).echo[Text](["managed"])[0] == "managed"
+        }
+        """], "\n"))
+}
+
+test fn computed_families_keep_lexical_shadowing_captures_and_member_requirements() {
+    discard accepted(std.text.join([computed_family_declarations(), """
+        pub fn captured[X](value dyn Family[Item[T] = comptime { of[(X, T)]() }])
+            dyn Family[Item[U] = (X, U)] {
+            value
+        }
+        fn main() {
+            let T = Text
+            let Copy = Bool
+            let value dyn Family[Item[T] = comptime {
+                let Copy = T
+                List[Copy]
+            }] = true
+            assert value.echo[Int]([7])[0] == 7
+            assert comptime { T == Text && Copy == Bool }
+        }
+        """], "\n"))
+    discard accepted("""
+        concept Value {}
+        concept Family {
+            type Item[T Value] Value
+        }
+        fn identity_type[T Value]() type {
+            T
+        }
+        pub fn same(value dyn Family[Item[T] = comptime { identity_type[T]() }])
+            dyn Family[Item[U] = U] {
+            value
+        }
+        pub fn selected(value dyn Family[Item[T] = comptime if T implements Value {
+            identity_type[T]()
+        } else {
+            unavailable()
+        }]) dyn Family[Item[U] = U] {
+            value
+        }
+        """)
+    rejects("""
+        concept Value {}
+        concept Family {
+            type Item[T]
+        }
+        fn identity_type[T Value]() type {
+            T
+        }
+        pub fn invalid(value dyn Family[Item[T] = comptime { identity_type[T]() }]) {
+        }
+        """)
+}
+
+test fn computed_families_reject_unresolved_selection_and_runtime_capture() {
+    rejects(std.text.join([computed_family_declarations(), """
+        fn main() {
+            let value dyn Family[Item[T] = comptime {
+                if T == Int { Bool } else { List[T] }
+            }] = true
+            discard value
+        }
+        """], "\n"))
+    rejects(std.text.join([computed_family_declarations(), """
+        fn main() {
+            let value dyn Family[Item[T] = comptime if T == Int { Bool } else { List[T] }] = true
+            discard value
+        }
+        """], "\n"))
+    rejects(std.text.join([computed_family_declarations(), """
+        fn choose(comptime flag Bool, comptime T type) type {
+            if flag { List[T] } else { Bool }
+        }
+        pub fn invalid(flag Bool, value dyn Family[Item[T] = comptime { choose(flag, T) }]) {
+        }
+        """], "\n"))
+    rejects(std.text.join([computed_family_declarations(), """
+        fn choose(comptime flag Bool, comptime T type) type {
+            if flag { List[T] } else { Bool }
+        }
+        pub fn invalid(flag Bool) {
+            let value dyn Family[Item[T] = comptime { choose(flag, T) }] = true
+            discard value
+        }
+        """], "\n"))
+    rejects(std.text.join([computed_family_declarations(), """
+        fn ignore_flag[T](comptime flag Bool) type {
+            List[T]
+        }
+        pub fn invalid(flag Bool) {
+            let value dyn Family[Item[T] = comptime { ignore_flag[T](flag) }] = true
+            discard value
+        }
+        """], "\n"))
+}
+
+test fn computed_families_recheck_helper_changes_after_cache_restore() {
+    let source = std.text.join(["""
+        pub fn keep(value dyn Family[Item[T] = comptime { list_type[T]() }])
+            dyn Family[Item[U] = List[U]] {
+            value
+        }
+        """, computed_family_declarations()], "\n")
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, std.text.join([source, """
+        fn unrelated() {
+        }
+        """], "\n")) {
+        Result.Ok(_) => bodies_reused(restored) >= 1
+        Result.Err(_) => false
+    }
+    let changed = std.text.join(std.text.split(source, "    List[T]\n}"), "    of[(T, T)]()\n}")
+    assert changed != source
+    let recovered = restored_definition_cache(restored)
+    assert match cached_source(recovered, changed) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match cached_source(recovered, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
+test fn computed_family_headers_demand_forward_helpers_and_reject_dependency_cycles() {
+    discard accepted("""
+        concept Family {
+            type Item[T]
+        }
+        pub fn forward(value dyn Family[Item[T] = comptime { later[T]() }])
+            dyn Family[Item[U] = List[U]] {
+            value
+        }
+        fn later[T]() type {
+            List[T]
+        }
+        """)
+    let cycle = """
+        concept Family {
+            type Item[T]
+        }
+        fn first(value dyn Family[Item[T] = comptime { later[T]() }]) {
+        }
+        fn later[T]() type {
+            discard first
+            List[T]
+        }
+        """
+    assert match checked(source_files(cycle)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "cyclic compile-time dependency")
+        Result.Ok(_) => false
+    }
+}

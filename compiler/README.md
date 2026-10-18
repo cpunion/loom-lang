@@ -2140,10 +2140,16 @@ input requirements and must establish the member's result requirements; they
 cannot strengthen the domain. A template-local parameter cannot escape through
 inference into an enclosing parameter.
 
-Templates normalize structural types and associated projections. A `comptime`
-computation that depends on a template-local parameter is not yet a symbolic
-template and rejects. Templates are compile-time metadata, not runtime type
-functions. Incremental body reuse reconstructs closed templates with fresh bound
+Templates normalize structural types, associated projections and pure `comptime`
+computations with closed structural results. For example, `Item[T] = comptime {
+list_type[T]() }` can use an ordinary type-producing helper, including a known
+compile-time function value. Template binders shadow outer names; their inherited
+requirements remain local. A determined `comptime if` instantiates only its chosen
+branch. An unresolved choice involving a template binder rejects rather than
+sampling concrete calls or inventing a uniform opaque result. Signature computations
+may demand later helper signatures; real header dependency cycles reject.
+Templates are compile-time metadata, not runtime type functions.
+Incremental body reuse reconstructs closed templates with fresh bound
 variables and current declaration identities; free captures or unsupported
 metadata still require a fresh check.
 The [dynamic family example](examples/dyn_families/main.loom) exercises native

@@ -9,36 +9,45 @@ fn dynamic_family_templates_preserve_captures_and_only_emit_reachable_slots() {
     success(&loom(&["check", example.to_str().unwrap()]));
     let executable = common::executable(temporary.path(), "dyn-families");
     let ir = temporary.path().join("dyn-families.ll");
-    success(
-        &common::command(&[
-            "build",
-            example.to_str().unwrap(),
-            "--output",
-            executable.to_str().unwrap(),
-            "--emit-ir",
-            ir.to_str().unwrap(),
-        ])
-        .env("LOOM_OPT_LEVEL", "0")
-        .output()
-        .unwrap(),
-    );
-    success(
-        &Command::new(executable)
-            .env("LOOM_GC_STRESS", "1")
+    let tests = common::executable(temporary.path(), "dyn-family-tests");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                example.to_str().unwrap(),
+                "--output",
+                executable.to_str().unwrap(),
+                "--emit-ir",
+                ir.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
             .output()
             .unwrap(),
-    );
-    assert!(
-        !fs::read_to_string(ir)
-            .unwrap()
-            .contains("unreachable-dyn-family-method")
-    );
-    success(
-        &common::command(&["test", example.to_str().unwrap()])
-            .env("LOOM_OPT_LEVEL", "0")
-            .output()
-            .unwrap(),
-    );
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+        let emitted = fs::read_to_string(&ir).unwrap();
+        assert!(!emitted.contains("unreachable-dyn-family-method"));
+        assert!(!emitted.contains("compile-time-family-helper"));
+        success(
+            &common::command(&["test", example.to_str().unwrap()])
+                .args(["--no-run", "--output"])
+                .arg(&tests)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(
+            &Command::new(&tests)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
 }
 
 #[test]

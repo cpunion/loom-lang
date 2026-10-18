@@ -59,6 +59,7 @@ impl Nested for Bool {
 }
 
 fn exercise() {
+    exercise_computed()
     exercise_projection()
     let lists dyn Lists[Item[T] = List[T]] = true
     let values = relabel(lists).echo[Int]([7, 9])

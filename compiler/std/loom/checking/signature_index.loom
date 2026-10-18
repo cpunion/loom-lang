@@ -19,6 +19,54 @@ fn source_signature_id(env Environment, owner Int) Int {
     get(ids, owner)
 }
 
+// Header CTFE can demand a later declaration. The existing index records -1
+// for absent and -2 only while its header is being resolved; no partial
+// signature is visible to overload selection or saved after failure.
+fn demand_source_signature(env Environment, owner Int) Result[Int, Failure] {
+    let known = source_signature_id(env, owner)
+    if known >= 0 {
+        return Result.Ok(known)
+    }
+    let node = symbol(env, owner).node
+    if known == -2 {
+        return Result.Err(failure(env, owner, node, "cyclic compile-time dependency in function signature"))
+    }
+    let ids = get(env.inputs, 0).signature_ids
+    while length(ids) <= owner {
+        push(ids, -1)
+    }
+    set(ids, owner, -2)
+    let arguments = abstract_arguments(env, function_parameter_count(env, owner))
+    let built = match requirements(env, owner, arguments) {
+        Result.Ok(evidence) => match source_signature(env, owner, arguments, evidence) {
+            Result.Ok(current) => register_signature(env, current)
+            Result.Err(failed) => Result.Err(failed)
+        }
+        Result.Err(failed) => Result.Err(failed)
+    }
+    match built {
+        Result.Ok(id) => Result.Ok(id)
+        Result.Err(failed) => {
+            set(ids, owner, -1)
+            Result.Err(failed)
+        }
+    }
+}
+
+fn demand_call_signatures(env Environment, available List[Int]) Result[Bool, Failure] {
+    var index = 0
+    while index < length(available) {
+        let owner = get(available, index)
+        let item = symbol(env, owner)
+        if item.node.kind == NodeKind.Function && pack_parameter(item.node) < 0 &&
+        (item.owner < 0 || prototype(env, owner)) {
+            discard demand_source_signature(env, owner)?
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
 fn call_signature_options(env Environment, available List[Int], arguments Int, parameters Int) List[Int] {
     let options = new[Int]()
     var index = 0

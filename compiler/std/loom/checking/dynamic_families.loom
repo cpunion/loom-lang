@@ -61,13 +61,9 @@ fn family_binding_node(node Node, parameters List[Node], types List[Int]) Node {
     pack_node(node, node.kind, name, children)
 }
 
-fn dynamic_binding(env Environment, owner Int, member Int, binding Node,
-    arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
+fn dynamic_family_parameters(env Environment, owner Int, member Int, binding Node) Result[List[Node], Failure] {
     let parameters = group(binding, NodeKind.TypeParameters)
     discard member_parameter_nodes(env, member, owner, parameters, binding)?
-    if length(parameters) == 0 {
-        return resolve_bound(env, owner, child(binding, 0), arguments, obligations, depth)
-    }
     var index = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)
@@ -79,9 +75,24 @@ fn dynamic_binding(env Environment, owner Int, member Int, binding Node,
         }
         index = index + 1
     }
+    Result.Ok(parameters)
+}
+
+fn dynamic_binding(env Environment, owner Int, member Int, binding Node,
+    arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
+    let parameters = dynamic_family_parameters(env, owner, member, binding)?
+    if length(parameters) == 0 {
+        return resolve_bound(env, owner, child(binding, 0), arguments, obligations, depth)
+    }
+    if family_computation(child(binding, 0)) {
+        return computed_family_binding(family_header_context(env, owner, arguments, obligations)?, member, binding)
+    }
     let fresh = fresh_family_parameters(env, length(parameters))
     let evidence = family_obligations(env, member, fresh, obligations)?
     let body = resolve_bound(env, owner, family_binding_node(child(binding, 0), parameters, fresh), arguments, evidence, depth + 1)?
+    if get(env.types, body).kind == TypeKind.Family {
+        return Result.Ok(type_family(env, fresh, apply_type_family(env, owner, body, fresh, binding)?))
+    }
     Result.Ok(type_family(env, fresh, body))
 }
 

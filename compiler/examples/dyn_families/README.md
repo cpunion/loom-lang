@@ -16,3 +16,9 @@ family whose inner interface captures the outer template parameter. A bounded
 projection template normalizes `T.Data` when its generic method is called. Runtime
 dispatch still uses only reachable concrete method instantiations. It performs
 no runtime type discovery and the type template has no native value layout.
+
+[Computed templates](computed.loom) use pure helpers and compile-time function
+values to construct the same structural bindings. The example covers signatures,
+lexical shadowing, captured outer types, nested templates and known selected
+branches. Computation helpers and unselected branches do not become native roots.
+Unknown type-dependent decisions remain errors rather than sampled specializations.
