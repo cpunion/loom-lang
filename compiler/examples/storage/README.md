@@ -13,9 +13,10 @@ IDs, not physical database names. Explicit `(field_name, column_id)` mappings
 support renamed fields; descriptor order determines row order.
 
 The example supplies an explicit `ColumnValue` implementation for constrained
-`Amount`. Decoding calls the ordinary checked constructor, so a negative stored
-amount is rejected. No handwritten record encoder/decoder or runtime type
-discovery is needed. The descriptor and mapping are frozen during preparation;
+`Amount`, delegating to the source `encode_refined_column` /
+`decode_refined_column` helpers. Decoding calls the ordinary checked constructor,
+so a negative stored amount is rejected. No handwritten record encoder/decoder
+or runtime type discovery is needed. The descriptor and mapping are frozen during preparation;
 record values and Bytes retain ordinary sharing.
 
 This example does not access a database or prove a schema upgrade safe. Deployment
