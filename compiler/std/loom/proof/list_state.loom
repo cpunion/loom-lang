@@ -36,6 +36,11 @@ fn with_extent(identity Int, size Linear, allocated Bool, state State) State {
 fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool, state State) State {
     let extents = new[ListExtent]()
     var private_storage = initially_private
+    var birth_floor = if allocated {
+        identity
+    } else {
+        -1
+    }
     var read_only = false
     var fixed_extent = false
     var invariant_type = -1
@@ -48,6 +53,7 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
             push(extents, extent)
         } else {
             private_storage = extent.private_storage
+            birth_floor = extent.birth_floor
             read_only = extent.read_only
             fixed_extent = extent.fixed_extent
             invariant_type = extent.invariant_type
@@ -60,6 +66,7 @@ fn with_extent(identity Int, size Linear, allocated Bool, initially_private Bool
             identity = identity
             size = size
             allocated = allocated
+            birth_floor = birth_floor
             private_storage = private_storage
             read_only = read_only
             fixed_extent = fixed_extent
@@ -122,6 +129,7 @@ fn private_extent(extent ListExtent, private_storage Bool) ListExtent {
         identity = extent.identity
         size = extent.size
         allocated = extent.allocated
+        birth_floor = extent.birth_floor
         private_storage = private_storage
         read_only = extent.read_only
         fixed_extent = extent.fixed_extent
@@ -268,6 +276,9 @@ fn extent_overlap(left ListExtent, right ListExtent) Bool {
         return true
     }
     if list_graph_frame(left, right) || list_graph_frame(right, left) {
+        return false
+    }
+    if left.birth_floor > right.identity || right.birth_floor > left.identity {
         return false
     }
     if left.allocated && (right.allocated || left.identity > right.identity) {

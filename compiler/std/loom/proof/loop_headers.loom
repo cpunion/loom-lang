@@ -11,6 +11,10 @@ fn loop_header_leaf(proof Verification, candidates List[LoopCandidate], local In
             if length(candidates) < 64 && list_state(identity, entry)?.private_storage {
                 discard add_loop_candidate(candidates, LoopCandidate.Unpublished(local, path), entry)?
             }
+            let birth = list_state(identity, entry)?.birth_floor
+            if birth >= 0 && length(candidates) < 64 {
+                discard add_loop_candidate(candidates, LoopCandidate.Born(local, path, birth), entry)?
+            }
             var index = 0
             while index < length(entry.extents) && length(candidates) < 64 {
                 let target = get(entry.extents, index)
@@ -64,6 +68,31 @@ fn loop_header_candidates(proof Verification, candidates List[LoopCandidate], wr
     Result.Ok(length(candidates) - before)
 }
 
+// Lower bounds form a minimum join. Weaken the one entry proposal rather than
+// enumerating epoch cutoffs. A weakening must rebuild the head before any exit
+// or captured return can be committed.
+fn loop_birth_floor(local Int, path List[Int], floor Int, backedges List[Outcome]) Result[Int, Text] {
+    var bound = floor
+    var index = 0
+    while index < length(backedges) {
+        let state = get(backedges, index).state
+        if !loop_holds(Predicate.Constant(false), state) {
+            let value = loop_local_value(get(state.locals, local), path)?
+            let birth = match value {
+                Value.List(identity) => list_state(identity, state)?.birth_floor
+                _ => {
+                    return Result.Err("loop allocation join needs a tracked sequence")
+                }
+            }
+            if birth < bound {
+                bound = birth
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(bound)
+}
+
 fn loop_header_count(candidates List[LoopCandidate]) Int {
     var count = 0
     var index = 0
@@ -73,6 +102,9 @@ fn loop_header_count(candidates List[LoopCandidate]) Int {
                 count = count + 1
             }
             LoopCandidate.Unpublished(_, _) => {
+                count = count + 1
+            }
+            LoopCandidate.Born(_, _, _) => {
                 count = count + 1
             }
             LoopCandidate.Unreachable(_, _, _) => {
@@ -270,6 +302,17 @@ fn loop_separated_head(local Int, value Value, candidates List[LoopCandidate], s
     var index = 0
     while index < length(candidates) {
         match get(candidates, index) {
+            LoopCandidate.Born(target, path, floor) => {
+                if target == local {
+                    match loop_local_value(value, path)? {
+                        Value.List(identity) => {
+                            current = storage_birth(identity, floor, current)
+                        }
+                        _ => {
+                        }
+                    }
+                }
+            }
             LoopCandidate.Unpublished(target, path) => {
                 if target == local {
                     // An entry/all-backedge property, not a new allocation or

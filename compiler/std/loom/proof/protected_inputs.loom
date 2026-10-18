@@ -45,6 +45,7 @@ fn protected_extent(identity Int, guarantee InputGuarantee, state State) State {
                 identity = extent.identity
                 size = extent.size
                 allocated = extent.allocated
+                birth_floor = extent.birth_floor
                 private_storage = extent.private_storage
                 read_only = extent.read_only || (extent.identity == identity && guarantee.writes == 0)
                 fixed_extent = extent.fixed_extent || (extent.identity == identity && guarantee.writes <= 1)
