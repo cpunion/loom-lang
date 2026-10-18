@@ -10,6 +10,13 @@ pub record ContractGroupFailure {
 // or termination promise. Non-members are independently checked host evidence.
 pub fn verify_contract_group(program Program, members List[Bool], backend ProofBackend)
 Result[List[List[Expr]], ContractGroupFailure] {
+    verify_contract_group(program, members, backend, new[InputGuarantee]())
+}
+
+// Exact continuing input policies supplied by the checked source host, not
+// promises inferred from a read-only body or a user-provided type name.
+pub fn verify_contract_group(program Program, members List[Bool], backend ProofBackend,
+    protected List[InputGuarantee]) Result[List[List[Expr]], ContractGroupFailure] {
     if length(members) != length(program.functions) {
         return Result.Err(ContractGroupFailure {
                 function = -1
@@ -33,7 +40,7 @@ Result[List[List[Expr]], ContractGroupFailure] {
                 }
             }
             if length(proof.function.postconditions) != 0 {
-                match verify_body(proof) {
+                match verify_body(proof, protected) {
                     Result.Ok(_) => {
                     }
                     Result.Err(message) => {

@@ -46,9 +46,9 @@ fn proves_with_input_invariants(stage Context, program std.loom.typed.Program, f
     }
     match expanded_invariant_types(stage, function) {
         Result.Ok(types) => match if continuation {
-            verify_expression_with_helpers(proof_types(program, types), function, backend)
+            verify_expression_with_helpers(proof_types(program, types), function, backend, stable_extent_guarantees(stage.env))
         } else {
-            verify_with_helpers(proof_types(program, types), function, backend)
+            verify_with_helpers(proof_types(program, types), function, backend, stable_extent_guarantees(stage.env))
         } {
             Result.Ok(_) => true
             Result.Err(_) => false

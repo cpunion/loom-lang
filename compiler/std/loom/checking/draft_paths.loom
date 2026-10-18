@@ -339,6 +339,8 @@ fn unpublished_draft(env Environment, functions List[Function], current Function
             contents = true
             writes = 0
             root_list = -1
+            header_reads = false
+            stable_headers = Option.None
             element_reads = reads.element_reads
             calls = new[InvariantCall]()
             valid = reads.valid

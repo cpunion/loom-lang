@@ -88,6 +88,8 @@ record TypeState {
     // Unconditional writes: 0: none; 1: replacement; 2: replacement and append.
     // Individual atomic replacements may additionally prove full preservation.
     list_writes Int
+    // A persistent invariant depends on this sequence's non-resizing policy.
+    stable_extent Bool
 }
 
 record Environment {

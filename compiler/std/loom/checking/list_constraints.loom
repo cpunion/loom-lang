@@ -2,7 +2,8 @@ import std.loom.proof.fresh_list_factory
 import std.loom.proof.single_list_write
 
 // A constrained sequence has no pre-existing writable outer aliases. Content
-// predicates may observe immutable fields, not nested shared mutable storage.
+// predicates may observe immutable fields and proved-stable child extents,
+// not nested shared mutable contents.
 // Copies retain the constrained type and ordinary sharing.
 // Plain List borrows must not escape. Stores require a proved preserving
 // operation; no runtime monitor is needed.

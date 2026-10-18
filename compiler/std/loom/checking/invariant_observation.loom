@@ -13,6 +13,8 @@ record InvariantReads {
     contents Bool
     writes Int
     root_list Int
+    header_reads Bool
+    stable_headers Option[List[Int]]
     element_reads List[Bool]
     calls List[InvariantCall]
     valid List[Bool]
@@ -96,7 +98,7 @@ fn invariant_call(reads InvariantReads, target Int, inputs List[InputOrigin], de
             inputs = inputs
             origin = origin_input(reads.root_list >= 0)
         })
-    if function.runtime_name != "" && !invariant_intrinsic_allowed(reads.contents, reads.writes, function.runtime_name, inputs) {
+    if function.runtime_name != "" && !invariant_intrinsic_allowed(reads, function.runtime_name, inputs) {
         set(reads.valid, 0, false)
         return origin_input()
     }
@@ -188,11 +190,22 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
         }
     }
     if kind == ExprKind.Call && origin_shared(borrowed) {
-        borrowed = invariant_call(if permitted >= 0 {
-                get(permissions, permitted).effects
-            } else {
-                reads
-            }, value.index, inputs, depth + 1)
+        let header = if permitted < 0 && match reads.stable_headers {
+                Option.Some(_) => true
+                Option.None => false
+            } {
+            invariant_header_call(reads, value, inputs, depth + 1)
+        } else {
+            Option.None
+        }
+        borrowed = match header {
+            Option.Some(origin) => origin
+            Option.None => invariant_call(if permitted >= 0 {
+                    get(permissions, permitted).effects
+                } else {
+                    reads
+                }, value.index, inputs, depth + 1)
+        }
     }
     if kind == ExprKind.IndirectCall && origin_shared(borrowed) {
         borrowed = invariant_indirect(reads, value, inputs, depth + 1)
@@ -216,7 +229,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
             borrowed = origin_indirect(borrowed)
         }
     }
-    if ((kind == ExprKind.Intrinsic && permitted < 0 && !invariant_intrinsic_allowed(reads.contents, reads.writes, value.text, inputs)) || kind == ExprKind.DynCall ||
+    if ((kind == ExprKind.Intrinsic && permitted < 0 && !invariant_intrinsic_allowed(reads, value.text, inputs)) || kind == ExprKind.DynCall ||
         kind == ExprKind.FrameStore) && origin_shared(borrowed) {
         set(reads.valid, 0, false)
     }
@@ -306,6 +319,8 @@ fn invariant_reads(env Environment, functions List[Function], value Expr, conten
         contents = contents
         writes = writes
         root_list = root_list
+        header_reads = false
+        stable_headers = Option.None
         element_reads = invariant_flag(false)
         calls = new[InvariantCall]()
         valid = invariant_flag(true)
@@ -313,7 +328,15 @@ fn invariant_reads(env Environment, functions List[Function], value Expr, conten
 }
 
 fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int, root_list Int) InvariantReads {
-    let reads = invariant_reads(env, program.functions, value, root_list >= 0, 0, root_list)
+    invariant_observation(env, program, value, count, root_list, Option.None)
+}
+
+fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int,
+    root_list Int, stable_headers Option[List[Int]]) InvariantReads {
+    let reads = InvariantReads {
+        stable_headers = stable_headers
+        ..invariant_reads(env, program.functions, value, root_list >= 0, 0, root_list)
+    }
     let inputs = new[InputOrigin]()
     push(inputs, origin_input())
     let frame = invariant_frame(count, inputs)
@@ -324,6 +347,11 @@ fn invariant_observation(env Environment, program std.loom.typed.Program, value 
         more = get(frame.changed, 0)
     }
     reads
+}
+
+fn invariant_intrinsic_allowed(reads InvariantReads, name Text, inputs List[InputOrigin]) Bool {
+    (reads.header_reads && std.loom.proof.sequence_operation(name) == "list_len" && length(inputs) == 1) ||
+    invariant_intrinsic_allowed(reads.contents, reads.writes, name, inputs)
 }
 
 fn invariant_intrinsic_allowed(contents Bool, writes Int, name Text, inputs List[InputOrigin]) Bool {

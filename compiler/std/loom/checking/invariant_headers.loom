@@ -1,0 +1,123 @@
+// A resize-protected sequence can change elements, but not its outer extent.
+// Revalidate the child invariant rather than depending on declaration order or
+// an uninitialized list_writes entry. Only this predicate's reachable types are
+// visited, and recursive stability queries never supply their own evidence.
+fn invariant_header_types(env Environment, root Int, checking List[Int]) List[Int] {
+    let pending = ints(root)
+    let seen = new[Int]()
+    let stable = new[Int]()
+    var index = 0
+    while index < length(pending) && index < 256 {
+        let ty = get(pending, index)
+        index = index + 1
+        if !resource_seen(seen, ty) {
+            push(seen, ty)
+            let shape = get(env.types, ty)
+            if get(env.type_states, ty).phase == 2 {
+                if constrained_sequence(env, ty) && !resource_seen(checking, ty) {
+                    match validate_refinement(env, ty, Option.Some(checking)) {
+                        Result.Ok(writes) => {
+                            if writes == 1 {
+                                let state = get(env.type_states, ty)
+                                set(env.type_states, ty, TypeState {
+                                        list_writes = 1
+                                        stable_extent = true
+                                        ..state
+                                    })
+                                push(stable, ty)
+                            }
+                        }
+                        Result.Err(_) => {
+                        }
+                    }
+                }
+                if shape.kind == TypeKind.List {
+                    push(pending, get(shape.arguments, 0))
+                }
+                var field = 0
+                while field < length(shape.fields) {
+                    push(pending, get(shape.fields, field).ty)
+                    field = field + 1
+                }
+                var variant = 0
+                while variant < length(shape.variants) {
+                    let fields = get(shape.variants, variant).fields
+                    field = 0
+                    while field < length(fields) {
+                        push(pending, get(fields, field))
+                        field = field + 1
+                    }
+                    variant = variant + 1
+                }
+            }
+        }
+    }
+    stable
+}
+
+fn invariant_header_argument(stable List[Int], value Expr) Bool {
+    if resource_seen(stable, value.ty) {
+        return true
+    }
+    value.kind == ExprKind.Coerce && length(value.children) == 1 &&
+    resource_seen(stable, get(value.children, 0).ty)
+}
+
+// Mandatory proofs may retain the exact extents on which continuing record
+// predicates depend. Content versions still change across suspension/writes.
+fn stable_extent_guarantees(env Environment) List[std.loom.proof.InputGuarantee] {
+    let protected = new[std.loom.proof.InputGuarantee]()
+    var ty = 6
+    while env.has_refinements && ty < length(env.types) {
+        let state = get(env.type_states, ty)
+        if state.phase == 2 && state.stable_extent && state.list_writes == 1 {
+            push(protected, std.loom.proof.InputGuarantee {
+                    ty = ty
+                    writes = 1
+                })
+        }
+        ty = ty + 1
+    }
+    protected
+}
+
+// The alternate footprint permits only length reads of protected inputs, not
+// element reads, writes, publication or suspension. Its memo and failure flag
+// are private to this probe. Known wrappers keep their ordinary origin walk,
+// so an unobserved raw sibling need not acquire a stable-extent guarantee.
+fn invariant_header_call(reads InvariantReads, value Expr, inputs List[InputOrigin], depth Int) Option[InputOrigin] {
+    let stable = match reads.stable_headers {
+        Option.Some(stable) => stable
+        Option.None => {
+            return Option.None
+        }
+    }
+    if length(stable) == 0 ||
+    (value.ty != 0 && !inline_constraint_base(reads.env, value.ty, 0)) {
+        return Option.None
+    }
+    var index = 0
+    while index < length(inputs) {
+        if origin_shared(get(inputs, index)) && !invariant_header_argument(stable, get(value.children, index)) {
+            return Option.None
+        }
+        index = index + 1
+    }
+    let probe = InvariantReads {
+        contents = false
+        writes = 0
+        root_list = -1
+        header_reads = true
+        stable_headers = Option.None
+        element_reads = invariant_flag(false)
+        calls = new[InvariantCall]()
+        valid = invariant_flag(true)
+        ..reads
+    }
+    let origin = invariant_call(probe, value.index, inputs, depth)
+    if get(probe.valid, 0) && !origin_shared(origin) {
+        Option.Some(origin)
+    } else {
+        Option.None
+    }
+}

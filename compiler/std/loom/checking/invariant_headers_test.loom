@@ -1,0 +1,154 @@
+test fn constraints_can_observe_resize_protected_child_extents_through_helpers() {
+    byte_constraint_accept("""
+        import std.list.length
+        import std.list.push
+        import std.bytes.length
+        import std.result.Result
+        import std.result.ConstraintError
+        record Shared {
+            values Fixed
+            bytes FixedBytes
+            notes List[Int]
+            count Int
+        }
+        fn extent(values List[Int]) Int {
+            let alias = values
+            length(alias)
+        }
+        fn valid(value Shared) Bool {
+            value.count == extent(value.values) + length(value.bytes)
+        }
+        type Valid = Shared where valid(self)
+        type Fixed = List[Int] where length(self) <= 4
+        type FixedBytes = Bytes where length(self) == 2
+        pub fn checked(value Shared) Result[Valid, ConstraintError] {
+            Valid(value)
+        }
+        pub fn mutate(value Valid) {
+            value.values[0] = 9
+            value.bytes[0] = 1
+            push(value.notes, 7)
+        }
+        pub fn count(value Valid) Int
+        ensures result == extent(value.values) + length(value.bytes)
+        {
+            value.count
+        }
+        async fn tick() {
+        }
+        pub async fn count_later(value Valid) Int
+        ensures result == extent(value.values) + length(value.bytes)
+        {
+            tick().await
+            value.count
+        }
+        """)
+}
+
+test fn stable_extent_permission_does_not_allow_contents_growth_or_erased_aliases() {
+    let header = """
+        import std.list.length
+        import std.list.push
+        type Fixed = List[Int] where length(self) == 2
+        type Growing = List[Int] where length(self) > 0
+        record Shared {
+            values Fixed
+            growing Growing
+            raw List[Int]
+        }
+
+        """
+    let invalid = ["""
+        type Invalid = Shared where self.values[0] > 0
+        """, """
+        type Invalid = Shared where length(self.growing) > 1
+        """, """
+        type Invalid = Shared where length(self.raw) == 2
+        """, """
+        fn hidden(values List[Int]) Bool {
+            values[0] > 0
+        }
+        type Invalid = Shared where hidden(self.values)
+        """, """
+        fn hidden(values List[Int], growing List[Int]) Bool {
+            length(values) == length(growing)
+        }
+        type Invalid = Shared where hidden(self.values, self.growing)
+        """, """
+        fn hidden(values List[Int]) Bool {
+            push(values, 9)
+            length(values) > 0
+        }
+        type Invalid = Shared where hidden(self.values)
+        """]
+    var index = 0
+    while index < length(invalid) {
+        list_constraint_reject(concat(header, invalid[index]))
+        index = index + 1
+    }
+    assert match list_constraint_checked(concat(header, """
+        type Checked = Shared where length(self.values) == 2
+        fn append(values List[Int]) {
+            push(values, 9)
+        }
+        pub fn invalid(value Checked) {
+            append(value.values)
+        }
+        """)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message,
+            "invalidate or expose constrained sequence storage")
+        Result.Ok(_) => false
+    }
+    assert match list_constraint_checked(concat(header, """
+        type Checked = Shared where length(self.values) == 2
+        async fn tick() {
+        }
+        pub async fn invalid(value Checked) Int
+        ensures result == value.values[0]
+        {
+            let previous = value.values[0]
+            tick().await
+            previous
+        }
+        """)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message,
+            "required postcondition is not proved")
+        Result.Ok(_) => false
+    }
+}
+
+test fn stable_extent_dependencies_recheck_after_a_cached_child_constraint_changes() {
+    let source = """
+        import std.list.length
+        import std.result.Result
+        import std.result.ConstraintError
+        record Header {
+            values Fixed
+            count Int
+        }
+        type Checked = Header where self.count == length(self.values)
+        type Fixed = List[Int] where length(self) == 2
+        pub fn checked(value Header) Result[Checked, ConstraintError] {
+            Checked(value)
+        }
+        """
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(fixture_project(list_constraint_files(concat(source,
+                    "\nfn unrelated() {}\n"))), false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) >= 1
+    let growing = std.text.join(std.text.split(source, "length(self) == 2"), "length(self) > 0")
+    assert match check_project_cached(fixture_project(list_constraint_files(growing)),
+        false, build_inputs(no_input_reader), restored_definition_cache(initial)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

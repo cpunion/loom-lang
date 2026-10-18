@@ -2558,6 +2558,17 @@ not prove predicate truth or protect arbitrary existing mutable aliases. See the
 [effect example](examples/record_refinement/effects.loom).
 The [callback example](examples/record_refinement/callbacks.loom) uses ordinary
 higher-order helpers at the same checked construction boundary.
+
+Nested List/Bytes lengths may also be observed when the child's checked mutation
+policy prohibits resizing. The extent is stable for each existing header; this
+does not imply that every value of that child type has the same length. Ordinary
+pure wrappers may read that extent, while element reads, writes, escaping aliases
+and suspension cannot gain permission from the header-only footprint. Unobserved
+shared siblings remain mutable. The compiler retains this policy dependency;
+later validation cannot silently grant resizing. Growing or unrestricted children
+and unknown observations still reject. See the
+[stable extent example](examples/record_refinement/extents.loom).
+
 Scoped resources and one-shot Tasks cannot be wrapped in a refinement.
 Its constructor checks an unknown value once and returns `Result`; copying the
 refined value or widening it to the base record adds no check. Fields cannot be
@@ -2591,8 +2602,9 @@ equality with a previous or subsequent read.
 List-backed constraints can observe lengths independently of their element
 type, including generic or shared elements. Content predicates may observe
 immutable element fields even beside unobserved shared fields. Reads through
-those fields into nested mutable Lists or Bytes reject, including a recursive
-List with the same stored type as the outer header.
+those fields into nested mutable List/Bytes contents reject, including a recursive
+List with the same stored type as the outer header. Resize-protected child
+extents use the header-only rule above, not permission to read their contents.
 Construction must use a fresh List literal, a factory proved to return a
 fresh unpublished outer header, or a proved unpublished local draft. Elements may retain their specified sharing;
 the existing header cannot be returned through a nested input either.

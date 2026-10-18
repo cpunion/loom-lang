@@ -354,6 +354,7 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
                 phase = 2
                 task_width = -1
                 list_writes = 0
+                stable_extent = false
             })
         push(context.env.closures, ClosurePlan {
                 signature = signature

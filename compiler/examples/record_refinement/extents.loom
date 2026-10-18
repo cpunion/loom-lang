@@ -1,0 +1,104 @@
+import std.time.sleep_ms
+
+type ExtentValues = List[Int] where length(self) <= 4
+
+record ExtentDraft {
+    values ExtentValues
+    notes List[Int]
+    count Int
+}
+
+fn stable_length(values List[Int]) Int {
+    let alias = values
+    length(alias)
+}
+
+fn extent_matches(value ExtentDraft) Bool {
+    value.count == stable_length(value.values)
+}
+
+type ExtentSnapshot = ExtentDraft where extent_matches(self)
+
+enum ExtentEnvelope {
+    Empty
+    Snapshot(ExtentSnapshot)
+}
+
+fn envelope_extent(value ExtentEnvelope) Int {
+    match value {
+        ExtentEnvelope.Empty => 0
+        ExtentEnvelope.Snapshot(snapshot) => length(snapshot.values)
+    }
+}
+
+fn bind_extent(values ExtentValues, notes List[Int], count Int) Result[ExtentSnapshot, ConstraintError] {
+    ExtentSnapshot(ExtentDraft {
+            values = values
+            notes = notes
+            count = count
+        })
+}
+
+fn observed_extent(value ExtentSnapshot) Int
+ensures result == length(value.values)
+{
+    value.count
+}
+
+fn stable_extent_scope() Bool {
+    let values = ExtentValues([1, 2])
+    let notes List[Int] = []
+    let snapshot = match bind_extent(values, notes, 2) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return false
+        }
+    }
+    let alias = values
+    alias[0] = 9
+    push(snapshot.notes, 7)
+    assert observed_extent(snapshot) == 2 && snapshot.values[0] == 9
+    assert length(notes) == 1
+    match bind_extent(values, notes, 3) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+async fn retained_extent(value ExtentSnapshot) Int
+ensures result == length(value.values)
+{
+    sleep_ms(1).await
+    value.count
+}
+
+async fn retained_envelope(value ExtentEnvelope) Int
+ensures result == envelope_extent(value)
+{
+    sleep_ms(1).await
+    match value {
+        ExtentEnvelope.Empty => 0
+        ExtentEnvelope.Snapshot(snapshot) => snapshot.count
+    }
+}
+
+test async fn stable_child_extents_survive_alias_writes_and_real_suspension() {
+    assert stable_extent_scope()
+    let values = ExtentValues([1, 2])
+    let notes List[Int] = []
+    let snapshot = match bind_extent(values, notes, 2) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let pending = retained_extent(snapshot)
+    values[0] = 11
+    push(notes, 9)
+    assert pending.await == 2
+    assert snapshot.values[0] == 11 && length(snapshot.notes) == 1
+    assert retained_envelope(ExtentEnvelope.Snapshot(snapshot)).await == 2
+    assert retained_envelope(ExtentEnvelope.Empty).await == 0
+}
