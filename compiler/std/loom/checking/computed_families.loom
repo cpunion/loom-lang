@@ -1,0 +1,178 @@
+fn family_computation(node Node) Bool {
+    if node.kind == NodeKind.Comptime {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if family_computation(child(node, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Headers have no runtime value environment. Bind parameter names as opaque
+// locals so a same-spelled global cannot hide an illegal runtime capture.
+fn family_header_context(env Environment, owner Int, arguments List[Int], evidence List[Requirement]) Result[Context, Failure] {
+    let base = empty_context(env, owner)
+    var context = Context {
+        arguments = arguments
+        signature = Signature {
+            requirements = evidence
+            ..base.signature
+        }
+        ..base
+    }
+    let parameters = group(symbol(env, owner).node, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        let opaque = intern(env, TypeKind.Rigid, length(env.types), new[Int]())
+        context = bind_local(context, parameter, parameter.value, opaque, false, -1)?
+        index = index + 1
+    }
+    Result.Ok(context)
+}
+
+// A symbolic computation must return a closed structural template, not a
+// fresh opaque answer to an unresolved type decision. Scope-keyed traversal
+// retains nested binders and legitimate captures without concrete sampling.
+fn computed_family_closed(env Environment, ty Int, prior Int, scopes List[FamilyAliases],
+    scope Int, seen List[(Int, Int)], depth Int) Bool {
+    if depth >= 64 {
+        return false
+    }
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Rigid {
+        return ty < prior || family_alias(scopes, scope, ty, true) >= 0
+    }
+    var index = 0
+    while index < length(seen) {
+        let previous = get(seen, index)
+        if previous.0 == ty && previous.1 == scope {
+            return true
+        }
+        index = index + 1
+    }
+    push(seen, (ty, scope))
+    if shape.kind == TypeKind.Family {
+        let parameters = family_parameters(env, ty)
+        let nested = family_scope(scopes, scope, parameters, parameters)
+        return computed_family_closed(env, get(shape.arguments, shape.symbol), prior,
+            scopes, nested, seen, depth + 1)
+    }
+    index = 0
+    while index < length(shape.arguments) {
+        if !computed_family_closed(env, get(shape.arguments, index), prior, scopes, scope, seen, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn computed_family_body(context Context, node Node) Result[Node, Failure] {
+    if node.kind == NodeKind.Comptime {
+        var source = child(node, 0)
+        var selected = context
+        if source.kind == NodeKind.If {
+            match guard_condition(context, node, child(source, 0), 0)? {
+                GuardDecision.Pending => {
+                    return Result.Err(error(context, node, "dynamic associated family needs a uniform symbolic type template"))
+                }
+                GuardDecision.Known(yes, chosen) => {
+                    selected = chosen
+                    if yes {
+                        source = child(source, 1)
+                    } else if length(source.children) == 3 {
+                        source = child(source, 2)
+                    } else {
+                        return Result.Err(error(context, node, "type expression must have a compile-time identity"))
+                    }
+                }
+            }
+        }
+        let value = computed_type(selected, node, source)?
+        if value.kind != ExprKind.TypeValue {
+            return Result.Err(error(context, node, "dynamic associated family needs a uniform symbolic type template"))
+        }
+        return Result.Ok(meta_reference(node, value.index))
+    }
+    if node.kind == NodeKind.DynType {
+        return meta_type_node(context, node)
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, computed_family_body(context, child(node, index))?)
+        index = index + 1
+    }
+    meta_type_node(context, pack_node(node, node.kind, node.value, children))
+}
+
+fn computed_family_binding(context Context, member Int, binding Node) Result[Int, Failure] {
+    let parameters = dynamic_family_parameters(context.env, context.signature.symbol, member, binding)?
+    let prior = length(context.env.types)
+    let fresh = fresh_family_parameters(context.env, length(parameters))
+    let stage = staging(context, binding)?
+    var scope = Context {
+        signature = Signature {
+            requirements = family_obligations(stage.env, member, fresh, stage.signature.requirements)?
+            ..stage.signature
+        }
+        ..stage
+    }
+    let boundary = scope.head
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        scope = bind_meta(scope, parameter, meta_literal(scope, parameter, get(fresh, index))?, boundary)?.context
+        index = index + 1
+    }
+    let body = computed_family_body(scope, child(binding, 0))?
+    let ty = resolve_bound(scope.env, scope.signature.symbol, body, scope.arguments, scope.signature.requirements, 0)?
+    let scopes = new[FamilyAliases]()
+    let aliases = family_scope(scopes, -1, fresh, fresh)
+    if !computed_family_closed(scope.env, ty, prior, scopes, aliases, new[(Int, Int)](), 0) {
+        return Result.Err(error(context, binding, "dynamic associated family needs a uniform symbolic type template"))
+    }
+    discard well_formed(scope.env, scope.signature.symbol, ty, scope.signature.requirements, binding, 0)?
+    Result.Ok(type_family(scope.env, fresh, ty))
+}
+
+// Preserve the original lexical environment while computing a family body.
+// The ordinary dyn resolver still checks duplicates, domains and result bounds.
+fn computed_dynamic_node(context Context, node Node) Result[Node, Failure] {
+    let capability = referenced_concept(context.env, context.signature.symbol, node, node.value, 0)?
+    if capability < 0 {
+        return Result.Err(error(context, node, "expected an accessible concept"))
+    }
+    let members = get(context.env.concepts, concept_index(context.env, capability)).associated
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        let binding = child(node, index)
+        if length(group(binding, NodeKind.TypeParameters)) != 0 && family_computation(binding) {
+            var member = 0
+            while member < length(members) && symbol(context.env, get(members, member)).name != binding.value {
+                member = member + 1
+            }
+            if member == length(members) {
+                return Result.Err(error(context, binding, "unknown dynamic associated type binding"))
+            }
+            let ty = computed_family_binding(context, get(members, member), binding)?
+            let parts = [meta_reference(child(binding, 0), ty)]
+            var part = 1
+            while part < length(binding.children) {
+                push(parts, child(binding, part))
+                part = part + 1
+            }
+            push(children, pack_node(binding, binding.kind, binding.value, parts))
+        } else {
+            push(children, meta_type_node(context, binding)?)
+        }
+        index = index + 1
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}

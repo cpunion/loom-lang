@@ -124,8 +124,12 @@ Nontransparent/noncontiguous adapters retain boxes. Dynamic associated families
 accept scoped structural templates, including outer captures and nested bindings;
 conversion checks arbitrary admitted inputs rather than sampling reachable slots.
 Eligible body snapshots rekey closed templates, nested captures and symbolic
-projections without exporting their local evidence. Dependent compile-time type
-computations remain unsupported. See [concepts](../../compiler/README.md#concepts).
+projections without exporting their local evidence. Pure computed family bodies
+can normalize closed structural results in signatures and local annotations,
+including known function callbacks, lexical captures and selected branches.
+Unknown binder-dependent choices still reject without concrete sampling.
+Header helpers are resolved by dependency, with cycles reported explicitly.
+See [concepts](../../compiler/README.md#concepts).
 
 Receiver-free associated functions select an implementing type through
 `Concept.function[Self, ...](...)`, using ordinary calls, function values and

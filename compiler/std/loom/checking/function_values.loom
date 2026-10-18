@@ -26,6 +26,9 @@ fn referenced_functions(context Context, node Node) Result[List[Int], Failure] {
     } else {
         ordinary
     }
+    if context.env.stage_depth > 0 {
+        discard demand_call_signatures(context.env, available)?
+    }
     var index = 0
     while index < length(available) {
         let declaration = get(available, index)

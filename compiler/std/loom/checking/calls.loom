@@ -558,6 +558,9 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
 }
 
 fn functions_call(context Context, node Node, available List[Int], types List[Node], inputs CallInputs, expected Int) Result[Expr, Failure] {
+    if context.env.stage_depth > 0 {
+        discard demand_call_signatures(context.env, available)?
+    }
     let type_count = call_type_count(node, types)
     let options = call_signature_options(context.env, available, length(inputs.nodes), type_count)
     var index = 0

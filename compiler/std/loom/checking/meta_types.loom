@@ -147,6 +147,9 @@ fn meta_arguments(context Context, node Node, ty Int) List[Node] {
 }
 
 fn meta_type_node(context Context, node Node) Result[Node, Failure] {
+    if node.kind == NodeKind.DynType && family_computation(node) {
+        return computed_dynamic_node(context, node)
+    }
     if node.kind == NodeKind.AssociatedType && length(group(node, NodeKind.TypeParameters)) != 0 {
         return meta_family_node(context, node, new[Node]())
     }

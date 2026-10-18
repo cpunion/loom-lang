@@ -48,35 +48,6 @@ fn body_dynamic_slot(reuse BodyReuse, value Expr) BodyTarget {
     get(get(prior.interfaces, receiver.symbol).slots, value.index)
 }
 
-// Reused expressions already have concrete types and checked lexical access.
-// This context supplies current source identity to normal witness/slot building;
-// it neither invents generic assumptions nor restores previous witness indices.
-fn body_dynamic_context(env Environment, owner Int) Context {
-    Context {
-        lexical = new_lexical()
-        env = env
-        signature = Signature {
-            symbol = owner
-            parameters = 0
-            params = new[Int]()
-            compile_time = new[Int]()
-            result = 0
-            requirements = new[Requirement]()
-        }
-        arguments = new[Int]()
-        constants = new[StaticValue]()
-        locals = new[Local]()
-        bindings = new[Binding]()
-        head = -1
-        cleanups = new[Cleanup]()
-        cleanup_head = -1
-        loop_boundary = -2
-        facts = new[Fact]()
-        fact_head = -1
-        emit = true
-    }
-}
-
 fn body_dynamic_expression(env Environment, reuse BodyReuse, value Expr, owner Int, span Span, children List[Expr]) Result[Expr, Failure] {
     let node = Node {
         kind = NodeKind.Call
@@ -84,7 +55,8 @@ fn body_dynamic_expression(env Environment, reuse BodyReuse, value Expr, owner I
         span = span
         children = new[Node]()
     }
-    let context = body_dynamic_context(env, owner)
+    // Concrete reused types retain lexical access; rebuild only current slots.
+    let context = empty_context(env, owner)
     let ty = body_type(env, reuse, value.ty)?
     if value.kind == ExprKind.DynBox {
         return witness_box(context, node, get(children, 0), ty)

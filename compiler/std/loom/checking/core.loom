@@ -195,6 +195,34 @@ record Context {
     emit Bool
 }
 
+// A declaration-scoped entry without value bindings. Consumers add their
+// actual arguments/requirements; this supplies no inferred conformance facts.
+fn empty_context(env Environment, owner Int) Context {
+    Context {
+        lexical = new_lexical()
+        env = env
+        signature = Signature {
+            symbol = owner
+            parameters = 0
+            params = new[Int]()
+            compile_time = new[Int]()
+            result = 0
+            requirements = new[Requirement]()
+        }
+        arguments = new[Int]()
+        constants = new[StaticValue]()
+        locals = new[Local]()
+        bindings = new[Binding]()
+        head = -1
+        cleanups = new[Cleanup]()
+        cleanup_head = -1
+        loop_boundary = -2
+        facts = new[Fact]()
+        fact_head = -1
+        emit = true
+    }
+}
+
 record Step {
     context Context
     expression Expr
@@ -523,8 +551,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, decl
         // Impl headers are matched against complete concept signatures before
         // inheriting that exact overload's method parameter requirements.
         if item.node.kind == NodeKind.Function && pack_parameter(item.node) < 0 && (item.owner < 0 || prototype(env, index)) {
-            let arguments = abstract_arguments(env, function_parameter_count(env, index))
-            discard register_signature(env, source_signature(env, index, arguments, requirements(env, index, arguments)?)?)?
+            discard demand_source_signature(env, index)?
         }
         index = index + 1
     }

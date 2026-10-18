@@ -1,0 +1,56 @@
+import std.meta.of
+
+fn list_type[T]() type {
+    discard "compile-time-family-helper"
+    List[T]
+}
+
+fn invoke_type(comptime factory fn() type) type {
+    factory()
+}
+
+fn computed_lists(value dyn Lists[Item[T] = comptime {
+            invoke_type(list_type[T])
+        }])
+dyn Lists[Item[U] = List[U]] {
+    value
+}
+
+fn computed_pairs[X](value dyn Pairing[Item[T] = comptime {
+            of[(X, T)]()
+        }])
+dyn Pairing[Item[U] = (X, U)] {
+    value
+}
+
+fn computed_selected(value dyn Lists[Item[T] = comptime if T == T {
+            List[T]
+        } else {
+            unavailable()
+        }]) dyn Lists[Item[U] = List[U]] {
+    value
+}
+
+fn exercise_computed() {
+    let T = Text
+    let Copy = Bool
+    let source dyn Lists[Item[T] = comptime {
+            let Copy = T
+            List[Copy]
+        }] = true
+    assert computed_lists(source).echo[Int]([7])[0] == 7
+    assert computed_lists(source).echo[Text](["managed"])[0] == "managed"
+    assert computed_selected(source).echo[Bool]([true])[0]
+    assert comptime {
+        T == Text && Copy == Bool
+    }
+    let paired = computed_pairs(erase(Box {
+                value = "captured"
+            })).pair[Bool](true)
+    assert paired.0 == "captured" && paired.1
+    let nested dyn Nested[Entry[T] = dyn Pairing[Item[U] = comptime {
+                of[(T, U)]()
+            }]] = true
+    let pair = nested.wrap[Text]("outer").pair[Int](9)
+    assert pair.0 == "outer" && pair.1 == 9
+}
