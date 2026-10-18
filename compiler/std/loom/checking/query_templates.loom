@@ -90,9 +90,10 @@ fn require_query_reference(env Environment, signature Int, arguments List[Int]) 
     if prototype(env, current.symbol) && length(arguments) != 0 {
         let receiver = get(arguments, 0)
         let kind = get(env.types, receiver).kind
-        // A known nominal receiver selects its implementation even inside an
-        // abstract caller. Evidence-only and dynamic receivers select none.
-        if kind != TypeKind.Parameter && kind != TypeKind.Associated && kind != TypeKind.Rigid && kind != TypeKind.Dyn &&
+        // Known static Self selects its implementation, including an explicit
+        // dyn wrapper implementation. Erased receiver dispatch selects none.
+        if kind != TypeKind.Parameter && kind != TypeKind.Associated && kind != TypeKind.Rigid &&
+        (kind != TypeKind.Dyn || !method_receiver(env, current.symbol)) &&
         conformance(env, receiver, symbol(env, current.symbol).owner).implementation >= 0 {
             let target = method_target(env, signature, arguments, new[StaticValue]())?
             require_query_template(env, target.signature)

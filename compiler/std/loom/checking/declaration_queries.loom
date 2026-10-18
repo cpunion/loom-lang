@@ -88,10 +88,14 @@ fn record_function_reference(env Environment, owner Int, node Node, selected Int
     var target = selected
     var types = arguments
     if prototype(env, get(env.signatures, selected).symbol) && length(arguments) != 0 &&
-    concrete(env, get(arguments, 0)) && get(env.types, get(arguments, 0)).kind != TypeKind.Dyn {
+    concrete(env, get(arguments, 0)) &&
+    (get(env.types, get(arguments, 0)).kind != TypeKind.Dyn ||
+        (!method_receiver(env, get(env.signatures, selected).symbol) &&
+            conformance(env, get(arguments, 0), symbol(env, get(env.signatures, selected).symbol).owner).implementation >= 0)) {
         // A concrete method call names its selected implementation. Retain
         // that binding before logical-only call indices lose their queue.
-        // Dynamic/evidence-only receivers keep the concept query path.
+        // Erased receiver dispatch keeps the concept path; a receiver-free
+        // function on a known dyn wrapper selects its explicit implementation.
         let resolved = method_target(env, selected, arguments, unknown_constants(get(env.signatures, selected)))?
         target = resolved.signature
         types = resolved.arguments
