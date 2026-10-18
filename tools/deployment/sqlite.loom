@@ -1,29 +1,49 @@
-import std.bytes.new
-import std.bytes.push
 import std.build.target
 import std.list.new
 import std.list.push
 import std.process.capture_input
 import std.process.ExitStatus
 import std.result.Result
-import std.text.byte
+import std.text.to_bytes
+import std.text.replace
+import std.text.starts_with
+import std.text.slice
 import std.text.length
+import std.text.byte
+import std.text.contains
+import std.text.concat
 
-fn bytes(value Text) Bytes {
-    let output = std.bytes.new()
-    var index = 0
-    while index < length(value) {
-        std.bytes.push(output, byte(value, index))
-        index = index + 1
+// Filenames are literal filesystem paths, not caller-supplied URI parameters.
+// URI modes express non-creation without depending on newer CLI switches.
+fn database_filename(database Text, mode Text) Text {
+    var path = database
+    comptime if target("os") == "windows" {
+        path = replace(path, "\\", "/")
+        if starts_with(path, "//?/UNC/") {
+            path = concat("//", slice(path, 8, std.text.length(path)))
+        } else {
+            if starts_with(path, "//?/") {
+                path = slice(path, 4, std.text.length(path))
+            }
+        }
+        if std.text.length(path) >= 2 && byte(path, 1) == 58 {
+            path = concat("/", path)
+        }
     }
-    output
+    path = replace(replace(replace(path, "%", "%25"), "?", "%3f"), "#", "%23")
+    let prefix = if starts_with(path, "//") {
+        "file://"
+    } else {
+        "file:"
+    }
+    concat(prefix, concat(path, concat("?mode=", mode)))
 }
 
 // The SQLite executable is an explicit deployment-tool dependency, not a
 // language runtime intrinsic. Child arguments are literal; no shell is used.
-fn invoke(tool Text, database Text, sql Text, read_only Bool) Result[Bytes, Text] {
-    if tool == "" || database == "" {
-        return Result.Err("SQLite tool and database path are required")
+fn invoke(tool Text, database Text, sql Text, read_only Bool, require_existing Bool) Result[Bytes, Text] {
+    if tool == "" || database == "" || database == ":memory:" || contains(database, "\0") {
+        return Result.Err("SQLite tool and persistent database filename are required")
     }
     let args = std.list.new[Text]()
     std.list.push(args, tool)
@@ -45,8 +65,17 @@ fn invoke(tool Text, database Text, sql Text, read_only Bool) Result[Bytes, Text
         std.list.push(args, "-readonly")
     }
     std.list.push(args, "--")
-    std.list.push(args, database)
-    match capture_input(args, bytes(sql)) {
+    let mode = if read_only {
+        "ro"
+    } else {
+        if require_existing {
+            "rw"
+        } else {
+            "rwc"
+        }
+    }
+    std.list.push(args, database_filename(database, mode))
+    match capture_input(args, to_bytes(sql)) {
         Result.Ok(output) => match output.status {
             ExitStatus.Exited(code) => {
                 if code == 0 {
@@ -65,11 +94,15 @@ fn invoke(tool Text, database Text, sql Text, read_only Bool) Result[Bytes, Text
 // stdin (dot commands can reopen a writable database), so this is not public.
 // Diagnostics never echo SQL, database contents, paths, or SQLite stderr.
 fn inspect(tool Text, database Text, sql Text) Result[Bytes, Text] {
-    invoke(tool, database, sql, true)
+    invoke(tool, database, sql, true, true)
 }
 
 // Internal SQL transport. Only generated statements with validated identifiers
 // may cross this boundary; completion requires a separate checked transaction.
 fn execute(tool Text, database Text, sql Text) Result[Bytes, Text] {
-    invoke(tool, database, sql, false)
+    invoke(tool, database, sql, false, false)
+}
+
+fn execute_existing(tool Text, database Text, sql Text) Result[Bytes, Text] {
+    invoke(tool, database, sql, false, true)
 }

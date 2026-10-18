@@ -1,8 +1,7 @@
-import std.bytes.get
-import std.bytes.length
 import std.bytes.decode_utf8
+import std.encoding.binary64.decode_be
 import std.encoding.hex.decode
-import std.float.from_int
+import std.float.is_nan
 import std.int.parse
 import std.list.new
 import std.list.get
@@ -29,6 +28,8 @@ pub enum SqliteRowError {
     Query
     Encoding
     Decode(Int, CodecError)
+    Encode(Int, CodecError)
+    WriteOutcomeUnknown
 }
 
 fn row_identifier(value Text) Result[Text, SqliteRowError] {
@@ -36,6 +37,44 @@ fn row_identifier(value Text) Result[Text, SqliteRowError] {
         return Result.Err(SqliteRowError.Mapping)
     }
     Result.Ok(concat("\"", concat(join(split(value, "\""), "\"\""), "\"")))
+}
+
+fn row_same_column(left Text, right Text) Bool {
+    if std.text.length(left) != std.text.length(right) {
+        return false
+    }
+    var index = 0
+    while index < std.text.length(left) {
+        let a = byte(left, index)
+        let b = byte(right, index)
+        if (if a >= 65 && a <= 90 {
+                a + 32
+            } else {
+                a
+            }) !=
+        (if b >= 65 && b <= 90 {
+                b + 32
+            } else {
+                b
+            }) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn row_column(name Text, seen List[Text]) Result[Text, SqliteRowError] {
+    var index = 0
+    while index < std.list.length(seen) {
+        if row_same_column(name, std.list.get(seen, index)) {
+            return Result.Err(SqliteRowError.Mapping)
+        }
+        index = index + 1
+    }
+    let quoted = row_identifier(name)?
+    std.list.push(seen, name)
+    Result.Ok(quoted)
 }
 
 fn row_expression(column Text) Text {
@@ -50,6 +89,7 @@ fn row_expression(column Text) Text {
 
 fn row_query[T](codec PreparedRowCodec[T]) Result[Text, SqliteRowError] {
     let table = codec_table(codec)
+    let seen = std.list.new[Text]()
     var output = "SELECT "
     var index = 0
     while index < std.list.length(table.columns) {
@@ -58,7 +98,7 @@ fn row_query[T](codec PreparedRowCodec[T]) Result[Text, SqliteRowError] {
         }
         // Qualified names cannot fall back to SQLite's legacy double-quoted
         // string literals when a requested column does not exist.
-        let column = concat("loom_row.", row_identifier(std.list.get(table.columns, index).physical_name)?)
+        let column = concat("loom_row.", row_column(std.list.get(table.columns, index).physical_name, seen)?)
         output = concat(output, row_expression(column))
         index = index + 1
     }
@@ -66,63 +106,18 @@ fn row_query[T](codec PreparedRowCodec[T]) Result[Text, SqliteRowError] {
     Result.Ok(concat(output, concat(row_identifier(table.physical_name)?, " AS loom_row;\n")))
 }
 
-// Decode SQLite CLI's big-endian binary64 payload using ordinary arithmetic.
-// Integer significands fit exactly in Float. Power-of-two scaling preserves
-// finite values, subnormals and signed zero without decimal formatting loss.
 fn row_float(value Bytes) Result[Float, SqliteRowError] {
-    if std.bytes.length(value) != 8 {
-        return Result.Err(SqliteRowError.Encoding)
-    }
-    let negative = std.bytes.get(value, 0) >= 128
-    let exponent = (std.bytes.get(value, 0) & 127) * 16 + (std.bytes.get(value, 1) >> 4)
-    var fraction = std.bytes.get(value, 1) & 15
-    var index = 2
-    while index < 8 {
-        fraction = fraction * 256 + std.bytes.get(value, index)
-        index = index + 1
-    }
-    if exponent == 2047 {
-        // SQLite represents NaN as NULL; a real-cell NaN payload is not valid
-        // wire data. Infinity has an ordinary IEEE value in Loom.
-        if fraction != 0 {
-            return Result.Err(SqliteRowError.Encoding)
-        }
-        return Result.Ok(if negative {
-                -1.0 / 0.0
+    match decode_be(value) {
+        Result.Ok(value) => {
+            // SQLite maps NaN to NULL; a real-cell NaN is invalid wire data.
+            if is_nan(value) {
+                Result.Err(SqliteRowError.Encoding)
             } else {
-                1.0 / 0.0
-            })
-    }
-    var output = from_int(fraction)
-    var power = -1074
-    if exponent != 0 {
-        output = output + 4503599627370496.0
-        power = exponent - 1075
-    }
-    var remaining = if power < 0 {
-        -power
-    } else {
-        power
-    }
-    var factor = if power < 0 {
-        0.5
-    } else {
-        2.0
-    }
-    while remaining > 0 {
-        if (remaining & 1) == 1 {
-            output = output * factor
+                Result.Ok(value)
+            }
         }
-        remaining = remaining >> 1
-        if remaining > 0 {
-            factor = factor * factor
-        }
+        Result.Err(_) => Result.Err(SqliteRowError.Encoding)
     }
-    Result.Ok(if negative {
-            -output
-        } else {
-            output
-        })
 }
 
 fn row_value(value Text) Result[Value, SqliteRowError] {
