@@ -1,0 +1,54 @@
+import std.meta.enum_variants
+import std.meta.VariantType
+import std.option.Option
+
+pub enum Message[T] {
+    Empty
+    Item(T)
+    Pair(Int, T)
+    Branch(List[Message[T]])
+}
+
+enum PrivateMessage {
+    Secret(Text)
+}
+
+fn variant_payload[Ts...](values Ts...) (Ts...) {
+    values
+}
+
+fn variant_types() {
+    let Payload = comptime {
+        let variants = match enum_variants[Message[Text]]() {
+            Option.Some(variants) => variants
+            Option.None => {
+                assert false
+                new[VariantType]()
+            }
+        }
+        assert variants[3].payload == of[(List[Message[Text]],)]()
+        assert match enum_variants[PrivateMessage]() {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        variants[2].payload
+    }
+    let value Payload = (42, "message")
+    assert value.0 == 42 && value.1 == "message"
+
+    let Shape = comptime {
+        Message[Bool]
+    }
+    let calls = [0]
+    let callbacks = comptime map name, Fields in Shape {
+        assert name != ""
+        fn(fields Fields) Fields {
+            calls[0] = calls[0] + 1
+            fields
+        }
+    }
+    discard callbacks.0(variant_payload())
+    let item = callbacks.1((true,))
+    assert callbacks.2((7, item.0)).1
+    assert calls[0] == 3
+}

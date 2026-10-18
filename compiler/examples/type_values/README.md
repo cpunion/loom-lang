@@ -30,6 +30,14 @@ Obtaining a private field's type identity grants no construction or inspection r
 See [selected_fields.loom](selected_fields.loom); descriptor indices never become
 type identities.
 
+`std.meta.enum_variants[T]()` similarly returns `Option[List[VariantType]]`.
+Each entry has its declaration name and a `payload` tuple type: no-payload
+variants have an empty tuple, one field has a one-element tuple, and multiple
+fields retain their declared order. `comptime for/map name, Payload in T`
+can iterate those tuples directly. This inspects a visible enum **type**, not
+the selected variant of an enum value; no constructor is executed. The same
+visibility and checked-construction rules apply. See [variants.loom](variants.loom).
+
 `std.meta.tuple(elements)` and `std.meta.function(parameters, output)` build
 ordinary tuple/function types from computed `List[type]` inputs. The optional
 output is `None` for no result. Loops may select the elements; the result has

@@ -1166,6 +1166,15 @@ private-field checks as named types. An inner value binding with the same name
 retains ordinary value iteration. See the
 [selected-field example](examples/type_values/selected_fields.loom).
 
+For a visible enum type, the same iteration binds each variant's payload as a
+tuple type, with an optional Text variant-name key, in declaration order.
+A payload-free variant supplies an empty tuple; a single payload supplies a
+one-element tuple. This enumerates the type's alternatives, not the active
+variant of a runtime value. Generic and recursive payload types keep their
+ordinary identities, visibility and construction/resource checks.
+`std.meta.enum_variants[T]()` collects these compile-time identities as ordinary
+library data; see [variant types](examples/type_values/variants.loom).
+
 `std.reflect.from_fields` assembles a visible record from a tuple in field
 declaration order. An expected result type determines the record type:
 
