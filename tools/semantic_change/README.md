@@ -115,3 +115,30 @@ or target reads. This is ordinary contract checking, not migration or
 behavior-equivalence proof.
 
 Run `target/loom test tools/semantic_change` from the repository root.
+
+## Dependency updates
+
+`review_dependencies(before, before_tests, after, after_tests)` reviews two offline
+dependency graphs with unchanged application sources. Supply complete selected-
+module projects loaded separately for production and private tests, for example
+with `std.loom.project.load_packages`. Application module origin, package set,
+paths and source must agree; dependency origins and project-local IDs may differ.
+A final optional `ProofBackend` has the same capability boundary as merge APIs.
+
+The review checks production and each application's package-private test root.
+It reports before/after source inventories (module origin, package, path and
+SHA-256) and changed explicit reference observations, including the selected
+definition's source and span. A same-named fork remains a different origin;
+same-path source edits cannot be hidden by equal offsets. Index renumbering
+alone is not a binding change. File-level hashes deliberately over-report when
+only another declaration or trivia in the target file changed. Observations can
+repeat in different production/test contexts. The observations cover references
+inside declarations, not unused import/export sets or implicit effects.
+
+Reference obligations come from the original, unexpanded source. Unknown or
+generated forms, ambiguous targets, missing abstract generic evidence and
+exported macro providers reject rather than imply completeness. Both graphs
+must pass ordinary typing and required contracts; tests are checked, not run.
+The API neither fetches dependencies nor edits manifests/locks. Source hashes
+and equal explicit bindings are not behavior equivalence, nominal identity
+migration, external-consumer coverage or deployment authorization.

@@ -954,6 +954,7 @@ fn main() {
     let initializing = length(args) == 4 && get(args, 1) == "init"
     let scanning = length(args) == 3 && get(args, 1) == "scan"
     let refreshing = length(args) >= 3 && get(args, 1) == "refresh"
+    let dependencies_preview = length(args) == 5 && get(args, 1) == "--dependencies"
     let directories_preview = length(args) == 4 && get(args, 1) != "--apply" && get(args, 1) != "--git" &&
     get(args, 1) != "init" && get(args, 1) != "refresh" && get(args, 1) != "scan"
     let git_preview = length(args) == 8 && get(args, 1) == "--git"
@@ -974,7 +975,7 @@ fn main() {
     if !initializing && !scanning && !refreshing && !directories_preview && !git_preview && !context_preview &&
     !directories_apply && !context_apply && !git_apply && !module_preview && !module_apply &&
     !context_git_preview && !context_git_apply && !module_git_preview && !module_git_apply &&
-    !automatic_preview && !automatic_apply {
+    !automatic_preview && !automatic_apply && !dependencies_preview {
         discard write_error("usage: semantic_change_trial init PACKAGE_NAME DIR\n")
         discard write_error("   or: semantic_change_trial scan DIR\n")
         discard write_error("   or: semantic_change_trial refresh DIR [--draft] [--move ID NEW_FILE NEW_NAME KEY | --delete ID]...\n")
@@ -983,6 +984,7 @@ fn main() {
         discard write_error("   or: semantic_change_trial --context PACKAGE_DIR STD_ROOT BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --context PACKAGE_DIR STD_ROOT --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         discard write_error("   or: semantic_change_trial --module STD_ROOT BASE_DIR LEFT_DIR RIGHT_DIR\n")
+        discard write_error("   or: semantic_change_trial --dependencies STD_ROOT BEFORE_DIR AFTER_DIR\n")
         discard write_error("   or: semantic_change_trial --module BASE_MODULE_DIR STD_ROOT --git GIT_EXE REPO MODULE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         discard write_error("   or: semantic_change_trial --git-module SCRATCH STD_ROOT CACHE_BASE GIT_EXE REPO MODULE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         discard write_error("   or: semantic_change_trial --apply TOKEN --git-module SCRATCH STD_ROOT CACHE_BASE GIT_EXE REPO MODULE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
@@ -995,7 +997,9 @@ fn main() {
         exit_code(2)
         return
     }
-    let outcome = if automatic_preview {
+    let outcome = if dependencies_preview {
+        preview_dependencies(get(args, 2), get(args, 3), get(args, 4))
+    } else if automatic_preview {
         automatic_git_module(git_auto_request(args, 2), false, "")
     } else if automatic_apply {
         automatic_git_module(git_auto_request(args, 4), true, get(args, 2))

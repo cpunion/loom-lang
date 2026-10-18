@@ -1,0 +1,87 @@
+import semantic_change.review_dependencies
+import semantic_change.DependencyReview
+import semantic_change.DependencySource
+import std.list.clone
+import std.list.set
+import std.text.join
+
+// Only the application's presentation root is normalized. Dependency origins
+// remain distinct, even when two snapshots contain identical library bytes.
+fn dependency_application_basis(project Project, logical Text) Project {
+    let owner = get(project.packages, project.root).instance
+    let module = get(project.modules, owner)
+    let modules = std.list.clone(project.modules)
+    std.list.set(modules, owner, ModuleInstance {
+            source = logical,
+            ..module
+        })
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        push(files, if get(project.packages, file.package).instance == owner {
+                SourceFile {
+                    path = basis_path(file.path, module.source, logical),
+                    ..file
+                }
+            } else {
+                file
+            })
+        index = index + 1
+    }
+    Project {
+        modules = modules,
+        files = files,
+        ..project
+    }
+}
+
+fn dependency_module_review(standard Text, before Text, after Text) Result[DependencyReview, Text] {
+    let original = module_context(read_module(before)?, standard)?
+    let current = module_context(read_module(after)?, standard)?
+    review_dependencies(original.production, original.tests,
+        dependency_application_basis(current.production, original.directory),
+        dependency_application_basis(current.tests, original.directory), backend("z3"))
+}
+
+fn dependency_source_line(source DependencySource) Text {
+    concat(source.module.name, concat(" ", concat(source.module.source,
+                concat(" ", concat(source.path, concat(" sha256:", source.digest))))))
+}
+
+fn preview_dependencies(standard Text, before Text, after Text) Result[Text, Text] {
+    let review = dependency_module_review(standard, before, after)?
+    let output = ["dependency binding review (not behavioral compatibility)\n"]
+    var side = 0
+    let sources = [review.before, review.after]
+    while side < 2 {
+        let values = get(sources, side)
+        var index = 0
+        while index < length(values) {
+            push(output, concat(if side == 0 {
+                        "before "
+                    } else {
+                        "after "
+                    }, concat(dependency_source_line(get(values, index)), "\n")))
+            index = index + 1
+        }
+        side = side + 1
+    }
+    var index = 0
+    while index < length(review.bindings) {
+        let change = get(review.bindings, index)
+        push(output, concat(if change.tests {
+                    "test "
+                } else {
+                    "production "
+                }, concat("root=", concat(change.root, concat(" package=", concat(change.package,
+                                concat(" ", concat(change.path, concat(":", concat(to_text(change.offset), "\n"))))))))))
+        push(output, concat("  before ", concat(dependency_source_line(change.before.source),
+                    concat(":", concat(to_text(change.before.span.start), "\n")))))
+        push(output, concat("  after  ", concat(dependency_source_line(change.after.source),
+                    concat(":", concat(to_text(change.after.span.start), "\n")))))
+        index = index + 1
+    }
+    push(output, concat("changed binding observations: ", concat(to_text(length(review.bindings)), "\n")))
+    Result.Ok(join(output, ""))
+}
