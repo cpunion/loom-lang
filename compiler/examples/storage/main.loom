@@ -1,126 +1,110 @@
 import std.list.get
+import std.list.set
 import std.result.Result
 import std.storage.Value
 import std.storage.ValueKind
 import std.storage.Column
 import std.storage.Table
-import std.storage.RowCodec
+import std.storage.ColumnValue
 import std.storage.CodecError
-import std.storage.encode_row
-import std.storage.decode_row
-import std.storage.prepare_codec
+import std.storage.record_codec
 import std.storage.encode_prepared_row
 import std.storage.decode_prepared_row
 
-record Note {
+pub type Amount = Int where self >= 0
+
+impl ColumnValue for Amount {
+    fn column_kind() ValueKind {
+        ValueKind.Int
+    }
+
+    fn to_column(self Amount) Result[Value, CodecError] {
+        Result.Ok(Value.Int(self))
+    }
+
+    fn from_column(value Value) Result[Amount, CodecError] {
+        match value {
+            Value.Int(number) => match Amount(number) {
+                Result.Ok(checked) => Result.Ok(checked)
+                Result.Err(_) => Result.Err(CodecError.Rejected)
+            }
+            _ => Result.Err(CodecError.Rejected)
+        }
+    }
+}
+
+pub record Note {
     id Int
+    body Text
+    amount Amount
+}
+
+record PrivateNote {
     body Text
 }
 
-fn encode_note(note Note) Result[List[Value], CodecError] {
-    Result.Ok([Value.Int(note.id), Value.Text(note.body)])
-}
+type ValidNote = Note where self.id > 0
 
-fn decode_note(values List[Value]) Result[Note, CodecError] {
-    let id = match get(values, 0) {
-        Value.Int(number) => number,
-        _ => {
-            return Result.Err(CodecError.Rejected)
-        }
+fn round_trip() Result[Bool, CodecError] {
+    let table = Table {
+        id = "notes"
+        physical_name = "current_notes"
+        columns = [
+            Column {
+                id = "body"
+                physical_name = "note_body"
+                kind = ValueKind.Text
+                nullable = false
+            },
+            Column {
+                id = "amount"
+                physical_name = "total_cents"
+                kind = ValueKind.Int
+                nullable = false
+            },
+            Column {
+                id = "note-id"
+                physical_name = "id"
+                kind = ValueKind.Int
+                nullable = false
+            }
+        ]
     }
-    let body = match get(values, 1) {
-        Value.Text(text) => text,
-        _ => {
-            return Result.Err(CodecError.Rejected)
-        }
+    assert match record_codec[PrivateNote](table) {
+        Result.Err(CodecError.InvalidSchema) => true
+        _ => false
     }
-    Result.Ok(Note {
-            id = id
-            body = body
-        })
-}
-
-fn note_codec() RowCodec[Note] {
-    RowCodec {
-        table = Table {
-            id = "notes/v1"
-            physical_name = "notes"
-            columns = [
-                Column {
-                    id = "note-id"
-                    physical_name = "id"
-                    kind = ValueKind.Int
-                    nullable = false
-                },
-                Column {
-                    id = "note-body"
-                    physical_name = "body"
-                    kind = ValueKind.Text
-                    nullable = false
-                }
-            ]
-        }
-        encode_value = encode_note
-        decode_value = decode_note
+    assert match record_codec[ValidNote](table) {
+        Result.Err(CodecError.InvalidSchema) => true
+        _ => false
     }
-}
-
-fn round_trip() {
-    let codec = note_codec()
-    let encoded = match encode_row(codec, Note {
-            id = 4
+    let codec = record_codec[Note](table, [("id", "note-id")])?
+    let row = encode_prepared_row(codec, Note {
+            id = 7
             body = "hello"
-        }) {
-        Result.Ok(values) => values,
-        Result.Err(_) => {
-            assert false
-            []
-        }
+            amount = Amount(1250)
+        })?
+    let decoded = decode_prepared_row(codec, row)?
+    assert decoded.id == 7 && decoded.body == "hello" && decoded.amount == 1250
+    assert match get(row, 2) {
+        Value.Int(7) => true
+        _ => false
     }
-    match decode_row(codec, encoded) {
-        Result.Ok(note) => {
-            assert note.id == 4 && note.body == "hello"
-        }
-        Result.Err(_) => {
-            assert false
-        }
+    set(row, 1, Value.Int(-1))
+    assert match decode_prepared_row(codec, row) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
     }
-}
-
-fn prepared_round_trip() {
-    let codec = match prepare_codec(note_codec()) {
-        Result.Ok(value) => value,
-        Result.Err(_) => {
-            assert false
-            return
-        }
-    }
-    let encoded = match encode_prepared_row(codec, Note {
-            id = 5
-            body = "prepared"
-        }) {
-        Result.Ok(values) => values,
-        Result.Err(_) => {
-            assert false
-            []
-        }
-    }
-    match decode_prepared_row(codec, encoded) {
-        Result.Ok(note) => {
-            assert note.id == 5 && note.body == "prepared"
-        }
-        Result.Err(_) => {
-            assert false
-        }
-    }
+    Result.Ok(true)
 }
 
 fn main() {
-    round_trip()
-    prepared_round_trip()
+    assert match round_trip() {
+        Result.Ok(ok) => ok
+        Result.Err(_) => false
+    }
 }
 
-test fn imported_storage_codec_round_trip() {
-    round_trip()
-    prepared_round_trip()
+test fn imported_record_codec_preserves_constraints() {
+    main()
 }
