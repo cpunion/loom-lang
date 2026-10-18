@@ -1,8 +1,7 @@
-import std.bytes.new
 import std.bytes.get
-import std.bytes.push
 import std.bytes.length
 import std.bytes.decode_utf8
+import std.encoding.hex.decode
 import std.float.from_int
 import std.int.parse
 import std.list.new
@@ -65,37 +64,6 @@ fn row_query[T](codec PreparedRowCodec[T]) Result[Text, SqliteRowError] {
     }
     output = concat(output, " FROM main.")
     Result.Ok(concat(output, concat(row_identifier(table.physical_name)?, " AS loom_row;\n")))
-}
-
-fn row_digit(value Int) Int {
-    if value >= 48 && value <= 57 {
-        return value - 48
-    }
-    if value >= 65 && value <= 70 {
-        return value - 55
-    }
-    if value >= 97 && value <= 102 {
-        return value - 87
-    }
-    -1
-}
-
-fn row_bytes(value Text) Result[Bytes, SqliteRowError] {
-    if std.text.length(value) % 2 != 0 {
-        return Result.Err(SqliteRowError.Encoding)
-    }
-    let output = std.bytes.new()
-    var index = 0
-    while index < std.text.length(value) {
-        let high = row_digit(byte(value, index))
-        let low = row_digit(byte(value, index + 1))
-        if high < 0 || low < 0 {
-            return Result.Err(SqliteRowError.Encoding)
-        }
-        std.bytes.push(output, high * 16 + low)
-        index = index + 2
-    }
-    Result.Ok(output)
 }
 
 // Decode SQLite CLI's big-endian binary64 payload using ordinary arithmetic.
@@ -168,7 +136,12 @@ fn row_value(value Text) Result[Value, SqliteRowError] {
     if tag != 105 && tag != 102 && tag != 116 && tag != 98 {
         return Result.Err(SqliteRowError.Encoding)
     }
-    let payload = row_bytes(slice(value, 1, std.text.length(value)))?
+    let payload = match decode(slice(value, 1, std.text.length(value))) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(SqliteRowError.Encoding)
+        }
+    }
     if tag == 98 {
         return Result.Ok(Value.Bytes(payload))
     }
