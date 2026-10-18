@@ -33,10 +33,21 @@ test fn refinement_base_uses_compile_time_identity_without_waiving_construction(
                 }
             }
         }
+        pub fn read[T](value T) Int {
+            let Base = comptime { selected[T]() }
+            comptime if Base == Int {
+                let raw Base = value
+                raw
+            } else {
+                discard value
+                0
+            }
+        }
         fn main() {
             let Base = comptime { selected[Positive]() }
             let raw Base = 0
             assert raw == 0 && has_int_base(Positive(7)) && !has_int_base(true)
+            assert read(Positive(7)) == 7 && read(true) == 0
             assert comptime { selected[Valid]() == Pair }
             assert comptime {
                 match refinement_base[Int]() {

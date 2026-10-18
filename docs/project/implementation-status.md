@@ -158,6 +158,9 @@ ordinary typing and visibility. Declaration generation is not an implicit
 fixed-point expansion. Reflection exposes filtered schemas, not extra access
 or conformance evidence. `std.meta.refinement_base` exposes a visible base's
 compile-time identity without waiving visibility or constrained construction.
+Type-producing helpers may retain an opaque local identity during generic
+checking and select guarded uses at specialization. Known symbolic structures
+remain available; an opaque result grants no assumed shape or input relationship.
 `std.reflect.predicates.implies` queries the existing checked weakening rules;
 an optional source witness binds both endpoint types. Unproved queries return
 false, never migration or application-compatibility evidence.

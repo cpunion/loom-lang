@@ -1,0 +1,35 @@
+// The helper's result is not assumed to equal T while this public body is
+// checked. A concrete call selects its type and then checks the selected branch.
+pub fn integer_base[T](value T) Int {
+    let Base = comptime {
+        transparent_base[T]()
+    }
+    comptime if Base == Int {
+        let raw Base = value
+        raw
+    } else {
+        discard value
+        0
+    }
+}
+
+pub fn selected_label[T](value T) Text {
+    let Selected = comptime {
+        select([Int, Text], T)
+    }
+    discard value
+    comptime if Selected == Int {
+        "integer"
+    } else {
+        "other"
+    }
+}
+
+fn dependent_type_values() {
+    assert integer_base(Positive(7)) == 7
+    assert integer_base(9) == 9
+    assert integer_base(true) == 0
+    assert selected_label(7) == "integer"
+    assert selected_label(true) == "integer"
+    assert selected_label("text") == "other"
+}

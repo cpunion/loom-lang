@@ -314,6 +314,9 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?
     discard spend(state, expr, 1, 128)?
+    if expr.kind == ExprKind.Deferred {
+        return Result.Err(unresolved(expr, "compile-time expression still has unresolved types"))
+    }
     // Failed isolated computations are rejected; normal cleanup executes in
     // the owner's frame, with late-bound reads and assignments to its locals.
     if expr.kind == ExprKind.Defer { return Result.Ok(step(unit())) }

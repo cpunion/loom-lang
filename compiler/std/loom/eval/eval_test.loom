@@ -115,6 +115,26 @@ test fn symbolic_type_equality_never_guesses_a_branch() {
     let branches = two(condition, literal(1))
     push(branches, literal(2))
     discard rejected(program, node(ExprKind.If, 1, "", -1, branches), 0)
+    assert match evaluate_symbolic_types(program, node(ExprKind.If, 1, "", -1, branches), 0) {
+        Result.Ok(Option.None) => true
+        _ => false
+    }
+    let deferred = node(ExprKind.Deferred, 6, "", -1, new[Expr]())
+    assert match evaluate_symbolic_types(program, deferred, 0) {
+        Result.Ok(Option.None) => true
+        _ => false
+    }
+    discard rejected(program, deferred, 0)
+    // Pending type decisions must not hide effects or actual execution faults.
+    let effects = two(deferred, node(ExprKind.Intrinsic, 0, "write", -1, new[Expr]()))
+    assert match evaluate_symbolic_types(program, node(ExprKind.Block, 0, "", -1, effects), 0) {
+        Result.Err(failed) => !failed.unresolved && failed.message == "compile-time evaluation forbids intrinsic write"
+        _ => false
+    }
+    assert match evaluate_symbolic_types(program, binary("/", 1, literal(1), literal(0)), 0) {
+        Result.Err(failed) => !failed.unresolved && failed.message == "compile-time division by zero"
+        _ => false
+    }
     assert match scalar(condition, unknown()) {
         Result.Ok(value) => value.ty == -1
         Result.Err(_) => false

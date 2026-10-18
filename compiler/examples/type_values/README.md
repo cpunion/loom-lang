@@ -44,6 +44,12 @@ definitions; abstract queries remain deferred until selection is known. The
 result is only compile-time identity: it grants neither construction permission
 nor predicate evidence. See [refinements.loom](refinements.loom).
 
+A type-producing helper may depend on an unknown generic type. Its result stays
+opaque during generic checking; `comptime if` selects and checks the concrete
+branch at specialization. This neither assumes that the result equals the input
+nor adds undeclared capabilities. Known structural results still retain their
+symbolic elements. See [dependent.loom](dependent.loom).
+
 `std.meta.tuple(elements)` and `std.meta.function(parameters, output)` build
 ordinary tuple/function types from computed `List[type]` inputs. The optional
 output is `None` for no result. Loops may select the elements; the result has

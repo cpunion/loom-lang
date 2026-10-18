@@ -13,6 +13,7 @@ import std.list.push
 import std.list.set
 import std.list.length
 import std.result.Result
+import std.option.Option
 
 // Mutable containers use a positive evaluation-local allocation ID in number;
 // records use zero and enums keep their variant tag. These are not addresses.
@@ -35,6 +36,7 @@ pub record Value {
 pub record Failure {
     span Span
     message Text
+    unresolved Bool
 }
 
 enum Control { Normal Return Break Continue }
@@ -53,6 +55,7 @@ record Frame {
 record State {
     program Program
     construct_types Bool
+    symbolic Bool
     budget List[Int]
     partial Bool
     task_types List[Int]
@@ -82,7 +85,13 @@ fn aggregate(ty Int, tag Int, items List[Value]) Value { Value { ty = ty number 
 
 fn step(value Value) Step { Step { value = value control = Control.Normal } }
 
-fn failure(expr Expr, message Text) Failure { Failure { span = expr.span message = message } }
+fn failure(expr Expr, message Text) Failure {
+    Failure { span = expr.span message = message unresolved = false }
+}
+
+fn unresolved(expr Expr, message Text) Failure {
+    Failure { span = expr.span message = message unresolved = true }
+}
 
 fn finished(expr Expr, value Step) Result[Value, Failure] {
     if value.control == Control.Break || value.control == Control.Continue {
@@ -103,6 +112,7 @@ fn state(program Program, partial Bool, construct_types Bool) State {
     State {
         program = program
         construct_types = construct_types
+        symbolic = false
         budget = budget
         partial = partial
         task_types = new[Int]()
@@ -164,6 +174,9 @@ fn stored(frame Frame, expr Expr, index Int, value Value) Result[Bool, Failure] 
 }
 
 fn boolean(expr Expr, value Value) Result[Bool, Failure] {
+    if value.ty < 0 {
+        return Result.Err(unresolved(expr, "compile-time condition needs a known Bool"))
+    }
     if value.ty != 2 { return Result.Err(failure(expr, "compile-time condition needs a known Bool")) }
     Result.Ok(value.number != 0)
 }
@@ -184,6 +197,22 @@ pub fn evaluate(program Program, expression Expr, locals Int) Result[Value, Fail
 // Default evaluation leaves its caller's checked type table unchanged.
 pub fn evaluate_types(program Program, expression Expr, locals Int) Result[Value, Failure] {
     evaluated(state(program, false, true), expression, locals)
+}
+
+// Checking a generic type computation may encounter a genuinely unknown type
+// decision. Effects and ordinary faults still reject; no result is guessed.
+pub fn evaluate_symbolic_types(program Program, expression Expr, locals Int) Result[Option[Value], Failure] {
+    let initial = state(program, false, true)
+    let state = State {
+        symbolic = true
+        ..initial
+    }
+    match evaluated(state, expression, locals) {
+        Result.Ok(value) => Result.Ok(if value.ty < 0 { Option.None } else { Option.Some(value) })
+        Result.Err(failed) => {
+            if failed.unresolved { Result.Ok(Option.None) } else { Result.Err(failed) }
+        }
+    }
 }
 
 fn evaluated(state State, expression Expr, locals Int) Result[Value, Failure] {

@@ -154,7 +154,7 @@ fn scan(effects Effects, expr Expr, seen List[Int], depth Int, loops Int) Result
     if (expr.kind == ExprKind.Break || expr.kind == ExprKind.Continue) && loops == 0 {
         return Result.Err(failure(expr, "compile-time loop control escaped its loop"))
     }
-    if expr.kind == ExprKind.Deferred {
+    if expr.kind == ExprKind.Deferred && !state.symbolic {
         return Result.Err(failure(expr, "compile-time expression still has unresolved types"))
     }
     if expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Associated {

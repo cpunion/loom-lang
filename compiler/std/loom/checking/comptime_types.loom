@@ -1,0 +1,39 @@
+import std.loom.eval.evaluate_symbolic_types
+
+// A computed type can remain opaque while checking its generic definition.
+// Unlike T or an associated type, this fresh identity grants no relationship to
+// its inputs. Concrete instances rerun the ordinary computation before emission.
+fn computed_type(context Context, node Node, source Node) Result[Expr, Failure] {
+    let stage = staging(context, node)?
+    let value = expr(stage, source, meta_type(context.env))?
+    discard isolated(context, node, value, length(context.locals))?
+    let program = prepared(stage)?
+    let body = close_function(stage, Function {
+            is_async = false
+            symbol = stage.signature.symbol
+            arguments = stage.arguments
+            params = new[Int]()
+            result = value.ty
+            locals = stage.locals
+            preconditions = new[Expr]()
+            postconditions = new[Expr]()
+            result_cleanup = new[Expr]()
+            result_local = -1
+            body = value
+            runtime_name = ""
+            span = value.span
+        })
+    discard check_computation_effects(stage, program.functions, body)?
+    let evaluated = std.loom.eval.evaluate_symbolic_types(program, body.body, length(body.locals))
+    complete_structural_types(context.env)
+    match evaluated {
+        Result.Ok(Option.Some(value)) => materialize(context, node, value)
+        Result.Ok(Option.None) => {
+            if context.emit && context.env.stage_depth == 0 {
+                return deferred(context, node, meta_type(context.env))
+            }
+            meta_literal(context, node, intern(context.env, TypeKind.Rigid, length(context.env.types), new[Int]()))
+        }
+        Result.Err(failed) => Result.Err(error(context, node, failed.message))
+    }
+}
