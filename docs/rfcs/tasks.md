@@ -219,8 +219,11 @@ label preserves the actual dynamic creation site. Synchronous dynamic methods ca
 also transfer direct Task parameters/results using their caller's owner.
 Async MustScope parameters are checked borrows when their call is directly
 awaited. The caller retains the owner through completion or cancellation drain;
-the borrowing Task cannot be saved, forwarded, joined or returned. Checked
-direct calls also retain Dispose-only borrows; indirect calls require MustScope.
+the borrowing Task cannot be saved or joined. A synchronous `fn ... Task[T]`
+wrapper may return a Task borrowing only its caller-provided resources when the
+caller directly awaits that forwarding call. Local-owner escapes and async
+returns exposing an inner borrowing Task still reject. Checked direct calls
+also retain Dispose-only borrows; indirect calls require MustScope.
 NoSuspend parameters/results remain rejected. Fresh MustScope results are owned
 by their completed Task until one-shot extraction; an unextracted result drains
 through typed frame callbacks on fault/cancellation. Extraction transfers to a
