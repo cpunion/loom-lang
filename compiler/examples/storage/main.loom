@@ -10,6 +10,8 @@ import std.storage.CodecError
 import std.storage.record_codec
 import std.storage.encode_prepared_row
 import std.storage.decode_prepared_row
+import std.storage.encode_refined_column
+import std.storage.decode_refined_column
 
 pub type Amount = Int where self >= 0
 
@@ -19,17 +21,11 @@ impl ColumnValue for Amount {
     }
 
     fn to_column(self Amount) Result[Value, CodecError] {
-        Result.Ok(Value.Int(self))
+        encode_refined_column[Amount, Int](self)
     }
 
     fn from_column(value Value) Result[Amount, CodecError] {
-        match value {
-            Value.Int(number) => match Amount(number) {
-                Result.Ok(checked) => Result.Ok(checked)
-                Result.Err(_) => Result.Err(CodecError.Rejected)
-            }
-            _ => Result.Err(CodecError.Rejected)
-        }
+        decode_refined_column[Amount, Int](value)
     }
 }
 
@@ -45,7 +41,13 @@ record PrivateNote {
 
 type ValidNote = Note where self.id > 0
 
+type PrivateAmount = Int where self > 0
+
 fn round_trip() Result[Bool, CodecError] {
+    assert match decode_refined_column[PrivateAmount, Int](Value.Int(1)) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
     let table = Table {
         id = "notes"
         physical_name = "current_notes"

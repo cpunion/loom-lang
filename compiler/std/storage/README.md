@@ -38,6 +38,16 @@ snapshot. User-defined/refined types provide an explicit implementation;
 decoders use their normal checked constructors. Test-only implementations do not
 become discoverable from production generic code.
 
+For a visible refinement over an unrefined `Base ColumnValue`, implementations
+can delegate to `encode_refined_column[T, Base](value)` and
+`decode_refined_column[T, Base](cell)`. Encoding uses the base codec; decoding
+passes the base value through `T`'s ordinary checked constructor and maps a
+failed constraint to `CodecError.Rejected`. An always-proved constructor still
+returns `Result.Ok`, without an extra check. Opaque types and mismatched bases
+reject; visibility is the library's lexical visibility. The conformance and its
+physical kind/nullability remain explicit. Delegation does not prove that an
+arbitrary base codec preserves values or that deployments are compatible.
+
 See the [runnable example](../../examples/storage/README.md), including stable-ID
 mapping and a constrained amount decoder. No per-record handwritten encoder or
 runtime type registry is required.

@@ -1,0 +1,75 @@
+import std.text.length
+
+pub type PositiveColumn = Int where self > 0
+
+pub type AnyIntColumn = Int where self == self
+
+pub type ShortColumn = Text where std.text.length(self) <= 3
+
+impl ColumnValue for PositiveColumn {
+    fn column_kind() ValueKind {
+        ColumnValue.column_kind[Int]()
+    }
+
+    fn to_column(self PositiveColumn) Result[Value, CodecError] {
+        encode_refined_column[PositiveColumn, Int](self)
+    }
+
+    fn from_column(value Value) Result[PositiveColumn, CodecError] {
+        decode_refined_column[PositiveColumn, Int](value)
+    }
+}
+
+test fn refined_columns_reuse_base_codecs_and_checked_construction() {
+    assert match PositiveColumn(7).to_column() {
+        Result.Ok(Value.Int(7)) => true
+        _ => false
+    }
+    assert match ColumnValue.from_column[PositiveColumn](Value.Int(9)) {
+        Result.Ok(value) => value == 9
+        _ => false
+    }
+    assert match ColumnValue.from_column[PositiveColumn](Value.Int(0)) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
+    assert match ColumnValue.from_column[PositiveColumn](Value.Text("9")) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
+    assert match ColumnValue.from_column[Option[PositiveColumn]](Value.Null) {
+        Result.Ok(Option.None) => true
+        _ => false
+    }
+    assert match ColumnValue.from_column[Option[PositiveColumn]](Value.Int(-1)) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
+    assert match decode_refined_column[AnyIntColumn, Int](Value.Int(-2)) {
+        Result.Ok(value) => value == -2
+        _ => false
+    }
+    assert match decode_refined_column[ShortColumn, Text](Value.Text("abc")) {
+        Result.Ok(value) => value == "abc"
+        _ => false
+    }
+    assert match decode_refined_column[ShortColumn, Text](Value.Text("abcd")) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
+}
+
+test fn refined_column_delegation_rejects_wrong_bases() {
+    assert match decode_refined_column[PositiveColumn, Float](Value.Float(1.0)) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
+    assert match encode_refined_column[PositiveColumn, Float](PositiveColumn(1)) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
+    assert match decode_refined_column[Int, Int](Value.Int(1)) {
+        Result.Err(CodecError.Rejected) => true
+        _ => false
+    }
+}
