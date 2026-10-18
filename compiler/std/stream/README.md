@@ -78,8 +78,11 @@ a lazy one never opens it. The limit is checked before construction.
 Async resource parameters are checked borrows, not ownership transfers. Their
 calls must be directly awaited: `source.next().await` and `collect(source).await`
 keep the owner alive until children drain, including cancellation and faults.
-Storing, returning, joining or forwarding a borrowing Task rejects. An existing
-scoped producer also cannot be copied into a returned adapter; use a factory.
+Synchronous `fn ... Task[T]` wrappers can return a Task borrowing only their
+caller-provided resources; the caller must directly await the forwarding call.
+Storing or joining that Task, returning a locally owned borrow, or exposing an
+inner borrowing Task from an async function rejects. An existing scoped producer
+also cannot be copied into a returned adapter; use a factory.
 NoSuspend resources still cannot cross suspension. General borrow-retaining
 adapters remain unsupported.
 See the [file pipeline](../../examples/stream_lines/README.md).
