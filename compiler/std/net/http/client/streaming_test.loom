@@ -1,3 +1,5 @@
+import std.task.outcome
+
 async fn streaming_peer(listener ListenerHandle, mode Int, entered List[Bool]) Result[Bool, TcpError] {
     scoped acquired = std.net.tcp.accept_owned(listener).await?
     let stream = std.net.tcp.detach(acquired)?
@@ -52,6 +54,9 @@ async fn streaming_roundtrip(mode Int) Result[Bool, TcpError] {
         if mode == 2 {
             return Result.Err(Error.Unsupported)
         }
+        if mode == 5 {
+            fault_text("stream consumer fault")
+        }
         var count = 0
         while true {
             match response.next().await {
@@ -92,6 +97,11 @@ async fn streaming_roundtrip(mode Int) Result[Bool, TcpError] {
             Outcome.Cancelled => entered[0] && left[0]
             _ => false
         }
+    } else if mode == 5 {
+        match outcome(pending).await {
+            Outcome.Faulted(error) => contains(error.message, "stream consumer fault") && entered[0] && left[0]
+            _ => false
+        }
     } else {
         match pending.await {
             Result.Ok(count) => (mode == 0 && count == 131072) || (mode == 1 && count > 0 && count <= 16384)
@@ -125,12 +135,16 @@ test async fn early_stream_consumers_and_errors_close_without_draining_the_body(
     }
 }
 
-test async fn streaming_deadlines_and_cancellation_drain_the_consumer_before_close() {
+test async fn streaming_deadlines_cancellation_and_faults_drain_the_consumer_before_close() {
     assert match streaming_roundtrip(3).await {
         Result.Ok(value) => value
         _ => false
     }
     assert match streaming_roundtrip(4).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match streaming_roundtrip(5).await {
         Result.Ok(value) => value
         _ => false
     }
