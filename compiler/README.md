@@ -271,7 +271,8 @@ node scripts/bootstrap-seed.mjs --write target/loom
 
 Refresh the pin only when the seed's source must change; ordinary edits to the
 current compiler do not require a new checked input. The private checked format
-is not a stable release ABI. `LOOM_BOOTSTRAP_COMPILER` and
+is not a stable release ABI. New diagnostic sections can require refreshing the
+checked input without advancing its source pin. `LOOM_BOOTSTRAP_COMPILER` and
 `LOOM_BOOTSTRAP_INPUT` remain explicit overrides for trusted compatible inputs.
 The active frontend remains Loom-only.
 
