@@ -864,8 +864,15 @@ fn checked_inspection(analysis AnalysisState, file Int, offset Int, tokens List[
     }
     // A declaration is written against its lexical parameters, not whichever
     // concrete callers happened to enter this application build.
-    if source_header_at(analysis, file, offset) {
-        return independent_inspection(analysis, file, offset, tokens)
+    let source_header = source_header_at(analysis, file, offset)
+    if source_header {
+        match independent_inspection(analysis, file, offset, tokens) {
+            Option.Some(found) => {
+                return Option.Some(found)
+            }
+            Option.None => {
+            }
+        }
     }
     let view = CheckedQuery {
         bindings = analysis.bindings
@@ -881,6 +888,11 @@ fn checked_inspection(analysis AnalysisState, file Int, offset Int, tokens List[
             get(analysis.declarations, 0)
         }
         stages = new[std.loom.checking.StagedQuery]()
+    }
+    if source_header {
+        // A complete check can retain source bindings even when an independent
+        // header has no singular type. Never substitute a runtime instance.
+        return inspect_declaration_at(analysis, view, file, offset, tokens)
     }
     match inspect_view(view, file, offset, tokens) {
         Option.Some(found) => Option.Some(found)

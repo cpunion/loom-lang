@@ -1,0 +1,24 @@
+concept WordRelay {
+    type Value
+    fn relay_word(self Self, value Self.Value) Self.Value
+}
+
+impl[Ts...] WordRelay for (Ts...) {
+    type Value = dyn WordFactory[Item[U] = (Ts..., U)]
+    fn relay_word(self Self, value dyn WordFactory[Item[V] = (Ts..., V)])
+    dyn WordFactory[Item[W] = (Ts..., W)] {
+        discard self
+        value
+    }
+}
+
+async fn exercise_family_schema() {
+    let empty = packet()
+    let first dyn WordFactory[Item[U] = (U,)] = 0
+    let forwarded = empty.values.relay_word(first)
+    assert forwarded.append(true) == (true,)
+    let second dyn WordFactory[Item[U] = (Int, Bool, U)] = true
+    let relayed = (7, true).relay_word(second)
+    let resumed = echo(relayed).await
+    assert resumed.append("schema") == (42, true, "schema")
+}

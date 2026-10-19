@@ -148,31 +148,28 @@ fn impl_method_resolved_schema(env Environment, scope ImplMethodScope, ty Int, n
     }
     let schema = impl_type_schema(env, ty, node, true)
     if length(shape.pack_widths) > 1 {
-        // Preserve independent nominal group boundaries from the shared encoder.
-        return impl_method_resolved_slots(env, scope, schema, depth + 1)
+        // The shared encoder owns group boundaries. Fill its slots with the
+        // already-normalized children, rather than decoding raw identities a
+        // second time and losing dyn members or scoped family captures.
+        let parameters = group(symbol(env, shape.symbol).node, NodeKind.TypeParameters)
+        let groups = new[Node]()
+        var offset = 0
+        index = 0
+        while index < length(parameters) {
+            let slot = child(schema, index)
+            if get(parameters, index).kind == NodeKind.TypePack {
+                let end = offset + length(slot.children)
+                push(groups, pack_node(slot, slot.kind, slot.value, pack_forward_range(children, offset, end)))
+                offset = end
+            } else {
+                push(groups, get(children, offset))
+                offset = offset + 1
+            }
+            index = index + 1
+        }
+        return Result.Ok(pack_node(schema, schema.kind, schema.value, groups))
     }
     Result.Ok(pack_node(node, schema.kind, schema.value, children))
-}
-
-fn impl_method_resolved_slots(env Environment, scope ImplMethodScope, schema Node, depth Int) Result[Node, Failure] {
-    if depth >= 64 {
-        return Result.Err(failure(env, get(env.implementations, scope.implementation).source, schema,
-                "implementation method type expansion must be finite"))
-    }
-    var index = 0
-    while index < length(scope.types) {
-        if schema.kind == NodeKind.Type && schema.value == to_text(get(scope.types, index)) {
-            return Result.Ok(impl_method_variable(schema, index))
-        }
-        index = index + 1
-    }
-    let children = new[Node]()
-    index = 0
-    while index < length(schema.children) {
-        push(children, impl_method_resolved_slots(env, scope, child(schema, index), depth + 1)?)
-        index = index + 1
-    }
-    Result.Ok(pack_node(schema, schema.kind, schema.value, children))
 }
 
 fn impl_method_type_schema(env Environment, scope ImplMethodScope, owner Int, node Node,
@@ -197,6 +194,12 @@ fn impl_method_type_schema(env Environment, scope ImplMethodScope, owner Int, no
     let resolved = meta_type_node(context, node)?
     let ty = resolve_bound(env, owner, resolved, new[Int](), scope.evidence, 0)?
     discard well_formed(env, owner, ty, scope.evidence, node, 0)?
+    if node.kind == NodeKind.Type && get(env.inputs, 0).declaration_queries {
+        let shape = get(env.types, ty)
+        if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
+            record_declaration_reference(env, owner, node, shape.symbol, reference_path_segment(node.value), "")
+        }
+    }
     impl_method_resolved_schema(env, scope, ty, node, 0)
 }
 
@@ -227,7 +230,7 @@ fn impl_method_source_context(env Environment, scope ImplMethodScope, owner Int,
     Result.Ok(context)
 }
 
-fn impl_method_family_schema(env Environment, scope ImplMethodScope, owner Int, capability Int,
+fn impl_method_closed_family_schema(env Environment, scope ImplMethodScope, owner Int, capability Int,
     binding Node, frame List[Node], values List[Node]) Result[Node, Failure] {
     let context = impl_method_source_context(env, scope, owner, binding, frame, values)?
     let node = computed_dynamic_node(context,
@@ -239,6 +242,9 @@ fn impl_method_family_schema(env Environment, scope ImplMethodScope, owner Int, 
         if symbol(env, member).name == binding.value {
             let ty = dynamic_binding(env, owner, member, child(node, 0), new[Int](), scope.evidence, 0)?
             discard dynamic_family_requirements(env, owner, member, ty, scope.evidence, binding)?
+            if get(env.inputs, 0).declaration_queries {
+                record_declaration_reference(env, owner, binding, member, 0, "")
+            }
             return Result.Ok(pack_node(binding, NodeKind.AssociatedType, binding.value,
                     source_nodes(impl_type_schema(env, ty, binding, true))))
         }
@@ -291,7 +297,7 @@ fn impl_method_substitute(env Environment, scope ImplMethodScope, owner Int, sch
                     return Result.Err(failure(env, owner, schema, "invalid symbolic dynamic type"))
                 }
             }
-            push(children, impl_method_family_schema(env, scope, owner, capability, member, frame, values)?)
+            push(children, impl_method_family_schema(env, scope, owner, capability, member, frame, values, depth + 1)?)
         } else {
             push(children, impl_method_substitute(env, scope, owner, member, frame,
                     values, depth + 1)?)
@@ -412,7 +418,15 @@ fn impl_method_header_matches(env Environment, implementation Int, owner Int, de
     match impl_method_header_schema(env, scope, owner, false) {
         Result.Ok(actual) => {
             let expected = impl_method_header_schema(env, scope, declaration, true)?
-            Result.Ok(same_method_pack_schema(expected, actual))
+            if same_method_pack_schema(expected, actual) {
+                return Result.Ok(true)
+            }
+            if !pack_has_family_schema(expected) && !pack_has_family_schema(actual) {
+                return Result.Ok(false)
+            }
+            Result.Ok(same_method_pack_schema(
+                    impl_method_family_canonical(env, scope, expected, 0)?,
+                    impl_method_family_canonical(env, scope, actual, 0)?))
         }
         Result.Err(failed) => {
             if method_trial_missing_evidence(failed) ||

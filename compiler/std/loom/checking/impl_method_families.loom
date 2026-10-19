@@ -1,0 +1,154 @@
+fn impl_method_family_has_word(binding Node, frame List[Node], values List[Node]) Bool {
+    if has_type_expansion(binding) {
+        return true
+    }
+    var index = 0
+    while index < length(frame) {
+        if has_type_expansion(get(values, index)) && mentions_pack(binding, get(frame, index).value) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Reuse ordinary hygienic family application before closing its eigenvariables.
+// This also exposes captures inside a nested, already-interned family value.
+fn impl_method_family_canonical(env Environment, scope ImplMethodScope, schema Node,
+    depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, get(env.implementations, scope.implementation).source, schema,
+                "implementation family normalization must be finite"))
+    }
+    let identity = pack_schema_identity(env, schema)
+    if identity >= 0 && get(env.types, identity).kind == TypeKind.Family {
+        let count = get(env.types, identity).symbol
+        let first = length(scope.types)
+        let fresh = fresh_family_parameters(env, count)
+        let nested = ImplMethodScope {
+            types = member_arguments(scope.types, fresh)
+            ..scope
+        }
+        let body = apply_type_family(env, get(env.implementations, scope.implementation).source,
+            identity, fresh, schema)?
+        let resolved = impl_method_resolved_schema(env, nested, body, schema, depth + 1)?
+        let normalized = impl_method_family_canonical(env, nested, resolved, depth + 1)?
+        return Result.Ok(pack_family_schema(schema, count, pack_family_schema_close(normalized, first, count, 0)))
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(schema.children) {
+        push(children, impl_method_family_canonical(env, scope, child(schema, index), depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(pack_node(schema, schema.kind, schema.value, children))
+}
+
+fn impl_method_family_schema(env Environment, scope ImplMethodScope, owner Int, capability Int,
+    binding Node, frame List[Node], values List[Node], depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, binding, "implementation family normalization must be finite"))
+    }
+    if !impl_method_family_has_word(binding, frame, values) {
+        return impl_method_closed_family_schema(env, scope, owner, capability, binding, frame, values)
+    }
+    let members = get(env.concepts, concept_index(env, capability)).associated
+    var selected = 0
+    while selected < length(members) && symbol(env, get(members, selected)).name != binding.value {
+        selected = selected + 1
+    }
+    if selected == length(members) {
+        return Result.Err(failure(env, owner, binding, "unknown dynamic associated type binding"))
+    }
+    let member = get(members, selected)
+    let local = dynamic_family_parameters(env, owner, member, binding)?
+    if get(env.inputs, 0).declaration_queries {
+        record_declaration_reference(env, owner, binding, member, 0, "")
+    }
+    let first = length(scope.types)
+    let fresh = fresh_family_parameters(env, length(local))
+    let types = member_arguments(scope.types, fresh)
+    let parameters = std.list.clone(group(scope.caller, NodeKind.TypeParameters))
+    let assumptions = std.list.clone(scope.assumptions)
+    let evidence = std.list.clone(scope.evidence)
+    let source_frame = new[Node]()
+    let source_values = std.list.clone(values)
+    var index = 0
+    while index < length(frame) {
+        let parameter = get(frame, index)
+        push(source_frame, if family_parameter_index(local, parameter.value) >= 0 {
+                pack_node(parameter, parameter.kind, concat("$shadow#", to_text(index)), parameter.children)
+            } else {
+                parameter
+            })
+        index = index + 1
+    }
+    let declared = member_parameters(env, member)
+    index = 0
+    while index < length(local) {
+        let parameter = get(local, index)
+        let variable = impl_method_variable(parameter, first + index)
+        push(source_frame, parameter)
+        push(source_values, variable)
+        push(parameters, pack_node(parameter, NodeKind.Name, concat("$family-param#", to_text(first + index)),
+                new[Node]()))
+        let bounds = get(declared, index).children
+        var bound = 0
+        while bound < length(bounds) {
+            let capability = required_concept(env, member, get(bounds, bound))?
+            push(assumptions, PackLayoutRequirement {
+                    schema = variable
+                    capability = capability
+                })
+            push(evidence, Requirement {
+                    ty = get(fresh, index)
+                    capability = capability
+                })
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(scope.caller.children) {
+        if child(scope.caller, index).kind != NodeKind.TypeParameters {
+            push(children, child(scope.caller, index))
+        }
+        index = index + 1
+    }
+    push(children, pack_node(binding, NodeKind.TypeParameters, "", parameters))
+    let nested = ImplMethodScope {
+        caller = pack_node(scope.caller, scope.caller.kind, scope.caller.value, children)
+        assumptions = assumptions
+        types = types
+        evidence = evidence
+        ..scope
+    }
+    var body = impl_method_family_canonical(env, nested,
+        impl_method_type_schema(env, nested, owner, child(binding, 0), source_frame, source_values, depth + 1)?,
+        depth + 1)?
+    if pack_family_schema_arity(body) >= 0 {
+        if pack_family_schema_arity(body) != length(local) {
+            return Result.Err(failure(env, owner, binding, "wrong number of dynamic associated type arguments"))
+        }
+        body = match pack_family_schema_open(child(body, 0), first, length(local), 0, 0) {
+            Option.Some(value) => value
+            Option.None => {
+                return Result.Err(failure(env, owner, binding, "implementation family substitution must be finite"))
+            }
+        }
+    }
+    discard impl_method_well_formed(env, nested, owner, body)?
+    let bounds = member_bounds(env, member)
+    index = 0
+    while index < length(bounds) {
+        if !pack_layout_admitted(impl_method_context(env, nested, owner), nested.caller, body,
+            get(bounds, index), new[PackLayoutRequirement](), ints(512), 0, Option.Some(assumptions))? {
+            return Result.Err(failure(env, owner, binding, "implementation family result needs its declared concept requirements"))
+        }
+        index = index + 1
+    }
+    Result.Ok(pack_node(binding, NodeKind.AssociatedType, binding.value,
+            source_nodes(pack_family_schema(binding, length(local),
+                    pack_family_schema_close(body, first, length(local), 0)))))
+}
