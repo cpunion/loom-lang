@@ -216,6 +216,7 @@ fn resource_function(analysis ResourceAnalysis, id Int, borrowed List[Int]) Resu
     if flow_resource(flow, current.result)? && current.body.falls && !value.fresh {
         return Result.Err(resource_error(flow, current.body, "a resource return must transfer a fresh value"))
     }
+    resource_consume(flow, value)
     if resource_pending(flow.locals, -1) {
         return Result.Err(resource_error(flow, current.body, "a resource payload must immediately enter scoped or transfer into a fresh result"))
     }
@@ -316,9 +317,12 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     // without allowing an effect before adoption.
     if resource_pending(flow.locals, -1) && kind != ExprKind.Block && kind != ExprKind.Local && kind != ExprKind.Return &&
     kind != ExprKind.Record && kind != ExprKind.Variant &&
+    !(kind == ExprKind.Match && expr.text == "pattern-decision") &&
+    !(kind == ExprKind.If && expr.text == "pattern-literal") &&
     !registration && !(kind == ExprKind.Cleanup && expr.text == "resource-disarm") &&
     !(kind == ExprKind.Let && (get(current.locals, expr.index).is_scoped ||
-            (expr.text == "pattern-binding" && get(expr.children, 0).kind == ExprKind.Local) ||
+            (expr.text == "pattern-binding" && (get(expr.children, 0).kind == ExprKind.Local ||
+                    get(expr.children, 0).text == "pattern-rebuild")) ||
             (get(current.locals, expr.index).name == "" &&
                 ((get(expr.children, 0).kind == ExprKind.Local && !flow_resource(flow, get(current.locals, expr.index).ty)?) ||
                     ((get(expr.children, 0).kind == ExprKind.Record || get(expr.children, 0).kind == ExprKind.Variant) &&
@@ -433,7 +437,7 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
             set(flow.locals, expr.index, resource_origin(resource_value(true, false, -1), value.caller))
             return Result.Ok(resource_value(false, false, -1))
         }
-        if kind == ExprKind.Let && expr.text == "pattern-binding" && value.pending >= 0 && value.fresh && !value.protected {
+        if kind == ExprKind.Let && expr.text == "pattern-binding" && value.fresh && !value.protected && flow_resource(flow, local.ty)? {
             // Decision trees rename a selected payload through a compiler-only
             // local before executing its source arm. Forward the obligation,
             // not a shareable copy; the old local becomes consumed.
@@ -490,7 +494,17 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         return resource_call(flow, expr, automatic, false)
     }
     if kind == ExprKind.If {
-        discard resource_expression(flow, get(expr.children, 0), false)?
+        if expr.text == "pattern-literal" {
+            // A generated equality test only reads its saved scalar operand.
+            // Its literal is not a source operation delaying resource adoption.
+            var operand = get(get(expr.children, 0).children, 0)
+            while operand.kind == ExprKind.Coerce {
+                operand = get(operand.children, 0)
+            }
+            discard resource_expression(flow, operand, false)?
+        } else {
+            discard resource_expression(flow, get(expr.children, 0), false)?
+        }
         let yes = resource_branch(flow)
         let first = resource_expression(yes, get(expr.children, 1), automatic)?
         let no = resource_branch(flow)
@@ -498,6 +512,11 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
             resource_expression(no, get(expr.children, 2), automatic)?
         } else {
             resource_value(false, false, -1)
+        }
+        if expr.text == "pattern-literal" {
+            if !resource_pattern_result(yes.locals, first.pending) || !resource_pattern_result(no.locals, other.pending) {
+                return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped or transfer into a fresh result"))
+            }
         }
         resource_join(flow, yes)
         resource_join(flow, no)
@@ -530,6 +549,9 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         return Result.Ok(value)
     }
     if kind == ExprKind.Block {
+        if expr.text == "pattern-product" {
+            return resource_product_pattern(flow, expr, automatic)
+        }
         var value = resource_value(false, true, -1)
         var index = 0
         while index < length(expr.children) {
@@ -543,6 +565,9 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         // Ordinary fields retain their ordinary sharing semantics. A scoped
         // wrapper does not acquire exclusive ownership of its reachable data.
         return Result.Ok(resource_origin(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1), value.caller))
+    }
+    if (kind == ExprKind.Record || kind == ExprKind.Variant) && expr.text == "pattern-rebuild" {
+        return resource_rebuilt_pattern(flow, expr)
     }
     if (kind == ExprKind.Record || kind == ExprKind.Variant || kind == ExprKind.List) && expr.text == "resource-pending-transfer" {
         var field = 0
@@ -613,6 +638,9 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
     if !value.protected && resource && !value.fresh {
         return Result.Err(resource_error(flow, input, "resource matching requires a fresh result, not a scoped or copied value"))
     }
+    // Decomposition replaces the pending container with the selected fields;
+    // it does not leave a second obligation for the consumed container alias.
+    resource_consume(flow, value)
     var protected = false
     var fresh = true
     var caller = true
@@ -660,7 +688,7 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
             field = field + 1
         }
         // A returned pending owner does not account for any sibling payload.
-        if resource_pending(branch.locals, output.pending) {
+        if !resource_pattern_result(branch.locals, output.pending) {
             return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped or transfer into a fresh result"))
         }
         protected = protected || output.protected

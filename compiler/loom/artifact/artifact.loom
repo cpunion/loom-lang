@@ -224,8 +224,22 @@ fn expression(buffer Bytes, value Expr) {
     integer(buffer, value.ty)
     integer(buffer, value.span.start)
     integer(buffer, value.span.end)
-    text(buffer, value.text)
-    integer(buffer, value.index)
+    // Resource checking annotates ordinary pattern decisions and pure rebuilds.
+    // Neither those roles nor a product's parent-local ID are executable IR.
+    let product = value.kind == ExprKind.Block && value.text == "pattern-product"
+    let role = product || (value.kind == ExprKind.Match && value.text == "pattern-decision") ||
+    (value.kind == ExprKind.If && value.text == "pattern-literal") ||
+    ((value.kind == ExprKind.Record || value.kind == ExprKind.Variant) && value.text == "pattern-rebuild")
+    text(buffer, if role {
+            ""
+        } else {
+            value.text
+        })
+    integer(buffer, if product {
+            -1
+        } else {
+            value.index
+        })
     integer(buffer, if value.falls {
             1
         } else {

@@ -131,7 +131,7 @@ fn literal_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
             } else {
                 pattern_block(plan.source, new[Expr](), body)
             })
-        body = expression(ExprKind.If, plan.output, plan.source, "", -1, children, yes.falls || body.falls)
+        body = expression(ExprKind.If, plan.output, plan.source, "pattern-literal", -1, children, yes.falls || body.falls)
     }
     Result.Ok(body)
 }

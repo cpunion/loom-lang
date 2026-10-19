@@ -1,0 +1,76 @@
+// A decision leaf accounts for every pending owner before returning its one
+// fresh result. In particular, a literal split cannot hide an abandoned sibling
+// by merging its branch-local states into consumed/unavailable states.
+fn resource_pattern_result(locals List[ResourceValue], transferred Int) Bool {
+    if resource_pending(locals, transferred) {
+        return false
+    }
+    if transferred >= 0 {
+        set(locals, transferred, resource_value(false, false, -2))
+    }
+    true
+}
+
+// These leading projections are emitted together by the pattern matrix, not
+// source field reads. They cannot fault, allocate or invoke user code. Replace
+// one container obligation with independent obligations for all its fields,
+// before checking the selected source arm with the ordinary effect rules.
+fn resource_product_pattern(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
+    let current = get(flow.analysis.functions, flow.function)
+    let value = get(flow.locals, expr.index)
+    if value.pending == -2 {
+        return Result.Err(resource_error(flow, expr, "a transferred resource payload cannot be used again"))
+    }
+    let ty = get(current.locals, expr.index).ty
+    let needed_container = flow_resource(flow, ty)?
+    if !value.protected && needed_container && !value.fresh {
+        return Result.Err(resource_error(flow, expr, "resource matching requires a fresh result, not a scoped or copied value"))
+    }
+    if !value.protected && needed_container {
+        set(flow.locals, expr.index, resource_value(false, false, -2))
+    }
+    var index = 0
+    while index + 1 < length(expr.children) {
+        let binding = get(expr.children, index)
+        let needed = flow_resource(flow, get(current.locals, binding.index).ty)?
+        set(flow.locals, binding.index, resource_origin(resource_value(value.protected && needed,
+                    needed && !value.protected, if needed && !value.protected {
+                        binding.index
+                    } else {
+                        -1
+                    }), value.caller))
+        index = index + 1
+    }
+    resource_expression(flow, get(expr.children, index), automatic)
+}
+
+// A later whole-value row rebuilds only the already selected structural pieces.
+// No source constructor or field initializer executes here. Forward each fresh
+// piece once, or retain the original borrow provenance for a borrowed container.
+fn resource_rebuilt_pattern(flow ResourceFlow, expr Expr) Result[ResourceValue, Failure] {
+    var protected = false
+    var caller = true
+    var index = 0
+    while index < length(expr.children) {
+        let field = get(expr.children, index)
+        let input = if expr.kind == ExprKind.Record {
+            get(field.children, 0)
+        } else {
+            field
+        }
+        let value = resource_expression(flow, input, false)?
+        if flow_resource(flow, input.ty)? {
+            if value.protected {
+                protected = true
+                caller = caller && value.caller
+            } else {
+                if !value.fresh {
+                    return Result.Err(resource_error(flow, input, "resource aggregates require a fresh transferred payload"))
+                }
+                resource_consume(flow, value)
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(resource_origin(resource_value(protected, !protected, -1), caller))
+}

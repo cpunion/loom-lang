@@ -92,6 +92,10 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
 }
 
 fn record_pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, depth Int, borrowed Bool) Result[PatternScope, Failure] {
+    let marker = resource_concept(context.env, "MustScope")
+    if !borrowed && marker >= 0 && satisfies(context, ty, marker)? {
+        return Result.Err(error(context, node, "a MustScope value requires scoped; direct resource matching is not yet supported"))
+    }
     let fields = record_pattern_fields(context, node, ty)?
     let shape = get(context.env.types, base_type(context.env, ty))
     let positions = new[Int]()
