@@ -110,7 +110,8 @@ fn impl_method_context(env Environment, scope ImplMethodScope, owner Int) Contex
 // families. Logical identities are shared by both headers; no word is expanded.
 fn impl_method_resolved_schema(env Environment, scope ImplMethodScope, ty Int, node Node, depth Int) Result[Node, Failure] {
     if depth >= 64 {
-        return Result.Err(failure(env, -1, node, "implementation method type expansion must be finite"))
+        return Result.Err(failure(env, get(env.implementations, scope.implementation).source, node,
+                "implementation method type expansion must be finite"))
     }
     let shape = get(env.types, ty)
     var index = 0
@@ -155,7 +156,8 @@ fn impl_method_resolved_schema(env Environment, scope ImplMethodScope, ty Int, n
 
 fn impl_method_resolved_slots(env Environment, scope ImplMethodScope, schema Node, depth Int) Result[Node, Failure] {
     if depth >= 64 {
-        return Result.Err(failure(env, -1, schema, "implementation method type expansion must be finite"))
+        return Result.Err(failure(env, get(env.implementations, scope.implementation).source, schema,
+                "implementation method type expansion must be finite"))
     }
     var index = 0
     while index < length(scope.types) {
