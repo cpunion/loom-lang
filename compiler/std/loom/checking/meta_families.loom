@@ -15,6 +15,41 @@ fn family_node_mentions(node Node, parameters List[Node]) Bool {
     false
 }
 
+// A family-local type name is not a capture of a same-spelled static value.
+// Check free value references using the ordinary static-dependency predicate.
+fn unknown_static_family(context Context, node Node, bound List[Node]) Bool {
+    if node.kind == NodeKind.TypeParameters {
+        return false
+    }
+    var parameters = bound
+    let local = if node.kind == NodeKind.AssociatedType {
+        group(node, NodeKind.TypeParameters)
+    } else {
+        new[Node]()
+    }
+    if length(local) > 0 {
+        parameters = std.list.clone(bound)
+        var index = 0
+        while index < length(local) {
+            push(parameters, get(local, index))
+            index = index + 1
+        }
+    }
+    if (node.kind == NodeKind.Name || node.kind == NodeKind.Type || node.kind == NodeKind.Call) &&
+    family_parameter_index(parameters, slice(node.value, 0, first_dot(node.value))) < 0 &&
+    unknown_static(context, pack_node(node, node.kind, node.value, new[Node]())) {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if unknown_static_family(context, child(node, index), parameters) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
 // Capture outer type values without treating a template binder as a same-named
 // static value. Type computations depending on that binder cannot be executed
 // as though a rigid variable were one particular concrete type.

@@ -1,0 +1,31 @@
+concept DynamicFamily {
+    type Item[T]
+    fn echo[T](self Self, value Self.Item[T]) Self.Item[T]
+}
+
+impl DynamicFamily for Bool {
+    type Item[T] = (Int, T)
+    fn echo[T](self Bool, value (Int, T)) (Int, T) {
+        discard self
+        value
+    }
+}
+
+fn dynamic_family_type[Tag]() type {
+    dyn DynamicFamily[Item[T] = (Tag, T)]
+}
+
+fn dynamic_type_values() {
+    let Chosen = comptime {
+        choose(true, dynamic_family_type[Int](), Int)
+    }
+    let value Chosen = true
+    assert value.echo[Text]((42, "dynamic")).1 == "dynamic"
+    let shared = [7]
+    let returned = value.echo[List[Int]]((42, shared))
+    returned.1[0] = 11
+    assert shared[0] == 11
+    assert comptime {
+        dynamic_family_type[Int]() == dyn DynamicFamily[Item[U] = (Int, U)]
+    }
+}

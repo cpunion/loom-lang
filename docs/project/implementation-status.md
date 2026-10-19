@@ -225,7 +225,10 @@ Type/value/function parameters, structural type construction, associated
 projections, hygienic expression macros and explicit declaration generation use
 ordinary typing and visibility. Declaration generation is not an implicit
 fixed-point expansion. Reflection exposes filtered schemas, not extra access
-or conformance evidence. `std.meta.refinement_base` exposes a visible base's
+or conformance evidence. Direct `dyn` type values use ordinary dynamic-header
+checks and preserve local family binders rather than capturing same-named static
+values. They remain compile-time identities, not runtime conformance discovery.
+`std.meta.refinement_base` exposes a visible base's
 compile-time identity without waiving visibility or constrained construction.
 Type-producing helpers may retain an opaque local identity during generic
 checking and select guarded uses at specialization. Known symbolic structures

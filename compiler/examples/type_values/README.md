@@ -10,6 +10,10 @@ The keyword `type` names compile-time type identity, not a runtime tag or a
 reflection descriptor. Ordinary pure functions can accept and return it, store
 it in compile-time data, and select it with loops and conditionals.
 `std.meta.of[T]()` also accepts tuple/function/dynamic type syntax.
+`dyn C[...]` is itself a compile-time type expression, so pure helpers can return
+it directly while preserving family binders and captures. Ordinary visibility,
+domain, result-bound and object-safety checks still apply; no witness or runtime
+type lookup is created just by naming a type. See [dynamic.loom](dynamic.loom).
 The same keyword works in explicit generic arguments (`new[type]()`) and as
 the compile-time identity of `type` itself; it is still reserved as a name and
 cannot become a native value or an index.
