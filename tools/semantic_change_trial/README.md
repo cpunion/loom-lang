@@ -341,9 +341,12 @@ For an impl move, pass `--move ID NEW_FILE - KEY`; its opaque key distinguishes
 implementations even when they share a file. Concept/default methods retain
 checked member bindings across sibling body edits. Independent edits to different
 method bodies in the same impl or concept can combine, including a container
-move, when headers, contracts, member order and surrounding source are unchanged.
-Retained bodies and headers must keep their checked reference targets. Competing
-edits to one method, member renames and interface changes require resolution;
+move, when headers, contracts and member order are unchanged.
+Whitespace/comments between members can also compose with those body edits;
+each gap uses the same three-way equality rules and keeps exact bytes. Other
+container scaffolding remains fixed. Retained bodies and headers must keep their
+checked reference targets. Competing edits to one method, member renames and
+interface changes require resolution;
 the tool does not infer new member identities.
 
 Ambiguities may be saved without guessing an identity:
