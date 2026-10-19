@@ -303,6 +303,12 @@ Node process fixtures for `npm test`, not generated compiler artifacts. They are
 excluded from extension packaging; both smoke commands use the real compiler.
 
 The smoke command accepts `LOOM_EDITOR_COMPILER` and `LOOM_EDITOR_STD` overrides.
+It reports the selected paths and rejects positional arguments instead of silently
+testing the default compiler. Use absolute override paths when testing a candidate:
+
+```sh
+LOOM_EDITOR_COMPILER=/absolute/path/to/loom LOOM_EDITOR_STD=/absolute/path/to/std npm run smoke
+```
 The optional host test opens and closes its own Development Host with a temporary
 project and user-data/extensions directories. It also verifies format-on-save and
 same-directory tests plus execution; it neither installs the extension nor changes
