@@ -48,6 +48,35 @@ test fn macro_contracts_share_typed_expansion_and_mandatory_proofs() {
         Result.Err(_) => true
         Result.Ok(_) => false
     }
+    assert match macro_contract_source("""
+        fn keep[Ts...](context Ts...) Int
+        requires positive!(1)
+        {
+            discard context
+            1
+        }
+        fn main() {
+            assert keep() == 1
+            assert keep(2, true) == 1
+        }
+        """) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match macro_contract_source("""
+        fn shadowed[Ts...](positive Ts...) Int
+        requires positive!(1)
+        {
+            discard positive
+            1
+        }
+        fn main() {
+            discard shadowed(2)
+        }
+        """) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
 }
 
 test fn macro_contracts_retain_eager_inputs_and_expansion_purity() {

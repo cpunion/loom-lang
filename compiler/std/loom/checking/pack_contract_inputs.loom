@@ -11,7 +11,7 @@ fn pack_contract_inputs(node Node, bindings List[Node], depth Int) Result[Node, 
         push(children, pack_contract_inputs(child(node, index), bindings, depth + 1)?)
         index = index + 1
     }
-    if node.kind == NodeKind.Name || node.kind == NodeKind.Call {
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall {
         index = 0
         while index < length(bindings) {
             let binding = get(bindings, index)
@@ -19,6 +19,10 @@ fn pack_contract_inputs(node Node, bindings List[Node], depth Int) Result[Node, 
                 let parts = std.text.split(node.value, ".")
                 let tuple = child(binding, 0)
                 var value = pack_node(node, tuple.kind, tuple.value, tuple.children)
+                if node.kind == NodeKind.MacroCall {
+                    // A local pack cannot name a source macro generator either.
+                    return Result.Ok(pack_node(node, NodeKind.Invoke, "", [value, get(children, 0)]))
+                }
                 var member = 1
                 let count = length(parts) - if node.kind == NodeKind.Call {
                     1
