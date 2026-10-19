@@ -1,0 +1,486 @@
+fn impl_method_frame(env Environment, implementation Int, owner Int, outer Bool) List[Node] {
+    let node = symbol(env, owner).node
+    let parameters = source_nodes(pack_node(node, NodeKind.Type, "Self", new[Node]()))
+    if outer {
+        let declared = group(symbol(env, implementation).node, NodeKind.TypeParameters)
+        var index = 0
+        while index < length(declared) {
+            push(parameters, get(declared, index))
+            index = index + 1
+        }
+    }
+    let local = if owner == implementation {
+        new[Node]()
+    } else {
+        member_parameters(env, owner)
+    }
+    var index = 0
+    while index < length(local) {
+        push(parameters, get(local, index))
+        index = index + 1
+    }
+    parameters
+}
+
+fn impl_method_variable(node Node, index Int) Node {
+    pack_node(node, NodeKind.Type, concat("$parameter#", std.int.to_text(index)), new[Node]())
+}
+
+record ImplMethodScope {
+    implementation Int
+    caller Node
+    target Node
+    assumptions List[PackLayoutRequirement]
+    types List[Int]
+    evidence List[Requirement]
+}
+
+fn impl_method_scope(env Environment, implementation Int, owner Int, declaration Int) Result[ImplMethodScope, Failure] {
+    let header = get(env.implementations, implementation)
+    let frame = impl_method_frame(env, header.source, owner, true)
+    let children = new[Node]()
+    let node = symbol(env, owner).node
+    var index = 0
+    while index < length(node.children) {
+        if child(node, index).kind != NodeKind.TypeParameters {
+            push(children, child(node, index))
+        }
+        index = index + 1
+    }
+    push(children, pack_node(node, NodeKind.TypeParameters, "", frame))
+    let outer = group(symbol(env, header.source).node, NodeKind.TypeParameters)
+    let local = member_parameters(env, declaration)
+    let assumptions = new[PackLayoutRequirement]()
+    index = 0
+    while index < length(outer) + length(local) {
+        let parameter = if index < length(outer) {
+            get(outer, index)
+        } else {
+            get(local, index - length(outer))
+        }
+        let source = if index < length(outer) {
+            header.source
+        } else {
+            declaration
+        }
+        var bound = 0
+        while bound < length(parameter.children) {
+            push(assumptions, PackLayoutRequirement {
+                    schema = impl_method_variable(parameter, index + 1)
+                    capability = required_concept(env, source, child(parameter, bound))?
+                })
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    let types = fresh_family_parameters(env, length(frame))
+    let evidence = new[Requirement]()
+    index = 0
+    while index < length(assumptions) {
+        let known = get(assumptions, index)
+        push(evidence, Requirement {
+                ty = get(types, pack_schema_parameter(known.schema))
+                capability = known.capability
+            })
+        index = index + 1
+    }
+    Result.Ok(ImplMethodScope {
+            implementation = implementation
+            caller = pack_node(node, node.kind, node.value, children)
+            target = type_pattern_schema(env, header.source, child(symbol(env, header.source).node, 1),
+                false, 0, true, true, impl_method_frame(env, header.source, header.source, true))?
+            assumptions = assumptions
+            types = types
+            evidence = evidence
+        })
+}
+
+fn impl_method_context(env Environment, scope ImplMethodScope, owner Int) Context {
+    let context = empty_context(env, owner)
+    Context {
+        signature = Signature {
+            requirements = scope.evidence
+            ..context.signature
+        }
+        ..context
+    }
+}
+
+// Closed subtrees use the ordinary resolver, including scoped/computed type
+// families. Logical identities are shared by both headers; no word is expanded.
+fn impl_method_resolved_schema(env Environment, scope ImplMethodScope, ty Int, node Node, depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, get(env.implementations, scope.implementation).source, node,
+                "implementation method type expansion must be finite"))
+    }
+    let shape = get(env.types, ty)
+    var index = 0
+    while index < length(scope.types) {
+        if get(scope.types, index) == ty {
+            return Result.Ok(impl_method_variable(node, index))
+        }
+        index = index + 1
+    }
+    if shape.kind == TypeKind.Family {
+        // type_family already interns alpha-equivalent lexical binders.
+        return Result.Ok(impl_type_schema(env, ty, node, true))
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(shape.arguments) {
+        push(children, impl_method_resolved_schema(env, scope, get(shape.arguments, index), node, depth + 1)?)
+        index = index + 1
+    }
+    if shape.kind == TypeKind.Associated {
+        return Result.Ok(pack_node(node, NodeKind.Select, concat("member#", to_text(shape.symbol)), children))
+    }
+    if shape.kind == TypeKind.Dyn {
+        let capability = get(env.interfaces, shape.symbol).symbol
+        let members = get(env.concepts, concept_index(env, capability)).associated
+        let bindings = new[Node]()
+        index = 0
+        while index < length(members) {
+            push(bindings, pack_node(node, NodeKind.AssociatedType, symbol(env, get(members, index)).name,
+                    source_nodes(get(children, index))))
+            index = index + 1
+        }
+        return Result.Ok(pack_node(node, NodeKind.DynType, concat("concept#", to_text(capability)), bindings))
+    }
+    let schema = impl_type_schema(env, ty, node, true)
+    if length(shape.pack_widths) > 1 {
+        // Preserve independent nominal group boundaries from the shared encoder.
+        return impl_method_resolved_slots(env, scope, schema, depth + 1)
+    }
+    Result.Ok(pack_node(node, schema.kind, schema.value, children))
+}
+
+fn impl_method_resolved_slots(env Environment, scope ImplMethodScope, schema Node, depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, get(env.implementations, scope.implementation).source, schema,
+                "implementation method type expansion must be finite"))
+    }
+    var index = 0
+    while index < length(scope.types) {
+        if schema.kind == NodeKind.Type && schema.value == to_text(get(scope.types, index)) {
+            return Result.Ok(impl_method_variable(schema, index))
+        }
+        index = index + 1
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(schema.children) {
+        push(children, impl_method_resolved_slots(env, scope, child(schema, index), depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(pack_node(schema, schema.kind, schema.value, children))
+}
+
+fn impl_method_type_schema(env Environment, scope ImplMethodScope, owner Int, node Node,
+    frame List[Node], values List[Node], depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, node, "implementation method type expansion must be finite"))
+    }
+    var dependent = false
+    var index = 0
+    while index < length(frame) {
+        let parameter = get(frame, index)
+        dependent = dependent || ((index == 0 || parameter.kind == NodeKind.TypePack ||
+                pack_schema_parameter(get(values, index)) < 0) &&
+            mentions_pack(node, parameter.value))
+        index = index + 1
+    }
+    if dependent {
+        return impl_method_substitute(env, scope, owner,
+            type_pattern_schema(env, owner, node, false, 0, true, true, frame)?, frame, values, depth + 1)
+    }
+    let context = impl_method_source_context(env, scope, owner, node, frame, values)?
+    let resolved = meta_type_node(context, node)?
+    let ty = resolve_bound(env, owner, resolved, new[Int](), scope.evidence, 0)?
+    discard well_formed(env, owner, ty, scope.evidence, node, 0)?
+    impl_method_resolved_schema(env, scope, ty, node, 0)
+}
+
+fn impl_method_source_context(env Environment, scope ImplMethodScope, owner Int, node Node,
+    frame List[Node], values List[Node]) Result[Context, Failure] {
+    let base = family_header_context(env, owner, new[Int](), scope.evidence)?
+    var context = Context {
+        emit = false
+        ..base
+    }
+    let boundary = context.head
+    var index = 0
+    while index < length(frame) {
+        let parameter = get(frame, index)
+        if mentions_pack(node, parameter.value) {
+            let mapped = pack_schema_parameter(get(values, index))
+            let ty = if index == 0 {
+                get(scope.types, 0)
+            } else if mapped >= 0 {
+                get(scope.types, mapped)
+            } else {
+                pack_schema_type(impl_method_context(env, scope, owner), scope.types, get(values, index), 0)?
+            }
+            context = bind_meta(context, parameter, meta_literal(context, parameter, ty)?, boundary)?.context
+        }
+        index = index + 1
+    }
+    Result.Ok(context)
+}
+
+fn impl_method_family_schema(env Environment, scope ImplMethodScope, owner Int, capability Int,
+    binding Node, frame List[Node], values List[Node]) Result[Node, Failure] {
+    let context = impl_method_source_context(env, scope, owner, binding, frame, values)?
+    let node = computed_dynamic_node(context,
+        pack_node(binding, NodeKind.DynType, "", source_nodes(binding)), capability)?
+    let members = get(env.concepts, concept_index(env, capability)).associated
+    var index = 0
+    while index < length(members) {
+        let member = get(members, index)
+        if symbol(env, member).name == binding.value {
+            let ty = dynamic_binding(env, owner, member, child(node, 0), new[Int](), scope.evidence, 0)?
+            discard dynamic_family_requirements(env, owner, member, ty, scope.evidence, binding)?
+            return Result.Ok(pack_node(binding, NodeKind.AssociatedType, binding.value,
+                    source_nodes(impl_type_schema(env, ty, binding, true))))
+        }
+        index = index + 1
+    }
+    Result.Err(failure(env, owner, binding, "unknown dynamic associated type binding"))
+}
+
+fn impl_method_well_formed(env Environment, scope ImplMethodScope, owner Int, schema Node) Result[Node, Failure] {
+    if !pack_layout_well_formed(impl_method_context(env, scope, owner), scope.caller, schema, ints(512), 0,
+        Option.Some(scope.assumptions))? {
+        return Result.Err(failure(env, owner, schema, "implementation method type needs its declared concept requirements"))
+    }
+    Result.Ok(schema)
+}
+
+fn impl_method_projection(env Environment, scope ImplMethodScope, owner Int, schema Node) Result[Node, Failure] {
+    let context = impl_method_context(env, scope, owner)
+    let ty = pack_projection_type(context, scope.caller, schema, new[Requirement](), ints(512), 0,
+        Option.Some(scope.assumptions))?
+    if ty < 0 || get(env.types, ty).kind != TypeKind.Associated {
+        return Result.Err(failure(env, owner, schema, "implementation method projection needs a symbolic associated member"))
+    }
+    Result.Ok(pack_node(schema, NodeKind.Select, concat("member#", to_text(get(env.types, ty).symbol)), schema.children))
+}
+
+// Rewrite source frames, not expanded element lists. Self denotes the complete
+// target schema; local method parameters follow the implementation parameters.
+fn impl_method_substitute(env Environment, scope ImplMethodScope, owner Int, schema Node,
+    frame List[Node], values List[Node], depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, schema, "implementation method type expansion must be finite"))
+    }
+    let parameter = pack_schema_parameter(schema)
+    if parameter >= 0 {
+        if parameter >= length(values) {
+            return Result.Err(failure(env, owner, schema, "implementation method has an unbound type parameter"))
+        }
+        return Result.Ok(get(values, parameter))
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(schema.children) {
+        let member = child(schema, index)
+        if schema.kind == NodeKind.DynType && member.kind == NodeKind.AssociatedType &&
+        length(group(member, NodeKind.TypeParameters)) > 0 {
+            let capability = match std.int.parse(slice(schema.value, length("concept#"), length(schema.value))) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Err(failure(env, owner, schema, "invalid symbolic dynamic type"))
+                }
+            }
+            push(children, impl_method_family_schema(env, scope, owner, capability, member, frame, values)?)
+        } else {
+            push(children, impl_method_substitute(env, scope, owner, member, frame,
+                    values, depth + 1)?)
+        }
+        index = index + 1
+    }
+    let rewritten = pack_node(schema, schema.kind, schema.value, children)
+    if schema.kind != NodeKind.Select || length(children) == 0 {
+        return Result.Ok(rewritten)
+    }
+    if !pack_schema_equal(get(children, 0), scope.target) {
+        return impl_method_projection(env, scope, owner, rewritten)
+    }
+    let header = get(env.implementations, scope.implementation)
+    let path = slice(schema.value, 1, length(schema.value))
+    let qualifier = std.loom.project.package(path)
+    if qualifier != "" {
+        let capability = concept_named(env, owner, schema, qualifier)?
+        if capability < 0 {
+            return Result.Err(failure(env, owner, schema, "unknown associated type concept qualifier"))
+        }
+        if capability != header.capability {
+            return impl_method_projection(env, scope, owner, rewritten)
+        }
+    }
+    let members = get(env.concepts, concept_index(env, header.capability)).associated
+    index = 0
+    while index < length(members) {
+        let member = get(members, index)
+        if symbol(env, member).name == std.loom.project.name(path) {
+            if length(children) - 1 != length(member_parameters(env, member)) {
+                return Result.Err(failure(env, owner, schema, "wrong number of associated type arguments"))
+            }
+            let arguments = new[Int]()
+            let obligations = new[Requirement]()
+            var argument = 1
+            while argument < length(children) {
+                discard impl_method_well_formed(env, scope, owner, get(children, argument))?
+                let ty = pack_symbolic_type(empty_context(env, owner), scope.caller, get(children, argument),
+                    obligations, ints(512), 0, Option.Some(scope.assumptions))?
+                if ty < 0 {
+                    return Result.Err(failure(env, owner, schema, "associated type argument needs a symbolic type"))
+                }
+                push(arguments, ty)
+                argument = argument + 1
+            }
+            discard member_domain(env, owner, member, arguments, obligations, schema)?
+            let binding = get(header.associated, index)
+            let supplied = symbol(env, binding)
+            let outer = supplied.owner == header.source
+            let frame = impl_method_frame(env, header.source, binding, outer)
+            let replacements = source_nodes(scope.target)
+            if outer {
+                var parameter = 1
+                while parameter <= length(group(symbol(env, header.source).node, NodeKind.TypeParameters)) {
+                    push(replacements, impl_method_variable(schema, parameter))
+                    parameter = parameter + 1
+                }
+            }
+            argument = 1
+            while argument < length(children) {
+                push(replacements, get(children, argument))
+                argument = argument + 1
+            }
+            return impl_method_type_schema(env, scope, binding, child(supplied.node, type_part(supplied.node)),
+                frame, replacements, depth + 1)
+        }
+        index = index + 1
+    }
+    Result.Err(failure(env, owner, schema, "unknown associated type in implementation method"))
+}
+
+fn impl_method_header_schema(env Environment, scope ImplMethodScope, owner Int, declared Bool) Result[Node, Failure] {
+    let header = get(env.implementations, scope.implementation)
+    let node = symbol(env, owner).node
+    let outer = length(group(symbol(env, header.source).node, NodeKind.TypeParameters))
+    let frame = impl_method_frame(env, header.source, owner, !declared)
+    let replacements = source_nodes(scope.target)
+    var index = 1
+    while index < length(frame) {
+        push(replacements, impl_method_variable(node, if declared {
+                    outer + index
+                } else {
+                    index
+                }))
+        index = index + 1
+    }
+    let children = new[Node]()
+    let parameters = group(node, NodeKind.Parameters)
+    index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        let ty = impl_method_type_schema(env, scope, owner, child(parameter, 0), frame, replacements, 0)?
+        push(children, pack_node(parameter, NodeKind.Parameter, if has(parameter, NodeKind.Comptime) {
+                    "static"
+                } else {
+                    "runtime"
+                }, source_nodes(impl_method_well_formed(env, scope, owner, ty)?)))
+        index = index + 1
+    }
+    let returns = group(node, NodeKind.ReturnType)
+    let output = if length(returns) == 0 {
+        pack_node(node, NodeKind.Type, "0", new[Node]())
+    } else {
+        impl_method_well_formed(env, scope, owner,
+            impl_method_type_schema(env, scope, owner, get(returns, 0), frame, replacements, 0)?)?
+    }
+    push(children, pack_node(node, NodeKind.ReturnType, "", source_nodes(output)))
+    Result.Ok(pack_node(node, NodeKind.Parameters, if has(node, NodeKind.Async) {
+                "async"
+            } else {
+                "sync"
+            }, children))
+}
+
+fn impl_method_header_matches(env Environment, implementation Int, owner Int, declaration Int) Result[Bool, Failure] {
+    let scope = impl_method_scope(env, implementation, owner, declaration)?
+    match impl_method_header_schema(env, scope, owner, false) {
+        Result.Ok(actual) => {
+            let expected = impl_method_header_schema(env, scope, declaration, true)?
+            Result.Ok(same_method_pack_schema(expected, actual))
+        }
+        Result.Err(failed) => {
+            if method_trial_missing_evidence(failed) ||
+            failed.diagnostic.message == "implementation method type needs its declared concept requirements" {
+                Result.Ok(false)
+            } else {
+                Result.Err(failed)
+            }
+        }
+    }
+}
+
+fn validate_impl_method_headers(env Environment, implementation Int) Result[Bool, Failure] {
+    let header = get(env.implementations, implementation)
+    let declarations = new[Int]()
+    var source = 0
+    while source < length(env.source.symbols) {
+        let member = symbol(env, source)
+        if member.owner == header.capability && member.node.kind == NodeKind.Function &&
+        method_reference_source(env, source) == source {
+            push(declarations, source)
+        }
+        source = source + 1
+    }
+    let matched = new[Int]()
+    source = 0
+    while source < length(env.source.symbols) {
+        let supplied = symbol(env, source)
+        if supplied.owner == header.source && supplied.node.kind == NodeKind.Function {
+            var selected = -1
+            var index = 0
+            while index < length(declarations) {
+                let declaration = get(declarations, index)
+                if symbol(env, declaration).name == supplied.name &&
+                method_bounds_match(env, declaration, source)? {
+                    if impl_method_header_matches(env, implementation, source, declaration)? {
+                        if selected >= 0 {
+                            return Result.Err(failure(env, source, supplied.node,
+                                    "implementation method matches multiple concept overloads"))
+                        }
+                        selected = declaration
+                    }
+                }
+                index = index + 1
+            }
+            if selected < 0 {
+                return Result.Err(failure(env, source, supplied.node,
+                        "implementation method signature does not match its concept for every type pack"))
+            }
+            if resource_seen(matched, selected) {
+                return Result.Err(failure(env, source, supplied.node,
+                        "duplicate implementation method for this concept overload"))
+            }
+            push(matched, selected)
+            if get(env.inputs, 0).declaration_queries {
+                record_method_conformance(env, header, source, selected)
+            }
+        }
+        source = source + 1
+    }
+    var index = 0
+    while index < length(declarations) {
+        let declaration = get(declarations, index)
+        if !resource_seen(matched, declaration) && !has(symbol(env, declaration).node, NodeKind.Block) {
+            return Result.Err(failure(env, header.source, symbol(env, header.source).node,
+                    "implementation is missing a required concept method overload"))
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

@@ -261,6 +261,11 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, argumen
     Result.Ok(resolved)
 }
 fn projection(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
+    projection(env, owner, node, arguments, obligations, depth, -1)
+}
+
+fn projection(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement],
+    depth Int, capability Int) Result[Int, Failure] {
     let split = first_dot(node.value)
     if split == length(node.value) { return Result.Ok(-1) }
     let first = slice(node.value, 0, split)
@@ -278,7 +283,7 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
     if receiver < 0 { return Result.Ok(-1) }
     let rest = slice(node.value, split + 1, length(node.value))
     let qualifier = package(rest)
-    let selected = if qualifier == "" { -1 } else { referenced_concept(env, owner, node, qualifier, 1)? }
+    let selected = if capability >= 0 { capability } else if qualifier == "" { -1 } else { referenced_concept(env, owner, node, qualifier, 1)? }
     if qualifier != "" && selected < 0 { return Result.Err(failure(env, owner, node, "unknown associated type concept qualifier")) }
     let parent = enclosing(env, owner)
     var own = -1

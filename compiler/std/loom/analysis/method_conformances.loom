@@ -38,7 +38,7 @@ fn conformance_location(analysis AnalysisState, file Int, node Node) Result[Loca
 
 // Positive, checked source edges in this analysis: (implementation, concept).
 // This is not a complete implementation registry or permission to rename a
-// family. Uninstantiated pack impls and generated source need separate coverage.
+// family. Generated source and complete use coverage need separate evidence.
 // Returned lists are detached; source file IDs belong to this analysis only.
 pub fn method_conformances(analysis Analysis) Result[List[(Location, Location)], Text] {
     let state = analysis.state
