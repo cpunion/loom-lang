@@ -1,0 +1,276 @@
+record UploadProbeState {
+    mode Int
+    pulls List[Int]
+    created List[Int]
+    closed List[Int]
+    entered List[Bool]
+    drained List[Int]
+    ready List[Bool]
+}
+
+fn upload_probe(mode Int) UploadProbeState {
+    UploadProbeState {
+        mode = mode
+        pulls = [0]
+        created = [0]
+        closed = [0]
+        entered = [false]
+        drained = [0]
+        ready = [false]
+    }
+}
+
+record PlainUpload {
+    state UploadProbeState
+}
+
+record ScopedUpload {
+    source PlainUpload
+}
+
+impl Stream for PlainUpload {
+    type Item = Result[Bytes, Int]
+
+    async fn next(self PlainUpload) Option[Result[Bytes, Int]] {
+        let state = self.state
+        let index = state.pulls[0]
+        state.pulls[0] = index + 1
+        if index == 0 {
+            return Option.Some(Result.Ok(to_bytes("a")))
+        }
+        if index == 1 {
+            if state.mode == 0 {
+                return Option.Some(Result.Ok(to_bytes("b")))
+            }
+            if state.mode == 1 {
+                return Option.Some(Result.Err(73))
+            }
+            state.entered[0] = true
+            defer {
+                state.drained[0] = state.drained[0] + 1
+            }
+            if state.mode == 5 {
+                while !state.ready[0] {
+                    sleep_ms(0).await
+                }
+                fault_text("upload producer fault")
+            }
+            sleep_ms(60000).await
+        }
+        Option.None
+    }
+}
+
+impl MustScope for ScopedUpload {
+}
+
+impl Dispose for ScopedUpload {
+    fn dispose(self ScopedUpload) {
+        self.source.state.closed[0] = self.source.state.closed[0] + 1
+    }
+}
+
+impl Stream for ScopedUpload {
+    type Item = Result[Bytes, Int]
+
+    async fn next(self ScopedUpload) Option[Result[Bytes, Int]] {
+        self.source.next().await
+    }
+}
+
+fn plain_upload(state UploadProbeState) Result[PlainUpload, Int] {
+    state.created[0] = state.created[0] + 1
+    Result.Ok(PlainUpload {
+            state = state
+        })
+}
+
+fn scoped_upload(state UploadProbeState) Result[ScopedUpload, Int] {
+    Result.Ok(ScopedUpload {
+            source = match plain_upload(state) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    fault_text("unexpected fixture factory error")
+                }
+            }
+        })
+}
+
+fn upload_packet(value Result[Bytes, Int]) Result[Bytes, Int] {
+    value
+}
+
+async fn upload_peer(listener ListenerHandle, state UploadProbeState, finished List[Bool]) Result[Bool, TcpError] {
+    scoped acquired = std.net.tcp.accept_owned(listener).await?
+    let stream = std.net.tcp.detach(acquired)?
+    defer {
+        discard close_stream(stream)
+    }
+    let input = reader(std.net.tcp.chunks.read(stream, 4096), tcp_packet, std.net.http.limits())
+    if state.mode <= 1 {
+        match read_request(input).await {
+            Result.Ok(Option.Some(value)) => {
+                assert state.mode == 0 && to_text(value.body) == "ab"
+                assert length(value.trailers) == 1 && to_text(value.trailers[0].value) == "complete"
+                discard std.net.tcp.write_bytes(stream, to_bytes("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\naccepted")).await?
+            }
+            _ => {
+                return Result.Ok(state.mode == 1)
+            }
+        }
+    } else {
+        scoped incoming = open_request(input, 1).await
+        match incoming {
+            Result.Ok(Option.Some(value)) => {
+                assert match value.body.next().await {
+                    Option.Some(Result.Ok(bytes)) => to_text(bytes) == "a"
+                    _ => false
+                }
+                state.ready[0] = true
+            }
+            _ => {
+                return Result.Ok(false)
+            }
+        }
+        if state.mode == 2 {
+            while !state.entered[0] {
+                sleep_ms(0).await
+            }
+            discard std.net.tcp.write_bytes(stream, to_bytes("HTTP/1.1 413 Rejected\r\nContent-Length: 0\r\n\r\n")).await?
+            while !finished[0] {
+                sleep_ms(0).await
+            }
+            return Result.Ok(true)
+        }
+    }
+    Result.Ok(match std.net.tcp.read(stream, std.bytes.new(), 1).await {
+            Result.Ok(count) => count == 0
+            Result.Err(_) => true
+        })
+}
+
+async fn upload_count(response Incoming) Result[Int, Error] {
+    assert status(response) == 200
+    var count = 0
+    while true {
+        match response.next().await {
+            Option.None => {
+                return Result.Ok(count)
+            }
+            Option.Some(value) => {
+                count = count + std.bytes.length(value?)
+            }
+        }
+    }
+    Result.Ok(count)
+}
+
+async fn upload_roundtrip(mode Int, owned Bool) Result[Bool, TcpError] {
+    scoped owner = listen("127.0.0.1:0").await?
+    let listener = std.net.tcp.detach(owner)?
+    defer {
+        discard close_listener(listener)
+    }
+    let address = std.net.tcp.local_address(listener)?
+    let state = upload_probe(mode)
+    let finished = [false]
+    let serving = upload_peer(listener, state, finished)
+    let value = UploadRequest {
+        trailers = [Header {
+                name = "X-End"
+                value = to_bytes("complete")
+            }]
+        ..upload_request("POST", concat("http://", concat(address, "/upload")))
+    }
+    let configuration = Options {
+        allow_http = true
+        timeout_ns = if mode == 4 {
+            3000000000
+        } else {
+            10000000000
+        }
+        ..options()
+    }
+    let accepted = if !owned {
+        match consume_upload(value, configuration, plain_upload, state, upload_packet, upload_count).await {
+            Result.Ok(count) => count == 8
+            _ => false
+        }
+    } else {
+        let pending = upload(value, configuration, scoped_upload, state, upload_packet)
+        if mode == 3 {
+            while !state.entered[0] {
+                sleep_ms(0).await
+            }
+            match cancel(pending) {
+                Outcome.Cancelled => true
+                _ => false
+            }
+        } else if mode == 5 {
+            match outcome(pending).await {
+                Outcome.Faulted(error) => contains(error.message, "upload producer fault")
+                _ => false
+            }
+        } else {
+            match pending.await {
+                Result.Ok(response) => (mode == 0 && response.status == 200) || (mode == 2 && response.status == 413)
+                Result.Err(UploadError.Input(error)) => mode == 1 && error == 73
+                Result.Err(UploadError.Client(Error.Timeout)) => mode == 4 && state.entered[0]
+                _ => false
+            }
+        }
+    }
+    finished[0] = true
+    let served = serving.await
+    Result.Ok(accepted && state.created[0] == 1 && state.closed[0] == (if owned {
+                1
+            } else {
+                0
+            }) &&
+        (mode < 2 || (state.pulls[0] == 2 && state.drained[0] == 1)) && match served {
+            Result.Ok(value) => value
+            _ => false
+        })
+}
+
+test async fn streaming_uploads_accept_plain_and_owned_sources_and_stop_on_input_errors() {
+    assert match upload_roundtrip(0, false).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match upload_roundtrip(0, true).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match upload_roundtrip(1, true).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+test async fn streaming_upload_early_responses_and_cancellation_drain_owned_producers() {
+    var mode = 2
+    while mode <= 5 {
+        assert match upload_roundtrip(mode, true).await {
+            Result.Ok(value) => value
+            _ => false
+        }
+        mode = mode + 1
+    }
+}
+
+test async fn upload_preflight_errors_never_construct_a_producer() {
+    let state = upload_probe(0)
+    assert match upload(upload_request("POST", "http://127.0.0.1:0/"), scoped_upload, state, upload_packet).await {
+        Result.Err(UploadError.Client(Error.Insecure)) => true
+        _ => false
+    }
+    assert match upload(upload_request("POST", "https://localhost/"), Options {
+            timeout_ns = 0
+            ..options()
+        }, scoped_upload, state, upload_packet).await {
+        Result.Err(UploadError.Client(Error.Timeout)) => true
+        _ => false
+    }
+    assert state.created[0] == 0 && state.closed[0] == 0
+}

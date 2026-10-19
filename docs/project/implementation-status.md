@@ -345,8 +345,11 @@ explicit plaintext policy, input snapshots, concurrent upload/response reads and
 draining deadlines. Buffered reads collect the same bounded-chunk response path
 used by awaited scoped consumers. Early consumer return closes without draining
 the unread suffix; timeout/cancellation drains callback children before cleanup.
-It does not add automatic retries, redirects or pooling; streaming uploads and
-broader application networking remain open.
+Streaming uploads create ordinary/scoped producers inside their child Task,
+retaining synchronous metadata snapshots, backpressure, typed source errors and
+the same response/deadline path. Source failure revokes pending transport I/O;
+early final responses drain unfinished producers. It does not add automatic
+retries, redirects or pooling; broader application networking remains open.
 
 Stop-the-world copying GC preserves precise roots, sharing and cycles.
 Nonallocating functions stay root-free; liveness retires dead locals at checked

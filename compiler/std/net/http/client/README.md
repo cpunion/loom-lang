@@ -18,7 +18,7 @@ Mozilla roots, no client identity, a 30-second network budget, eight information
 responses and the message codec's byte limits. Custom PEM trust/client identity
 is explicit. ALPN offers only HTTP/1.1; no insecure TLS verifier is supplied.
 
-`send` and `consume` validate and snapshot encoded requests and TLS buffers
+`send` and `consume` validate encoded requests and snapshot request/TLS buffers
 synchronously, before queuing network work. Later caller mutations cannot alter
 that snapshot.
 Host and the origin-form target come from the URL; fragments stay local.
@@ -64,14 +64,44 @@ suffix was valid. Full body/trailer validation requires consuming to completion.
 `send` is the collecting handler over this same path and performs that validation.
 Handler errors, faults, cancellation and timeout drain pending children before
 transport cleanup. Byte quotas and the one deadline apply throughout; streaming
-does not remove the default body limit. Request bodies are still snapshotted and
-buffered. Application-specific errors can be returned inside `T`.
+does not remove the default body limit. `send`/`consume` snapshot and buffer their
+request bodies. Application-specific errors can be returned inside `T`.
 Resource-valued consumer results are not supported by this adapter; `T` is
 ordinary result data, not an ownership transfer of the scoped input.
 
-`Error` contains typed enum causes, never a URL, certificate, header or response
-body. Bodies stay binary/opaque; decompression, cookies, proxies, HTTP/2,
-streaming uploads and connection pools are separate library work.
+## Streaming uploads
+
+Use `upload_request(method, url)` to create `UploadRequest` metadata (headers and
+separate trailers), then `upload(value, options, create, input, bytes).await`.
+Omit `options` for defaults. `consume_upload` adds the same awaited `Incoming`
+handler as `consume`, returning ordinary `T` instead of collecting the response.
+See the [HTTPS file upload](../../../../examples/http_upload_client/README.md).
+
+`create` is `fn(A) Result[S, E]`, with `S Stream`; `input` is ordinary capturable
+factory data, and `bytes` is `fn(S.Item) Result[Bytes, E]`. The factory runs inside
+the upload child after acquisition. Its result enters a fresh lexical owner:
+MustScope payloads are disposed, ordinary data keeps its sharing semantics.
+An already scoped source cannot be captured or copied into that factory.
+The factory is synchronous; async file/network work belongs in the producer's
+pulls. A constructor failure is an ordinary Input error, not a Task fault.
+
+The client validates request metadata and snapshots metadata/TLS buffers
+synchronously before queuing network work. It does not pre-read the producer: each chunk is privately
+copied and fully written before another pull. Choose bounded producer chunks;
+the total body/framing quotas still apply. Missing framing selects chunked;
+explicit Content-Length must match exactly. Trailers are snapshotted up front.
+
+The existing concurrent response path, informational limit and one deadline
+apply. A successful handler/final response may stop an unfinished upload; it
+does not certify that the entire producer was read. Source failure retires the
+transport, waking pending response I/O. Cancellation/fault/timeout drains source
+pulls and handlers before connection cleanup. No retries or replay are added.
+
+Results use `UploadError[E]`, with `Input(E)` and `Client(Error)` variants.
+The client-generated `Error` contains typed enum causes, never a URL,
+certificate, header or response body; custom `E` remains the application's data.
+Bodies stay binary/opaque; decompression, cookies, proxies, HTTP/2 and connection
+pools are separate library work.
 The underlying [codec](../README.md) remains available for streaming or persistent
 protocols. See [HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html) and
 [HTTP/1.1 framing](https://www.rfc-editor.org/rfc/rfc9112.html).

@@ -63,7 +63,14 @@ Faults and cancellation use ordinary Task child draining. The writer borrows
 its producer and does not own the transport; the caller scopes resources and
 closes a partially written connection on failure. Duplex response handling,
 deadlines and early final responses remain caller policy. The one-request
-client's `send`/`consume` upload path is still buffered.
+client owns that policy rather than this codec.
+
+For synchronous preflight, `request_writer(metadata, limits)` returns a checked
+`RequestWriter`. Pass it to `write_request(writer, source, bytes, sink).await`.
+Copies share one owner-thread cursor: once writing starts, a second invocation
+reports Closed before any source/sink work, even if the first fails or is
+cancelled. This is not cross-worker
+synchronization or an automatic replay facility.
 
 ## Reading
 
