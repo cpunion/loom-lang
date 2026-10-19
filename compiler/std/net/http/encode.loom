@@ -153,14 +153,10 @@ fn encode_message(start Bytes, headers List[Header], content Bytes, suffix List[
     Result.Ok(output)
 }
 
-// Content-Length is generated when absent. An explicit chunked transfer coding
-// emits one data chunk and a separate trailer section. Neither path sends I/O.
-pub fn encode_request(value Request, maximum Limits) Result[Bytes, ProtocolError]
-requires valid_limits(maximum)
-{
-    let start = to_bytes(concat(concat(concat(value.method, " "), value.target), " HTTP/1.1"))
+fn request_fields(method Text, target Text, fields List[Header], maximum Limits) Result[(Bytes, List[Header]), ProtocolError] {
+    let start = to_bytes(concat(concat(concat(method, " "), target), " HTTP/1.1"))
     discard request_line(start)?
-    let headers = snapshot(value.headers, maximum)?
+    let headers = snapshot(fields, maximum)?
     var hosts = 0
     var index = 0
     while index < std.list.length(headers) {
@@ -172,6 +168,15 @@ requires valid_limits(maximum)
     if hosts != 1 {
         return Result.Err(ProtocolError.Framing)
     }
+    Result.Ok((start, headers))
+}
+
+// Content-Length is generated when absent. An explicit chunked transfer coding
+// emits one data chunk and a separate trailer section. Neither path sends I/O.
+pub fn encode_request(value Request, maximum Limits) Result[Bytes, ProtocolError]
+requires valid_limits(maximum)
+{
+    let start, headers = request_fields(value.method, value.target, value.headers, maximum)?
     encode_message(start, headers, value.body, value.trailers, maximum, false)
 }
 

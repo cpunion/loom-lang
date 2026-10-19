@@ -31,6 +31,40 @@ the body, or emits chunked data when the caller specifies that transfer coding.
 Trailers require chunked encoding and stay in their own section.
 Pure encoding and parsing helpers work through ordinary compile-time execution.
 
+## Streaming requests
+
+`write_request(metadata, source, bytes, sink, limits).await` sends a request
+without collecting its body. `RequestMetadata` holds `method`, `target`,
+`headers` and `trailers`; `source` is a `Stream`, `bytes` converts each item to
+`Result[Bytes, E]`, and `sink` is `fn(Bytes) Task[Result[Int, F]]`.
+The [file upload example](../../../examples/http_upload/README.md) directly
+borrows a scoped file stream and writes bounded chunks over TCP.
+
+Absent explicit framing, the writer generates `Transfer-Encoding: chunked`.
+An explicit Content-Length instead requires exactly that many body bytes;
+premature EOF reports Truncated, excess data reports Framing. Length/coding
+mixtures, duplicate framing and unsupported transfer codings reject.
+Trailers require chunked framing and remain a separate terminating section.
+Empty producer buffers are skipped, not emitted as a message terminator.
+
+On Task execution, metadata and trailers are validated and snapshotted before
+the first sink call or source pull. This is not a synchronous snapshot when the
+Task is created. Each nonempty producer buffer is copied into a private output
+chunk before awaiting the sink. The next pull waits for that sink to finish;
+there is no whole-body buffer or prefetch. Choose bounded producer chunks to
+bound memory. Body and total framing quotas apply across the entire message.
+
+The sink must consume each complete buffer or return an error. The result is
+`Result[Int, WriteError[E, F]]`: success counts wire bytes; Input/Sink preserve
+their typed causes, Protocol reports codec failure, and Count reports an
+incorrect sink byte count. No suffix is pulled or terminator emitted after an
+error. Partial output is not undone or retried.
+Faults and cancellation use ordinary Task child draining. The writer borrows
+its producer and does not own the transport; the caller scopes resources and
+closes a partially written connection on failure. Duplex response handling,
+deadlines and early final responses remain caller policy. The one-request
+client's `send`/`consume` upload path is still buffered.
+
 ## Reading
 
 `reader(source, bytes, limits)` takes a `Stream` and a converter

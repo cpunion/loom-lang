@@ -4,6 +4,101 @@ mod common;
 use common::success;
 
 #[test]
+fn streamed_http_file_uploads_interoperate_without_buffering_the_document() {
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("payload");
+    let payload: Vec<u8> = (0..65539).map(|index| (index % 256) as u8).collect();
+    std::fs::write(&path, &payload).unwrap();
+    let executable = common::executable(temporary.path(), "http-upload");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", "compiler/examples/http_upload"])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let expected = payload.clone();
+        let peer = thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut stream = BufReader::new(socket);
+            let mut line = String::new();
+            let mut fields = Vec::new();
+            loop {
+                line.clear();
+                assert!(stream.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                fields.push(line.clone());
+            }
+            assert_eq!(fields[0], "POST /upload HTTP/1.1\r\n");
+            assert!(fields.contains(&format!("Host: {address}\r\n")));
+            assert!(fields.contains(&"Transfer-Encoding: chunked\r\n".into()));
+            assert!(
+                !fields
+                    .iter()
+                    .any(|line| line.starts_with("Content-Length:"))
+            );
+            let mut body = Vec::new();
+            let mut chunks = 0;
+            loop {
+                line.clear();
+                stream.read_line(&mut line).unwrap();
+                let size = usize::from_str_radix(line.strip_suffix("\r\n").unwrap(), 16).unwrap();
+                if size == 0 {
+                    break;
+                }
+                assert!(size <= 8192);
+                let start = body.len();
+                body.resize(start + size, 0);
+                stream.read_exact(&mut body[start..]).unwrap();
+                let mut crlf = [0; 2];
+                stream.read_exact(&mut crlf).unwrap();
+                assert_eq!(crlf, *b"\r\n");
+                chunks += 1;
+            }
+            assert!(chunks > 1);
+            assert_eq!(body, expected);
+            line.clear();
+            stream.read_line(&mut line).unwrap();
+            assert_eq!(line, "X-End: complete\r\n");
+            line.clear();
+            stream.read_line(&mut line).unwrap();
+            assert_eq!(line, "\r\n");
+            stream
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\naccepted")
+                .unwrap();
+            let mut byte = [0];
+            assert!(!matches!(stream.read(&mut byte), Ok(1)));
+        });
+        let output = common::run_task_command(
+            Command::new(&executable)
+                .arg(address.to_string())
+                .arg(&path)
+                .env("LOOM_GC_STRESS", "1"),
+        );
+        peer.join().unwrap();
+        success(&output);
+        assert_eq!(output.stdout, b"streamed upload accepted\n");
+    }
+}
+
+#[test]
 fn source_framing_keeps_binary_text_boundaries_limits_and_real_tcp_cleanup() {
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "framed-stream");
