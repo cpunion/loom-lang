@@ -30,6 +30,12 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
     if node.kind == NodeKind.DynType {
         discard accessible_concept(env, owner, node)?
     }
+    if node.kind == NodeKind.Type && type_constant(env, owner, node)? >= 0 {
+        // The ordinary resolver rejects arguments on a scalar before trying
+        // to resolve them; a dependent child cannot turn it into a template.
+        discard resolve_bound(env, owner, node, new[Int](), obligations, 0)?
+        return Result.Ok(true)
+    }
     if node.kind == NodeKind.Type && type_constant(env, owner, node)? < 0 {
         let root = slice(node.value, 0, first_dot(node.value))
         var lexical = false
@@ -45,6 +51,9 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
         }
         // A lexical receiver may project an associated family. Its arguments
         // still need specialization; a global constructor must already bind.
+        if lexical && node.value == root && length(node.children) != 0 {
+            return Result.Err(failure(env, owner, node, "this type takes no arguments"))
+        }
         if !lexical {
             discard type_constructor(env, owner, node)?
             // Check symbolic nominal words through the same universal matcher
