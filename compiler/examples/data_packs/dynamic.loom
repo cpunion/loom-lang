@@ -1,0 +1,26 @@
+concept ReadValue {
+    type Value
+    fn read(self Self) Self.Value
+}
+
+impl ReadValue for Int {
+    type Value = Int
+
+    fn read(self Int) Int {
+        self
+    }
+}
+
+record Readers[Ts...] {
+    values (dyn ReadValue[Value = Ts]...)
+}
+
+async fn exercise_dynamic() {
+    let first dyn ReadValue[Value = Int] = 20
+    let second dyn ReadValue[Value = Int] = 22
+    let rows = Readers[Int, Int] {
+        values = (first, second)
+    }
+    let resumed = echo(rows).await
+    assert resumed.values.0.read() + resumed.values.1.read() == 42
+}

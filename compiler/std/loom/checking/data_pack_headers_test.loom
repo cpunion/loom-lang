@@ -1,0 +1,105 @@
+test fn uninstantiated_data_pack_headers_check_closed_types_and_bounds() {
+    rejects("""
+        record Row[Ts...] {
+            missing DoesNotExist
+            values (Ts...)
+        }
+        """)
+    rejects("""
+        record Box[T] {
+            value T
+        }
+        enum Row[Ts...] {
+            Values(Ts...)
+            Invalid(Box[Int, Bool])
+        }
+        """)
+    rejects("""
+        record Row[Ts...] {
+            call fn((Ts...), (Int, DoesNotExist)) Int
+        }
+        """)
+    rejects("""
+        concept Tagged {}
+        record Bounded[T Tagged] {
+            value T
+        }
+        record Row[Ts..., Tag] {
+            tag Bounded[Tag]
+            values (Ts...)
+        }
+        """)
+    let valid = """
+        record Row[Ts...] {
+            tag Int
+            values (Ts...)
+        }
+        """
+    let invalid = std.text.join(std.text.split(valid, "tag Int"), "tag DoesNotExist")
+    let cache = definition_cache()
+    assert match cached_source(cache, valid) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert match cached_source(cache, invalid) {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert match cached_source(restored_definition_cache(cache), invalid) {
+        Result.Err(_) => true
+        _ => false
+    }
+}
+
+test fn uninstantiated_data_pack_headers_keep_fixed_parameters_and_words_separate() {
+    discard accepted("""
+        concept Tagged {}
+        record Bounded[T Tagged] {
+            value T
+        }
+        record Row[As..., Tag Tagged, Bs...] {
+            tag Bounded[Tag]
+            values (As..., (Bs...))
+            call fn((As...), Tag) Tag
+        }
+        enum Reply[Ts..., Tag Tagged] {
+            Values(Ts...)
+            Tag(Bounded[Tag])
+        }
+        """)
+}
+
+test fn uninstantiated_data_pack_headers_bind_constructors_before_word_expansion() {
+    rejects("""
+        record Row[Ts...] {
+            values DoesNotExist[Ts...]
+        }
+        """)
+    rejects("""
+        enum Row[Ts...] {
+            Values(DoesNotExist[Ts]...)
+        }
+        """)
+    rejects("""
+        record Row[Ts...] {
+            values (Unit[Ts]...)
+        }
+        """)
+    rejects("""
+        record Row[Ts...] {
+            values (dyn DoesNotExist[Item = Ts]...)
+        }
+        """)
+    discard accepted("""
+        concept C {
+            type Item
+        }
+        record Box[T] {
+            value T
+        }
+        record Row[Ts...] {
+            values Box[(Ts...)]
+            views (dyn C[Item = Ts]...)
+        }
+        """)
+}

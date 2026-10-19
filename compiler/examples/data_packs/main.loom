@@ -62,6 +62,7 @@ async fn echo[T](value T) T {
 async fn exercise() {
     exercise_groups().await
     exercise_functions()
+    exercise_dynamic().await
     exercise_factories().await
     associated().await
     implementation_packs().await
