@@ -8,6 +8,32 @@ pub record DeclarationReference {
     label Text
 }
 
+fn method_reference_source(env Environment, owner Int) Int {
+    var index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        if pack.signature >= 0 && get(env.signatures, pack.signature).symbol == owner {
+            return pack.source
+        }
+        index = index + 1
+    }
+    owner
+}
+
+// A Function reference is a checked implementation-to-concept declaration
+// edge, not an expression use. It does not claim complete source coverage.
+fn record_method_conformance(env Environment, header Implementation, owner Int, declaration Int) {
+    if header.source != header.symbol && length(header.widths) == 0 {
+        // An erased proof header is not an observed implementation instance.
+        return
+    }
+    let source = impl_member_source(env, method_reference_source(env, owner))
+    let target = method_reference_source(env, declaration)
+    if source >= 0 {
+        record_declaration_reference(env, source, symbol(env, source).node, target, 0, "")
+    }
+}
+
 fn referenced_concept(env Environment, owner Int, node Node, path Text, skip Int) Result[Int, Failure] {
     let selected = concept_named(env, owner, node, path)?
     if selected < 0 || !get(env.inputs, 0).declaration_queries {

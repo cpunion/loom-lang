@@ -1,0 +1,87 @@
+test fn method_conformances_follow_checked_overload_slots_and_generic_headers() {
+    let source = """
+        concept Read {
+            fn read(self Self, value Int) Int
+            fn read(self Self, value Bool) Bool
+        }
+        record Box[T] {
+            value T
+        }
+        impl[T] Read for Box[T] {
+            fn read(self Box[T], value Bool) Bool {
+                value
+            }
+            fn read(self Box[T], value Int) Int {
+                value
+            }
+        }
+        """
+    let analysis = published(input(source))
+    let edges = match method_conformances(analysis) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            new[(Location, Location)]()
+        }
+    }
+    assert length(edges) == 2
+    var index = 0
+    while index < length(edges) {
+        let edge = get(edges, index)
+        let integer = edge.0.span.start == query_offset(source, "read(self Box[T], value Int)")
+        assert edge.0.file == 0 && edge.1.file == 0
+        assert edge.1.span.start == query_offset(source, if integer {
+                "read(self Self, value Int)"
+            } else {
+                "read(self Self, value Bool)"
+            })
+        index = index + 1
+    }
+    discard take_last(edges)
+    assert match method_conformances(analysis) {
+        Result.Ok(current) => length(current) == 2
+        Result.Err(_) => false
+    }
+}
+
+test fn method_conformances_keep_variadic_and_generic_source_slots_after_instantiation() {
+    let source = """
+        concept Keep {
+            fn keep[Ts...](self Self, values Ts...) (Ts...)
+            fn echo[T](self Self, value T) T
+        }
+        impl Keep for Bool {
+            fn keep[Us...](self Bool, values Us...) (Us...) {
+                values
+            }
+            fn echo[U](self Bool, value U) U {
+                value
+            }
+        }
+        fn main() {
+            assert true.keep(1, "two", false).2 == false
+            assert true.echo(7) == 7
+        }
+        """
+    let edges = match method_conformances(published(input(source))) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            new[(Location, Location)]()
+        }
+    }
+    assert length(edges) == 2
+    var index = 0
+    while index < length(edges) {
+        let edge = get(edges, index)
+        let variadic = edge.0.span.start == query_offset(source, "keep[Us...")
+        assert edge.1.span.start == query_offset(source, if variadic {
+                "keep[Ts..."
+            } else {
+                "echo[T]"
+            })
+        index = index + 1
+    }
+}
+
+import std.list.transfer.take_last

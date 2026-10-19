@@ -57,6 +57,9 @@ unsaved diagnostics, formatting, hover/navigation, references, completion and
 checked import fixes. Checked renames cover local/parameter/pattern bindings and
 accounted function/type/concept/record-field uses across a local module, including
 each package's private tests. Virtual edits recheck before application.
+Method references join checked concept slots, implementation declarations and
+generic/dynamic/bound uses. Unrelated overloads stay separate; these positive
+conformance edges do not authorize method renames or prove complete source coverage.
 Private and public overloads can be individually renamed to an unused name,
 preserving checked sibling calls and typed callbacks. Public edits split imports
 when siblings retain the old name and recheck each local package and its private

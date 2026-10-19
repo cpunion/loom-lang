@@ -186,6 +186,9 @@ fn implementation_method(env Environment, header Implementation, owner Int, expe
     }
     if length(matches) != 1 { return Result.Err(failure(env, owner, item.node, "implementation method matches multiple concept overloads")) }
     let selected = get(matches, 0)
+    if get(env.inputs, 0).declaration_queries {
+        record_method_conformance(env, header, owner, get(env.signatures, get(expected, selected.slot)).symbol)
+    }
     if count == 0 { return Result.Ok(selected) }
     Result.Ok(MethodMatch { slot = selected.slot signature = source_signature(env, owner, arguments, selected.signature.requirements)? })
 }
