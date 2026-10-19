@@ -1,0 +1,72 @@
+import std.map.Map
+import std.map.new
+import std.map.get
+import std.map.insert
+import std.loom.ast.snapshot
+
+// Only raw parser results populate this private cache. Returned ASTs remain
+// independent editing data; filenames and exact source bytes define each hit.
+pub record SourceCache {
+    state SourceCacheState
+}
+
+record SourceCacheState {
+    files List[Map[Text, ParsedSource]]
+}
+
+record ParsedSource {
+    text Text
+    tree Node
+}
+
+pub fn source_cache() SourceCache {
+    SourceCache {
+        state = SourceCacheState {
+            files = [new[Text, ParsedSource]()]
+        }
+    }
+}
+
+fn file_tree(path Text, text Text) Result[Node, Diagnostic] {
+    std.loom.parser.parse(text)
+}
+
+fn cached_tree(previous Map[Text, ParsedSource], pending Map[Text, ParsedSource],
+    path Text, text Text) Result[Node, Diagnostic] {
+    match get(previous, path) {
+        Option.Some(saved) => {
+            if saved.text == text {
+                discard insert(pending, path, saved)
+                return Result.Ok(std.loom.ast.snapshot(saved.tree))
+            }
+        }
+        Option.None => {
+        }
+    }
+    let tree = std.loom.parser.parse(text)?
+    discard insert(pending, path, ParsedSource {
+            text = text
+            tree = std.loom.ast.snapshot(tree)
+        })
+    Result.Ok(tree)
+}
+
+pub fn load_overlaid(path Text, std_root Text, tests Bool,
+    overlays List[SourceOverlay], cache SourceCache) Result[Project, LoadFailure] {
+    let previous = get(cache.state.files, 0)
+    let pending = new[Text, ParsedSource]()
+    let reader = fn(path Text, text Text) Result[Node, Diagnostic] {
+        cached_tree(previous, pending, path, text)
+    }
+    let loaded = load_overlaid(path, std_root, tests, overlays, reader)
+    match loaded {
+        Result.Ok(_) => {
+            // Retain only this successful closure. Failed/partial loads do not
+            // replace it, and deleted files do not accumulate across successes.
+            set(cache.state.files, 0, pending)
+        }
+        Result.Err(_) => {
+        }
+    }
+    loaded
+}

@@ -110,6 +110,9 @@ direct package when the revised in-memory package checks. Bare-name import
 search is limited to unique exports of direct dependencies. A resident editor
 session reuses an unchanged checked snapshot across diagnostics, hover and
 navigation after reloading sources and verifying build inputs/options/targets.
+Its source cache compares freshly read text and reuses raw parses through
+independent AST copies. It retains only the latest successful import closure;
+failed loads cannot publish a partial cache or make library builds include tests.
 Unchanged ordinary definitions and concrete bodies also reuse checks after edits.
 Runtime-local rename accepts selected compile-time branches only when checked
 specializations account for every source occurrence; unobserved uses reject.
@@ -229,6 +232,12 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
   Manifest-relative path dependencies resolve from each importing module's
   direct entries. Canonical roots are reused; distinct roots with the same name
   keep separate package and nominal type identities.
+- `std.loom.project.source_cache()` creates a private in-memory raw-parse cache.
+  Pass it as the fifth argument of `load_overlaid(path, std_root, tests, overlays,
+  cache)` to reuse matching source text. Every load still reads current files,
+  resolves the graph and applies test selection; returned ASTs are independent.
+  Only a successful load replaces the retained closure. It is not a semantic
+  proof cache, timestamp shortcut or persistent sidecar.
 - `std.loom.project.load_packages(paths, std_root, tests)` loads several roots
   from one module into the same snapshot-local ID space. Production dependencies
   use the ordinary offline traversal. With tests enabled, each selected root's

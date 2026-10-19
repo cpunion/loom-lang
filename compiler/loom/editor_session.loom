@@ -5,6 +5,8 @@ import std.loom.analysis.snapshot
 import std.loom.analysis.analyze_cached
 import std.loom.analysis.source_paths
 import std.loom.project.BuildInput
+import std.loom.project.SourceCache
+import std.loom.project.source_cache
 import std.loom.binding.Failure
 import std.io.read_chunk
 import std.loom.checking.DefinitionCache
@@ -35,6 +37,7 @@ record EditorCache {
     analysis List[EditorAnalysis]
     hits List[Int]
     definitions DefinitionCache
+    sources SourceCache
 }
 
 fn editor_cache() EditorCache {
@@ -44,6 +47,7 @@ fn editor_cache() EditorCache {
         analysis = new[EditorAnalysis]()
         hits = hits
         definitions = definition_cache()
+        sources = source_cache()
     }
 }
 

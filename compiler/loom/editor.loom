@@ -254,7 +254,7 @@ fn editor_execute(args List[Text], cache EditorCache) EditorOutput {
         changed = false
         inserted = false
     }
-    var loaded = load_overlaid(options.path, options.std_root, options.tests, options.overlays)
+    var loaded = load_overlaid(options.path, options.std_root, options.tests, options.overlays, cache.sources)
     if get(args, 1) == "editor-complete" {
         match loaded {
             Result.Ok(_) => {
@@ -262,7 +262,7 @@ fn editor_execute(args List[Text], cache EditorCache) EditorOutput {
             Result.Err(_) => {
                 recovery = editor_recover(options)
                 if recovery.changed {
-                    loaded = load_overlaid(options.path, options.std_root, options.tests, options.overlays)
+                    loaded = load_overlaid(options.path, options.std_root, options.tests, options.overlays, cache.sources)
                 }
             }
         }

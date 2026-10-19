@@ -1,0 +1,116 @@
+import std.list.transfer.take_last
+import std.io.write_error
+import std.map.length
+import std.map.contains
+import std.loom.ast.same
+
+fn cached_overlay(directory Text, overlays List[SourceOverlay], tests Bool, cache SourceCache) Project {
+    match load_overlaid(directory, "compiler/std", tests, overlays, cache) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            discard std.io.write_error(failed.diagnostic.message)
+            assert false
+            cached_overlay(directory, overlays, tests, cache)
+        }
+    }
+}
+
+fn source_index(project Project, path Text) Int {
+    var index = 0
+    while index < length(project.files) {
+        if get(project.files, index).path == path {
+            return index
+        }
+        index = index + 1
+    }
+    assert false
+    -1
+}
+
+test fn source_cache_detaches_ast_edits_and_compares_full_overlay_text() {
+    let directory = match canonical("compiler/examples/scalar") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let path = join_path(directory, "parse_cache_probe.loom")
+    let first = """
+        fn cached_value() Int {
+            1
+        }
+        """
+    let second = """
+        fn cached_value() Int {
+            2
+        }
+        """
+    assert length(first) == length(second)
+    let cache = source_cache()
+    let before = cached_overlay(directory, [SourceOverlay {
+                path = path
+                text = first
+            }], false, cache)
+    let file = source_index(before, path)
+    let original = std.loom.ast.snapshot(get(before.files, file).tree)
+    discard take_last(get(before.files, file).tree.children)
+    let reused = cached_overlay(directory, [SourceOverlay {
+                path = path
+                text = first
+            }], false, cache)
+    assert std.loom.ast.same(get(reused.files, file).tree, original)
+    discard take_last(get(reused.files, file).tree.children)
+    let changed = cached_overlay(directory, [SourceOverlay {
+                path = path
+                text = second
+            }], false, cache)
+    assert !std.loom.ast.same(get(changed.files, file).tree, original)
+    let restored = cached_overlay(directory, [SourceOverlay {
+                path = path
+                text = first
+            }], false, cache)
+    assert std.loom.ast.same(get(restored.files, file).tree, original)
+}
+
+test fn source_cache_commits_only_complete_loads_and_keeps_test_selection() {
+    let directory = match canonical("compiler/examples/scalar") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let cache = source_cache()
+    let base = cached_overlay(directory, [], false, cache)
+    let count = std.map.length(get(cache.state.files, 0))
+    assert count == length(base.files)
+    let extra = SourceOverlay {
+        path = join_path(directory, "parse_cache_probe.loom")
+        text = """
+            fn cached_value() Int {
+                1
+            }
+            """
+    }
+    discard cached_overlay(directory, [extra], false, cache)
+    assert std.map.length(get(cache.state.files, 0)) == count + 1
+    let invalid = SourceOverlay {
+        path = join_path(directory, "parse_cache_probe_test.loom")
+        text = "test fn broken("
+    }
+    // A library load excludes test files before parsing; embedded tests use
+    // the current selection too, not a previously selected cached tree.
+    discard cached_overlay(directory, [extra, invalid], false, cache)
+    assert std.map.length(get(cache.state.files, 0)) == count + 1
+    assert match load_overlaid(directory, "compiler/std", true, [extra, invalid], cache) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert std.map.length(get(cache.state.files, 0)) == count + 1
+    discard cached_overlay(directory, [], true, cache)
+    let normal = cached_overlay(directory, [], false, cache)
+    assert std.map.length(get(cache.state.files, 0)) == count
+    assert length(normal.files) == count
+    assert !std.map.contains(get(cache.state.files, 0), extra.path)
+}
