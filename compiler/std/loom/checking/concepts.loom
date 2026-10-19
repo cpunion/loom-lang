@@ -295,6 +295,8 @@ fn conformances(env Environment) Result[Bool, Failure] {
     while position < length(env.implementations) {
         if get(env.implementations, position).state == 2 {
             discard implementation_methods(env, position)?
+        } else if get(env.implementations, position).state < 0 {
+            discard validate_impl_method_headers(env, position)?
         }
         position = position + 1
     }

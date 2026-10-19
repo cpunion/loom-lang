@@ -52,6 +52,11 @@ fn pack_schema_bindings(caller Node, parameters List[Node], pattern Node, schema
 // A symbolic capability cannot hide an ill-formed nested data argument. Match
 // nominal slots with the same word rules and discharge their declared bounds.
 fn pack_layout_well_formed(context Context, caller Node, schema Node, budget List[Int], depth Int) Result[Bool, Failure] {
+    pack_layout_well_formed(context, caller, schema, budget, depth, Option.None)
+}
+
+fn pack_layout_well_formed(context Context, caller Node, schema Node, budget List[Int], depth Int,
+    assumptions Option[List[PackLayoutRequirement]]) Result[Bool, Failure] {
     if depth >= 64 || get(budget, 0) == 0 {
         return Result.Ok(false)
     }
@@ -62,14 +67,14 @@ fn pack_layout_well_formed(context Context, caller Node, schema Node, budget Lis
     }
     var index = 0
     while index < length(schema.children) {
-        if !pack_layout_well_formed(context, caller, child(schema, index), budget, depth + 1)? {
+        if !pack_layout_well_formed(context, caller, child(schema, index), budget, depth + 1, assumptions)? {
             return Result.Ok(false)
         }
         index = index + 1
     }
     if schema.kind == NodeKind.Select || schema.kind == NodeKind.DynType {
         return Result.Ok(pack_symbolic_type(context, caller, schema, pack_projection_scope(context),
-                budget, depth + 1)? >= 0)
+                budget, depth + 1, assumptions)? >= 0)
     }
     if schema.kind != NodeKind.Type || !std.text.starts_with(schema.value, "nominal#") {
         return Result.Ok(true)
@@ -102,7 +107,7 @@ fn pack_layout_well_formed(context Context, caller Node, schema Node, budget Lis
     let target = pack_node(declaration.node, NodeKind.Type, concat("nominal#", std.int.to_text(owner)), arguments)
     match pack_schema_bindings(caller, parameters, target, schema, budget) {
         Option.Some(bindings) => pack_layout_prerequisites(context, caller, owner, parameters,
-            bindings, new[PackLayoutRequirement](), budget, 0)
+            bindings, new[PackLayoutRequirement](), budget, 0, assumptions)
         Option.None => Result.Ok(false)
     }
 }
@@ -111,13 +116,21 @@ fn pack_layout_well_formed(context Context, caller Node, schema Node, budget Lis
 // headers. This is entailment, not overlap testing or arity specialization.
 fn pack_layout_admitted(context Context, caller Node, schema Node, capability Int,
     path List[PackLayoutRequirement], budget List[Int], depth Int) Result[Bool, Failure] {
+    pack_layout_admitted(context, caller, schema, capability, path, budget, depth, Option.None)
+}
+
+// Explicit assumptions describe logical variables in this caller's complete
+// schema frame. They never reinterpret concrete instance arguments as a word.
+fn pack_layout_admitted(context Context, caller Node, schema Node, capability Int,
+    path List[PackLayoutRequirement], budget List[Int], depth Int,
+    assumptions Option[List[PackLayoutRequirement]]) Result[Bool, Failure] {
     if depth >= 64 || get(budget, 0) == 0 {
         return Result.Ok(false)
     }
     set(budget, 0, get(budget, 0) - 1)
     if schema.kind == NodeKind.Select || schema.kind == NodeKind.DynType {
         let obligations = pack_projection_scope(context)
-        let ty = pack_symbolic_type(context, caller, schema, obligations, budget, depth + 1)?
+        let ty = pack_symbolic_type(context, caller, schema, obligations, budget, depth + 1, assumptions)?
         if ty < 0 {
             return Result.Ok(false)
         }
@@ -126,6 +139,21 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
     let source = group(caller, NodeKind.TypeParameters)
     let parameter = pack_schema_parameter(schema)
     if parameter >= 0 {
+        match assumptions {
+            Option.Some(known) => {
+                var index = 0
+                while index < length(known) {
+                    let requirement = get(known, index)
+                    if requirement.capability == capability && pack_schema_equal(requirement.schema, schema) {
+                        return Result.Ok(true)
+                    }
+                    index = index + 1
+                }
+                return Result.Ok(false)
+            }
+            Option.None => {
+            }
+        }
         let bounds = get(source, parameter).children
         var index = 0
         while index < length(bounds) {
@@ -185,7 +213,7 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
             let parameters = group(declaration.node, NodeKind.TypeParameters)
             match pack_layout_bindings(context, caller, owner, child(declaration.node, 1), schema, budget) {
                 Option.Some(bindings) => {
-                    if pack_layout_prerequisites(context, caller, owner, parameters, bindings, path, budget, depth + 1)? {
+                    if pack_layout_prerequisites(context, caller, owner, parameters, bindings, path, budget, depth + 1, assumptions)? {
                         return Result.Ok(true)
                     }
                 }
@@ -200,6 +228,12 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
 
 fn pack_layout_prerequisites(context Context, caller Node, owner Int, parameters List[Node],
     bindings PackForwardMatch, path List[PackLayoutRequirement], budget List[Int], depth Int) Result[Bool, Failure] {
+    pack_layout_prerequisites(context, caller, owner, parameters, bindings, path, budget, depth, Option.None)
+}
+
+fn pack_layout_prerequisites(context Context, caller Node, owner Int, parameters List[Node],
+    bindings PackForwardMatch, path List[PackLayoutRequirement], budget List[Int], depth Int,
+    assumptions Option[List[PackLayoutRequirement]]) Result[Bool, Failure] {
     var index = 0
     while index < length(parameters) {
         if !get(bindings.known, index) {
@@ -218,7 +252,7 @@ fn pack_layout_prerequisites(context Context, caller Node, owner Int, parameters
                 } else {
                     item
                 }
-                if !pack_layout_admitted(context, caller, actual, capability, path, budget, depth)? {
+                if !pack_layout_admitted(context, caller, actual, capability, path, budget, depth, assumptions)? {
                     return Result.Ok(false)
                 }
                 member = member + 1

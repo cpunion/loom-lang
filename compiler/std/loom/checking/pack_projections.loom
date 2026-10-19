@@ -3,15 +3,20 @@
 // element. Only capabilities proved for the complete schema enter its scope.
 fn pack_symbolic_type(context Context, caller Node, schema Node, obligations List[Requirement],
     budget List[Int], depth Int) Result[Int, Failure] {
+    pack_symbolic_type(context, caller, schema, obligations, budget, depth, Option.None)
+}
+
+fn pack_symbolic_type(context Context, caller Node, schema Node, obligations List[Requirement],
+    budget List[Int], depth Int, assumptions Option[List[PackLayoutRequirement]]) Result[Int, Failure] {
     if depth >= 64 || get(budget, 0) == 0 {
         return Result.Ok(-1)
     }
     set(budget, 0, get(budget, 0) - 1)
     if schema.kind == NodeKind.Select {
-        return pack_projection_type(context, caller, schema, obligations, budget, depth + 1)
+        return pack_projection_type(context, caller, schema, obligations, budget, depth + 1, assumptions)
     }
     if schema.kind == NodeKind.DynType {
-        return pack_dynamic_type(context, caller, schema, obligations, budget, depth + 1)
+        return pack_dynamic_type(context, caller, schema, obligations, budget, depth + 1, assumptions)
     }
     if schema.kind == NodeKind.Type && length(schema.children) == 0 {
         match std.int.parse(schema.value) {
@@ -28,6 +33,24 @@ fn pack_symbolic_type(context Context, caller Node, schema Node, obligations Lis
     let ty = intern(context.env, TypeKind.Rigid, length(context.env.types), new[Int]())
     let parameter = pack_schema_parameter(schema)
     if parameter >= 0 {
+        match assumptions {
+            Option.Some(known) => {
+                var index = 0
+                while index < length(known) {
+                    let requirement = get(known, index)
+                    if pack_schema_equal(requirement.schema, schema) {
+                        push(obligations, Requirement {
+                                ty = ty
+                                capability = requirement.capability
+                            })
+                    }
+                    index = index + 1
+                }
+                return Result.Ok(ty)
+            }
+            Option.None => {
+            }
+        }
         let source = get(group(caller, NodeKind.TypeParameters), parameter)
         var bound = 0
         while bound < length(source.children) {
@@ -49,7 +72,7 @@ fn pack_symbolic_type(context Context, caller Node, schema Node, obligations Lis
         // visible merely by attaching it to a fresh logical receiver.
         if concept_named(context.env, pack_layout_owner(context), schema, spelling)? == capability &&
         pack_layout_admitted(context, caller, schema, capability,
-            new[PackLayoutRequirement](), budget, 0)? {
+            new[PackLayoutRequirement](), budget, 0, assumptions)? {
             push(obligations, Requirement {
                     ty = ty
                     capability = capability
@@ -62,10 +85,15 @@ fn pack_symbolic_type(context Context, caller Node, schema Node, obligations Lis
 
 fn pack_projection_type(context Context, caller Node, schema Node, obligations List[Requirement],
     budget List[Int], depth Int) Result[Int, Failure] {
+    pack_projection_type(context, caller, schema, obligations, budget, depth, Option.None)
+}
+
+fn pack_projection_type(context Context, caller Node, schema Node, obligations List[Requirement],
+    budget List[Int], depth Int, assumptions Option[List[PackLayoutRequirement]]) Result[Int, Failure] {
     if depth >= 64 || get(budget, 0) == 0 || length(schema.children) == 0 {
         return Result.Ok(-1)
     }
-    let receiver = pack_symbolic_type(context, caller, child(schema, 0), obligations, budget, depth + 1)?
+    let receiver = pack_symbolic_type(context, caller, child(schema, 0), obligations, budget, depth + 1, assumptions)?
     if receiver < 0 {
         return Result.Ok(-1)
     }
@@ -78,16 +106,32 @@ fn pack_projection_type(context Context, caller Node, schema Node, obligations L
             // domain; don't materialize a width just to try the member.
             return Result.Ok(-1)
         }
-        let ty = pack_symbolic_type(context, caller, argument, obligations, budget, depth + 1)?
+        let ty = pack_symbolic_type(context, caller, argument, obligations, budget, depth + 1, assumptions)?
         if ty < 0 {
             return Result.Ok(-1)
         }
         push(arguments, meta_reference(argument, ty))
         index = index + 1
     }
+    var suffix = schema.value
+    var capability = -1
+    if std.text.starts_with(suffix, "member#") {
+        let member = match std.int.parse(slice(suffix, length("member#"), length(suffix))) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(error(context, schema, "invalid symbolic associated member"))
+            }
+        }
+        if member < 0 || member >= length(context.env.source.symbols) ||
+        symbol(context.env, member).node.kind != NodeKind.AssociatedType {
+            return Result.Err(error(context, schema, "invalid symbolic associated member"))
+        }
+        capability = symbol(context.env, member).owner
+        suffix = concat(".", symbol(context.env, member).name)
+    }
     let node = pack_node(schema, NodeKind.Type,
-        concat(concat("$type#", to_text(receiver)), schema.value), arguments)
-    projection(context.env, pack_layout_owner(context), node, new[Int](), obligations, 0)
+        concat(concat("$type#", to_text(receiver)), suffix), arguments)
+    projection(context.env, pack_layout_owner(context), node, new[Int](), obligations, 0, capability)
 }
 
 fn pack_projection_scope(context Context) List[Requirement] {
@@ -96,6 +140,11 @@ fn pack_projection_scope(context Context) List[Requirement] {
 
 fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List[Requirement],
     budget List[Int], depth Int) Result[Int, Failure] {
+    pack_dynamic_type(context, caller, schema, obligations, budget, depth, Option.None)
+}
+
+fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List[Requirement],
+    budget List[Int], depth Int, assumptions Option[List[PackLayoutRequirement]]) Result[Int, Failure] {
     if depth >= 64 || get(budget, 0) == 0 {
         return Result.Ok(-1)
     }
@@ -110,12 +159,12 @@ fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List
     while index < length(schema.children) {
         let binding = child(schema, index)
         if length(group(binding, NodeKind.TypeParameters)) > 0 {
-            let scope = pack_family_scope(context, caller, obligations, budget, depth + 1)?
+            let scope = pack_family_scope(context, caller, obligations, budget, depth + 1, assumptions)?
             let prepared = computed_dynamic_node(scope,
                 pack_node(schema, NodeKind.DynType, schema.value, source_nodes(binding)), capability)?
             push(bindings, child(prepared, 0))
         } else {
-            let ty = pack_symbolic_type(context, caller, child(binding, 0), obligations, budget, depth + 1)?
+            let ty = pack_symbolic_type(context, caller, child(binding, 0), obligations, budget, depth + 1, assumptions)?
             if ty < 0 {
                 return Result.Ok(-1)
             }
@@ -130,6 +179,11 @@ fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List
 
 fn pack_family_scope(context Context, caller Node, obligations List[Requirement],
     budget List[Int], depth Int) Result[Context, Failure] {
+    pack_family_scope(context, caller, obligations, budget, depth, Option.None)
+}
+
+fn pack_family_scope(context Context, caller Node, obligations List[Requirement],
+    budget List[Int], depth Int, assumptions Option[List[PackLayoutRequirement]]) Result[Context, Failure] {
     let base = family_header_context(context.env, pack_layout_owner(context), new[Int](), obligations)?
     var scope = Context {
         emit = false
@@ -141,7 +195,7 @@ fn pack_family_scope(context Context, caller Node, obligations List[Requirement]
     while index < length(parameters) {
         let parameter = get(parameters, index)
         let schema = pack_node(parameter, NodeKind.Type, concat("$parameter#", to_text(index)), new[Node]())
-        let ty = pack_symbolic_type(context, caller, schema, obligations, budget, depth + 1)?
+        let ty = pack_symbolic_type(context, caller, schema, obligations, budget, depth + 1, assumptions)?
         if ty < 0 {
             return Result.Err(error(context, parameter, "symbolic family capture budget exhausted"))
         }

@@ -1,0 +1,102 @@
+test fn impl_method_headers_compare_self_and_closed_fragments_without_width_selection() {
+    let source = """
+        concept Consume {
+            fn consume(self Self, value Int) Self
+        }
+        impl[Ts...] Consume for (Ts...) {
+            fn consume(self (Ts...), value Int) (Ts...) {
+                self
+            }
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "value Int) (Ts...)", "value Bool) (Ts...)"))
+}
+
+test fn impl_method_headers_alpha_rename_local_parameters_and_expand_self_associations() {
+    let source = """
+        concept Read {
+            type Item[T]
+            fn read[U](self Self, value Self.Item[U]) Self.Item[U]
+        }
+        impl[Ts...] Read for (Ts...) {
+            type Item[T] = (T, (Ts...))
+            fn read[V](self (Ts...), value (V, (Ts...))) (V, (Ts...)) {
+                value
+            }
+        }
+        """
+    discard accepted(source)
+}
+
+test fn impl_method_headers_keep_independent_method_words_and_reject_unfilled_overloads() {
+    discard accepted("""
+        concept Keep {
+            fn keep[Us...](self Self, values Us...) (Us...)
+        }
+        impl[Ts...] Keep for (Ts...) {
+            fn keep[Vs...](self Self, values Vs...) (Vs...) {
+                values
+            }
+        }
+        """)
+    rejects("""
+        concept Consume {
+            fn consume(self Self, value Int) Int
+            fn consume(self Self, value Bool) Bool
+        }
+        impl[Ts...] Consume for (Ts...) {
+            fn consume(self Self, value Int) Int {
+                value
+            }
+        }
+        """)
+}
+
+test fn impl_method_headers_inherit_domains_and_compare_resolved_projection_members() {
+    discard accepted("""
+        concept Source {
+            type Item
+        }
+        concept Use {
+            fn use[T Source](self Self, value T.Item) T.Item
+        }
+        impl[Ts...] Use for (Ts...) {
+            fn use[U](self Self, value U.Source.Item) U.Source.Item {
+                value
+            }
+        }
+        """)
+    discard accepted("""
+        concept Source {}
+        record Box[T Source] {
+            value T
+        }
+        concept Use {
+            fn use[T Source](self Self, value Box[T]) Box[T]
+        }
+        impl[Ts...] Use for (Ts...) {
+            fn use[U](self Self, value Box[U]) Box[U] {
+                value
+            }
+        }
+        """)
+}
+
+test fn impl_method_headers_check_associated_domains_before_expanding_bindings() {
+    let source = """
+        concept Source {}
+        concept Read {
+            type Item[T Source]
+            fn read[U Source](self Self, value Self.Item[U]) Int
+        }
+        impl[Ts...] Read for (Ts...) {
+            type Item[T] = Int
+            fn read[V](self Self, value Int) Int {
+                value
+            }
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "fn read[U Source]", "fn read[U]"))
+}
