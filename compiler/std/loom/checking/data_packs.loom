@@ -36,17 +36,24 @@ fn unknown_extents(count Int) List[Int] {
 
 // Bind each selected declaration slot before recursive resolution. A flat
 // argument count cannot recover independent group boundaries.
+fn data_parameter_index(parameters List[Node], spelling Text) Int {
+    let root = slice(spelling, 0, first_dot(spelling))
+    var index = 0
+    while index < length(parameters) {
+        if root == get(parameters, index).value {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
 fn bind_data_parameters(node Node, parameters List[Node], arguments List[Int]) Node {
     var value = node.value
     if node.kind == NodeKind.Type || node.kind == NodeKind.Name {
-        let root = slice(value, 0, first_dot(value))
-        var index = 0
-        while index < length(parameters) {
-            if root == get(parameters, index).value {
-                value = concat(concat("$type#", to_text(get(arguments, index))), slice(value, length(root), length(value)))
-                break
-            }
-            index = index + 1
+        let index = data_parameter_index(parameters, value)
+        if index >= 0 {
+            value = concat(concat("$type#", to_text(get(arguments, index))), slice(value, first_dot(value), length(value)))
         }
     }
     let children = new[Node]()

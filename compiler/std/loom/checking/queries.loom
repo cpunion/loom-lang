@@ -28,6 +28,13 @@ pub record TypeHeader {
     ty Int
 }
 
+// A checked lexical binding, not a singular type or an expanded pack layout.
+pub record ParameterHeader {
+    symbol Int
+    node Node
+    parameter Node
+}
+
 pub record CheckedQuery {
     bindings std.loom.binding.Program
     types List[Type]
@@ -35,6 +42,7 @@ pub record CheckedQuery {
     functions List[Function]
     headers List[SignatureHeader]
     type_headers List[TypeHeader]
+    parameter_headers List[ParameterHeader]
     declarations List[DeclarationReference]
     stages List[StagedQuery]
 }
@@ -80,6 +88,7 @@ pub fn check_query(source std.loom.binding.Program, inputs BuildInputs) Result[C
             functions = program.functions
             headers = new[SignatureHeader]()
             type_headers = new[TypeHeader]()
+            parameter_headers = new[ParameterHeader]()
             declarations = get(env.inputs, 0).declaration_references
             stages = get(env.inputs, 0).staged_queries
         })
@@ -130,14 +139,16 @@ fn query_header_owner(env Environment, declarations Int, file Int, offset Int) I
 }
 
 fn query_declaration_type_header(env Environment, declarations Int, file Int, offset Int,
-    headers List[TypeHeader]) Result[Bool, Failure] {
+    headers List[TypeHeader], parameters List[ParameterHeader]) Result[Bool, Failure] {
     var index = 0
     while index < declarations {
         let item = symbol(env, index)
         if item.file == file && nominal_data(item.node.kind) && !has(item.node, NodeKind.ExpansionId) &&
         offset >= item.node.span.start && offset < item.node.span.end {
             if pack_parameter(item.node) >= 0 {
-                return Result.Err(failure(env, index, item.node, "source header cannot infer an unexpanded pack arity"))
+                discard data_pack_header(env, index, Option.Some(headers))?
+                data_header_parameters(index, item.node, type_parameters(env, index), parameters)
+                return Result.Ok(true)
             }
             let arguments = abstract_arguments(env, length(type_parameters(env, index)))
             let ty = data_type(env, index, arguments, 0)?
@@ -242,8 +253,9 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
     }
     var functions = new[Function]()
     let type_headers = new[TypeHeader]()
+    let parameter_headers = new[ParameterHeader]()
     let declaration_type_header = if length(headers) == 0 {
-        query_declaration_type_header(env, declarations, file, offset, type_headers)?
+        query_declaration_type_header(env, declarations, file, offset, type_headers, parameter_headers)?
     } else {
         false
     }
@@ -274,6 +286,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
             functions = functions
             headers = headers
             type_headers = type_headers
+            parameter_headers = parameter_headers
             declarations = get(env.inputs, 0).declaration_references
             stages = get(env.inputs, 0).staged_queries
         })
