@@ -38,6 +38,7 @@ ensures result.active == value.active
 }
 
 fn main() {
+    exercise_typed_snapshot()
     let snapshot = copy_snapshot(Snapshot {
             count = 3
             active = true

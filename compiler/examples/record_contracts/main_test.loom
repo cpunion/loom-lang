@@ -1,3 +1,7 @@
+test fn typed_snapshot_construction_preserves_effects_and_sharing() {
+    exercise_typed_snapshot()
+}
+
 test fn copy_snapshot_preserves_scalar_fields() {
     let snapshot = copy_snapshot(Snapshot {
             count = 7

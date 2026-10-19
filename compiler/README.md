@@ -2980,6 +2980,14 @@ to assertions, branch/exit guards and exact immutable copies. Check-only call
 identities remain separate from executable reachability, and concrete type and
 compile-time arguments remain part of the selected instance.
 
+Other constructor inputs enter the same proof as independent typed snapshots.
+Declared field and payload constraints can establish a record, tuple or enum
+constraint even through a projection or mutable binding. This does not reuse
+stale heap observations, replay input effects, or establish sequence isolation.
+Unknown predicates and unproved helper safety retain the checked boundary.
+The [typed snapshot example](examples/record_contracts/typed_snapshot.loom)
+preserves both once-only input effects and unrelated List sharing.
+
 Int, Bool, IEEE Float and immutable Text use their own value theories. Text equality
 and immutable copies do not expose native addresses or make mutable bindings
 stable; unknown alternatives remain unknown. See the

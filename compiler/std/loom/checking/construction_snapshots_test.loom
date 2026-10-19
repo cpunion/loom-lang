@@ -1,0 +1,91 @@
+test fn typed_input_snapshots_prove_composed_constraints_without_replaying_values() {
+    let program = accepted_result("""
+        type Positive = Int where self > 0
+        record Carrier {
+            key Positive
+            values List[Int]
+        }
+        record Wrapper {
+            payload Carrier
+        }
+        enum Choice {
+            Some(Positive)
+            Empty
+        }
+        type Keyed = Carrier where self.key > 0
+        type Pair = (Positive, List[Int]) where self.0 > 0
+        type ValidChoice = Choice where match self {
+            Choice.Some(value) => value > 0
+            Choice.Empty => true
+        }
+        pub fn record_input(value Carrier) Keyed {
+            Keyed(value)
+        }
+        pub fn mutable_input(value Carrier) Keyed {
+            var current = value
+            Keyed(current)
+        }
+        pub fn projection(value Wrapper) Keyed {
+            Keyed(value.payload)
+        }
+        pub fn tuple_input(value (Positive, List[Int])) Pair {
+            Pair(value)
+        }
+        pub fn enum_input(value Choice) ValidChoice {
+            ValidChoice(value)
+        }
+        """)
+    var index = 0
+    while index < length(program.functions) {
+        assert dynamic_count(get(program.functions, index).body, ExprKind.Call) == 0
+        index = index + 1
+    }
+}
+
+test fn typed_input_snapshots_do_not_invent_predicates_or_helper_definedness() {
+    discard accepted_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        record Carrier {
+            key Int
+            values List[Int]
+        }
+        type Keyed = Carrier where self.key > 0
+        pub fn checked(value Carrier) Result[Keyed, ConstraintError] {
+            Keyed(value)
+        }
+        """)
+    rejects_result("""
+        record Carrier {
+            key Int
+        }
+        type Keyed = Carrier where self.key > 0
+        pub fn unproved(value Carrier) Keyed {
+            Keyed(value)
+        }
+        """)
+    rejects_result("""
+        type Positive = Int where self > 0
+        record Carrier {
+            key Positive
+        }
+        type Small = Carrier where self.key < 3
+        pub fn unproved(value Carrier) Small {
+            Small(value)
+        }
+        """)
+    rejects_result("""
+        type Positive = Int where self > 0
+        record Carrier {
+            key Positive
+        }
+        fn positive(value Int) Bool {
+            let unused = value + 1
+            value > 0
+        }
+        type Keyed = Carrier where positive(self.key)
+        pub fn unsafe(value Carrier) Keyed {
+            Keyed(value)
+        }
+        """)
+}
