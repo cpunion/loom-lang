@@ -166,17 +166,9 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
     }
     // Already checked identities (including scoped families) keep ordinary
     // evidence only when their complete encoded structure matches.
-    if schema.kind == NodeKind.Type {
-        match std.int.parse(schema.value) {
-            Result.Ok(ty) => {
-                if ty >= 0 && ty < length(context.env.types) &&
-                pack_schema_equal(impl_type_schema(context.env, ty, schema, true), schema) {
-                    return satisfies(context, ty, capability)
-                }
-            }
-            Result.Err(_) => {
-            }
-        }
+    let identity = pack_schema_identity(context.env, schema)
+    if identity >= 0 {
+        return satisfies(context, identity, capability)
     }
     var index = 0
     while index < depth {

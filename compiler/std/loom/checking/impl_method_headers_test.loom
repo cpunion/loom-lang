@@ -170,3 +170,88 @@ test fn impl_method_headers_compare_family_captures_inside_symbolic_words() {
     discard accepted(source)
     rejects(std.text.replace(source, "(V, Ts)", "(V, Ts, Bool)"))
 }
+
+test fn impl_method_headers_restore_composite_arguments_without_losing_family_captures() {
+    let source = """
+        concept Family {
+            type Item[T]
+        }
+        concept Source {
+            type Item
+        }
+        record Holder[A, B, C, D, E] {
+            a A
+            b B
+            c C
+            d D
+            e E
+        }
+        concept Use {
+            type Value[T]
+            fn use[U Source](self Self, value Self.Value[Holder[(U, Int), List[U], fn(U) U, Task[U], U.Item]])
+        }
+        impl[Ts...] Use for (Ts...) {
+            type Value[T] = dyn Family[Item[Q] = (Q, T)]
+            fn use[V](self Self, value dyn Family[Item[P] = (P, Holder[(V, Int), List[V], fn(V) V, Task[V], V.Source.Item])]) {
+                discard value
+            }
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "(P, Holder[(V, Int)", "(P, Holder[(V, Bool)"))
+}
+
+test fn impl_method_headers_preserve_independent_groups_in_restored_family_arguments() {
+    let source = """
+        concept Family {
+            type Item[T]
+        }
+        record Group[As..., Bs...] {
+            left (As...)
+            right (Bs...)
+        }
+        concept Use {
+            type Value[T]
+            fn use[U](self Self, value Self.Value[Group[(U, Int)..., (Bool, Text)...]])
+        }
+        impl[Ts...] Use for (Ts...) {
+            type Value[T] = dyn Family[Item[Q] = (Q, T)]
+            fn use[V](self Self, value dyn Family[Item[P] = (P, Group[(V, Int)..., (Bool, Text)...])]) {
+                discard value
+            }
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "(V, Int)..., (Bool, Text)...", "(V, Int, Bool)..., (Text,)..."))
+}
+
+test fn impl_method_headers_check_erased_arguments_without_expanding_unused_words() {
+    discard accepted("""
+        concept Use {
+            type Value[T]
+            fn use(self Self, value Int)
+        }
+        impl[Ts...] Use for (Ts...) {
+            type Value[T] = Int
+            fn use(self Self, value Self.Value[(Ts...)]) {
+                discard value
+            }
+        }
+        """)
+    rejects("""
+        concept Tagged {}
+        record Box[T Tagged] {
+            value T
+        }
+        concept Use {
+            type Value[T]
+            fn use[U](self Self, value Int)
+        }
+        impl[Ts...] Use for (Ts...) {
+            type Value[T] = Int
+            fn use[V](self Self, value Self.Value[Box[V]]) {
+                discard value
+            }
+        }
+        """)
+}
