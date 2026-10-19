@@ -3,8 +3,14 @@ concept WordRelay {
     fn relay_word(self Self, value Self.Value) Self.Value
 }
 
+fn word_item_type[T]() type {
+    T
+}
+
 impl[Ts...] WordRelay for (Ts...) {
-    type Value = dyn WordFactory[Item[U] = (Ts..., U)]
+    type Value = dyn WordFactory[Item[U] = (Ts..., comptime {
+                word_item_type[U]()
+            })]
     fn relay_word(self Self, value dyn WordFactory[Item[V] = (Ts..., V)])
     dyn WordFactory[Item[W] = (Ts..., W)] {
         discard self
@@ -21,4 +27,6 @@ async fn exercise_family_schema() {
     let relayed = (7, true).relay_word(second)
     let resumed = echo(relayed).await
     assert resumed.append("schema") == (42, true, "schema")
+    let values = resumed.append([7, 11])
+    assert values.2[0] + values.2[1] == 18
 }
