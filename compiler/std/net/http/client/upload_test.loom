@@ -110,7 +110,8 @@ async fn upload_peer(listener ListenerHandle, state UploadProbeState, finished L
                 Result.Err(_) => true
             })
     }
-    let input = reader(std.net.tcp.chunks.read(stream, 4096), tcp_packet, std.net.http.limits())
+    // Deliberately split framing across reads, including the suffix after data.
+    let input = reader(std.net.tcp.chunks.read(stream, 1), tcp_packet, std.net.http.limits())
     if state.mode <= 1 {
         match read_request(input).await {
             Result.Ok(Option.Some(value)) => {
@@ -147,10 +148,25 @@ async fn upload_peer(listener ListenerHandle, state UploadProbeState, finished L
             return Result.Ok(true)
         }
     }
-    Result.Ok(match std.net.tcp.read(stream, std.bytes.new(), 1).await {
-            Result.Ok(count) => count == 0
-            Result.Err(_) => true
-        })
+    // Partial consumers may leave CRLF in the socket, rather than the reader's
+    // buffer. Consume that suffix before observing close; a complete request
+    // still forbids any extra bytes.
+    while true {
+        match std.net.tcp.read(stream, std.bytes.new(), 4096).await {
+            Result.Ok(0) => {
+                return Result.Ok(true)
+            }
+            Result.Err(_) => {
+                return Result.Ok(true)
+            }
+            Result.Ok(_) => {
+                if state.mode == 0 {
+                    return Result.Ok(false)
+                }
+            }
+        }
+    }
+    Result.Ok(false)
 }
 
 async fn upload_count(response Incoming) Result[Int, Error] {
@@ -203,7 +219,7 @@ async fn upload_roundtrip(mode Int, owned Bool) Result[Bool, TcpError] {
     } else {
         let pending = upload(value, configuration, scoped_upload, state, upload_packet)
         if mode == 3 {
-            while !state.entered[0] {
+            while !state.entered[0] || !state.ready[0] {
                 sleep_ms(0).await
             }
             match cancel(pending) {
