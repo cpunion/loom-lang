@@ -150,10 +150,11 @@ fn resource_join(flow ResourceFlow, branch ResourceFlow) {
     }
 }
 
-fn resource_pending(flow ResourceFlow) Bool {
+// Only the returned pending owner may leave an arm without being adopted.
+fn resource_pending(locals List[ResourceValue], transferred Int) Bool {
     var index = 0
-    while index < length(flow.locals) {
-        if get(flow.locals, index).pending == index {
+    while index < length(locals) {
+        if get(locals, index).pending == index && index != transferred {
             return true
         }
         index = index + 1
@@ -215,7 +216,7 @@ fn resource_function(analysis ResourceAnalysis, id Int, borrowed List[Int]) Resu
     if flow_resource(flow, current.result)? && current.body.falls && !value.fresh {
         return Result.Err(resource_error(flow, current.body, "a resource return must transfer a fresh value"))
     }
-    if resource_pending(flow) {
+    if resource_pending(flow.locals, -1) {
         return Result.Err(resource_error(flow, current.body, "a resource payload must immediately enter scoped or transfer into a fresh result"))
     }
     var fresh = !current.body.falls || value.fresh
@@ -302,13 +303,26 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Res
 fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
     let kind = expr.kind
     let current = get(flow.analysis.functions, flow.function)
+    // Compiler-only guard flags cannot fault or invoke source code.
+    if (kind == ExprKind.Let || kind == ExprKind.Assign) && expr.text == "resource-guard" &&
+    get(current.locals, expr.index).name == "" && get(current.locals, expr.index).ty == 2 &&
+    get(expr.children, 0).kind == ExprKind.Bool {
+        set(flow.locals, expr.index, resource_value(false, false, -1))
+        return Result.Ok(resource_value(false, false, -1))
+    }
+    let registration = kind == ExprKind.Defer && resource_seen(flow.automatic, expr.index)
     // Aggregate shells are pure; their elements still pass this check in
     // order, so nested constructors can reach their existing pending guards
     // without allowing an effect before adoption.
-    if resource_pending(flow) && kind != ExprKind.Block && kind != ExprKind.Local && kind != ExprKind.Return &&
+    if resource_pending(flow.locals, -1) && kind != ExprKind.Block && kind != ExprKind.Local && kind != ExprKind.Return &&
     kind != ExprKind.Record && kind != ExprKind.Variant &&
+    !registration && !(kind == ExprKind.Cleanup && expr.text == "resource-disarm") &&
     !(kind == ExprKind.Let && (get(current.locals, expr.index).is_scoped ||
-            (expr.text == "pattern-binding" && get(expr.children, 0).kind == ExprKind.Local))) {
+            (expr.text == "pattern-binding" && get(expr.children, 0).kind == ExprKind.Local) ||
+            (get(current.locals, expr.index).name == "" &&
+                ((get(expr.children, 0).kind == ExprKind.Local && !flow_resource(flow, get(current.locals, expr.index).ty)?) ||
+                    ((get(expr.children, 0).kind == ExprKind.Record || get(expr.children, 0).kind == ExprKind.Variant) &&
+                        get(expr.children, 0).text == "resource-pending-transfer"))))) {
         return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped or transfer before any other operation"))
     }
     if kind == ExprKind.Local {
@@ -391,6 +405,18 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     }
     if kind == ExprKind.Defer || kind == ExprKind.Cleanup {
         let cleanup = resource_branch(flow)
+        if registration {
+            // Registration does not run Dispose. Analyze its future callback
+            // without granting access to owners still awaiting adoption.
+            var index = 0
+            while index < length(cleanup.locals) {
+                let value = get(cleanup.locals, index)
+                if value.pending == index {
+                    resource_consume(cleanup, value)
+                }
+                index = index + 1
+            }
+        }
         discard resource_expression(cleanup, get(expr.children, 0), resource_seen(flow.automatic, expr.index))?
         return Result.Ok(resource_value(false, false, -1))
     }
@@ -633,7 +659,8 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
             output = resource_expression(branch, get(arm.body, field), automatic)?
             field = field + 1
         }
-        if resource_pending(branch) && output.pending < 0 {
+        // A returned pending owner does not account for any sibling payload.
+        if resource_pending(branch.locals, output.pending) {
             return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped or transfer into a fresh result"))
         }
         protected = protected || output.protected

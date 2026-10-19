@@ -4295,6 +4295,9 @@ constructor wrappers preserve immediate scoping or reconstruction. Operand
 effects still need prior resource adoption; matching a scoped owner only borrows
 its payloads.
 
+Every selected resource payload must be accounted for: returning one owner
+cannot silently abandon a sibling. Scope or transfer the other payloads first.
+
 Runtime function values and dynamic factory methods may also return MustScope
 resources, including the supported Result/Option transfers. Each selected source
 implementation must satisfy the same fresh-return obligation; indirect calls do

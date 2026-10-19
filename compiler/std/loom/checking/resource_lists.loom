@@ -10,7 +10,7 @@ fn pending_scope(context Context, node Node, receiver Expr, body List[Expr], fla
                 mutable = true
                 is_scoped = false
             })
-        push(body, expression(ExprKind.Let, 0, node, "", flag,
+        push(body, expression(ExprKind.Let, 0, node, "resource-guard", flag,
                 expressions(expression(ExprKind.Bool, 2, node, "true", -1, new[Expr](), true)), true))
         let dispose = expression(ExprKind.Block, 0, node, "", -1, expressions(get(disposals, index)), true)
         let guarded = expression(ExprKind.If, 0, node, "", -1,
@@ -36,7 +36,7 @@ fn pending_scope(context Context, node Node, receiver Expr, body List[Expr], fla
 fn pending_disarm(context Context, node Node, body List[Expr], flags List[Int], cleanups List[Int]) {
     var index = 0
     while index < length(flags) {
-        push(body, expression(ExprKind.Assign, 0, node, "", get(flags, index),
+        push(body, expression(ExprKind.Assign, 0, node, "resource-guard", get(flags, index),
                 expressions(expression(ExprKind.Bool, 2, node, "false", -1, new[Expr](), true)), true))
         index = index + 1
     }
@@ -51,7 +51,12 @@ fn pending_disarm(context Context, node Node, body List[Expr], flags List[Int], 
 
 fn generated_local(context Context, node Node, ty Int, mutable Bool, scoped_value Bool, value Expr, body List[Expr]) Int {
     let local = length(context.locals)
-    push(context.locals, Local { name = "" ty = ty mutable = mutable is_scoped = scoped_value })
+    push(context.locals, Local {
+            name = ""
+            ty = ty
+            mutable = mutable
+            is_scoped = scoped_value
+        })
     push(body, expression(ExprKind.Let, 0, node, "", local, expressions(value), true))
     local
 }
@@ -105,7 +110,11 @@ fn generated_resources(context Context, node Node, ty Int, stateful Bool) Result
     let index = generated_local(context, node, 1, true, false,
         expression(ExprKind.Integer, 1, node, "0", -1, new[Expr](), true), body)
     let position = atom(ExprKind.Local, 1, node, index)
-    let factory_index = if stateful { 2 } else { 1 }
+    let factory_index = if stateful {
+        2
+    } else {
+        1
+    }
     let factory = atom(ExprKind.Local, get(context.signature.params, factory_index), node, factory_index)
     let values = pair(factory, position)
     let iteration = new[Expr]()

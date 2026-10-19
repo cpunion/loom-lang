@@ -25,6 +25,26 @@ fn pattern_generic[T Dispose + MustScope](create fn(List[Int], Bool) Result[T, P
     }
 }
 
+record PatternHeld {
+    inner Leaf
+}
+
+impl Dispose for PatternHeld {
+    fn dispose(self PatternHeld) {
+    }
+}
+
+fn pattern_return_one(trace List[Int]) Leaf {
+    match acquired_pair(trace) {
+        AcquiredPair.Pair(first, second) => {
+            scoped held = PatternHeld {
+                inner = second
+            }
+            first
+        }
+    }
+}
+
 fn pattern_scope_trial() Bool {
     let successful List[Int] = []
     {
@@ -56,6 +76,13 @@ fn pattern_scope_trial() Bool {
         }
     }
     assert length(rejected) == 0
+    let retained List[Int] = []
+    {
+        scoped selected = pattern_return_one(retained)
+        assert length(retained) == 3 && retained[2] == 2
+        assert selected.id == 1
+    }
+    assert length(retained) == 4 && retained[3] == 1
     true
 }
 
