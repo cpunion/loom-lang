@@ -1,0 +1,138 @@
+// Restore fixed structural schemas under logical type identities. A spread is
+// still a word, not one type or a width to select for ordinary type resolution.
+fn pack_schema_identity(env Environment, schema Node) Int {
+    if schema.kind != NodeKind.Type {
+        return -1
+    }
+    match std.int.parse(schema.value) {
+        Result.Ok(ty) => {
+            if ty >= 0 && ty < length(env.types) &&
+            pack_schema_equal(impl_type_schema(env, ty, schema, true), schema) {
+                return ty
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    -1
+}
+
+fn pack_schema_type(context Context, parameters List[Int], schema Node, depth Int) Result[Int, Failure] {
+    if depth >= 64 {
+        return Result.Err(error(context, schema, "symbolic type restoration must be finite"))
+    }
+    let env = context.env
+    let owner = pack_layout_owner(context)
+    let parameter = pack_schema_parameter(schema)
+    if parameter >= 0 {
+        if parameter >= length(parameters) {
+            return Result.Err(error(context, schema, "symbolic type parameter needs a bound identity"))
+        }
+        return Result.Ok(get(parameters, parameter))
+    }
+    let identity = pack_schema_identity(env, schema)
+    if identity >= 0 {
+        return Result.Ok(identity)
+    }
+    if schema.kind == NodeKind.Select && std.text.starts_with(schema.value, "member#") &&
+    length(schema.children) > 0 {
+        let member = match std.int.parse(slice(schema.value, length("member#"), length(schema.value))) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(error(context, schema, "invalid symbolic associated member"))
+            }
+        }
+        if member < 0 || member >= length(env.source.symbols) ||
+        symbol(env, member).node.kind != NodeKind.AssociatedType {
+            return Result.Err(error(context, schema, "invalid symbolic associated member"))
+        }
+        let receiver = pack_schema_type(context, parameters, child(schema, 0), depth + 1)?
+        let arguments = new[Int]()
+        var index = 1
+        while index < length(schema.children) {
+            push(arguments, pack_schema_type(context, parameters, child(schema, index), depth + 1)?)
+            index = index + 1
+        }
+        if !admitted(env, owner, context.signature.requirements, receiver, symbol(env, member).owner)? {
+            return Result.Err(error(context, schema, "associated type needs its declared concept requirement"))
+        }
+        discard member_domain(env, owner, member, arguments, context.signature.requirements, schema)?
+        return associated_type(env, owner, member, receiver, arguments, schema, depth + 1)
+    }
+    if schema.kind == NodeKind.DynType {
+        let capability = match std.int.parse(slice(schema.value, length("concept#"), length(schema.value))) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(error(context, schema, "invalid symbolic dynamic type"))
+            }
+        }
+        let bindings = new[Node]()
+        var index = 0
+        while index < length(schema.children) {
+            let binding = child(schema, index)
+            if length(binding.children) != 1 {
+                return Result.Err(error(context, binding, "symbolic family needs its checked type identity"))
+            }
+            let ty = pack_schema_type(context, parameters, child(binding, 0), depth + 1)?
+            push(bindings, pack_dynamic_binding(env, capability, binding, ty))
+            index = index + 1
+        }
+        return dynamic_type(env, owner, pack_node(schema, schema.kind, schema.value, bindings),
+            new[Int](), context.signature.requirements, depth + 1, capability)
+    }
+    if schema.kind == NodeKind.Type && std.text.starts_with(schema.value, "nominal#") {
+        let declaration = match std.int.parse(slice(schema.value, length("nominal#"), length(schema.value))) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(error(context, schema, "invalid symbolic data type"))
+            }
+        }
+        let slots = group(symbol(env, declaration).node, NodeKind.TypeParameters)
+        let arguments = new[Int]()
+        let widths = new[Int]()
+        var index = 0
+        while index < length(schema.children) {
+            let value = child(schema, index)
+            if type_pack_count(symbol(env, declaration).node) > 1 && index < length(slots) &&
+            get(slots, index).kind == NodeKind.TypePack {
+                if value.kind != NodeKind.TupleType {
+                    return Result.Err(error(context, value, "symbolic data group needs a fixed structure"))
+                }
+                push(widths, length(value.children))
+                var element = 0
+                while element < length(value.children) {
+                    push(arguments, pack_schema_type(context, parameters, child(value, element), depth + 1)?)
+                    element = element + 1
+                }
+            } else {
+                push(arguments, pack_schema_type(context, parameters, value, depth + 1)?)
+            }
+            index = index + 1
+        }
+        if type_pack_count(symbol(env, declaration).node) > 1 {
+            return constructed_group_type(context, declaration, arguments, widths, schema)
+        }
+        return constructed_type(context, declaration, arguments, schema)
+    }
+    let arguments = new[Int]()
+    var index = 0
+    while index < length(schema.children) {
+        push(arguments, pack_schema_type(context, parameters, child(schema, index), depth + 1)?)
+        index = index + 1
+    }
+    if schema.kind == NodeKind.TupleType {
+        return tuple_type(env, owner, schema, arguments)
+    }
+    if schema.kind == NodeKind.FunctionType {
+        return Result.Ok(intern(env, TypeKind.Function, -1, arguments))
+    }
+    if schema.kind == NodeKind.Type && length(arguments) == 1 {
+        if schema.value == "List" {
+            return Result.Ok(intern(env, TypeKind.List, -1, arguments))
+        }
+        if schema.value == "Task" {
+            return Result.Ok(intern(env, TypeKind.Task, -1, arguments))
+        }
+    }
+    Result.Err(error(context, schema, "symbolic word needs an established fixed type structure"))
+}
