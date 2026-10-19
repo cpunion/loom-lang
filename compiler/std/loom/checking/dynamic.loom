@@ -89,6 +89,21 @@ fn fill_interface(env Environment, receiver Int) Result[Bool, Failure] {
     }
 }
 
+fn dynamic_signature_types(env Environment, current Signature, capability Int) Result[Bool, Failure] {
+    let node = symbol(env, current.symbol).node
+    var parameter = 1
+    while parameter < length(current.params) {
+        if !dynamic_member_type(env, get(current.params, parameter), capability) {
+            return Result.Err(failure(env, current.symbol, node, "dyn concept methods may use Self only as the receiver"))
+        }
+        parameter = parameter + 1
+    }
+    if !dynamic_member_type(env, current.result, capability) {
+        return Result.Err(failure(env, current.symbol, node, "dyn concept methods cannot return Self or a type containing Self"))
+    }
+    Result.Ok(true)
+}
+
 fn fill_interface_methods(env Environment, receiver Int, capability Concept, methods List[Method], slots List[DynamicSlot]) Result[Bool, Failure] {
     discard dynamic_method_pack_headers(env, capability.symbol)?
     // Compare complete source signatures, including comptime parameters, before
@@ -102,17 +117,7 @@ fn fill_interface_methods(env Environment, receiver Int, capability Concept, met
             continue
         }
         let node = symbol(env, current.symbol).node
-        var parameter = 1
-        while parameter < length(current.params) {
-            let ty = get(current.params, parameter)
-            if !dynamic_member_type(env, ty, capability.symbol) {
-                return Result.Err(failure(env, current.symbol, symbol(env, current.symbol).node, "dyn concept methods may use Self only as the receiver"))
-            }
-            parameter = parameter + 1
-        }
-        if !dynamic_member_type(env, current.result, capability.symbol) {
-            return Result.Err(failure(env, current.symbol, symbol(env, current.symbol).node, "dyn concept methods cannot return Self or a type containing Self"))
-        }
+        discard dynamic_signature_types(env, current, capability.symbol)?
         // Generic and static declarations have no unspecialized ABI slot.
         // Concrete calls append only the instances this build needs.
         if current.parameters == 1 {
