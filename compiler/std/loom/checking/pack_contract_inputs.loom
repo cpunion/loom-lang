@@ -36,6 +36,10 @@ fn pack_contract_inputs(node Node, bindings List[Node], depth Int) Result[Node, 
                     return Result.Ok(pack_node(node, NodeKind.MethodCall, get(parts, length(parts) - 1),
                             [value, get(children, 0), get(children, 1)]))
                 }
+                // A pack tuple shadows same-spelled package functions here,
+                // just as in the body. Preserve the value call so ordinary
+                // contract checking rejects this non-callable tuple.
+                return Result.Ok(pack_node(node, NodeKind.Invoke, "", [value, get(children, 1)]))
             }
             index = index + 1
         }
