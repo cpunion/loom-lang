@@ -50,8 +50,9 @@ Calls without a usable result contract need bounded, nonrecursive scalar helper
 bodies with local bindings/reassignment, `if/else` and early returns from body or
 branch blocks. Reassignment cannot change earlier reads; expression blocks and
 short-circuit operands merge only executed writes. Shared-storage mutation,
-returns inside operands, cleanup, loops and indirect calls remain unsupported
-for helper expansion. Branches retain their evaluation guards;
+returns inside operands, cleanup and indirect calls remain unsupported
+for helper expansion. Bounded unit-step scans use the same guarded rules;
+broader loop shapes remain unproved. Branches retain their evaluation guards;
 eager arguments, overwritten/discarded arithmetic and assertions still create proof
 obligations. Expansion and conditional normalization have finite budgets.
 Arithmetic that executed in a body may rely on its runtime overflow check having
