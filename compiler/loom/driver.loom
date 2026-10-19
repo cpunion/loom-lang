@@ -4,6 +4,7 @@ import std.loom.project.is_windows_path
 import std.loom.project.join_path
 import std.fs.canonicalize
 import std.loom.binding.bind
+import std.loom.binding.Program
 import std.loom.binding.Failure
 import std.loom.project.SourceFile
 import std.loom.project.Project
@@ -305,12 +306,13 @@ fn prepare_loaded(options Options, loaded Project, inputs BuildInputs) Result[Pr
         }
     }
     match check_with_inputs(bound, inputs) {
-        Result.Ok(value) => Result.Ok(prepare_checked(options, loaded, inputs, value))
+        Result.Ok(value) => Result.Ok(prepare_checked(options, loaded, inputs, value, bound))
         Result.Err(failure) => Result.Err(diagnostic(loaded.files, failure))
     }
 }
 
-fn prepare_checked(options Options, project Project, inputs BuildInputs, value std.loom.typed.Program) Prepared {
+fn prepare_checked(options Options, project Project, inputs BuildInputs, value std.loom.typed.Program,
+    bindings std.loom.binding.Program) Prepared {
     let selected = select_tests(value, options.test_filter)
     Prepared {
         inputs = inputs.files
@@ -318,7 +320,7 @@ fn prepare_checked(options Options, project Project, inputs BuildInputs, value s
         input = if options.command == "check" {
             ""
         } else {
-            encode(lower(selected), inputs.targets)
+            encode(lower(selected), inputs.targets, bindings)
         }
         entry = selected.entry
         tests = length(selected.tests)

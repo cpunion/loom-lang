@@ -338,6 +338,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 functions: self.functions,
                 witnesses: self.witnesses,
                 function,
+                source_function: self.source_function,
+                fault_span: source.span,
                 locals,
                 local_types: &source.locals,
                 allocating: self.allocating,

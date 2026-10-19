@@ -318,6 +318,8 @@ fn emit_checked(
             functions: &functions,
             witnesses: &witnesses,
             function,
+            source_function: id,
+            fault_span: source.span,
             locals,
             local_types: &source.locals,
             allocating: &allocating,
@@ -341,7 +343,9 @@ fn emit_checked(
             let condition = emitter
                 .expr(requirement)?
                 .ok_or("invalid checked precondition")?;
+            emitter.fault_span = requirement.span;
             emitter.guard(condition.into_int_value(), "precondition failed")?;
+            emitter.fault_span = source.span;
         }
         let result = emitter.block(&source.body)?;
         if emitter.live() {
@@ -605,6 +609,8 @@ struct FunctionEmitter<'a, 'ctx> {
     functions: &'a [Option<FunctionValue<'ctx>>],
     witnesses: &'a [Option<PointerValue<'ctx>>],
     function: FunctionValue<'ctx>,
+    source_function: usize,
+    fault_span: crate::model::Span,
     locals: Vec<Option<PointerValue<'ctx>>>,
     local_types: &'a [Type],
     allocating: &'a BTreeSet<usize>,
@@ -1216,7 +1222,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 }
                 checked::StmtKind::Assert { condition, message } => {
                     if let Some(value) = self.expr(condition)? {
-                        self.guard(
+                        self.guard_message(
                             value.into_int_value(),
                             if message.is_empty() {
                                 "assertion failed"
@@ -1335,8 +1341,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 
     fn expr(&mut self, expr: &checked::Expr) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         let previous = self.restore_point.replace(expr);
+        let previous_span = std::mem::replace(&mut self.fault_span, expr.span);
         let value = self.expr_inner(expr);
         self.restore_point = previous;
+        self.fault_span = previous_span;
         let value = value?;
         if let Some(value) = value
             && let Some(slot) = self.roots.expressions.get(&(expr as *const checked::Expr))
@@ -2305,6 +2313,27 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     fn guard(&self, valid: IntValue<'ctx>, message: &str) -> NativeResult<()> {
+        // Compile static provenance into the existing failure edge. No source
+        // lookup, TLS update or extra argument occurs in the emitted fast path.
+        let message = self
+            .program
+            .source_locations
+            .sites
+            .get(&(self.source_function, self.fault_span))
+            .map_or_else(
+                || message.to_owned(),
+                |site| {
+                    format!(
+                        "{}:{}:{}: {message}",
+                        self.program.source_locations.paths[site.file], site.line, site.column
+                    )
+                },
+            );
+        let message = message.as_str();
+        self.guard_message(valid, message)
+    }
+
+    fn guard_message(&self, valid: IntValue<'ctx>, message: &str) -> NativeResult<()> {
         let good = self.context.append_basic_block(self.function, "guard.ok");
         let bad = self
             .context
@@ -2711,6 +2740,7 @@ mod tests {
             tests: vec![],
             test_names: vec![],
             target_inputs: vec![],
+            source_locations: Default::default(),
             exports: vec![],
         };
         let context = Context::create();

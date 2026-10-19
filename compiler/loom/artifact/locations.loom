@@ -1,0 +1,160 @@
+import std.loom.binding.Program
+import std.loom.source.Span
+import std.loom.source.Position
+import std.list.sorted
+import std.list.push
+import std.map.new
+import std.map.get
+import std.map.insert
+import std.option.Option
+import std.text.width
+
+record SourceLines {
+    text Text
+    starts List[Int]
+}
+
+fn source_lines(source Text) SourceLines {
+    let starts = [0]
+    var cursor = 0
+    while cursor < length(source) {
+        let current = byte(source, cursor)
+        cursor = cursor + 1
+        if current == 13 || current == 10 {
+            push(starts, cursor)
+            if current == 13 && cursor < length(source) && byte(source, cursor) == 10 {
+                cursor = cursor + 1
+            }
+        }
+    }
+    SourceLines {
+        text = source
+        starts = starts
+    }
+}
+
+fn source_location(source SourceLines, offset Int) Position {
+    var lower = 0
+    var upper = std.list.length(source.starts)
+    while lower + 1 < upper {
+        let middle = lower + (upper - lower) / 2
+        if get(source.starts, middle) <= offset {
+            lower = middle
+        } else {
+            upper = middle
+        }
+    }
+    var cursor = get(source.starts, lower)
+    var column = 1
+    while cursor < offset {
+        // A CRLF line begins just after CR, so its LF does not add a column.
+        if byte(source.text, cursor) == 10 {
+            cursor = cursor + 1
+        } else {
+            cursor = cursor + std.text.width(source.text, cursor)
+            column = column + 1
+        }
+    }
+    Position {
+        line = lower + 1
+        column = column
+    }
+}
+
+fn fault_spans(value Expr, spans List[Span]) {
+    if value.kind == ExprKind.Unary || value.kind == ExprKind.Binary ||
+    value.kind == ExprKind.Intrinsic || value.kind == ExprKind.Call {
+        push(spans, value.span)
+    }
+    var index = 0
+    while index < std.list.length(value.children) {
+        fault_spans(get(value.children, index), spans)
+        index = index + 1
+    }
+    index = 0
+    while index < std.list.length(value.arms) {
+        let body = get(value.arms, index).body
+        var child = 0
+        while child < std.list.length(body) {
+            fault_spans(get(body, child), spans)
+            child = child + 1
+        }
+        index = index + 1
+    }
+}
+
+fn span_before(left Span, right Span) Bool {
+    left.start < right.start || (left.start == right.start && left.end < right.end)
+}
+
+// Positions are computed from current binding inputs, after incremental reuse
+// and native lowering. Only paths and coordinates cross the native boundary.
+fn source_locations(buffer Bytes, program std.loom.typed.Program, bindings std.loom.binding.Program) {
+    let rows = new()
+    let files = std.map.new[Int, SourceLines]()
+    var count = 0
+    var index = 0
+    while index < std.list.length(program.functions) {
+        let function = get(program.functions, index)
+        if function.symbol >= 0 && function.symbol < std.list.length(bindings.symbols) {
+            let file = get(bindings.symbols, function.symbol).file
+            let source = match std.map.get(files, file) {
+                Option.Some(value) => value
+                Option.None => {
+                    let input = get(bindings.files, file)
+                    let value = source_lines(input.text)
+                    discard insert(files, file, value)
+                    value
+                }
+            }
+            let spans = std.list.new[Span]()
+            fault_spans(function.body, spans)
+            var requirement = 0
+            while requirement < std.list.length(function.preconditions) {
+                fault_spans(get(function.preconditions, requirement), spans)
+                requirement = requirement + 1
+            }
+            let ordered = sorted(spans, span_before)
+            let sites = new()
+            var site_count = 0
+            var previous = Span {
+                start = -1
+                end = -1
+            }
+            var site = 0
+            while site < std.list.length(ordered) {
+                let span = get(ordered, site)
+                if span.start >= 0 && span.start <= span.end && span.end <= length(source.text) &&
+                (span.start != previous.start || span.end != previous.end) {
+                    let location = source_location(source, span.start)
+                    integer(sites, span.start)
+                    integer(sites, span.end)
+                    integer(sites, location.line)
+                    integer(sites, location.column)
+                    site_count = site_count + 1
+                }
+                previous = span
+                site = site + 1
+            }
+            if site_count > 0 {
+                integer(rows, index)
+                integer(rows, file)
+                integer(rows, site_count)
+                raw(rows, std.bytes.to_text(sites))
+                count = count + 1
+            }
+        }
+        index = index + 1
+    }
+    if count > 0 {
+        integer(buffer, 4)
+        integer(buffer, std.list.length(bindings.files))
+        index = 0
+        while index < std.list.length(bindings.files) {
+            text(buffer, get(bindings.files, index).path)
+            index = index + 1
+        }
+        integer(buffer, count)
+        raw(buffer, std.bytes.to_text(rows))
+    }
+}

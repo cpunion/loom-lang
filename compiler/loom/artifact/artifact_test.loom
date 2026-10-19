@@ -54,7 +54,7 @@ test fn resource_pattern_roles_do_not_change_executable_artifacts() {
 }
 
 test fn empty_checked_program_has_a_deterministic_stream() {
-    let program = Program {
+    let program = std.loom.typed.Program {
         types = std.list.new[Type]()
         functions = std.list.new[Function]()
         entry = -1
@@ -179,7 +179,7 @@ test fn dynamic_metadata_is_an_explicit_sparse_tail() {
             concrete = 1
             methods = slots
         })
-    let program = Program {
+    let program = std.loom.typed.Program {
         types = types
         functions = std.list.new[Function]()
         entry = -1

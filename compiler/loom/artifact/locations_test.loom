@@ -1,0 +1,18 @@
+import std.loom.source.position
+
+test fn indexed_locations_match_source_positions() {
+    let text = "é订单𐐀\r\nnext\rlast\n"
+    let indexed = source_lines(text)
+    var offset = 0
+    while offset <= length(text) {
+        let expected = position(text, offset)
+        let actual = source_location(indexed, offset)
+        assert actual.line == expected.line && actual.column == expected.column
+        if offset == length(text) {
+            break
+        }
+        offset = offset + std.text.width(text, offset)
+    }
+    let empty = source_location(source_lines(""), 0)
+    assert empty.line == 1 && empty.column == 1
+}

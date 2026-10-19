@@ -122,6 +122,7 @@ fn explicit_witnesses_dispatch_and_keep_sparse_reachability() {
         tests: vec![],
         test_names: vec![],
         target_inputs: vec![],
+        source_locations: Default::default(),
         // Public functions can make the source metadata retain full tables,
         // but an executable still starts only at main (or selected tests).
         exports: vec![2],
@@ -311,6 +312,7 @@ fn transparent_witness_slices_emit_without_a_second_box() {
         tests: vec![],
         test_names: vec![],
         target_inputs: vec![],
+        source_locations: Default::default(),
         exports: vec![1],
         interfaces: vec![
             checked::Interface {
