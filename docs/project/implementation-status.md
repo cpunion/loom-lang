@@ -349,6 +349,8 @@ storage directly as GC roots;
 pending arguments retain independent snapshots. Large objects use separate
 storage; stress tests relocate all sizes. Temporary slots are declared inactive
 and become traced only after capture, without eager entry clearing.
+Compact local shadows reload only continuing values after a collection;
+cleanup captures and pending operand snapshots retain their independent roots.
 Source exposes no addresses, finalizers, weak references or ownership/borrow
 syntax. Finer cleanup/lifetime precision and generational/concurrent GC remain open.
 

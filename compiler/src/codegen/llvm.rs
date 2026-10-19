@@ -326,6 +326,7 @@ fn emit_checked(
             size_type,
             roots,
             liveness,
+            restore_point: None,
             tracers: &mut tracers,
             loop_targets: Vec::new(),
             cleanups: HashMap::new(),
@@ -612,6 +613,7 @@ struct FunctionEmitter<'a, 'ctx> {
     size_type: IntType<'ctx>,
     roots: gc::RootFrame<'ctx>,
     liveness: gc_liveness::Plan,
+    restore_point: Option<*const checked::Expr>,
     tracers: &'a mut HashMap<Type, FunctionValue<'ctx>>,
     /// Nearest loop body first via `last()`: (continue target, break target).
     loop_targets: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
@@ -670,7 +672,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         // Source-local order keeps generated IR deterministic. Compact locals
         // remain nonescaping; in-place roots already hold relocated references.
+        let live = self
+            .restore_point
+            .and_then(|point| self.liveness.restores.get(&point));
         for (index, ty) in self.local_types.iter().enumerate() {
+            if live.is_some_and(|live| !live.contains(&index))
+                && !self.liveness.pinned.contains(&index)
+            {
+                continue;
+            }
             if let Some(root) = self.roots.locals.get(&index) {
                 if self.locals[index] == Some(*root) {
                     continue;
@@ -1158,6 +1168,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     fn block(&mut self, block: &checked::Block) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
+        // Statement checkpoints and callbacks are not at an enclosing
+        // expression's continuation. Keep their conservative restoration.
+        let previous = self.restore_point.take();
+        let value = self.block_inner(block);
+        self.restore_point = previous;
+        value
+    }
+
+    fn block_inner(
+        &mut self,
+        block: &checked::Block,
+    ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         if let Some(retired) = self.liveness.entries.get(&(block as *const checked::Block)) {
             for local in retired {
                 self.clear_dead_local(*local)?;
@@ -1312,7 +1334,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     fn expr(&mut self, expr: &checked::Expr) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
-        let value = self.expr_inner(expr)?;
+        let previous = self.restore_point.replace(expr);
+        let value = self.expr_inner(expr);
+        self.restore_point = previous;
+        let value = value?;
         if let Some(value) = value
             && let Some(slot) = self.roots.expressions.get(&(expr as *const checked::Expr))
         {
