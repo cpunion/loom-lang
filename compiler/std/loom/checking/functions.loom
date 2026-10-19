@@ -628,7 +628,7 @@ fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
         }
         return Result.Ok(true)
     }
-    if node.kind == NodeKind.Old || node.kind == NodeKind.Unary || node.kind == NodeKind.Binary || node.kind == NodeKind.Select || node.kind == NodeKind.Tuple {
+    if node.kind == NodeKind.Old || node.kind == NodeKind.Unary || node.kind == NodeKind.Binary || node.kind == NodeKind.Select || node.kind == NodeKind.Tuple || node.kind == NodeKind.Spread {
         var index = 0
         while index < length(node.children) {
             discard scalar_contract(context, child(node, index))?

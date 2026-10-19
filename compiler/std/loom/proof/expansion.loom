@@ -54,10 +54,12 @@ fn helper_type(program Program, ty Int, depth Int) Bool {
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         return helper_type(program, get(shape.fields, 0).ty, depth + 1)
     }
-    // Inline aggregate leaves may be opaque. Projection does not establish
-    // facts about their shared storage or permit operations on that storage.
+    // Values may remain opaque, including unresolved generic entries. Passing
+    // them establishes no storage facts; unsupported observations still reject.
     shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple || shape.kind == TypeKind.Enum ||
-    shape.kind == TypeKind.List || shape.kind == TypeKind.Bytes || shape.kind == TypeKind.Task
+    shape.kind == TypeKind.List || shape.kind == TypeKind.Bytes || shape.kind == TypeKind.Task ||
+    shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated ||
+    shape.kind == TypeKind.Function || shape.kind == TypeKind.Dyn
 }
 
 fn expanded_field(context Expansion, field Expr, value Expr, depth Int) Result[Expr, Text] {

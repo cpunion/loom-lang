@@ -1,0 +1,140 @@
+test fn variadic_preconditions_compose_proved_helpers_for_every_width() {
+    discard accepted("""
+        fn positive[Ts...](value Int, context Ts...) Bool
+        ensures result == (value > 0) {
+            value > 0
+        }
+        fn keep[Ts...](value Int, context Ts...) Int
+        requires positive(value, context...)
+        ensures result > 0 {
+            value
+        }
+        fn forward[Us...](value Int, context (Us...)) Int
+        requires positive(value, context...)
+        ensures result > 0 {
+            keep(value, context...)
+        }
+        async fn later[Ts...](value Int, context Ts...) Int
+        requires positive(value, context...)
+        ensures result > 0 {
+            keep(value, context...)
+        }
+        fn main() {
+            assert keep(1) == 1 && keep(2, true, "context") == 2
+            assert forward(3, (false, "context")) == 3
+            assert comptime { keep(4, false) } == 4
+        }
+        """)
+}
+
+test fn variadic_preconditions_share_tuple_predicate_expansion() {
+    discard accepted("""
+        fn ordered(left Int, right Int) Bool {
+            left <= right
+        }
+        type Ordered = (Int, Int) where ordered(self...)
+        fn keep(value (Int, Int)) (Int, Int)
+        requires ordered(value...)
+        ensures ordered(result...) && ordered(old(value)...) {
+            value
+        }
+        fn main() {
+            let value = Ordered((1, 2))
+            assert value.0 == 1 && keep((3, 4)).1 == 4
+        }
+        """)
+    // Runtime-only preconditions need purity, not an invented helper summary.
+    discard accepted("""
+        fn positive[Ts...](value Int, context Ts...) Bool {
+            value > 0
+        }
+        fn keep[Ts...](value Int, context Ts...) Int
+        requires positive(value, context...) {
+            value
+        }
+        fn main() {
+            assert keep(5, true, "context") == 5
+        }
+        """)
+}
+
+test fn variadic_preconditions_do_not_weaken_proofs_purity_or_eager_checks() {
+    let framing = """
+        import std.list.length
+        fn valid[T](ignored T) Bool {
+            true
+        }
+        """
+    list_length_contract(concat(framing, """
+        fn keep(values List[Int], callback fn() Int) Int
+        requires length(values) > 0 && valid(callback)
+        ensures length(values) == old(length(values)) {
+            0
+        }
+        """), true)
+    list_length_contract(concat(framing, """
+        fn changed(values List[Int], callback fn() Int) Int
+        requires length(values) > 0 && valid(callback)
+        ensures length(values) == old(length(values)) {
+            discard callback()
+            0
+        }
+        """), false)
+    let predicate = """
+        fn positive[Ts...](value Int, context Ts...) Bool
+        ensures result == (value > 0) {
+            value > 0
+        }
+        """
+    // Implementations cannot strengthen an inherited pack precondition.
+    rejects(concat(predicate, """
+        concept Positive {
+            fn keep[Ts...](self Self, value Int, context Ts...) Int
+            requires positive(value, context...)
+            ensures result > 0
+        }
+        impl Positive for Bool {
+            fn keep[Us...](self Bool, number Int, inputs Us...) Int
+            requires positive(number - 1, inputs...) {
+                number
+            }
+        }
+        """))
+    // The family must prove its body even without any selected call.
+    rejects(concat(predicate, """
+        fn wrong[Ts...](value Int, context Ts...) Int
+        requires positive(value, context...)
+        ensures result > 0 {
+            0
+        }
+        """))
+    rejects("""
+        fn always[Ts...](context Ts...) Bool
+        ensures result {
+            true
+        }
+        fn wrong[Ts...](context Ts...) Bool
+        ensures always(1 / 0, context...) {
+            true
+        }
+        """)
+    rejects("""
+        fn changed[T, U](values List[Int], first T, second U) Bool {
+            values[0] = 0
+            true
+        }
+        fn wrong(values List[Int], context (Int, Bool)) Int
+        requires changed(values, context...) {
+            1
+        }
+        """)
+    rejects("""
+        fn ordered(left Int, right Int) Bool {
+            left <= right
+        }
+        fn wrong(value (Int, Int)) (Int, Int)
+        ensures ordered(result...) {
+            value
+        }
+        """)
+}

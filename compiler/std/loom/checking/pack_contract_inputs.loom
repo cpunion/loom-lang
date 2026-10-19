@@ -1,0 +1,48 @@
+// Direct value packs become ordinary parameters at a selected arity. Their
+// source tuple name is a body binding, so clauses instead refer to that same
+// immutable tuple of parameters, without introducing runtime header bindings.
+fn pack_contract_inputs(node Node, bindings List[Node], depth Int) Result[Node, Node] {
+    if depth >= 64 {
+        return Result.Err(node)
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, pack_contract_inputs(child(node, index), bindings, depth + 1)?)
+        index = index + 1
+    }
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Call {
+        index = 0
+        while index < length(bindings) {
+            let binding = get(bindings, index)
+            if slice(node.value, 0, first_dot(node.value)) == binding.value {
+                let parts = std.text.split(node.value, ".")
+                let tuple = child(binding, 0)
+                var value = pack_node(node, tuple.kind, tuple.value, tuple.children)
+                var member = 1
+                let count = length(parts) - if node.kind == NodeKind.Call {
+                    1
+                } else {
+                    0
+                }
+                while member < count {
+                    value = pack_node(node, NodeKind.Select, get(parts, member), source_nodes(value))
+                    member = member + 1
+                }
+                if node.kind == NodeKind.Name {
+                    return Result.Ok(value)
+                }
+                if length(parts) > 1 {
+                    return Result.Ok(pack_node(node, NodeKind.MethodCall, get(parts, length(parts) - 1),
+                            [value, get(children, 0), get(children, 1)]))
+                }
+                // A pack tuple shadows same-spelled package functions here,
+                // just as in the body. Preserve the value call so ordinary
+                // contract checking rejects this non-callable tuple.
+                return Result.Ok(pack_node(node, NodeKind.Invoke, "", [value, get(children, 1)]))
+            }
+            index = index + 1
+        }
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}

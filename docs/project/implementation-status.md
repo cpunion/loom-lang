@@ -153,6 +153,9 @@ Symbolic family contracts use induction and word entailment, not sampled widths.
 Constructed and nested words can derive capabilities through checked impl
 prerequisites without granting hidden bounds to raw elements.
 Declaration headers check lexical expansion scope before proof-input erasure.
+Pack-bearing preconditions compose pure family helpers through the same universal
+proof. Tuple spreads work in contracts and refinement predicates; opaque helper
+arguments provide no storage or callback-behavior evidence.
 Type-dependent content induction, opaque-layout inspection and remaining
 unsupported combinations still reject.
 

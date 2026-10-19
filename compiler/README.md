@@ -969,6 +969,29 @@ ensures result == value && result >= 0 {
 }
 ```
 
+Preconditions can also forward pack-bearing inputs into pure helpers:
+
+```loom
+fn positive[Ts...](value Int, context Ts...) Bool
+ensures result == (value > 0) {
+    value > 0
+}
+
+fn require_positive[Ts...](value Int, context Ts...) Int
+requires positive(value, context...)
+ensures result > 0 {
+    value
+}
+```
+
+Required family proofs use the same universally checked summaries in clauses
+and bodies, not sampled arities. Selected clauses refer to the actual parameters;
+their pack tuple need not wait for a body binding. Ordinary contracts and refined
+predicates also accept tuple spreads. Opaque generic, callback and dyn arguments
+can pass through a pure helper without granting storage facts or callback
+behavior. Purity, eager argument checks and resource obligations still apply.
+See the [precondition example](examples/variadics/preconditions.loom).
+
 The [contract example](examples/variadics/contracts.loom) composes this guarantee
 with constrained construction, CTFE and dyn methods. Element-independent
 `comptime for` over a type pack, direct value pack or pack-bearing tuple input
