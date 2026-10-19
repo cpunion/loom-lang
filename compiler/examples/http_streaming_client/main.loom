@@ -1,0 +1,67 @@
+import std.net.http.client.Incoming
+import std.net.http.client.Error
+import std.net.http.client.Options
+import std.net.http.client.consume
+import std.net.http.client.request
+import std.net.http.client.options
+import std.net.http.client.status
+import std.net.http.client.trailers
+import std.net.tls.Trust
+import std.stream.Stream
+import std.result.Result
+import std.option.Option
+import std.process.arguments
+import std.process.exit_code
+import std.file.read_bytes
+import std.list.length
+import std.bytes.length
+import std.int.to_text
+import std.text.concat
+import std.io.write_text
+import std.io.write_error
+
+async fn count_body(response Incoming) Result[(Int, Int), Error] {
+    var count = 0
+    while true {
+        match response.next().await {
+            Option.None => {
+                discard trailers(response)?
+                return Result.Ok((status(response), count))
+            }
+            Option.Some(item) => {
+                count = count + std.bytes.length(item?)
+            }
+        }
+    }
+    Result.Ok((status(response), count))
+}
+
+async fn main() {
+    let args = arguments()
+    assert std.list.length(args) == 2 || std.list.length(args) == 3
+    let base = options()
+    let trust = if std.list.length(args) == 3 {
+        match read_bytes(args[2]) {
+            Result.Ok(bytes) => Trust.Certificates(bytes)
+            Result.Err(_) => {
+                discard write_error("cannot read trust certificates\n")
+                exit_code(1)
+                return
+            }
+        }
+    } else {
+        base.trust
+    }
+    match consume[(Int, Int)](request("GET", args[1]), Options {
+            trust = trust
+            ..base
+        }, count_body).await {
+        Result.Ok(value) => {
+            discard write_text(concat(to_text(value.0), concat(" ", concat(to_text(value.1), "\n"))))
+        }
+        Result.Err(_) => {
+            discard write_error("HTTP request failed\n")
+            exit_code(1)
+        }
+    }
+}

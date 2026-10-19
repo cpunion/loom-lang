@@ -92,43 +92,11 @@ fn packet(value Result[Bytes, TransportError]) Result[Bytes, TransportError] {
     value
 }
 
-async fn final_response(transport Transport, prepared Prepared) Result[Response, Error] {
-    let input = reader(Chunks {
-            transport = transport
-            ended = [false]
-        }, packet, prepared.limits)
-    var interim = 0
-    while true {
-        let response = match read_response(input, prepared.method).await {
-            Result.Ok(Option.Some(value)) => value
-            Result.Ok(Option.None) => {
-                return Result.Err(Error.Protocol(ProtocolError.Truncated))
-            }
-            Result.Err(ReadError.Protocol(error)) => {
-                return Result.Err(Error.Protocol(error))
-            }
-            Result.Err(ReadError.Input(error)) => {
-                return Result.Err(Error.Transport(error))
-            }
-        }
-        if response.status == 101 {
-            return Result.Err(Error.Unsupported)
-        }
-        if response.status >= 200 {
-            return Result.Ok(response)
-        }
-        if interim == prepared.max_informational {
-            return Result.Err(Error.Protocol(ProtocolError.Limit))
-        }
-        interim = interim + 1
-    }
-}
-
-async fn transact(transport Transport, prepared Prepared) Result[Response, Error] {
+async fn transact[T](transport Transport, prepared Prepared, handler fn(Incoming) Task[Result[T, Error]]) Result[T, Error] {
     // Read while uploading too: an early final response must not wait for a
     // peer that refuses the remaining request body to drain our send window.
     let writing = write_request(transport, prepared.wire)
-    let response = final_response(transport, prepared).await
+    let response = handled_response[T](transport, prepared, handler).await
     match cancel(writing) {
         Outcome.Faulted(error) => {
             fault_text(error.message)
@@ -141,7 +109,7 @@ async fn transact(transport Transport, prepared Prepared) Result[Response, Error
     }
 }
 
-async fn exchange(prepared Prepared) Result[Response, Error] {
+async fn exchange[T](prepared Prepared, handler fn(Incoming) Task[Result[T, Error]]) Result[T, Error] {
     if prepared.endpoint.secure {
         scoped acquired = match std.net.tls.open(prepared.endpoint.host, prepared.endpoint.port, prepared.tls).await {
             Result.Ok(value) => value
@@ -170,7 +138,7 @@ async fn exchange(prepared Prepared) Result[Response, Error] {
                 return Result.Err(Error.Transport(TransportError.Tls(error)))
             }
         }
-        transact(Transport.Tls(stream), prepared).await
+        transact[T](Transport.Tls(stream), prepared, handler).await
     } else {
         scoped acquired = match std.net.tcp.open(prepared.endpoint.host, prepared.endpoint.port).await {
             Result.Ok(value) => value
@@ -187,6 +155,6 @@ async fn exchange(prepared Prepared) Result[Response, Error] {
         defer {
             discard close_stream(stream)
         }
-        transact(Transport.Tcp(stream), prepared).await
+        transact[T](Transport.Tcp(stream), prepared, handler).await
     }
 }

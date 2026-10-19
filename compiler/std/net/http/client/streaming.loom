@@ -1,0 +1,160 @@
+import std.net.http.Reader
+import std.net.http.IncomingResponse
+import std.net.http.open_response
+import std.net.http.trailers
+import std.resource.MustScope
+import std.resource.Dispose
+import std.bytes.length
+import std.bytes.get
+import std.bytes.push
+
+// Borrowed only for the duration of the awaited response callback.
+pub record Incoming {
+    state IncomingState
+}
+
+record IncomingState {
+    message Option[IncomingResponse[Chunks, TransportError]]
+}
+
+pub fn status(response Incoming) Int {
+    match response.state.message {
+        Option.Some(value) => value.status
+        Option.None => {
+            fault_text("HTTP response has no header")
+        }
+    }
+}
+
+pub fn reason(response Incoming) Bytes {
+    match response.state.message {
+        Option.Some(value) => value.reason
+        Option.None => {
+            fault_text("HTTP response has no header")
+        }
+    }
+}
+
+pub fn headers(response Incoming) List[Header] {
+    match response.state.message {
+        Option.Some(value) => value.headers
+        Option.None => {
+            fault_text("HTTP response has no header")
+        }
+    }
+}
+
+impl MustScope for Incoming {
+}
+
+impl Dispose for Incoming {
+    fn dispose(self Incoming) {
+    }
+}
+
+impl MustScope for IncomingState {
+}
+
+impl Dispose for IncomingState {
+    fn dispose(self IncomingState) {
+    }
+}
+
+impl std.stream.Stream for Incoming {
+    type Item = Result[Bytes, Error]
+
+    async fn next(self Incoming) Option[Result[Bytes, Error]] {
+        match self.state.message {
+            Option.None => Option.None
+            Option.Some(value) => match value.body.next().await {
+                Option.None => Option.None
+                Option.Some(Result.Ok(bytes)) => Option.Some(Result.Ok(bytes))
+                Option.Some(Result.Err(ReadError.Input(error))) => Option.Some(Result.Err(Error.Transport(error)))
+                Option.Some(Result.Err(ReadError.Protocol(error))) => Option.Some(Result.Err(Error.Protocol(error)))
+            }
+        }
+    }
+}
+
+pub fn trailers(response Incoming) Result[List[Header], Error] {
+    match response.state.message {
+        Option.None => Result.Err(Error.Protocol(ProtocolError.Truncated))
+        Option.Some(value) => match std.net.http.trailers(value.body) {
+            Result.Ok(value) => Result.Ok(value)
+            Result.Err(error) => Result.Err(Error.Protocol(error))
+        }
+    }
+}
+
+async fn stream_header(input std.net.http.Reader[Chunks, TransportError], method Text) Result[Incoming, ReadError[TransportError]] {
+    Result.Ok(Incoming {
+            state = IncomingState {
+                message = std.net.http.open_response(input, method, 16384).await?
+            }
+        })
+}
+
+async fn handled_response[T](transport Transport, prepared Prepared, consume fn(Incoming) Task[Result[T, Error]]) Result[T, Error] {
+    let input = reader(Chunks {
+            transport = transport
+            ended = [false]
+        }, packet, prepared.limits)
+    var interim = 0
+    while true {
+        scoped received = stream_header(input, prepared.method).await
+        match received {
+            Result.Ok(response) => {
+                if match response.state.message {
+                    Option.None => true
+                    Option.Some(_) => false
+                } {
+                    return Result.Err(Error.Protocol(ProtocolError.Truncated))
+                }
+                let code = status(response)
+                if code == 101 {
+                    return Result.Err(Error.Unsupported)
+                }
+                if code >= 200 {
+                    return consume(response).await
+                }
+            }
+            Result.Err(ReadError.Protocol(error)) => {
+                return Result.Err(Error.Protocol(error))
+            }
+            Result.Err(ReadError.Input(error)) => {
+                return Result.Err(Error.Transport(error))
+            }
+        }
+        if interim == prepared.max_informational {
+            return Result.Err(Error.Protocol(ProtocolError.Limit))
+        }
+        interim = interim + 1
+    }
+    Result.Err(Error.Protocol(ProtocolError.Truncated))
+}
+
+async fn collect_response(response Incoming) Result[Response, Error] {
+    let body = std.bytes.new()
+    while true {
+        match response.next().await {
+            Option.None => {
+                return Result.Ok(Response {
+                        status = status(response)
+                        reason = reason(response)
+                        headers = headers(response)
+                        body = body
+                        trailers = trailers(response)?
+                    })
+            }
+            Option.Some(item) => {
+                let bytes = item?
+                var index = 0
+                while index < std.bytes.length(bytes) {
+                    std.bytes.push(body, std.bytes.get(bytes, index))
+                    index = index + 1
+                }
+            }
+        }
+    }
+    Result.Err(Error.Protocol(ProtocolError.Truncated))
+}

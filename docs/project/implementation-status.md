@@ -332,10 +332,13 @@ The separate pure HTTP(S) URL parser splits connection host/port, Host authority
 origin-form target and local fragment without decoding path escapes. It rejects
 userinfo and malformed/unsupported forms; DNS/TLS and destination policies remain
 explicit. The real TCP example uses its result, not a new runtime boundary.
-The separate source HTTP client performs one buffered exchange with verified TLS,
+The separate source HTTP client performs one exchange with verified TLS,
 explicit plaintext policy, input snapshots, concurrent upload/response reads and
-draining deadlines. It does not add automatic retries, redirects or pooling;
-streaming clients and broader application networking remain open.
+draining deadlines. Buffered reads collect the same bounded-chunk response path
+used by awaited scoped consumers. Early consumer return closes without draining
+the unread suffix; timeout/cancellation drains callback children before cleanup.
+It does not add automatic retries, redirects or pooling; streaming uploads and
+broader application networking remain open.
 
 Stop-the-world copying GC preserves precise roots, sharing and cycles.
 Nonallocating functions stay root-free; liveness retires dead locals at checked

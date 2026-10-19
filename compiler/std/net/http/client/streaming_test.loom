@@ -1,0 +1,151 @@
+import std.task.outcome
+
+async fn streaming_peer(listener ListenerHandle, mode Int, entered List[Bool]) Result[Bool, TcpError] {
+    scoped acquired = std.net.tcp.accept_owned(listener).await?
+    let stream = std.net.tcp.detach(acquired)?
+    defer {
+        discard close_stream(stream)
+    }
+    let input = reader(std.net.tcp.chunks.read(stream, 16384), tcp_packet, std.net.http.limits())
+    assert match read_request(input).await {
+        Result.Ok(Option.Some(value)) => value.method == "GET" && value.target == "/stream"
+        _ => false
+    }
+    discard std.net.tcp.write_bytes(stream, to_bytes("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10000\r\n")).await?
+    let chunk = filled(65536, 65)
+    discard std.net.tcp.write_bytes(stream, chunk).await?
+    discard std.net.tcp.write_bytes(stream, to_bytes("\r\n")).await?
+    if mode == 0 {
+        // A collect-before-callback implementation deadlocks here: only the
+        // consumer can release the rest of this framed response.
+        while !entered[0] {
+            sleep_ms(0).await
+        }
+        discard std.net.tcp.write_bytes(stream, to_bytes("10000\r\n")).await?
+        discard std.net.tcp.write_bytes(stream, chunk).await?
+        discard std.net.tcp.write_bytes(stream, to_bytes("\r\n0\r\nX-End: streamed\r\n\r\n")).await?
+    }
+    Result.Ok(match std.net.tcp.read(stream, std.bytes.new(), 1).await {
+            Result.Ok(count) => count == 0
+            Result.Err(_) => true
+        })
+}
+
+async fn streaming_roundtrip(mode Int) Result[Bool, TcpError] {
+    scoped owner = listen("127.0.0.1:0").await?
+    let listener = std.net.tcp.detach(owner)?
+    defer {
+        discard close_listener(listener)
+    }
+    let address = std.net.tcp.local_address(listener)?
+    let entered = [false]
+    let left = [false]
+    let serving = streaming_peer(listener, mode, entered)
+    let handler = async fn(response Incoming) Result[Int, Error] {
+        defer {
+            left[0] = true
+        }
+        assert status(response) == 200
+        assert match trailers(response) {
+            Result.Err(Error.Protocol(ProtocolError.Busy)) => true
+            _ => false
+        }
+        entered[0] = true
+        if mode == 2 {
+            return Result.Err(Error.Unsupported)
+        }
+        if mode == 5 {
+            fault_text("stream consumer fault")
+        }
+        var count = 0
+        while true {
+            match response.next().await {
+                Option.None => {
+                    let ending = trailers(response)?
+                    assert std.list.length(ending) == 1 && header_named(ending[0], "X-End") &&
+                    to_text(ending[0].value) == "streamed"
+                    return Result.Ok(count)
+                }
+                Option.Some(item) => {
+                    let bytes = item?
+                    assert std.bytes.length(bytes) > 0 && std.bytes.length(bytes) <= 16384
+                    assert std.bytes.get(bytes, 0) == 65 && std.bytes.get(bytes, std.bytes.length(bytes) - 1) == 65
+                    count = count + std.bytes.length(bytes)
+                    if mode == 1 {
+                        return Result.Ok(count)
+                    }
+                }
+            }
+        }
+        Result.Ok(count)
+    }
+    let pending = consume[Int](request("GET", concat("http://", concat(address, "/stream"))), Options {
+            allow_http = true
+            timeout_ns = if mode == 3 {
+                1000000000
+            } else {
+                5000000000
+            }
+            ..options()
+        }, handler)
+    let accepted = if mode == 4 {
+        let deadline = monotonic_ns() + 5000000000
+        while !entered[0] && monotonic_ns() < deadline {
+            sleep_ms(0).await
+        }
+        match cancel(pending) {
+            Outcome.Cancelled => entered[0] && left[0]
+            _ => false
+        }
+    } else if mode == 5 {
+        match outcome(pending).await {
+            Outcome.Faulted(error) => contains(error.message, "stream consumer fault") && entered[0] && left[0]
+            _ => false
+        }
+    } else {
+        match pending.await {
+            Result.Ok(count) => (mode == 0 && count == 131072) || (mode == 1 && count > 0 && count <= 16384)
+            Result.Err(Error.Unsupported) => mode == 2
+            Result.Err(Error.Timeout) => mode == 3 && entered[0] && left[0]
+            _ => false
+        }
+    }
+    let served = serving.await
+    Result.Ok(accepted && entered[0] && left[0] && match served {
+            Result.Ok(value) => value
+            Result.Err(_) => false
+        })
+}
+
+test async fn streaming_consumer_starts_before_body_completion_and_preserves_trailers() {
+    assert match streaming_roundtrip(0).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+test async fn early_stream_consumers_and_errors_close_without_draining_the_body() {
+    assert match streaming_roundtrip(1).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match streaming_roundtrip(2).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+test async fn streaming_deadlines_cancellation_and_faults_drain_the_consumer_before_close() {
+    assert match streaming_roundtrip(3).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match streaming_roundtrip(4).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match streaming_roundtrip(5).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
