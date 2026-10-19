@@ -1,0 +1,142 @@
+import std.loom.checking.static_parameter_info
+import std.loom.project.name
+
+// Lexical bindings, not concrete callback targets after specialization.
+pub record StaticBinding {
+    declaration Location
+    scope Span
+    references List[Location]
+    types List[Text]
+}
+
+fn static_parameters(node Node) List[Node] {
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.Parameters {
+            return child.children
+        }
+        index = index + 1
+    }
+    new[Node]()
+}
+
+fn static_binding(analysis AnalysisState, file Int, token Token, tokens List[Token]) Option[StaticBinding] {
+    var owner = 0
+    while owner < length(analysis.bindings.symbols) {
+        let item = get(analysis.bindings.symbols, owner)
+        if item.file == file && item.node.kind == NodeKind.Function && item.node.value != "" &&
+        item.node.span.start <= token.span.start && token.span.end <= item.node.span.end &&
+        !has(item.node, NodeKind.ExpansionId) {
+            let parameters = static_parameters(item.node)
+            var parameter = 0
+            while parameter < length(parameters) {
+                let node = get(parameters, parameter)
+                if node.value == token.value && has(node, NodeKind.Comptime) {
+                    let span = match name_span(tokens, node, node.value) {
+                        Option.Some(value) => value
+                        Option.None => {
+                            return Option.None
+                        }
+                    }
+                    let information = match static_parameter_info(analysis.bindings, owner, parameter, analysis_query_inputs(analysis)) {
+                        Result.Ok(value) => value
+                        Result.Err(_) => {
+                            return Option.None
+                        }
+                    }
+                    let target = Location {
+                        file = file
+                        span = span
+                    }
+                    let references = new[Location]()
+                    static_location(references, target)
+                    var index = 0
+                    while index < length(information.references) {
+                        static_location(references, Location {
+                                file = file
+                                span = get(information.references, index)
+                            })
+                        index = index + 1
+                    }
+                    if static_contains(references, Location {
+                            file = file
+                            span = token.span
+                        }) {
+                        return Option.Some(StaticBinding {
+                                declaration = target
+                                scope = item.node.span
+                                references = references
+                                types = information.types
+                            })
+                    }
+                }
+                parameter = parameter + 1
+            }
+        }
+        owner = owner + 1
+    }
+    Option.None
+}
+
+fn static_contains(locations List[Location], target Location) Bool {
+    var index = 0
+    while index < length(locations) {
+        let location = get(locations, index)
+        if location.file == target.file && same_span(location.span, target.span) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn static_location(locations List[Location], target Location) {
+    if !static_contains(locations, target) {
+        push(locations, target)
+    }
+}
+
+fn import_definition(analysis AnalysisState, file Int, token Token, tokens List[Token]) Option[Location] {
+    let declarations = get(analysis.bindings.files, file).tree.children
+    var index = 0
+    while index < length(declarations) {
+        let node = get(declarations, index)
+        if node.kind == NodeKind.Import && token.span.start >= node.span.start && token.span.end <= node.span.end {
+            let member = std.loom.project.name(node.value)
+            var last = token.span
+            var item = 0
+            while item < length(tokens) {
+                let part = get(tokens, item)
+                if part.kind == Kind.Name && part.span.start >= node.span.start && part.span.end <= node.span.end {
+                    last = part.span
+                }
+                item = item + 1
+            }
+            if token.value != member || !same_span(token.span, last) {
+                return Option.None
+            }
+            let candidates = std.loom.binding.candidates(analysis.bindings, file, true, node.value)
+            if length(candidates) != 1 {
+                return Option.None
+            }
+            let symbol = get(analysis.bindings.symbols, get(candidates, 0))
+            let source = get(analysis.bindings.files, symbol.file)
+            let declared = match lex(source.text) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Option.None
+                }
+            }
+            return match name_span(declared, symbol.node, symbol.node.value) {
+                Option.Some(span) => Option.Some(Location {
+                        file = symbol.file
+                        span = span
+                    })
+                Option.None => Option.None
+            }
+        }
+        index = index + 1
+    }
+    Option.None
+}

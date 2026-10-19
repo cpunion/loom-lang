@@ -331,6 +331,9 @@ without the CLI, LLVM backend, or filesystem loading:
 | `analyze_cached(project, tests, inputs, cache)` | The same private snapshot using a `checking.DefinitionCache`; the host's input-observation log is preserved |
 | `snapshot(analysis)` | Editable `AnalysisData`: detached source, bindings, function-symbol IDs, inputs and targets |
 | `function_at(analysis, index)` | An independent editable function; indices refer to this analysis |
+| `source_paths(analysis)` | File-ID paths without exporting mutable source or AST storage |
+| `static_binding_at(analysis, file, offset)` | A lexical compile-time parameter's declaration, scope, observed references and type labels; not a concrete callback target |
+| `import_definition_at(analysis, file, offset)` | The unique imported declaration at a member token, or no evidence for an ambiguous import |
 | `type_name(analysis, ty)` | Display name for a type in that analysis |
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
@@ -373,6 +376,10 @@ editable metadata and `function_at` for an editable function. Returned expressio
 trees are detached too; changing any of these drafts cannot affect later queries.
 Copy metadata once per editing pass, not before every query. Parser and IR builder
 types remain mutable; a draft does not become checked evidence by being edited.
+`inspect_at` follows lexical callback parameters and imported declarations, using
+the same evidence as the editor. `expressions_at` retains concrete call indices
+for clients inspecting specialization. Read-only hover resolves file IDs through
+`source_paths`; it does not export an editable project just to report locations.
 `is_current` compares module origins, package/import edges, file
 metadata, text and AST, not the disk: reload first to detect filesystem changes.
 These are result-local indices, not persistent identities or an incremental cache.

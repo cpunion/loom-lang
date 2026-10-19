@@ -140,8 +140,10 @@ test fn static_capture_slots_do_not_shift_source_parameters_or_leak_frame_types(
     only_definition(parameter, declared, declared + 5)
     let call = inspection(analysis, text, "action(value)")
     only_type(call, "fn(Int) Int")
-    let closure = query_offset(text, "fn(item")
-    only_definition(call, closure, closure + 2)
+    // Hover/navigation follows the lexical callback parameter, as the editor
+    // does, not whichever closure happened to specialize this call.
+    let action = query_offset(text, "action fn")
+    only_definition(call, action, action + 6)
 }
 
 test fn async_calls_tasks_and_await_have_distinct_editor_types() {

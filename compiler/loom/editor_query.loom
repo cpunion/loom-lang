@@ -47,7 +47,17 @@ fn editor_source(project Project, path Text) Result[Int, Text] {
     Result.Ok(selected)
 }
 
-fn editor_inspection(bindings std.loom.binding.Program, inspection Option[Inspection], diagnostic Text) EditorOutput {
+fn editor_paths(bindings std.loom.binding.Program) List[Text] {
+    let paths = new[Text](length(bindings.files))
+    var index = 0
+    while index < length(bindings.files) {
+        push(paths, get(bindings.files, index).path)
+        index = index + 1
+    }
+    paths
+}
+
+fn editor_inspection(paths List[Text], inspection Option[Inspection], diagnostic Text) EditorOutput {
     let prefix = concat("{\"diagnostics\":[", concat(diagnostic, "],\"hover\":"))
     let information = match inspection {
         Option.Some(value) => value
@@ -75,7 +85,7 @@ fn editor_inspection(bindings std.loom.binding.Program, inspection Option[Inspec
             definitions = concat(definitions, ",")
         }
         let target = get(information.definitions, index)
-        let path = get(bindings.files, target.file).path
+        let path = get(paths, target.file)
         let location = concat("{\"path\":", concat(editor_quoted(path), concat(",\"start\":", to_text(target.span.start))))
         definitions = concat(definitions, concat(location, concat(",\"end\":", concat(to_text(target.span.end), "}"))))
         index = index + 1
@@ -87,50 +97,6 @@ fn editor_inspection(bindings std.loom.binding.Program, inspection Option[Inspec
         text = concat(payload, concat(definitions, "}\n"))
         failed = diagnostic != ""
     }
-}
-
-// Source binding evidence takes precedence over the expression produced by
-// specialization: a callback parameter is not its concrete target function.
-fn editor_bound_inspection(analysis EditorAnalysis, file Int, offset Int, inputs BuildInputs) Option[Inspection] {
-    match lex(get(editor_data(analysis).bindings.files, file).text) {
-        Result.Ok(tokens) => {
-            match editor_token(tokens, offset) {
-                Option.Some(token) => {
-                    match editor_static_binding(analysis, file, token, tokens, inputs) {
-                        Option.Some(binding) => {
-                            let definitions = new[Location]()
-                            std.list.push(definitions, binding.declaration)
-                            return Option.Some(Inspection {
-                                    span = token.span
-                                    types = binding.types
-                                    definitions = definitions
-                                })
-                        }
-                        Option.None => {
-                        }
-                    }
-                    match editor_import_selected(analysis, file, token, tokens) {
-                        Option.Some(location) => {
-                            let definitions = new[Location]()
-                            std.list.push(definitions, location)
-                            return Option.Some(Inspection {
-                                    span = token.span
-                                    types = new[Text]()
-                                    definitions = definitions
-                                })
-                        }
-                        Option.None => {
-                        }
-                    }
-                }
-                Option.None => {
-                }
-            }
-        }
-        Result.Err(_) => {
-        }
-    }
-    inspect_at(analysis.snapshot, file, offset)
 }
 
 test fn query_options_require_an_explicit_source_and_byte_offset() {

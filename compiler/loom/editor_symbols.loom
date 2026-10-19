@@ -1,11 +1,11 @@
 import std.loom.analysis.Location
 import std.loom.analysis.inspect_at
 import std.loom.analysis.inspect_references
+import std.loom.analysis.static_binding_at
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.ast.has
 import std.loom.binding.builtin_type_name
-import std.loom.checking.static_parameter_info
 import std.loom.checking.macro_generator_candidates
 import std.loom.lexer.Kind
 import std.loom.lexer.Token
@@ -631,83 +631,6 @@ fn editor_rename_output(bindings std.loom.binding.Program, references List[Locat
     }
 }
 
-record EditorStaticBinding {
-    declaration Location
-    scope Span
-    references List[Location]
-    types List[Text]
-}
-
-fn editor_parameters(node Node) List[Node] {
-    var index = 0
-    while index < length(node.children) {
-        let child = get(node.children, index)
-        if child.kind == NodeKind.Parameters {
-            return child.children
-        }
-        index = index + 1
-    }
-    new[Node]()
-}
-
-fn editor_static_binding(analysis EditorAnalysis, file Int, token Token, tokens List[Token], inputs BuildInputs) Option[EditorStaticBinding] {
-    var owner = 0
-    while owner < length(editor_data(analysis).bindings.symbols) {
-        let item = get(editor_data(analysis).bindings.symbols, owner)
-        if item.file == file && item.node.kind == NodeKind.Function && item.node.value != "" &&
-        item.node.span.start <= token.span.start && token.span.end <= item.node.span.end &&
-        !has(item.node, NodeKind.ExpansionId) {
-            let parameters = editor_parameters(item.node)
-            var parameter = 0
-            while parameter < length(parameters) {
-                let node = get(parameters, parameter)
-                if node.value == token.value && has(node, NodeKind.Comptime) {
-                    let span = match editor_name(tokens, node) {
-                        Option.Some(value) => value
-                        Option.None => {
-                            return Option.None
-                        }
-                    }
-                    let information = match static_parameter_info(editor_data(analysis).bindings, owner, parameter, inputs) {
-                        Result.Ok(value) => value
-                        Result.Err(_) => {
-                            return Option.None
-                        }
-                    }
-                    let target = Location {
-                        file = file
-                        span = span
-                    }
-                    let references = new[Location]()
-                    editor_push_location(references, target)
-                    var index = 0
-                    while index < length(information.references) {
-                        editor_push_location(references, Location {
-                                file = file
-                                span = get(information.references, index)
-                            })
-                        index = index + 1
-                    }
-                    if editor_contains(references, Location {
-                            file = file
-                            span = token.span
-                        }) {
-                        return Option.Some(EditorStaticBinding {
-                                declaration = target
-                                scope = item.node.span
-                                references = references
-                                types = information.types
-                            })
-                    }
-                }
-                parameter = parameter + 1
-            }
-        }
-        owner = owner + 1
-    }
-    Option.None
-}
-
 fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
     file Int, offset Int, inputs BuildInputs) EditorOutput {
     let bindings = editor_data(analysis).bindings
@@ -725,7 +648,7 @@ fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
             return editor_no_symbols(rename)
         }
     }
-    match editor_static_binding(analysis, file, token, tokens, inputs) {
+    match static_binding_at(analysis.snapshot, file, token.span.start) {
         Option.Some(binding) => {
             if rename {
                 if !editor_valid_new_name(new_name) {

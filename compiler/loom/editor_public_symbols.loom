@@ -1,52 +1,13 @@
 import std.loom.binding.candidates
 import std.loom.project.name
 import std.loom.analysis.import_edits
+import std.loom.analysis.import_definition_at
 import std.loom.source.apply_edits
 
 // Public declaration edits cover this module, not external consumers or dependency
 // snapshots. Each directory keeps its own private test scope and checked IDs.
 fn editor_import_selected(analysis EditorAnalysis, file Int, token Token, tokens List[Token]) Option[Location] {
-    let declarations = get(editor_data(analysis).bindings.files, file).tree.children
-    var index = 0
-    while index < length(declarations) {
-        let node = get(declarations, index)
-        if node.kind == NodeKind.Import && token.span.start >= node.span.start && token.span.end <= node.span.end {
-            let member = std.loom.project.name(node.value)
-            var last = token.span
-            var item = 0
-            while item < length(tokens) {
-                let part = get(tokens, item)
-                if part.kind == Kind.Name && part.span.start >= node.span.start && part.span.end <= node.span.end {
-                    last = part.span
-                }
-                item = item + 1
-            }
-            if token.value != member || !editor_same_span(token.span, last) {
-                return Option.None
-            }
-            let candidates = std.loom.binding.candidates(editor_data(analysis).bindings, file, true, node.value)
-            if length(candidates) != 1 {
-                return Option.None
-            }
-            let symbol = get(editor_data(analysis).bindings.symbols, get(candidates, 0))
-            let source = get(editor_data(analysis).bindings.files, symbol.file)
-            let declared = match lex(source.text) {
-                Result.Ok(value) => value
-                Result.Err(_) => {
-                    return Option.None
-                }
-            }
-            return match editor_name(declared, symbol.node) {
-                Option.Some(span) => Option.Some(Location {
-                        file = symbol.file
-                        span = span
-                    })
-                Option.None => Option.None
-            }
-        }
-        index = index + 1
-    }
-    Option.None
+    import_definition_at(analysis.snapshot, file, token.span.start)
 }
 
 fn editor_generated(node Node) Bool {
