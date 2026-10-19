@@ -163,7 +163,7 @@ fn query_declaration_type_header(env Environment, declarations Int, file Int, of
         if item.file == file && item.node.kind == NodeKind.AssociatedType && !has(item.node, NodeKind.ExpansionId) &&
         offset >= item.node.span.start && offset < item.node.span.end {
             if pack_parameter(item.node) >= 0 || (item.owner >= 0 && pack_parameter(symbol(env, item.owner).node) >= 0) {
-                return Result.Ok(false)
+                return query_symbolic_associated_header(env, index, parameters)
             }
             let arguments = abstract_arguments(env, length(type_parameters(env, index)) + parameter_offset(env, index))
             let obligations = requirements(env, index, arguments)?
@@ -185,9 +185,8 @@ fn query_declaration_type_header(env Environment, declarations Int, file Int, of
             while part < 3 {
                 let span = child(item.node, part).span
                 if offset >= span.start && offset < span.end {
-                    // A pack's arity is not guessed for an uninstantiated query.
                     if pack_parameter(item.node) >= 0 {
-                        return Result.Ok(false)
+                        return query_symbolic_implementation_header(env, index, parameters)
                     }
                     let arguments = abstract_arguments(env, length(type_parameters(env, index)))
                     let obligations = requirements(env, index, arguments)?

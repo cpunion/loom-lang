@@ -170,7 +170,7 @@ fn data_header_parameters(owner Int, node Node, parameters List[Node], output Li
         return
     }
     if node.kind == NodeKind.Type || node.kind == NodeKind.Name || node.kind == NodeKind.TypePack {
-        let index = data_parameter_index(visible, node.value)
+        let index = data_parameter_index(visible, slice(node.value, 0, first_dot(node.value)))
         if index >= 0 {
             push(output, ParameterHeader {
                     symbol = owner

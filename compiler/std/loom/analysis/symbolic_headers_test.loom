@@ -1,0 +1,100 @@
+fn symbolic_associated_header_source() Text {
+    """
+        concept Source {
+            type Item
+        }
+        concept Family {
+            type Item[U Source]
+        }
+        record Box[As..., Bs...] {
+            left (As...)
+            right (Bs...)
+        }
+        concept Pass {
+            type Wrap[T Source]
+        }
+        impl[Ts...] Pass for (Ts...) {
+            type Wrap[T] = Box[(Ts..., T.Item)..., (dyn Family[Item[U] = (T.Item, U.Item)],)...]
+        }
+        """
+}
+
+test fn symbolic_associated_header_queries_keep_unused_words_without_checking_unrelated_bodies() {
+    let source = concat(symbolic_associated_header_source(), """
+        fn broken() Int {
+            false
+        }
+        """)
+    let bindings = query_bindings(input(source))
+    let nominal = query_offset(source, "Box[As...")
+    only_definition(independent_found(bindings, source, "Box[(Ts..."), nominal, nominal + 3)
+    let family = query_offset(source, "Item[U Source]")
+    only_definition(independent_found(bindings, source, "Item[U] ="), family, family + 4)
+    let pack = independent_found(bindings, source, "Ts..., T.Item")
+    only_type(pack, "Ts...")
+    let declared = query_offset(source, "Ts...] Pass")
+    only_definition(pack, declared, declared + 2)
+    let receiver = independent_found(bindings, source, "T.Item)...")
+    only_type(receiver, "T")
+    let local = query_offset(source, "T] = Box")
+    only_definition(receiver, local, local + 1)
+    let nested = independent_found(bindings, source, "U.Item")
+    only_type(nested, "U")
+    let binder = query_offset(source, "U] =")
+    only_definition(nested, binder, binder + 1)
+}
+
+test fn symbolic_associated_header_queries_do_not_publish_invalid_shapes_or_result_bounds() {
+    let source = symbolic_associated_header_source()
+    let invalid = [
+        std.text.replace(source, "Ts..., T.Item", "Ts..., Missing"),
+        std.text.replace(source, "T.Item", "T.Missing"),
+        std.text.replace(source, "type Wrap[T Source]", "type Wrap[T Source] Source")
+    ]
+    var index = 0
+    while index < length(invalid) {
+        let current = get(invalid, index)
+        assert match inspect_independent(query_bindings(input(current)), 0, query_offset(current, "Box[(Ts...")) {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn symbolic_associated_header_queries_reuse_only_the_validated_source_header() {
+    let source = symbolic_associated_header_source()
+    let analysis = accepted(input(source))
+    discard cached_inspection(analysis, source, "Box[(Ts...")
+    only_type(cached_inspection(analysis, source, "Ts..., T.Item"), "Ts...")
+    only_type(cached_inspection(analysis, source, "U.Item"), "U")
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => saved.header && length(saved.view.functions) == 0 &&
+        saved.scope.span.start == query_offset(source, "type Wrap[T] =")
+        Option.None => false
+    }
+    only_type(cached_inspection(analysis, source, "Ts...] Pass"), "Ts...")
+    only_type(cached_inspection(analysis, source, "Ts...) {\n    type"), "Ts...")
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => saved.header && length(saved.view.functions) == 0 &&
+        saved.scope.span.start == query_offset(source, "impl[Ts...]")
+        Option.None => false
+    }
+}
+
+test fn symbolic_implementation_header_queries_validate_nominal_word_requirements() {
+    let source = std.text.replace(concat("""
+            record Carrier[Items...] {
+                values (Items...)
+            }
+            """, symbolic_associated_header_source()), "Pass for (Ts...)", "Pass for Carrier[Ts...]")
+    let bindings = query_bindings(input(source))
+    let nominal = query_offset(source, "Carrier[Items...")
+    only_definition(independent_found(bindings, source, "Carrier[Ts...]"), nominal, nominal + 7)
+    only_type(independent_found(bindings, source, "Ts...] {\n    type"), "Ts...")
+    let invalid = std.text.replace(source, "Carrier[Items...]", "Carrier[Items... Source]")
+    assert match inspect_independent(query_bindings(input(invalid)), 0, query_offset(invalid, "Carrier[Ts...]")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}

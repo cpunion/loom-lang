@@ -91,6 +91,10 @@ specializations, including compound fields, variant payloads and return types.
 Variadic record/enum headers retain checked fixed type fragments and lexical
 parameter bindings, including packs displayed as `Ts...`, without inventing
 expansion widths. Pack-dependent compound layouts still supply no type evidence.
+Variadic impl and associated-type headers reuse universal word normalization and
+declared input/result requirements. Even unused bindings retain checked source
+references and lexical parameters despite unrelated body errors; a symbolic
+schema does not acquire a fabricated runtime type or body-success claim.
 Independent body queries isolate unrelated ordinary/template errors while
 validating the selected template, CTFE and witness dependency closure.
 Uninstantiated generic/comptime bodies retain checked local types and source
