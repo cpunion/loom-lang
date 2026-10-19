@@ -47,3 +47,28 @@ test fn implementation_members_inherit_their_headers_pack_scope() {
     rejects(std.text.join(std.text.split(valid, "type Items = (As...)"), "type Items = As"))
     rejects(std.text.join(std.text.split(valid, "fn items(self Self) Self.Items {"), "fn items(self Self) As {"))
 }
+
+test fn pack_widths_visit_arguments_of_an_already_seen_projection_receiver() {
+    let source = """
+        concept Family {
+            type Item[T]
+        }
+        impl Family for Bool {
+            type Item[T] = T
+        }
+        record Pairs[As... Family, Bs...] {
+            sources (As...)
+            items ((As, As.Item[Bs])...)
+        }
+        fn main() {
+            let pairs Pairs[(Bool, Bool)..., (Int, Text)...] = Pairs {
+                sources = (true, false)
+                items = ((true, 7), (false, "value"))
+            }
+            assert pairs.items.0.1 == 7
+            assert pairs.items.1.1 == "value"
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "(Int, Text)...", "(Int, Text, Bool)..."))
+}

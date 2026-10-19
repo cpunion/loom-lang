@@ -111,18 +111,34 @@ fn expand_family_parameters(parameters List[Node], widths List[Int]) List[Node] 
 }
 
 fn pack_root(node Node, name Text) Bool {
-    (node.kind == NodeKind.Type || node.kind == NodeKind.Name) &&
+    name != "" && (node.kind == NodeKind.Type || node.kind == NodeKind.Name) &&
     (node.value == name || (first_dot(node.value) == length(name) && std.text.starts_with(node.value, name)))
 }
 
 fn mentions_pack(node Node, name Text) Bool {
+    if node.kind == NodeKind.AssociatedType {
+        let parameters = group(node, NodeKind.TypeParameters)
+        var parameter = 0
+        while parameter < length(parameters) {
+            if get(parameters, parameter).value == name {
+                return false
+            }
+            parameter = parameter + 1
+        }
+    }
     if pack_root(node, name) {
         return true
     }
     var index = 0
     while index < length(node.children) {
-        if mentions_pack(child(node, index), name) {
+        let member = child(node, index)
+        if !(node.kind == NodeKind.AssociatedType && member.kind == NodeKind.TypeParameters) &&
+        !pack_child_binds(node, index, name) &&
+        mentions_pack(member, name) {
             return true
+        }
+        if node.kind == NodeKind.Block && pack_local_binds(member, name) {
+            return false
         }
         index = index + 1
     }
@@ -293,26 +309,102 @@ fn pack_root_index(node Node, names List[Text]) Int {
     -1
 }
 
+// Keep word indices stable while a family-local binder hides an outer name.
+// Scope validation, width discovery and concrete expansion share this rule.
+fn family_pack_names(node Node, names List[Text]) List[Text] {
+    if node.kind != NodeKind.AssociatedType {
+        return names
+    }
+    let parameters = group(node, NodeKind.TypeParameters)
+    var visible = names
+    var copied = false
+    var index = 0
+    while index < length(names) {
+        if family_parameter_index(parameters, get(names, index)) >= 0 {
+            if !copied {
+                visible = std.list.clone(names)
+                copied = true
+            }
+            set(visible, index, "")
+        }
+        index = index + 1
+    }
+    visible
+}
+
+fn pack_child_binds(node Node, index Int, name Text) Bool {
+    if node.kind == NodeKind.Function && node.value == "" && child(node, index).kind == NodeKind.Block {
+        let parameters = group(node, NodeKind.Parameters)
+        var parameter = 0
+        while parameter < length(parameters) {
+            if get(parameters, parameter).value == name {
+                return true
+            }
+            parameter = parameter + 1
+        }
+    }
+    if node.kind == NodeKind.Arm && index > 0 {
+        return pack_pattern_binds(child(node, 0), name)
+    }
+    (node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) &&
+    index == 1 && iteration_binds(node, name)
+}
+
+// Mask only colliding names, preserving element indices and the original list
+// on the common unshadowed path. A block binds after its initializer is read.
+fn lexical_pack_names(node Node, index Int, names List[Text], local Bool) List[Text] {
+    if local {
+        if node.kind != NodeKind.Let && node.kind != NodeKind.Var &&
+        node.kind != NodeKind.Scoped && node.kind != NodeKind.Destructure {
+            return names
+        }
+    } else if node.kind != NodeKind.Arm && node.kind != NodeKind.ComptimeFor &&
+    node.kind != NodeKind.ComptimeMap &&
+    !(node.kind == NodeKind.Function && node.value == "" && child(node, index).kind == NodeKind.Block) {
+        return names
+    }
+    var visible = names
+    var copied = false
+    var pack = 0
+    while pack < length(names) {
+        let name = get(names, pack)
+        let binds = if local {
+            pack_local_binds(node, name)
+        } else {
+            pack_child_binds(node, index, name)
+        }
+        if name != "" && binds {
+            if !copied {
+                visible = std.list.clone(names)
+                copied = true
+            }
+            set(visible, pack, "")
+        }
+        pack = pack + 1
+    }
+    visible
+}
+
 // Free pack references determine this expansion's width. Nested ... nodes
 // have their own expansion scope, rather than contributing another dimension.
 fn collect_expansion_packs(node Node, names List[Text], selected List[Int]) {
     if node.kind == NodeKind.Spread {
         return
     }
-    let pack = pack_root_index(node, names)
-    if pack >= 0 {
-        var index = 0
-        while index < length(selected) {
-            if get(selected, index) == pack {
-                return
-            }
-            index = index + 1
-        }
+    var visible = family_pack_names(node, names)
+    let pack = pack_root_index(node, visible)
+    if pack >= 0 && !resource_seen(selected, pack) {
         push(selected, pack)
     }
     var index = 0
     while index < length(node.children) {
-        collect_expansion_packs(child(node, index), names, selected)
+        let member = child(node, index)
+        if !(node.kind == NodeKind.AssociatedType && member.kind == NodeKind.TypeParameters) {
+            collect_expansion_packs(member, lexical_pack_names(node, index, visible, false), selected)
+        }
+        if node.kind == NodeKind.Block {
+            visible = lexical_pack_names(member, 0, visible, true)
+        }
         index = index + 1
     }
 }
@@ -354,6 +446,22 @@ fn expand_family_type(env Environment, owner Int, node Node, names List[Text], w
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "type pack expansion nesting limit exceeded"))
     }
+    if node.kind == NodeKind.AssociatedType && length(group(node, NodeKind.TypeParameters)) > 0 {
+        let visible = family_pack_names(node, names)
+        let children = new[Node]()
+        var index = 0
+        while index < length(node.children) {
+            let member = child(node, index)
+            push(children, if member.kind == NodeKind.TypeParameters {
+                    member
+                } else {
+                    expand_family_type(env, owner, member, visible, widths, elements, types,
+                        depth + 1, preserve_other_packs)?
+                })
+            index = index + 1
+        }
+        return Result.Ok(pack_node(node, node.kind, node.value, children))
+    }
     let type_context = types || node.kind == NodeKind.Type || node.kind == NodeKind.TupleType || node.kind == NodeKind.FunctionType || node.kind == NodeKind.TypeArguments
     var value = node.value
     let pack = pack_root_index(node, names)
@@ -367,26 +475,32 @@ fn expand_family_type(env Environment, owner Int, node Node, names List[Text], w
         value = concat(pack_name(get(names, pack), element), slice(node.value, length(get(names, pack)), length(node.value)))
     }
     let children = new[Node]()
+    var visible = names
     var index = 0
     while index < length(node.children) {
         let child = child(node, index)
+        let child_names = if type_context {
+            lexical_pack_names(node, index, visible, false)
+        } else {
+            names
+        }
         let child_types = type_context || (node.kind == NodeKind.Parameter && index == 0) ||
         (node.kind == NodeKind.Apply && index == 1 && has_type_expansion(child))
         if child_types && child.kind == NodeKind.Spread &&
-        (!preserve_other_packs || length(expansion_packs(get(child.children, 0), names)) != 0) {
+        (!preserve_other_packs || length(expansion_packs(get(child.children, 0), child_names)) != 0) {
             let pattern = get(child.children, 0)
             if node.kind == NodeKind.Type && (pattern.kind == NodeKind.TupleType || pattern.kind == NodeKind.Tuple) {
                 push(children, pack_node(child, NodeKind.Spread, "", source_nodes(
-                            expand_family_type(env, owner, pattern, names, widths, elements, true, depth + 1, preserve_other_packs)?)))
+                            expand_family_type(env, owner, pattern, child_names, widths, elements, true, depth + 1, preserve_other_packs)?)))
                 index = index + 1
                 continue
             }
-            let arity = expansion_width(env, owner, pattern, names, widths)?
+            let arity = expansion_width(env, owner, pattern, child_names, widths)?
             let expanded = new[Node]()
             var selected = 0
             while selected < arity {
-                push(expanded, expand_family_type(env, owner, pattern, names, widths,
-                        expansion_elements(pattern, names, elements, selected), true, depth + 1, preserve_other_packs)?)
+                push(expanded, expand_family_type(env, owner, pattern, child_names, widths,
+                        expansion_elements(pattern, child_names, elements, selected), true, depth + 1, preserve_other_packs)?)
                 selected = selected + 1
             }
             let nominal = if node.kind == NodeKind.Type {
@@ -404,7 +518,10 @@ fn expand_family_type(env Environment, owner Int, node Node, names List[Text], w
                 }
             }
         } else {
-            push(children, expand_family_type(env, owner, child, names, widths, elements, child_types, depth + 1, preserve_other_packs)?)
+            push(children, expand_family_type(env, owner, child, child_names, widths, elements, child_types, depth + 1, preserve_other_packs)?)
+        }
+        if type_context && node.kind == NodeKind.Block {
+            visible = lexical_pack_names(child, 0, visible, true)
         }
         index = index + 1
     }

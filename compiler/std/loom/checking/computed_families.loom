@@ -148,6 +148,10 @@ fn computed_dynamic_node(context Context, node Node) Result[Node, Failure] {
     if capability < 0 {
         return Result.Err(error(context, node, "expected an accessible concept"))
     }
+    computed_dynamic_node(context, node, capability)
+}
+
+fn computed_dynamic_node(context Context, node Node, capability Int) Result[Node, Failure] {
     let members = get(context.env.concepts, concept_index(context.env, capability)).associated
     let children = new[Node]()
     var index = 0

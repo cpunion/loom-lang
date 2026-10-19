@@ -35,6 +35,7 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
             return Result.Err(failure(env, owner, node,
                     "variadic dynamic binding needs its declared member requirements"))
         }
+        return Result.Ok(true)
     }
     if node.kind == NodeKind.Type && type_constant(env, owner, node)? >= 0 {
         // The ordinary resolver rejects arguments on a scalar before trying
@@ -130,19 +131,57 @@ fn data_pack_headers(env Environment) Result[Bool, Failure] {
 }
 
 fn data_header_parameters(owner Int, node Node, parameters List[Node], output List[ParameterHeader]) {
+    if node.kind == NodeKind.Comptime {
+        // Computed blocks have their own checked local/type bindings. Do not
+        // claim an outer parameter from a same-spelled source token alone.
+        return
+    }
+    var visible = parameters
+    if node.kind == NodeKind.AssociatedType && length(group(node, NodeKind.TypeParameters)) > 0 {
+        let local = group(node, NodeKind.TypeParameters)
+        visible = new[Node]()
+        var index = 0
+        while index < length(parameters) {
+            if family_parameter_index(local, get(parameters, index).value) < 0 {
+                push(visible, get(parameters, index))
+            }
+            index = index + 1
+        }
+        index = 0
+        while index < length(local) {
+            push(visible, get(local, index))
+            index = index + 1
+        }
+    }
+    if node.kind == NodeKind.TypeParameters {
+        var index = 0
+        while index < length(node.children) {
+            let parameter = child(node, index)
+            let selected = data_parameter_index(visible, parameter.value)
+            if selected >= 0 {
+                push(output, ParameterHeader {
+                        symbol = owner
+                        node = parameter
+                        parameter = get(visible, selected)
+                    })
+            }
+            index = index + 1
+        }
+        return
+    }
     if node.kind == NodeKind.Type || node.kind == NodeKind.Name || node.kind == NodeKind.TypePack {
-        let index = data_parameter_index(parameters, node.value)
+        let index = data_parameter_index(visible, node.value)
         if index >= 0 {
             push(output, ParameterHeader {
                     symbol = owner
                     node = node
-                    parameter = get(parameters, index)
+                    parameter = get(visible, index)
                 })
         }
     }
     var child = 0
     while child < length(node.children) {
-        data_header_parameters(owner, get(node.children, child), parameters, output)
+        data_header_parameters(owner, get(node.children, child), visible, output)
         child = child + 1
     }
 }
