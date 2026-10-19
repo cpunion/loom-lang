@@ -22,6 +22,18 @@ fn word_map_origin_source() Text {
 
 test fn word_map_origins_preserve_constant_map_lengths_without_element_types() {
     discard accepted(word_map_origin_source())
+    let zipped = concat("""
+            record Pair[As..., Bs...] {
+                first (As...)
+                second (Bs...)
+            }
+            """, std.text.replace(std.text.replace(word_map_origin_source(),
+                "impl[Ts...] Pass for (Ts...)", "impl[As..., Bs...] Pass for Pair[(As...)..., (Bs...)...]"),
+            "erase_type[Ts]()", "erase_type[(As, Bs)]()"))
+    assert match checked(source_files(zipped)) {
+        Result.Err(failed) => failed.diagnostic.message == "elementwise expansion needs proved equal source widths"
+        Result.Ok(_) => false
+    }
 }
 
 test fn word_map_origins_do_not_equate_independent_words_after_associated_erasure() {
