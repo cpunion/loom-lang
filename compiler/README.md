@@ -1604,8 +1604,9 @@ type names, visibility and provable header obligations cannot wait for a caller.
 Associated projections and direct dyn bindings reuse ordinary member/domain and
 result-bound checks on fresh logical identities. Those identities grant only
 capabilities proved for the complete source word, never a selected arity or a
-concrete layout. Fixed parameters stay abstract too. General dependent layouts
-and scoped dyn-family header validation remain open.
+concrete layout. Fixed parameters stay abstract too. Scoped dyn-family headers
+retain captures, nested/local binders and uniformly computed type bodies through
+ordinary family checking. Whole-word-dependent layout inspection remains open.
 Instances retain the original nominal declaration;
 no runtime pack or per-arity nominal type is introduced. See the
 [native data-pack example](examples/data_packs/main.loom).

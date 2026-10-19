@@ -35,6 +35,7 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
             return Result.Err(failure(env, owner, node,
                     "variadic dynamic binding needs its declared member requirements"))
         }
+        return Result.Ok(true)
     }
     if node.kind == NodeKind.Type && type_constant(env, owner, node)? >= 0 {
         // The ordinary resolver rejects arguments on a scalar before trying

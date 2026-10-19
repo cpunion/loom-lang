@@ -5,10 +5,27 @@ fn pack_type_scope(env Environment, owner Int, node Node, names List[Text], elem
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "type pack expansion nesting limit exceeded"))
     }
+    if node.kind == NodeKind.TypeParameters {
+        // Family domains name concepts; their lexical type binders are not
+        // references to an enclosing pack with the same spelling.
+        return Result.Ok(true)
+    }
+    var visible = names
+    if node.kind == NodeKind.AssociatedType {
+        visible = std.list.clone(names)
+        let parameters = group(node, NodeKind.TypeParameters)
+        var index = 0
+        while index < length(visible) {
+            if family_parameter_index(parameters, get(visible, index)) >= 0 {
+                set(visible, index, "")
+            }
+            index = index + 1
+        }
+    }
     var active = elements
     if node.kind == NodeKind.Spread {
         active = std.list.clone(elements)
-        let selected = expansion_packs(child(node, 0), names)
+        let selected = expansion_packs(child(node, 0), visible)
         var index = 0
         while index < length(selected) {
             let pack = get(selected, index)
@@ -18,13 +35,13 @@ fn pack_type_scope(env Environment, owner Int, node Node, names List[Text], elem
             index = index + 1
         }
     }
-    let pack = pack_root_index(node, names)
+    let pack = pack_root_index(node, visible)
     if pack >= 0 && !resource_seen(active, pack) {
         return Result.Err(failure(env, owner, node, "expand a type pack with ...; it is not one type"))
     }
     var index = 0
     while index < length(node.children) {
-        discard pack_type_scope(env, owner, child(node, index), names, active, depth + 1)?
+        discard pack_type_scope(env, owner, child(node, index), visible, active, depth + 1)?
         index = index + 1
     }
     Result.Ok(true)

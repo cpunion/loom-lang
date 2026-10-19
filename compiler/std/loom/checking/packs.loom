@@ -116,6 +116,16 @@ fn pack_root(node Node, name Text) Bool {
 }
 
 fn mentions_pack(node Node, name Text) Bool {
+    if node.kind == NodeKind.AssociatedType {
+        let parameters = group(node, NodeKind.TypeParameters)
+        var parameter = 0
+        while parameter < length(parameters) {
+            if get(parameters, parameter).value == name {
+                return false
+            }
+            parameter = parameter + 1
+        }
+    }
     if pack_root(node, name) {
         return true
     }

@@ -177,7 +177,9 @@ parameter widths and capability prerequisites through the universal family-shape
 matcher, including nested constructors and independent packs; no width is sampled.
 Associated projections and direct dyn bindings reuse ordinary member/domain and
 result-bound checks on fresh logical identities with only universally proved
-capabilities. General dependent layouts and scoped dyn-family headers remain open.
+capabilities. Scoped dyn-family headers retain captures, local/nested binders and
+uniformly computed type bodies through ordinary family checking. General
+whole-word-dependent layout inspection remains open.
 Pack-bearing preconditions compose pure family helpers through the same universal
 proof. Tuple spreads work in contracts and refinement predicates; opaque helper
 arguments provide no storage or callback-behavior evidence.

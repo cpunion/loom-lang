@@ -110,6 +110,11 @@ fn type_pattern_schema(env Environment, owner Int, node Node, element Bool, dept
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "implementation target nesting limit exceeded"))
     }
+    if header && node.kind == NodeKind.AssociatedType && length(group(node, NodeKind.TypeParameters)) > 0 {
+        // Keep the lexical binder intact; the ordinary family checker consumes
+        // it with logical captures before the enclosing dyn supplies evidence.
+        return Result.Ok(node)
+    }
     if node.kind == NodeKind.Spread {
         let names = pack_names(declared_packs(symbol(env, owner).node))
         var selected = false

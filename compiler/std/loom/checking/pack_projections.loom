@@ -109,14 +109,44 @@ fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List
     var index = 0
     while index < length(schema.children) {
         let binding = child(schema, index)
-        let ty = pack_symbolic_type(context, caller, child(binding, 0), obligations, budget, depth + 1)?
-        if ty < 0 {
-            return Result.Ok(-1)
+        if length(group(binding, NodeKind.TypeParameters)) > 0 {
+            let scope = pack_family_scope(context, caller, obligations, budget, depth + 1)?
+            let prepared = computed_dynamic_node(scope,
+                pack_node(schema, NodeKind.DynType, schema.value, source_nodes(binding)), capability)?
+            push(bindings, child(prepared, 0))
+        } else {
+            let ty = pack_symbolic_type(context, caller, child(binding, 0), obligations, budget, depth + 1)?
+            if ty < 0 {
+                return Result.Ok(-1)
+            }
+            push(bindings, pack_node(binding, NodeKind.AssociatedType, binding.value,
+                    source_nodes(meta_reference(child(binding, 0), ty))))
         }
-        push(bindings, pack_node(binding, NodeKind.AssociatedType, binding.value,
-                source_nodes(meta_reference(child(binding, 0), ty))))
         index = index + 1
     }
     dynamic_type(context.env, pack_layout_owner(context),
         pack_node(schema, NodeKind.DynType, schema.value, bindings), new[Int](), obligations, 0, capability)
+}
+
+fn pack_family_scope(context Context, caller Node, obligations List[Requirement],
+    budget List[Int], depth Int) Result[Context, Failure] {
+    let base = family_header_context(context.env, pack_layout_owner(context), new[Int](), obligations)?
+    var scope = Context {
+        emit = false
+        ..base
+    }
+    let parameters = group(caller, NodeKind.TypeParameters)
+    let boundary = scope.head
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        let schema = pack_node(parameter, NodeKind.Type, concat("$parameter#", to_text(index)), new[Node]())
+        let ty = pack_symbolic_type(context, caller, schema, obligations, budget, depth + 1)?
+        if ty < 0 {
+            return Result.Err(error(context, parameter, "symbolic family capture budget exhausted"))
+        }
+        scope = bind_meta(scope, parameter, meta_literal(scope, parameter, ty)?, boundary)?.context
+        index = index + 1
+    }
+    Result.Ok(scope)
 }

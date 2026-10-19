@@ -1,0 +1,75 @@
+fn scoped_pack_header_definitions() Text {
+    """
+        concept Family {
+            type Item[T]
+        }
+        concept Inner {
+            type Out[T]
+        }
+        concept Tagged {}
+        impl[Us... Tagged] Tagged for (Us...) {}
+        concept Bounded {
+            type Item[T Tagged] Tagged
+        }
+        """
+}
+
+test fn scoped_pack_headers_keep_captures_and_nested_family_binders() {
+    discard accepted(concat(scoped_pack_header_definitions(), """
+        record Rows[Tag, Ts...] {
+            tag Tag
+            values (dyn Family[Item[U] = (Tag, Ts, U)]...)
+            nested (dyn Family[Item[U] = dyn Inner[Out[V] = (Ts, U, V)]]...)
+        }
+        record Checked[Ts... Tagged] {
+            values (dyn Bounded[Item[U] = (Ts, U)]...)
+        }
+        """))
+}
+
+test fn scoped_pack_headers_compute_uniform_types_in_the_lexical_scope() {
+    discard accepted(concat(scoped_pack_header_definitions(), """
+        record Rows[Ts...] {
+            values (dyn Family[Item[U] = (Ts, comptime {
+                let Ts type = Bool
+                Ts
+            }, U)]...)
+        }
+        """))
+    rejects(concat(scoped_pack_header_definitions(), """
+        record Rows[Ts...] {
+            values (dyn Family[Item[U] = (Ts, comptime if U == Int {
+                Int
+            } else {
+                Bool
+            })]...)
+        }
+        """))
+}
+
+test fn scoped_pack_headers_local_names_do_not_refer_to_an_outer_pack() {
+    discard accepted(concat(scoped_pack_header_definitions(), """
+        record Rows[Ts...] {
+            sources (Ts...)
+            value dyn Family[Item[Ts] = Ts]
+        }
+        """))
+    rejects(concat(scoped_pack_header_definitions(), """
+        record Rows[Ts...] {
+            values (dyn Family[Item[Ts] = Ts]...)
+        }
+        """))
+}
+
+test fn scoped_pack_headers_cannot_strengthen_domains_or_invent_result_bounds() {
+    rejects(concat(scoped_pack_header_definitions(), """
+        record Rows[Ts...] {
+            values (dyn Family[Item[U Tagged] = (Ts, U)]...)
+        }
+        """))
+    rejects(concat(scoped_pack_header_definitions(), """
+        record Rows[Ts...] {
+            values (dyn Bounded[Item[U] = (Ts, U)]...)
+        }
+        """))
+}

@@ -56,6 +56,10 @@ fn pack_layout_well_formed(context Context, caller Node, schema Node, budget Lis
         return Result.Ok(false)
     }
     set(budget, 0, get(budget, 0) - 1)
+    if schema.kind == NodeKind.AssociatedType && length(group(schema, NodeKind.TypeParameters)) > 0 {
+        // A family body is checked under its own parameters by pack_dynamic_type.
+        return Result.Ok(true)
+    }
     var index = 0
     while index < length(schema.children) {
         if !pack_layout_well_formed(context, caller, child(schema, index), budget, depth + 1)? {
