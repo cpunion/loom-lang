@@ -122,10 +122,43 @@ test fn generated_test() {
 `;
     await client.change(library, generated, 5);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...imported, newName: 'identity' }), /generated source references/);
-    await client.change(library, `${sources.get('library/main.loom')}\npub fn answer(value Bool) Bool {\n    value\n}\n`, 6);
-    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
+    const overloadedLibrary = `${sources.get('library/main.loom')}\npub fn answer(value Bool) Bool {\n    value\n}\ntest fn boolean_sibling() {\n    assert answer(true)\n}\n`;
+    await client.change(library, overloadedLibrary, 6);
+    const mixed = `// é😀 keep the overload comment
+import demo.library.answer // keep both overloads
+
+test fn mixed() {
+    let integer fn(Int) Int = answer
+    let boolean fn(Bool) Bool = answer
+    assert integer(3) == demo.library.answer(3)
+    assert boolean(true) && demo.library.answer(true)
+}
+`.replaceAll('\n', '\r\n');
+    await client.change(testFile, mixed, 2);
+    assert.deepEqual((await client.wait(testFile, 2)).diagnostics, []);
+    const split = await client.rpc.sendRequest('textDocument/rename', {
       ...at(library, sources.get('library/main.loom'), 'answer'), newName: 'identity',
-    }), /one top-level function/);
+    });
+    const mixedUri = URI.file(testFile).toString();
+    const afterSplit = TextDocument.applyEdits(TextDocument.create(mixedUri, 'loom', 2, mixed), split.changes[mixedUri]);
+    assert.equal(afterSplit, mixed
+      .replace('import demo.library.answer // keep both overloads\r\n',
+        'import demo.library.answer // keep both overloads\r\nimport demo.library.identity\r\n')
+      .replace('fn(Int) Int = answer', 'fn(Int) Int = identity')
+      .replace('demo.library.answer(3)', 'demo.library.identity(3)'));
+    const fromCall = await client.rpc.sendRequest('textDocument/rename', {
+      ...at(testFile, mixed, 'answer(3)'), newName: 'identity',
+    });
+    assert.deepEqual(fromCall, split);
+    const updatedLibrary = TextDocument.applyEdits(TextDocument.create(URI.file(library).toString(), 'loom', 6, overloadedLibrary),
+      split.changes[URI.file(library).toString()]);
+    assert.ok(updatedLibrary.includes('pub fn identity(value Int)') && updatedLibrary.includes('pub fn answer(value Bool)'));
+    assert.ok(updatedLibrary.includes('assert identity(4) == 4') && updatedLibrary.includes('assert answer(true)'));
+    // One import denotes an overload group, not an arbitrarily chosen member.
+    assert.equal(await client.rpc.sendRequest('textDocument/rename', {
+      ...at(testFile, mixed, 'answer //'), newName: 'identity',
+    }), null);
+    await client.change(testFile, 'import demo.library.answer\n\ntest fn trial() {\n    assert answer(3) == 3\n}\n', 3);
     await client.change(library, sources.get('library/main.loom'), 7);
 
     // Rechecking alone could accept accidental capture by this callback.
@@ -150,7 +183,7 @@ test fn generated_test() {
 
     for (const [name, text] of sources) assert.equal(await fs.readFile(path.join(folder, name), 'utf8'), text);
     assert.equal(await client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'identity' }), null);
-    console.log('Public function rename passed: module-wide imports, callbacks, independent tests, overlays, conflicts and no source writes.');
+    console.log('Public function rename passed: checked overload splits, CRLF imports, callbacks, independent tests, overlays, conflicts and no source writes.');
   } finally {
     await client.close();
     await fs.rm(temporary, { recursive: true, force: true });

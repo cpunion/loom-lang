@@ -219,19 +219,23 @@ async function semanticQuery(params, token, kind) {
       const locations = kind === 'references'
         ? (params.context?.includeDeclaration ? report.references : (report.references || []).filter(item =>
           !report.declaration || item.path !== report.declaration.path || item.start !== report.declaration.start || item.end !== report.declaration.end))
-        : report.edits;
+        : report.changes;
+      if (kind === 'rename' && (!Array.isArray(locations) || locations.some(item => typeof item.text !== 'string'))) {
+        throw new Error('Compiler rename protocol mismatch; rebuild the compiler and update the Loom extension together.');
+      }
       const sources = new Map();
       const converted = await Promise.all((locations || []).map(async item => {
         const targetFile = path.resolve(directory, item.path);
         if (!sources.has(targetFile)) sources.set(targetFile, sourceDocument(targetFile, buffers));
         const target = await sources.get(targetFile);
-        return { uri: target.uri, range: { start: compiler.bytePosition(target, item.start), end: compiler.bytePosition(target, item.end) } };
+        return { uri: target.uri, range: { start: compiler.bytePosition(target, item.start), end: compiler.bytePosition(target, item.end) },
+          ...(kind === 'rename' ? { newText: item.text } : {}) };
       }));
       if (kind === 'references') value = converted;
       else if (!converted.length) value = null;
       else {
         const changes = {};
-        for (const item of converted) (changes[item.uri] ||= []).push({ range: item.range, newText: params.newName });
+        for (const item of converted) (changes[item.uri] ||= []).push({ range: item.range, newText: item.newText });
         value = { changes };
       }
     } else {

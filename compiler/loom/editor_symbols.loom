@@ -13,7 +13,10 @@ import std.loom.lexer.Token
 import std.loom.lexer.lex
 import std.loom.project.SourceOverlay
 import std.loom.source.Span
+import std.loom.source.TextEdit
+import std.loom.source.apply_ordered_edits
 import std.option.Option
+import std.text.join
 
 fn editor_same_span(left Span, right Span) Bool {
     left.start == right.start && left.end == right.end
@@ -344,7 +347,7 @@ fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool
 }
 
 // Private declarations cannot be imported by another package. Select an exact
-// ordinary declaration; a private function may leave an overload set. Public
+// ordinary declaration; a function may leave an overload set. Public
 // edits use module-wide package checks instead.
 fn editor_declaration_authority(analysis Analysis, target Location, public Bool) Bool {
     let files = analysis.bindings.files
@@ -396,7 +399,7 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
         }
         index = index + 1
     }
-    selected && (matches == 1 || (!public && selected_function))
+    selected && (matches == 1 || selected_function)
 }
 
 // An unaccounted same-spelled token could be an unchecked use (for example in
@@ -525,8 +528,7 @@ fn editor_replaced_references(text Text, file Int, references List[Location], na
             return Option.None
         }
     }
-    var output = ""
-    var from = 0
+    let edits = new[TextEdit]()
     var index = 0
     while index < length(tokens) {
         let token = get(tokens, index)
@@ -534,12 +536,17 @@ fn editor_replaced_references(text Text, file Int, references List[Location], na
                 file = file
                 span = token.span
             }) {
-            output = concat(output, concat(std.text.slice(text, from, token.span.start), name))
-            from = token.span.end
+            push(edits, TextEdit {
+                    span = token.span
+                    text = name
+                })
         }
         index = index + 1
     }
-    Option.Some(concat(output, std.text.slice(text, from, length(text))))
+    match apply_ordered_edits(text, edits) {
+        Result.Ok(value) => Option.Some(value)
+        Result.Err(_) => Option.None
+    }
 }
 
 fn editor_private_overlays(options EditorOptions, bindings std.loom.binding.Program,
@@ -575,8 +582,16 @@ fn editor_private_overlays(options EditorOptions, bindings std.loom.binding.Prog
 
 fn editor_location_json(bindings std.loom.binding.Program, location Location) Text {
     let path = get(bindings.files, location.file).path
-    let prefix = concat("{\"path\":", concat(editor_quoted(path), concat(",\"start\":", to_text(location.span.start))))
-    concat(prefix, concat(",\"end\":", concat(to_text(location.span.end), "}")))
+    editor_change_json(path, location.span, Option.None)
+}
+
+fn editor_change_json(path Text, span Span, text Option[Text]) Text {
+    let prefix = concat("{\"path\":", concat(editor_quoted(path), concat(",\"start\":", to_text(span.start))))
+    let range = concat(prefix, concat(",\"end\":", to_text(span.end)))
+    concat(match text {
+            Option.Some(value) => concat(range, concat(",\"text\":", editor_quoted(value)))
+            Option.None => range
+        }, "}")
 }
 
 fn editor_locations_json(bindings std.loom.binding.Program, locations List[Location]) Text {
@@ -595,7 +610,7 @@ fn editor_locations_json(bindings std.loom.binding.Program, locations List[Locat
 fn editor_no_symbols(rename Bool) EditorOutput {
     EditorOutput {
         text = if rename {
-            "{\"diagnostics\":[],\"edits\":[]}\n"
+            "{\"diagnostics\":[],\"changes\":[]}\n"
         } else {
             "{\"diagnostics\":[],\"declaration\":null,\"references\":[]}\n"
         }
@@ -603,9 +618,16 @@ fn editor_no_symbols(rename Bool) EditorOutput {
     }
 }
 
-fn editor_rename_output(bindings std.loom.binding.Program, references List[Location]) EditorOutput {
+fn editor_rename_output(bindings std.loom.binding.Program, references List[Location], name Text) EditorOutput {
+    let changes = new[Text]()
+    var index = 0
+    while index < length(references) {
+        let location = get(references, index)
+        push(changes, editor_change_json(get(bindings.files, location.file).path, location.span, Option.Some(name)))
+        index = index + 1
+    }
     EditorOutput {
-        text = concat("{\"diagnostics\":[],\"edits\":", concat(editor_locations_json(bindings, references), "}\n"))
+        text = concat("{\"diagnostics\":[],\"changes\":[", concat(std.text.join(changes, ","), "]}\n"))
         failed = false
     }
 }
@@ -799,5 +821,5 @@ fn editor_checked_rename(options EditorOptions, bindings std.loom.binding.Progra
     if !editor_overlay_checks(options, overlays) {
         return editor_error("Rename would invalidate the checked package")
     }
-    editor_rename_output(bindings, references)
+    editor_rename_output(bindings, references, new_name)
 }

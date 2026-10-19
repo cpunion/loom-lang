@@ -15,6 +15,13 @@ const selected = Buffer.from(text).subarray(offset, offset + 5).toString() === '
 const declaration = target ? { path: target, start: Buffer.byteLength('// é😀\nfn '), end: Buffer.byteLength('// é😀\nfn chosen') } : null;
 const references = selected && declaration ? [declaration, { path: file, start: offset, end: offset + 5 }] : [];
 module.exports = mode => {
-  const report = mode === 'rename' ? { diagnostics: [], edits: references } : { diagnostics: [], declaration, references };
+  const replacement = args[args.indexOf('--to') + 1];
+  const report = mode === 'rename'
+    ? replacement === 'legacy' ? { diagnostics: [], edits: references }
+      : { diagnostics: [], changes: references.map(item => ({ ...item, text: replacement })) }
+    : { diagnostics: [], declaration, references };
+  if (mode === 'rename' && replacement === 'split') {
+    report.changes.push({ path: file, start: 0, end: 0, text: 'import demo.library.split\n' });
+  }
   setTimeout(() => { process.stdout.write(JSON.stringify(report)); }, text.includes('SLOW') ? 1000 : 0);
 };
