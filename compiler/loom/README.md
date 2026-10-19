@@ -350,6 +350,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | `inspect_independent(analysis, file, offset)` | The same isolated query using the analysis's input snapshot and one reusable checked scope |
 | `inspect_references(analysis, file, offsets)` | Ordered `ReferenceEvidence` for every requested position, including missing/ambiguous facts and duplicates |
 | `inspect_references(analysis, file, spelling)` | Source name-token candidates with the same evidence; comments/text literals are excluded and source lookup failures return `Err` |
+| `method_conformances(analysis)` | Detached `(implementation, concept)` source-location pairs from checked method matches; positive evidence, not a complete implementation registry or rename authorization |
 | `reference_obligations(tree, tokens)` | Explicit named-binding obligations and unaccounted source ranges for a declaration subtree in the same snapshot |
 | `reference_obligations(source)` | The same syntax coverage from source text, preserving structured parse/lex diagnostics |
 | `abstract_reference_scope(node)` | Whether the declaration requires generic/static binding evidence, including a concept's implicit `Self` |
@@ -369,7 +370,8 @@ For input-bearing analyses, `is_current` returns false: use
 the filesystem. `BuildInputs.requests` also retains failed read requests, allowing
 editor clients to watch missing files. VS Code dynamically watches actual request
 and resolved paths, including file creation/deletion, without a workspace-wide
-resource glob. Build receipts use a version-2 protocol with input digests.
+resource glob. Build receipts bind the artifact, selected sources and observed
+input digests.
 
 The [semantic example](../examples/semantic/main.loom) creates an in-memory
 project, queries inferred local types and selected overload/generic call targets,

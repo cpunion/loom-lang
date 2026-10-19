@@ -148,7 +148,13 @@ This is checked navigation, not a complete symbol index. References use
 exact definition spans from checked uses and can include the declaration. One
 public top-level function, nominal type or concept in the current module also includes import declarations
 and uses in other directory packages and their private tests. They omit
-uses without checked binding evidence and ambiguous targets. A package error suppresses references and rename until the
+uses without checked binding evidence and unrelated ambiguous targets. Method
+references join one checked concept slot with its implementation declarations,
+generic/dynamic calls and bound method values, without grouping by spelling.
+Excluding declarations removes that concept declaration; implementation names
+remain explicit conformance references. This positive evidence does not authorize
+method renames or establish complete generated/uninstantiated-pack coverage.
+A package error suppresses references and rename until the
 whole package checks; hover and definition retain their independent-function
 fallback.
 
