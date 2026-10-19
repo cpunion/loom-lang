@@ -58,8 +58,12 @@ checked import fixes. Checked renames cover local/parameter/pattern bindings and
 accounted function/type/concept/record-field uses across a local module, including
 each package's private tests. Virtual edits recheck before application.
 Method references join checked concept slots, implementation declarations and
-generic/dynamic/bound uses. Unrelated overloads stay separate; these positive
-conformance edges do not authorize method renames or prove complete source coverage.
+generic/dynamic/bound uses. Unrelated overloads stay separate; positive conformance
+edges alone do not prove complete source coverage. Method renames separately
+account for implementation declarations and every use, including tests, then
+recheck virtual edits. Private concepts stay within their package; public slots
+cover all packages and independent tests in the selected module. Ambiguous slots,
+generated/unaccounted uses and external method-family edits reject.
 Private and public overloads can be individually renamed to an unused name,
 preserving checked sibling calls and typed callbacks. Public edits split imports
 when siblings retain the old name and recheck each local package and its private

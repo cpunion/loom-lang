@@ -7,11 +7,8 @@ const { URI } = require('vscode-uri');
 const { TextDocument } = require('vscode-languageserver-textdocument');
 const { session } = require('./session');
 
-async function methodReferencesSmoke(executable, stdRoot) {
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'loom-method-references-'));
-  const folder = await fs.realpath(temporary);
-  const file = path.join(folder, 'main.loom');
-  const source = `concept Read {
+function methodReferenceSource() {
+  return `concept Read {
     fn read(self Self, value Int) Int
     fn read(self Self, value Bool) Bool
 }
@@ -61,6 +58,13 @@ fn main() {
     assert true.read() == "other"
 }
 `;
+}
+
+async function methodReferencesSmoke(executable, stdRoot) {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'loom-method-references-'));
+  const folder = await fs.realpath(temporary);
+  const file = path.join(folder, 'main.loom');
+  const source = methodReferenceSource();
   await fs.writeFile(file, source);
   const client = await session({ executable, stdRoot }, folder);
   try {
@@ -107,4 +111,4 @@ fn main() {
   }
 }
 
-module.exports = { methodReferencesSmoke };
+module.exports = { methodReferencesSmoke, methodReferenceSource };

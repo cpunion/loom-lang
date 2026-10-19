@@ -152,8 +152,16 @@ uses without checked binding evidence and unrelated ambiguous targets. Method
 references join one checked concept slot with its implementation declarations,
 generic/dynamic calls and bound method values, without grouping by spelling.
 Excluding declarations removes that concept declaration; implementation names
-remain explicit conformance references. This positive evidence does not authorize
+remain explicit conformance references. Positive evidence alone does not authorize
 method renames or establish complete generated/uninstantiated-pack coverage.
+Method renames separately require complete implementation and use coverage,
+including same-directory tests, and recheck the in-memory edit. One
+checked overload slot includes its defaults, overrides and static/generic/dynamic/
+bound uses without changing unrelated slots. Generated/unaccounted uses, ambiguous
+conformances and external method-family edits refuse. Private concepts stay in
+their package; public slots cover every package and independent test in the
+selected module, including implementation packages outside the initial import
+closure. No dependency snapshot or module-external consumer is rewritten.
 A package error suppresses references and rename until the
 whole package checks; hover and definition retain their independent-function
 fallback.

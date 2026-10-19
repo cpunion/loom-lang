@@ -50,9 +50,34 @@ fn editor_other_binding(analysis EditorAnalysis, file Int, token Token, tokens L
     }
 }
 
-// Even a package that has not loaded the owner may contain structural field
-// accesses in a deferred branch. It supplies no evidence for a partial edit.
-fn editor_field_unobserved(analysis EditorAnalysis, spelling Text) Bool {
+fn editor_binding_outside(analysis EditorAnalysis, file Int, token Token, tokens List[Token], targets List[Location]) Bool {
+    if editor_declaration(get(editor_data(analysis).bindings.files, file).tree, tokens, token.span) {
+        return !editor_contains(targets, Location {
+                file = file
+                span = token.span
+            })
+    }
+    match inspect_at(analysis.snapshot, file, token.span.start) {
+        Option.Some(found) => {
+            if length(found.definitions) == 0 {
+                return false
+            }
+            var index = 0
+            while index < length(found.definitions) {
+                if editor_contains(targets, get(found.definitions, index)) {
+                    return false
+                }
+                index = index + 1
+            }
+            true
+        }
+        Option.None => false
+    }
+}
+
+// Even a package that has not loaded the owner must account for deferred member
+// uses. Absence from the loaded closure is not evidence for a partial edit.
+fn editor_unobserved_binding(analysis EditorAnalysis, spelling Text) Bool {
     var file = 0
     while file < length(editor_data(analysis).bindings.files) {
         let source = get(editor_data(analysis).bindings.files, file)
@@ -70,7 +95,7 @@ fn editor_field_unobserved(analysis EditorAnalysis, spelling Text) Bool {
             while index < length(tokens) {
                 let token = get(tokens, index)
                 if token.kind == Kind.Name && token.value == spelling &&
-                !editor_other_binding(analysis, file, token, tokens, Option.None) {
+                !editor_binding_outside(analysis, file, token, tokens, new[Location]()) {
                     return true
                 }
                 index = index + 1

@@ -188,17 +188,25 @@ test fn impl_method_headers_restore_composite_arguments_without_losing_family_ca
         }
         concept Use {
             type Value[T]
-            fn use[U Source](self Self, value Self.Value[Holder[(U, Int), List[U], fn(U) U, Task[U], U.Item]])
+            fn use[U Source](self Self,
+                value Self.Value[Holder[
+                    (U, Int), List[U], fn(U) U, Task[U],
+                    dyn Family[Item[R] = (R, U.Item)]
+                ]])
         }
         impl[Ts...] Use for (Ts...) {
             type Value[T] = dyn Family[Item[Q] = (Q, T)]
-            fn use[V](self Self, value dyn Family[Item[P] = (P, Holder[(V, Int), List[V], fn(V) V, Task[V], V.Source.Item])]) {
+            fn use[V](self Self,
+                value dyn Family[Item[P] = (P, Holder[
+                    (V, Int), List[V], fn(V) V, Task[V],
+                    dyn Family[Item[S] = (S, V.Source.Item)]
+                ])]) {
                 discard value
             }
         }
         """
     discard accepted(source)
-    rejects(std.text.replace(source, "(P, Holder[(V, Int)", "(P, Holder[(V, Bool)"))
+    rejects(std.text.replace(source, "(V, Int)", "(V, Bool)"))
 }
 
 test fn impl_method_headers_preserve_independent_groups_in_restored_family_arguments() {
