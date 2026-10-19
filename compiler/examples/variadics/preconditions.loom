@@ -1,0 +1,68 @@
+fn precondition_positive[Ts...](value Int, context Ts...) Bool
+ensures result == (value > 0) {
+    value > 0
+}
+
+fn precondition_keep[Ts...](value Int, context Ts...) Int
+requires precondition_positive(value, context...)
+ensures result > 0 {
+    value
+}
+
+fn precondition_forward[Us...](value Int, context (Us...)) Int
+requires precondition_positive(value, context...)
+ensures result > 0 {
+    precondition_keep(value, context...)
+}
+
+concept PositiveInputs {
+    fn keep_positive[Ts...](self Self, value Int, context Ts...) Int
+    requires precondition_positive(value, context...)
+    ensures result > 0
+}
+
+impl PositiveInputs for Bool {
+    fn keep_positive[Us...](self Bool, number Int, inputs Us...) Int {
+        number
+    }
+}
+
+fn precondition_ordered(left Int, right Int) Bool {
+    left <= right
+}
+
+type PreconditionOrdered = (Int, Int) where precondition_ordered(self...)
+
+fn precondition_tuple(value (Int, Int)) (Int, Int)
+requires precondition_ordered(value...)
+ensures precondition_ordered(result...) && precondition_ordered(old(value)...) {
+    value
+}
+
+fn precondition_callback(value Int) Int {
+    value
+}
+
+fn exercise_preconditions() {
+    assert precondition_keep(1) == 1
+    assert precondition_keep(2, true, "context", [3]) == 2
+    assert precondition_forward(3, (false, "context")) == 3
+    assert comptime {
+        precondition_keep(4, false)
+    } == 4
+    let source dyn PositiveInputs = true
+    assert source.keep_positive(5, "context", false) == 5
+    assert precondition_keep(6, precondition_callback, source) == 6
+    let ordered = PreconditionOrdered((7, 8))
+    assert ordered.0 == 7 && precondition_tuple((9, 10)).1 == 10
+    let log List[Int] = []
+    assert precondition_keep(mark(log, 11), mark(log, 12), mark(log, 13)) == 11
+    assert log[0] == 11 && log[1] == 12 && log[2] == 13
+    assert std.list.length(log) == 3
+}
+
+async fn precondition_later[Ts...](value Int, context Ts...) Int
+requires precondition_positive(value, context...)
+ensures result > 0 {
+    precondition_keep(value, context...)
+}

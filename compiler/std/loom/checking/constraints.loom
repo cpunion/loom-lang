@@ -37,6 +37,10 @@ fn predicate_form(node Node, calls Bool) Bool {
     if node.kind == NodeKind.Select {
         return predicate_form(child(node, 0), calls)
     }
+    if node.kind == NodeKind.Spread {
+        // Ordinary typing validates its call/tuple position and known shape.
+        return calls && predicate_form(child(node, 0), calls)
+    }
     // Brackets remain ambiguous until typing selects indexing/application.
     // Validate their receiver and arguments here; the typed observation pass
     // still rejects external/nested mutable storage. Scalar-only fast rules do
@@ -185,10 +189,10 @@ fn validate_refinement(env Environment, ty Int, checking Option[List[Int]]) Resu
     if !inline_constraint_base(env, base, 0) {
         let sequence = get(env.types, base).kind == TypeKind.List || get(env.types, base).kind == TypeKind.Bytes
         let root = if sequence {
-                base
-            } else {
-                -1
-            }
+            base
+        } else {
+            -1
+        }
         var reads = invariant_observation(env, program, value, length(stage.locals), root)
         if !get(reads.valid, 0) {
             let active = ints(ty)
