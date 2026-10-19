@@ -136,8 +136,20 @@ fn factories() Bool {
     assert.deepEqual(Object.keys(staticEdit.changes), [uri]);
     assert.equal(staticEdit.changes[uri].length, 4);
     assert.ok(staticEdit.changes[uri].every(edit => staticDocument.getText(edit.range) === 'make'));
-    await client.change(file, TextDocument.applyEdits(staticDocument, staticEdit.changes[uri]), 6);
+    const staticChanged = TextDocument.applyEdits(staticDocument, staticEdit.changes[uri]);
+    await client.change(file, staticChanged, 6);
     assert.deepEqual((await client.wait(file, 6)).diagnostics, []);
+    const defaultEdit = await client.rpc.sendRequest('textDocument/rename', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('relay(self Self)')),
+      newName: 'relay_next',
+    });
+    assert.deepEqual(Object.keys(defaultEdit.changes), [uri]);
+    assert.equal(defaultEdit.changes[uri].length, 2);
+    const current = TextDocument.create(uri, 'loom', 6, staticChanged);
+    const final = TextDocument.applyEdits(current, defaultEdit.changes[uri]);
+    assert.ok(final.includes('Factory.manufacture[Bool]') && final.includes('true.relay_next()'));
+    await client.change(file, final, 7);
+    assert.deepEqual((await client.wait(file, 7)).diagnostics, []);
     assert.equal(await fs.readFile(file, 'utf8'), source);
     console.log('Method rename passed: one checked private slot, overload separation, unused impl words, generic/dyn/bound calls, tests, overlays and incomplete/public refusal.');
   } finally {
