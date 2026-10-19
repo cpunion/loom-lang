@@ -64,7 +64,7 @@ fn prepare_incremental(options Options, project Project, inputs BuildInputs, ide
     }
     cache_trace(concat("definitions reused ", concat(to_text(definitions_reused(cache)),
                 concat(", bodies reused ", to_text(bodies_reused(cache))))))
-    let prepared = prepare_checked(options, project, inputs, checked.checked.program)
+    let prepared = prepare_checked(options, project, inputs, checked.checked.program, checked.checked.bindings)
     match checked.snapshot {
         Option.Some(snapshot) => {
             frontend_publish(root, path, prefix, Prepared {

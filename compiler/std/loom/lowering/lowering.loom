@@ -67,7 +67,8 @@ fn function_type(types List[Type], params List[Int], output Int) Int {
 fn generated(source Function, params List[Int], output Int, locals List[Local], body Expr) Function {
     Function {
         is_async = false
-        symbol = -1
+        // Retain the lexical source owner for diagnostics in lowered callbacks.
+        symbol = source.symbol
         arguments = new[Int]()
         params = params
         result = output

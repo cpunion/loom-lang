@@ -1,6 +1,6 @@
 //! Checked native IR and its minimal layout and source-location descriptors.
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -205,8 +205,23 @@ pub mod checked {
         pub test_names: Vec<String>,
         /// Source-observed target properties; emission must preserve them.
         pub target_inputs: Vec<(String, String)>,
+        /// Optional static diagnostics keyed by native function and source span.
+        pub source_locations: SourceMap,
         /// Public functions of the selected package, for a library object.
         pub exports: Vec<usize>,
+    }
+
+    #[derive(Debug, Default)]
+    pub struct SourceMap {
+        pub paths: Vec<String>,
+        pub sites: std::collections::BTreeMap<(usize, Span), SourcePosition>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct SourcePosition {
+        pub file: usize,
+        pub line: usize,
+        pub column: usize,
     }
 
     #[derive(Debug)]

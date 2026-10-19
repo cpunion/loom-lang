@@ -68,6 +68,7 @@ fn program(locals: Vec<Type>, statements: Vec<checked::Stmt>) -> checked::Progra
         tests: vec![],
         test_names: vec![],
         target_inputs: vec![],
+        source_locations: Default::default(),
         exports: vec![],
     }
 }
@@ -851,7 +852,17 @@ fn direct_access_rejects_invalid_indices_and_bytes() {
             } else {
                 statement(S::Discard(primitive(Type::Int, operation, args)))
             });
-            let (_, output) = emit_run(&program(vec![list], statements), Optimization::O3);
+            let mut source = program(vec![list], statements);
+            source.source_locations.paths.push("memory.loom".into());
+            source.source_locations.sites.insert(
+                (0, Span::default()),
+                checked::SourcePosition {
+                    file: 0,
+                    line: 4,
+                    column: 5,
+                },
+            );
+            let (_, output) = emit_run(&source, Optimization::O3);
             assert!(!output.status.success());
             let message = if operation == Primitive::TextByte {
                 "text byte index out of bounds"
@@ -860,7 +871,10 @@ fn direct_access_rejects_invalid_indices_and_bytes() {
             } else {
                 "list index out of bounds"
             };
-            assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains(&format!("memory.loom:4:5: {message}"))
+            );
         }
     }
 }

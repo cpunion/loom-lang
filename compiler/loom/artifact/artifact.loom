@@ -43,6 +43,9 @@ import std.loom.project.BuildOption
 // Tag 2 contains test names, in the same order as tests. It contains no source
 // text. A source-less checked program can omit diagnostic names and messages.
 // Tag 3 contains observed target properties (name,value), checked by the backend.
+// Tag 4 contains paths, then function groups (function ID, file ID, sites).
+// Each site is span(start,end), line, Unicode-scalar column (both 1-based).
+// This diagnostic metadata contains no source text and has no execution effects.
 // Constraints, proof results, generic metadata and local names are not emitted.
 
 fn raw(buffer Bytes, value Text) {
@@ -258,11 +261,21 @@ fn expression(buffer Bytes, value Expr) {
     }
 }
 
-pub fn encode(program Program) Text {
+pub fn encode(program std.loom.typed.Program) Text {
     encode(program, std.list.new[BuildOption]())
 }
 
-pub fn encode(program Program, targets List[BuildOption]) Text {
+pub fn encode(program std.loom.typed.Program, targets List[BuildOption]) Text {
+    std.bytes.to_text(encoded(program, targets))
+}
+
+pub fn encode(program std.loom.typed.Program, targets List[BuildOption], bindings std.loom.binding.Program) Text {
+    let buffer = encoded(program, targets)
+    source_locations(buffer, program, bindings)
+    std.bytes.to_text(buffer)
+}
+
+fn encoded(program std.loom.typed.Program, targets List[BuildOption]) Bytes {
     let buffer = new()
     raw(buffer, "loom-checked-1\n")
     integer(buffer, length(program.types))
@@ -346,5 +359,5 @@ pub fn encode(program Program, targets List[BuildOption]) Text {
             index = index + 1
         }
     }
-    std.bytes.to_text(buffer)
+    buffer
 }

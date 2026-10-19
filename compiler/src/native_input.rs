@@ -204,11 +204,12 @@ pub fn decode(text: &str) -> Result<c::Program> {
     let mut witnesses = vec![];
     let mut test_names = vec![];
     let mut target_inputs = vec![];
-    let mut features = [false; 3];
+    let mut source_locations = c::SourceMap::default();
+    let mut features = [false; 4];
     while reader.offset != text.len() {
         let tag = reader.index()?;
         let seen = match tag {
-            1..=3 => &mut features[tag - 1],
+            1..=4 => &mut features[tag - 1],
             _ => return Err("unknown checked-IR feature tag".into()),
         };
         if *seen {
@@ -228,7 +229,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
             })?;
         } else if tag == 2 {
             test_names = reader.sequence(Reader::string)?;
-        } else {
+        } else if tag == 3 {
             target_inputs = reader.sequence(|reader| Ok((reader.string()?, reader.string()?)))?;
             let mut names = std::collections::HashSet::new();
             for (name, _) in &target_inputs {
@@ -236,6 +237,36 @@ pub fn decode(text: &str) -> Result<c::Program> {
                     || !names.insert(name)
                 {
                     return Err("invalid or duplicate checked target property".into());
+                }
+            }
+        } else {
+            source_locations.paths = reader.sequence(Reader::string)?;
+            let groups = reader.sequence(|reader| {
+                Ok((
+                    reader.index()?,
+                    reader.index()?,
+                    reader.sequence(|reader| {
+                        Ok((reader.span()?, reader.index()?, reader.index()?))
+                    })?,
+                ))
+            })?;
+            let mut seen = std::collections::HashSet::new();
+            for (function, file, sites) in groups {
+                at(&functions, function)?;
+                at(&source_locations.paths, file)?;
+                if !seen.insert(function) {
+                    return Err("duplicate checked source function".into());
+                }
+                for (span, line, column) in sites {
+                    if line == 0
+                        || column == 0
+                        || source_locations
+                            .sites
+                            .insert((function, span), c::SourcePosition { file, line, column })
+                            .is_some()
+                    {
+                        return Err("invalid or duplicate checked source location".into());
+                    }
                 }
             }
         }
@@ -254,6 +285,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
         tests,
         test_names,
         target_inputs,
+        source_locations,
         exports,
     };
     let mut types = Vec::new();
@@ -1827,6 +1859,9 @@ mod tests {
         let names = "2\n1\n12\npackage.test";
         let dynamic = "1\n0\n0\n";
         let target = "3\n1\n2\nos5\nlinux";
+        let site = "helpers.loom";
+        let paths = format!("1\n{}\n{site}", site.len());
+        let locations = format!("4\n{paths}1\n0\n0\n1\n0\n0\n2\n3\n");
         for tail in [
             String::new(),
             "2\n0\n".into(),
@@ -1834,6 +1869,8 @@ mod tests {
             format!("{names}{dynamic}"),
             format!("{dynamic}{names}"),
             format!("{names}{target}"),
+            locations.clone(),
+            format!("{locations}{names}{target}"),
         ] {
             let program = decode(&format!("{prefix}{tail}")).unwrap();
             let c::StmtKind::Assert {
@@ -1847,12 +1884,28 @@ mod tests {
                 program.test_names.len(),
                 usize::from(tail.contains("package.test"))
             );
+            assert_eq!(
+                program.source_locations.sites.get(&(0, Span::default())),
+                tail.contains(site).then_some(&c::SourcePosition {
+                    file: 0,
+                    line: 2,
+                    column: 3
+                })
+            );
         }
         for (tail, error) in [
             (format!("{names}{names}"), "duplicate"),
             (format!("{dynamic}{dynamic}"), "duplicate"),
-            ("4\n".into(), "unknown"),
+            ("5\n".into(), "unknown"),
             (format!("{target}{target}"), "duplicate"),
+            (format!("{locations}{locations}"), "duplicate"),
+            (format!("4\n{paths}2\n0\n0\n0\n0\n0\n0\n"), "duplicate"),
+            (
+                format!("4\n{paths}1\n0\n0\n2\n0\n0\n2\n3\n0\n0\n2\n3\n"),
+                "duplicate",
+            ),
+            (format!("4\n{paths}1\n0\n0\n1\n0\n0\n0\n3\n"), "invalid"),
+            (format!("4\n{paths}1\n0\n0\n1\n2\n1\n2\n3\n"), "reversed"),
             ("3\n2\n2\nos5\nlinux2\nos5\nmacos".into(), "duplicate"),
             ("3\n1\n7\nunknown1\nx".into(), "invalid"),
             ("2\n2\n1\na1\nb".into(), "count mismatch"),

@@ -45,6 +45,10 @@ No-result functions omit the return type and final return; source `Unit` rejects
 Unused values need explicit `discard`; Task/MustScope obligations cannot be
 discarded. Record fields require newlines or semicolons. Multiline Text and
 comment-preserving `loom fmt` are implemented.
+Native assertions and arithmetic/bounds guards retain lexical source locations
+without runtime source files, including closures, cleanup and async lowering.
+Source positions are static failure-path data; runtime-library-internal faults
+still lack positions. Test faults preserve the active test name and first fault.
 The [wordcount trial](../../compiler/examples/wordcount/README.md) exercises
 initialization, private packages, resources, tests and argument forwarding.
 

@@ -166,10 +166,13 @@ definition file, line and Unicode-scalar column, including assertions in called
 helpers. The diagnostic is compiled into the executable: `test --no-run`
 artifacts do not need source files at execution time. Successful test output is
 unchanged. The first fault's message and test name survive cleanup, even if
-cleanup also fails. Other faults do not yet carry source locations; this is not
-a stack trace or a recover-and-continue test runner. Ordinary executables have
-no test-entry instrumentation, and production builds exclude test-only names
-and source contents.
+cleanup also fails. Native arithmetic overflow, division, shift, bounds and byte
+value guards also carry their lexical source positions, including closures and
+lowered async states. Positions are static failure-path data, not per-call runtime
+instrumentation. Runtime-library-internal faults do not yet carry positions.
+This is not a stack trace or a recover-and-continue test runner. Ordinary
+executables have no test-entry instrumentation, and production builds exclude
+test-only names and source contents.
 
 ## Relocatable local toolchain
 

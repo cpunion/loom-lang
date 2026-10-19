@@ -84,6 +84,7 @@ fn program(
         tests: vec![],
         test_names: vec![],
         target_inputs: vec![],
+        source_locations: Default::default(),
         exports: vec![],
     }
 }
