@@ -80,6 +80,9 @@ impl Stream for ScopedUpload {
 
 fn plain_upload(state UploadProbeState) Result[PlainUpload, Int] {
     state.created[0] = state.created[0] + 1
+    if state.mode == 6 {
+        return Result.Err(73)
+    }
     Result.Ok(PlainUpload {
             state = state
         })
@@ -87,12 +90,7 @@ fn plain_upload(state UploadProbeState) Result[PlainUpload, Int] {
 
 fn scoped_upload(state UploadProbeState) Result[ScopedUpload, Int] {
     Result.Ok(ScopedUpload {
-            source = match plain_upload(state) {
-                Result.Ok(value) => value
-                Result.Err(_) => {
-                    fault_text("unexpected fixture factory error")
-                }
-            }
+            source = plain_upload(state)?
         })
 }
 
@@ -105,6 +103,12 @@ async fn upload_peer(listener ListenerHandle, state UploadProbeState, finished L
     let stream = std.net.tcp.detach(acquired)?
     defer {
         discard close_stream(stream)
+    }
+    if state.mode == 6 {
+        return Result.Ok(match std.net.tcp.read(stream, std.bytes.new(), 1).await {
+                Result.Ok(count) => count == 0
+                Result.Err(_) => true
+            })
     }
     let input = reader(std.net.tcp.chunks.read(stream, 4096), tcp_packet, std.net.http.limits())
     if state.mode <= 1 {
@@ -214,7 +218,7 @@ async fn upload_roundtrip(mode Int, owned Bool) Result[Bool, TcpError] {
         } else {
             match pending.await {
                 Result.Ok(response) => (mode == 0 && response.status == 200) || (mode == 2 && response.status == 413)
-                Result.Err(UploadError.Input(error)) => mode == 1 && error == 73
+                Result.Err(UploadError.Input(error)) => (mode == 1 || mode == 6) && error == 73
                 Result.Err(UploadError.Client(Error.Timeout)) => mode == 4 && state.entered[0]
                 _ => false
             }
@@ -222,12 +226,12 @@ async fn upload_roundtrip(mode Int, owned Bool) Result[Bool, TcpError] {
     }
     finished[0] = true
     let served = serving.await
-    Result.Ok(accepted && state.created[0] == 1 && state.closed[0] == (if owned {
+    Result.Ok(accepted && state.created[0] == 1 && state.closed[0] == (if owned && mode != 6 {
                 1
             } else {
                 0
             }) &&
-        (mode < 2 || (state.pulls[0] == 2 && state.drained[0] == 1)) && match served {
+        (mode < 2 || mode == 6 || (state.pulls[0] == 2 && state.drained[0] == 1)) && match served {
             Result.Ok(value) => value
             _ => false
         })
@@ -243,6 +247,10 @@ test async fn streaming_uploads_accept_plain_and_owned_sources_and_stop_on_input
         _ => false
     }
     assert match upload_roundtrip(1, true).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match upload_roundtrip(6, true).await {
         Result.Ok(value) => value
         _ => false
     }
