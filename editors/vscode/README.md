@@ -132,6 +132,10 @@ headers supply lexical type-parameter declarations and static value/callback
 slots, without evaluating the body, inventing static arguments or borrowing a
 generated instance's identity. A checked type-parameter binding can distinguish
 a shadowed name during nominal rename; unaccounted body occurrences still reject.
+Variadic record/enum headers also retain fixed type fragments and lexical
+parameter bindings: fixed parameters keep their names and packs display as
+`Ts...`. Navigation does not guess expansion widths or publish types for
+unexpanded, pack-dependent compounds.
 These query-only headers contain no executable body
 or proof-success claim. Body/call queries still require the selected function
 and its dependencies to check, including generic/comptime template legality.

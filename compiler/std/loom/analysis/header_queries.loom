@@ -41,7 +41,10 @@ fn append_header_parameters(parameters List[Node], node Node) {
         if group.kind == NodeKind.TypeParameters {
             var parameter = 0
             while parameter < length(group.children) {
-                push(parameters, get(group.children, parameter))
+                let declared = get(group.children, parameter)
+                if declared.kind != NodeKind.TypePack {
+                    push(parameters, declared)
+                }
                 parameter = parameter + 1
             }
         }

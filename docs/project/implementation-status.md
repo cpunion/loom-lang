@@ -74,12 +74,15 @@ inputs. Query-only declaration headers support ordinary/generic and impl
 signatures despite body errors, including original static parameter slots.
 Function/data headers retain their declared parameters rather than caller
 specializations, including compound fields, variant payloads and return types.
+Variadic record/enum headers retain checked fixed type fragments and lexical
+parameter bindings, including packs displayed as `Ts...`, without inventing
+expansion widths. Pack-dependent compound layouts still supply no type evidence.
 Independent body queries isolate unrelated ordinary/template errors while
 validating the selected template, CTFE and witness dependency closure.
 Uninstantiated generic/comptime bodies retain checked local types and source
 bindings with lexical type labels, without inventing runtime instances.
 Nested closures retain their parameters, captures and enclosing type labels too.
-Dependent type values, unexpanded packs and broader body recovery remain limited.
+Dependent type values, pack-dependent layouts and broader body recovery remain limited.
 Recovered queries provide neither build success nor proof evidence.
 Member completion inside `comptime` execution blocks uses staged prefix checking
 and the ordinary runtime-capture boundary; it does not evaluate an unfinished body.

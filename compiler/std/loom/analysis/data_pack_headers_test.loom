@@ -1,0 +1,75 @@
+test fn data_pack_headers_keep_fixed_parameters_and_symbolic_words_in_one_query_scope() {
+    let text = """
+        record Tag {
+            value Int
+        }
+        record Box[T] {
+            value T
+        }
+        record Bundle[Tag, As..., Middle, Bs..., Tail] {
+            tag Tag
+            first (As...)
+            middle List[Middle]
+            second (Bs...)
+            read fn(Tail) Box[Tag]
+        }
+        enum Choice[Ts..., End] {
+            Some((Ts...), Box[End])
+            Empty
+        }
+        """
+    let analysis = accepted(input(text))
+    let fragments = ["Tag\n    first", "As...)\n    middle", "Middle]\n    second",
+        "Bs...)\n    read", "Tail) Box", "Tag]\n}", "Ts...), Box", "End])"]
+    let declarations = ["Tag, As...", "As..., Middle", "Middle, Bs...", "Bs..., Tail",
+        "Tail] {", "Tag, As...", "Ts..., End", "End] {"]
+    let labels = ["Tag", "As...", "Middle", "Bs...", "Tail", "Tag", "Ts...", "End"]
+    let widths = [3, 2, 6, 2, 4, 3, 2, 3]
+    var index = 0
+    while index < length(fragments) {
+        let found = cached_inspection(analysis, text, get(fragments, index))
+        let declared = query_offset(text, get(declarations, index))
+        only_type(found, get(labels, index))
+        only_definition(found, declared, declared + get(widths, index))
+        let binder = cached_inspection(analysis, text, get(declarations, index))
+        only_type(binder, get(labels, index))
+        only_definition(binder, declared, declared + get(widths, index))
+        index = index + 1
+    }
+    let box = query_offset(text, "Box[T] {")
+    let closed = cached_inspection(analysis, text, "Box[End]")
+    only_type(closed, "app.Box[End]")
+    only_definition(closed, box, box + 3)
+    only_type(cached_inspection(analysis, text, "Box[Tag]"), "app.Box[Tag]")
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => saved.header && length(saved.view.functions) == 0 &&
+        saved.scope.span.start == query_offset(text, "record Bundle[")
+        Option.None => false
+    }
+}
+
+test fn data_pack_header_queries_recover_unrelated_bodies_but_reject_invalid_headers() {
+    let text = """
+        record Box[T] {
+            value T
+        }
+        record Bundle[Ts..., End] {
+            values (Ts...)
+            last Box[End]
+        }
+        fn main() {
+            let wrong Int = true
+            discard wrong
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let declared = query_offset(text, "End] {")
+    let found = independent_found(bindings, text, "End]\n}")
+    only_type(found, "End")
+    only_definition(found, declared, declared + 3)
+    let invalid = std.text.replace(text, "last Box[End]", "last Box[End, Int]")
+    assert match inspect_independent(query_bindings(input(invalid)), 0, query_offset(invalid, "Ts...)")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}

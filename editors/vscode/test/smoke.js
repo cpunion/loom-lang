@@ -190,6 +190,11 @@ impl[Item] Echo for Box[Item] {
 fn static_header[Item](comptime enabled Bool, value Item) Item {
     true
 }
+record Packet[Item, Ts..., End] {
+    first Item
+    values (Ts...)
+    last Box[End]
+}
 fn main() {}
 `;
   const client = await session({ executable, stdRoot }, folder);
@@ -209,6 +214,10 @@ fn main() {}
         ['Item](comptime', 'Item](comptime', 'Item'],
         ['Item) Item {', 'Item](comptime', 'Item'],
         ['enabled Bool', 'enabled Bool', 'Bool'],
+        ['Item\n    values', 'Item, Ts...', 'Item'],
+        ['Ts...)\n    last', 'Ts..., End', 'Ts...'],
+        ['Ts..., End', 'Ts..., End', 'Ts...'],
+        ['End]\n}', 'End] {', 'End'],
       ]) {
         const params = { textDocument: { uri }, position: document.positionAt(text.indexOf(fragment)) };
         const hover = await client.rpc.sendRequest('textDocument/hover', params);

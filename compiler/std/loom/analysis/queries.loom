@@ -10,6 +10,7 @@ import std.loom.checking.CheckedQuery
 import std.loom.checking.StagedQuery
 import std.loom.checking.SignatureHeader
 import std.loom.checking.TypeHeader
+import std.loom.checking.ParameterHeader
 import std.loom.checking.check_query
 import std.loom.binding.Program
 import std.loom.checking.type_name
@@ -87,7 +88,7 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
         index = index + 1
     }
     let kind = node.kind
-    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Construct || kind == NodeKind.Type || kind == NodeKind.DynType || kind == NodeKind.RecordPattern ||
+    if kind == NodeKind.Name || kind == NodeKind.TypePack || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Construct || kind == NodeKind.Type || kind == NodeKind.DynType || kind == NodeKind.RecordPattern ||
     (kind == NodeKind.Pattern && node.value != token.value) {
         var segment = -1
         var count = 0
@@ -845,6 +846,7 @@ fn checked_inspection(analysis Analysis, file Int, offset Int, tokens List[Token
         functions = analysis.program.functions
         headers = new[SignatureHeader]()
         type_headers = new[TypeHeader]()
+        parameter_headers = new[ParameterHeader]()
         declarations = if length(analysis.declarations) == 0 {
             new[std.loom.checking.DeclarationReference]()
         } else {
@@ -930,6 +932,23 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int, tokens List[Token])
         return Option.Some(report)
     }
     var index = 0
+    while index < length(analysis.parameter_headers) {
+        let header = get(analysis.parameter_headers, index)
+        let owner = get(analysis.bindings.symbols, header.symbol)
+        if owner.file == file && same_span(header.node.span, target.node.span) && target.segment == 0 {
+            add_type(report, if header.parameter.kind == NodeKind.TypePack {
+                    concat(header.parameter.value, "...")
+                } else {
+                    header.parameter.value
+                })
+            declaration(analysis, report, owner.file, header.parameter)
+        }
+        index = index + 1
+    }
+    if length(report.definitions) > 0 {
+        return Option.Some(report)
+    }
+    index = 0
     while index < length(analysis.headers) {
         let header = get(analysis.headers, index)
         let declaration = get(analysis.bindings.symbols, header.symbol)
@@ -1014,6 +1033,7 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int, tokens List[Token])
                 functions = stage.functions
                 headers = new[SignatureHeader]()
                 type_headers = new[TypeHeader]()
+                parameter_headers = new[ParameterHeader]()
                 // Stages are flat; inspecting one must not revisit its parent.
                 stages = new[StagedQuery]()
                 ..analysis
