@@ -103,3 +103,59 @@ test fn uninstantiated_data_pack_headers_bind_constructors_before_word_expansion
         }
         """)
 }
+
+test fn uninstantiated_data_pack_headers_check_symbolic_widths_and_bounds() {
+    rejects("""
+        record Box[T] {
+            value T
+        }
+        pub record Row[Ts...] {
+            values Box[Ts...]
+        }
+        """)
+    rejects("""
+        concept Tagged {}
+        record Box[T Tagged] {
+            value T
+        }
+        pub enum Row[Ts...] {
+            Values(Box[Ts]...)
+        }
+        """)
+    discard accepted("""
+        concept Tagged {}
+        record Box[T Tagged] {
+            value T
+        }
+        record Wrapped[T] {
+            value T
+        }
+        impl[T] Tagged for Wrapped[T] {}
+        pub record Row[Ts... Tagged] {
+            values (Box[Ts]...)
+        }
+        pub enum Constructed[Ts...] {
+            Values(Box[Wrapped[Ts]]...)
+        }
+        """)
+    rejects("""
+        concept Tagged {}
+        record Box[T Tagged] {
+            value T
+        }
+        record Row[As... Tagged, Bs...] {
+            values (Box[Bs]...)
+        }
+        """)
+    discard accepted("""
+        concept Tagged {}
+        record Batch[Ts... Tagged] {
+            values (Ts...)
+        }
+        record Row[As... Tagged, Bs... Tagged] {
+            left Batch[As...]
+            right Batch[Bs..., As...]
+            callback fn((As...), Batch[Bs...]) Batch[As...]
+        }
+        """)
+}

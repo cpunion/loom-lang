@@ -171,10 +171,11 @@ Symbolic family contracts use induction and word entailment, not sampled widths.
 Constructed and nested words can derive capabilities through checked impl
 prerequisites without granting hidden bounds to raw elements.
 Declaration headers check lexical expansion scope before proof-input erasure.
-Unused data-pack headers bind global constructors before expansion and check
-pack-independent field/payload types and bounds through the ordinary resolver,
-without choosing widths.
-Pack-dependent layout obligations still require symbolic or concrete checking.
+Unused data-pack headers bind global constructors and check closed field/payload
+types through the ordinary resolver. Nominal structural words also discharge
+parameter widths and capability prerequisites through the universal family-shape
+matcher, including nested constructors and independent packs; no width is sampled.
+Unsupported dependent projections and layouts still require further checking.
 Pack-bearing preconditions compose pure family helpers through the same universal
 proof. Tuple spreads work in contracts and refinement predicates; opaque helper
 arguments provide no storage or callback-behavior evidence.

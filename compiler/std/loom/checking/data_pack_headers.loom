@@ -1,5 +1,5 @@
-// Bind constructor names and check closed header obligations without choosing
-// pack widths. Whole words stay unresolved until symbolic/concrete shape checks.
+// Check closed obligations and symbolic nominal words without choosing pack
+// widths. Reuse the ordinary resolver and universal family-shape matcher.
 fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text],
     parameters List[Node], arguments List[Int], obligations List[Requirement],
     headers Option[List[TypeHeader]]) Result[Bool, Failure] {
@@ -47,6 +47,14 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
         // still need specialization; a global constructor must already bind.
         if !lexical {
             discard type_constructor(env, owner, node)?
+            // Check symbolic nominal words through the same universal matcher
+            // as variadic family proofs, never by choosing a representative arity.
+            let schema = type_pattern_schema(env, owner, node, true, 0, true)?
+            if !pack_layout_well_formed(empty_context(env, owner), symbol(env, owner).node,
+                schema, ints(512), 0)? {
+                return Result.Err(failure(env, owner, node,
+                        "variadic data header needs well-formed type arguments for every member"))
+            }
         }
     }
     index = 0
