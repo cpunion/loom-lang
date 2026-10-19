@@ -611,8 +611,14 @@ fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
         }
         return Result.Ok(true)
     }
-    if node.kind == NodeKind.Call {
-        let arguments = child(node, 1).children
+    if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall {
+        // Macros elaborate through ordinary typing. The checked expansion still
+        // needs pure inputs, eager definedness and the mandatory contract proof.
+        let arguments = child(node, if node.kind == NodeKind.MacroCall {
+                0
+            } else {
+                1
+            }).children
         var index = 0
         while index < length(arguments) {
             discard scalar_contract(context, get(arguments, index))?

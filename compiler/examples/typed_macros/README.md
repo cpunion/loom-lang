@@ -27,6 +27,11 @@ private definition-site helpers, opaque foreign types, mutable closure captures,
 cleanup, constraints, suspension and required proofs. Generator code and reflection descriptors disappear
 from runtime reachability unless separately called or exported as ordinary code.
 
+Macros also compose `requires` and `ensures`, as `keep_positive` demonstrates.
+Their checked expansions retain predicate purity, eager input evaluation and
+mandatory postcondition proofs; generated code cannot turn an unknown proof
+into an assumption.
+
 Generators use the bounded compile-time evaluator and tracked build inputs.
 Effects, faults, invalid syntax/types and expansion cycles reject. Abstract
 generic inputs need a contextual result type until instantiation; they provide

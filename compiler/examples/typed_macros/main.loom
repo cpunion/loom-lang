@@ -82,6 +82,13 @@ fn positive(types List[Schema]) Text {
     "$0 > 0"
 }
 
+fn keep_positive(value Int) Int
+requires positive!(value)
+ensures positive!(result)
+{
+    value
+}
+
 type Positive = Int where positive!(self)
 
 fn checked(value Int) Bool {
@@ -128,6 +135,7 @@ fn exercise() {
     assert twice!(next(values)) == 42 && length(values) == 2
     assert nested!(20) == 41
     assert proved(21) == 42
+    assert keep_positive(21) == 21
     assert checked(1) && !checked(0)
     let number, text = pair!(42, "answer")
     assert number == 42 && text == "answer"

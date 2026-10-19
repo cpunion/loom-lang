@@ -4042,6 +4042,9 @@ checked in the generator's package. `$0`, `$1`, ... refer to arguments evaluated
 exactly once, left to right; other names cannot capture caller locals. Generators
 need no separate package. Normal contracts, visibility, cleanup and Task rules
 apply to expanded code. The generator itself adds no runtime call edge.
+`requires` and `ensures` can use these macros too: the checked expansion must
+remain a pure predicate, and every postcondition still needs its ordinary proof.
+Unused macro inputs remain eager; generation cannot waive their fault checks.
 
 See the runnable [typed macro example](examples/typed_macros), including generic
 selection, heterogeneous inputs, closures, cleanup and required proofs. `loom fmt`
