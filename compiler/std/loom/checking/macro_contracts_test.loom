@@ -1,0 +1,126 @@
+fn macro_contract_source(body Text) Result[std.loom.typed.Program, Failure] {
+    reflected(concat("""
+        fn positive(types List[Schema]) Text {
+            discard types
+            "$0 > 0"
+        }
+        fn ignored(types List[Schema]) Text {
+            discard types
+            "true"
+        }
+        fn mutate_value(values List[Int]) Bool {
+            values[0] = 1
+            true
+        }
+        """, concat("\n", body)))
+}
+
+test fn macro_contracts_share_typed_expansion_and_mandatory_proofs() {
+    match macro_contract_source("""
+        fn keep(value Int) Int
+        requires positive!(value)
+        ensures positive!(result)
+        {
+            value
+        }
+        fn main() {
+            assert keep(1) == 1
+        }
+        """) {
+        Result.Ok(program) => {
+            // Only the entry requirement executes; generators are compile-time
+            // inputs, not runtime call roots or postcondition checks.
+            assert length(program.functions) == 2
+        }
+        Result.Err(failed) => {
+            discard failed
+            assert false
+        }
+    }
+    assert match macro_contract_source("""
+        fn wrong(value Int) Int
+        ensures positive!(result)
+        {
+            value
+        }
+        fn main() {}
+        """) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match macro_contract_source("""
+        fn keep[Ts...](context Ts...) Int
+        requires positive!(1)
+        {
+            discard context
+            1
+        }
+        fn main() {
+            assert keep() == 1
+            assert keep(2, true) == 1
+        }
+        """) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match macro_contract_source("""
+        fn shadowed[Ts...](positive Ts...) Int
+        requires positive!(1)
+        {
+            discard positive
+            1
+        }
+        fn main() {
+            discard shadowed(2)
+        }
+        """) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn macro_contracts_retain_eager_inputs_and_expansion_purity() {
+    assert match macro_contract_source("""
+        fn wrong(value Int) Int
+        ensures ignored!(1 / 0)
+        {
+            value
+        }
+        """) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    // The same generated store is legal ordinary code. Its rejection below
+    // must come from predicate purity, not malformed generated syntax.
+    assert match macro_contract_source("""
+        fn mutate(types List[Schema]) Text {
+            discard types
+            "mutate_value($0)"
+        }
+        fn main() {
+            let values = [0]
+            assert mutate!(values)
+            assert values[0] == 1
+        }
+        """) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert match macro_contract_source("""
+        fn mutate(types List[Schema]) Text {
+            discard types
+            "mutate_value($0)"
+        }
+        fn wrong(values List[Int]) Int
+        requires mutate!(values)
+        {
+            0
+        }
+        """) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
