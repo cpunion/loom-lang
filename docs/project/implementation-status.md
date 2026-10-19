@@ -96,8 +96,10 @@ implementation without requiring a compiler process, filesystem or LLVM.
 An `Analysis` keeps its checked source, IR and query caches private. Explicit
 metadata, function and expression copies can be edited without changing later
 queries, including across later analyses and scheduler suspension. The editor
-and semantic-change tools request metadata once; ordinary queries do not clone
-the whole project. Mutable parser and IR builders remain available separately.
+and semantic-change tools request editable metadata once when needed. Read-only
+editor hover uses the same lexical parameter/import evidence as public analysis,
+without exporting the whole project. Mutable parser and IR builders remain
+available separately.
 Hosts can explicitly supply the source `std.loom.proof.z3` adapter for unresolved
 supported proofs; default analysis stays I/O-free and ordinary programs gain no
 solver dependency.

@@ -3,6 +3,7 @@ import std.loom.analysis.Analysis
 import std.loom.analysis.AnalysisData
 import std.loom.analysis.snapshot
 import std.loom.analysis.analyze_cached
+import std.loom.analysis.source_paths
 import std.loom.project.BuildInput
 import std.loom.binding.Failure
 import std.io.read_chunk
@@ -18,6 +19,7 @@ import std.loom.binding.bind_headers
 record EditorAnalysis {
     snapshot std.loom.analysis.Analysis
     data List[AnalysisData]
+    paths List[Text]
     inputs List[BuildInput]
     targets List[std.loom.project.BuildOption]
 }
@@ -106,6 +108,7 @@ fn editor_checked(bindings std.loom.binding.Program, inputs BuildInputs, cache E
     let analysis = EditorAnalysis {
         snapshot = checked
         data = new[AnalysisData]()
+        paths = source_paths(checked)
         // Host observation logs are not proof evidence: reuse validates them
         // against the analysis's independently owned bytes/options first.
         inputs = inputs.files

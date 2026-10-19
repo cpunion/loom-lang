@@ -339,7 +339,7 @@ fn editor_execute(args List[Text], cache EditorCache) EditorOutput {
                     }
                 }
                 let diagnostic = editor_diagnostic_json(get(project.files, failed.source).path, failed.diagnostic)
-                return editor_input_report(inputs, editor_inspection(bound,
+                return editor_input_report(inputs, editor_inspection(editor_paths(bound),
                         inspect_independent(bound, index, options.offset, inputs), diagnostic))
             }
             editor_input_report(inputs, editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic))
@@ -361,7 +361,7 @@ fn editor_analyzed(args List[Text], options EditorOptions, project Project, anal
         let output = if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
             editor_symbols(options, analysis, index, options.offset, inputs)
         } else {
-            editor_inspection(editor_data(analysis).bindings, editor_bound_inspection(analysis, index, options.offset, inputs), "")
+            editor_inspection(analysis.paths, inspect_at(analysis.snapshot, index, options.offset), "")
         }
         return editor_input_report(inputs, output)
     }

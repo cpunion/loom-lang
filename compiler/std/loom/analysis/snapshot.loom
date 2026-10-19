@@ -40,6 +40,43 @@ pub fn snapshot(analysis Analysis) AnalysisData {
     }
 }
 
+// File IDs can be resolved without exporting any mutable source or AST storage.
+pub fn source_paths(analysis Analysis) List[Text] {
+    let paths = new[Text](length(analysis.state.bindings.files))
+    var index = 0
+    while index < length(analysis.state.bindings.files) {
+        push(paths, get(analysis.state.bindings.files, index).path)
+        index = index + 1
+    }
+    paths
+}
+
+pub fn static_binding_at(analysis Analysis, file Int, offset Int) Option[StaticBinding] {
+    if file < 0 || file >= length(analysis.state.bindings.files) {
+        return Option.None
+    }
+    match lex(get(analysis.state.bindings.files, file).text) {
+        Result.Ok(tokens) => match token_at(tokens, offset) {
+            Option.Some(token) => static_binding(analysis.state, file, token, tokens)
+            Option.None => Option.None
+        }
+        Result.Err(_) => Option.None
+    }
+}
+
+pub fn import_definition_at(analysis Analysis, file Int, offset Int) Option[Location] {
+    if file < 0 || file >= length(analysis.state.bindings.files) {
+        return Option.None
+    }
+    match lex(get(analysis.state.bindings.files, file).text) {
+        Result.Ok(tokens) => match token_at(tokens, offset) {
+            Option.Some(token) => import_definition(analysis.state, file, token, tokens)
+            Option.None => Option.None
+        }
+        Result.Err(_) => Option.None
+    }
+}
+
 // A copied function is an editable draft; its IDs still address this analysis.
 pub fn function_at(analysis Analysis, index Int) std.loom.typed.Function {
     std.loom.typed.snapshot(get(analysis.state.program.functions, index))

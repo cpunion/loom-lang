@@ -822,6 +822,34 @@ fn checked_inspection(analysis AnalysisState, file Int, offset Int, tokens List[
     if file < 0 || file >= length(analysis.source.files) {
         return Option.None
     }
+    match token_at(tokens, offset) {
+        Option.Some(token) => {
+            match static_binding(analysis, file, token, tokens) {
+                Option.Some(binding) => {
+                    return Option.Some(Inspection {
+                            span = token.span
+                            types = binding.types
+                            definitions = [binding.declaration]
+                        })
+                }
+                Option.None => {
+                }
+            }
+            match import_definition(analysis, file, token, tokens) {
+                Option.Some(location) => {
+                    return Option.Some(Inspection {
+                            span = token.span
+                            types = new[Text]()
+                            definitions = [location]
+                        })
+                }
+                Option.None => {
+                }
+            }
+        }
+        Option.None => {
+        }
+    }
     if source_contract_at(get(analysis.source.files, file).tree, offset) {
         return inspect_source_contract(analysis, file, offset, tokens)
     }

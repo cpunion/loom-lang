@@ -1,0 +1,99 @@
+test fn public_static_bindings_and_paths_do_not_export_mutable_evidence() {
+    let text = """
+        fn increment(value Int) Int {
+            value + 1
+        }
+
+        fn apply(comptime action fn(Int) Int, value Int) Int {
+            action(value)
+        }
+
+        fn main() {
+            assert apply(increment, 2) == 3
+        }
+        """
+    let analysis = published(input(text))
+    let use = offset(text, "action(value)")
+    let binding = match static_binding_at(analysis, 0, use) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    let declared = offset(text, "action fn")
+    assert binding.declaration.span.start == declared
+    assert length(binding.references) == 2
+    assert get(binding.types, 0) == "fn(Int) Int"
+    discard take_last(binding.references)
+    discard take_last(binding.types)
+    let paths = source_paths(analysis)
+    set(paths, 0, "changed.loom")
+    assert get(source_paths(analysis), 0) == "main.loom"
+    let found = match inspect_at(analysis, 0, use) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    only_definition(found, declared, declared + 6)
+    only_type(found, "fn(Int) Int")
+}
+
+test fn public_import_navigation_agrees_with_regular_inspection() {
+    let text = """
+        import helper.number
+
+        fn main() {
+            assert number() == 3
+        }
+        """
+    let project = input(text)
+    push(project.modules, ModuleInstance {
+            name = "helper"
+            source = "/helper"
+        })
+    push(project.packages, Package {
+            instance = 1
+            relative = ""
+            imports = new[PackageImport]()
+        })
+    push(get(project.packages, 0).imports, PackageImport {
+            spelling = "helper"
+            target = 1
+        })
+    let declaration = """
+        pub fn number() Int {
+            3
+        }
+        """
+    push(project.files, SourceFile {
+            package = 1
+            path = "/helper/main.loom"
+            text = declaration
+            tree = get(input(declaration).files, 0).tree
+            test_only = false
+            trusted_std = false
+        })
+    let analysis = published(project)
+    let position = offset(text, "number")
+    let target = match import_definition_at(analysis, 0, position) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    assert target.file == 1 && target.span.start == 7
+    let found = match inspect_at(analysis, 0, position) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    assert length(found.definitions) == 1
+    assert get(found.definitions, 0).file == target.file
+    assert same_span(get(found.definitions, 0).span, target.span)
+}
