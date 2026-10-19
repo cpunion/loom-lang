@@ -4,6 +4,8 @@ import std.loom.typed.Variant
 import std.loom.typed.Method
 import std.loom.typed.Interface
 import std.loom.typed.Witness
+import std.loom.typed.Arm
+import std.loom.source.Span
 import std.list.new
 import std.list.push
 import std.text.ends_with
@@ -13,6 +15,42 @@ test fn counted_fields_preserve_utf8_newlines_and_nuls() {
     integer(buffer, -9223372036854775808)
     text(buffer, "é\n\0")
     assert std.bytes.to_text(buffer) == "-9223372036854775808\n4\né\n\0"
+}
+
+fn encoded_expression(kind ExprKind, marker Text, index Int) Text {
+    let buffer = std.bytes.new()
+    expression(buffer, Expr {
+            kind = kind
+            ty = 0
+            span = Span {
+                start = 0
+                end = 1
+            }
+            text = marker
+            index = index
+            falls = true
+            children = std.list.new[Expr]()
+            arms = std.list.new[Arm]()
+        })
+    std.bytes.to_text(buffer)
+}
+
+test fn resource_pattern_roles_do_not_change_executable_artifacts() {
+    let kinds = [ExprKind.Match, ExprKind.If, ExprKind.Record, ExprKind.Variant, ExprKind.Block]
+    let markers = ["pattern-decision", "pattern-literal", "pattern-rebuild", "pattern-rebuild", "pattern-product"]
+    var index = 0
+    while index < std.list.length(kinds) {
+        let kind = std.list.get(kinds, index)
+        let marker = std.list.get(markers, index)
+        assert encoded_expression(kind, marker, 7) == encoded_expression(kind, "", if kind == ExprKind.Block {
+                -1
+            } else {
+                7
+            })
+        // The same bytes in a source literal remain observable data.
+        assert encoded_expression(ExprKind.Text, marker, -1) != encoded_expression(ExprKind.Text, "", -1)
+        index = index + 1
+    }
 }
 
 test fn empty_checked_program_has_a_deterministic_stream() {
