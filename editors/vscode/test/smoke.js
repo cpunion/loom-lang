@@ -547,9 +547,13 @@ fn generated(types List[Schema]) Text {
 }
 
 async function main() {
+  if (process.argv.length > 2) {
+    throw new Error('LSP smoke does not accept arguments. Use LOOM_EDITOR_COMPILER and LOOM_EDITOR_STD to select the toolchain.');
+  }
   const repository = path.resolve(__dirname, '../../..');
-  const executable = process.env.LOOM_EDITOR_COMPILER || path.join(repository, 'target', process.platform === 'win32' ? 'loom.exe' : 'loom');
-  const stdRoot = process.env.LOOM_EDITOR_STD || path.join(repository, 'compiler/std');
+  const executable = path.resolve(process.env.LOOM_EDITOR_COMPILER || path.join(repository, 'target', process.platform === 'win32' ? 'loom.exe' : 'loom'));
+  const stdRoot = path.resolve(process.env.LOOM_EDITOR_STD || path.join(repository, 'compiler/std'));
+  console.log(`LSP smoke toolchain: ${executable}; std: ${stdRoot}`);
   const folder = path.join(__dirname, 'fixtures/project');
   const file = path.join(folder, 'main.loom');
   const saved = await fs.readFile(file, 'utf8');
