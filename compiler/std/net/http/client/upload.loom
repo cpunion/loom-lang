@@ -1,0 +1,147 @@
+import std.net.http.RequestMetadata
+import std.net.http.RequestWriter
+import std.net.http.request_writer
+import std.net.http.WriteError
+import std.net.http.write_request
+import std.resource.Dispose
+
+pub record UploadRequest {
+    method Text
+    url Text
+    headers List[Header]
+    trailers List[Header]
+}
+
+pub enum UploadError[E] {
+    Input(E)
+    Client(Error)
+}
+
+// One fresh lexical owner works for both ordinary and resource producers.
+// Structural cleanup drains only the stored MustScope payload, if any.
+record UploadSource[S Stream, E] {
+    value Result[S, E]
+}
+
+impl[S Stream, E] MustScope for UploadSource[S, E] {
+}
+
+impl[S Stream, E] Dispose for UploadSource[S, E] {
+    fn dispose(self UploadSource[S, E]) {
+    }
+}
+
+pub fn upload_request(method Text, url Text) UploadRequest {
+    UploadRequest {
+        method = method
+        url = url
+        headers = std.list.new[Header]()
+        trailers = std.list.new[Header]()
+    }
+}
+
+fn upload_error[E](error Error) UploadError[E] {
+    UploadError.Client(error)
+}
+
+fn prepare_upload(value UploadRequest, configuration Options) Result[Prepared[RequestWriter], Error] {
+    let encode = fn(method Text, target Text, headers List[Header], maximum Limits) Result[RequestWriter, ProtocolError] {
+        request_writer(RequestMetadata {
+                method = method
+                target = target
+                headers = headers
+                trailers = value.trailers
+            }, maximum)
+    }
+    prepare[RequestWriter](value.method, value.url, value.headers, configuration, encode)
+}
+
+async fn write_source[S Stream, E](transport Transport, writer RequestWriter,
+    source S, bytes fn(S.Item) Result[Bytes, E]) Result[Int, UploadError[E]] {
+    let sink = fn(chunk Bytes) Task[Result[Int, Error]] {
+        write_request(transport, chunk)
+    }
+    match std.net.http.write_request(writer, source, bytes, sink).await {
+        Result.Ok(count) => Result.Ok(count)
+        Result.Err(WriteError.Input(error)) => Result.Err(UploadError.Input(error))
+        Result.Err(WriteError.Sink(error)) => Result.Err(UploadError.Client(error))
+        Result.Err(WriteError.Protocol(error)) => Result.Err(UploadError.Client(Error.Protocol(error)))
+        Result.Err(WriteError.Count(_, _)) => Result.Err(UploadError.Client(Error.Protocol(ProtocolError.Framing)))
+    }
+}
+
+async fn write_upload[A, S Stream, E](transport Transport, writer RequestWriter,
+    create fn(A) Result[S, E], input A, bytes fn(S.Item) Result[Bytes, E]) Result[Int, UploadError[E]] {
+    var success = false
+    defer {
+        if !success {
+            abort_transport(transport)
+        }
+    }
+    scoped produced = UploadSource[S, E] {
+        value = create(input)
+    }
+    let outcome = match produced.value {
+        Result.Ok(source) => write_source(transport, writer, source, bytes).await
+        Result.Err(error) => Result.Err(UploadError.Input(error))
+    }
+    success = match outcome {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    outcome
+}
+
+async fn upload_failed[T, E](error UploadError[E]) Result[T, UploadError[E]] {
+    Result.Err(error)
+}
+
+async fn upload_bounded[T, A, S Stream, E](prepared Prepared[RequestWriter], deadline Int,
+    create fn(A) Result[S, E], input A, bytes fn(S.Item) Result[Bytes, E],
+    handler fn(Incoming) Task[Result[T, Error]]) Result[T, UploadError[E]] {
+    if monotonic_ns() >= deadline {
+        return Result.Err(UploadError.Client(Error.Timeout))
+    }
+    let writer = fn(transport Transport) Task[Result[Int, UploadError[E]]] {
+        write_upload(transport, prepared.payload, create, input, bytes)
+    }
+    match at(exchange[T, UploadError[E], RequestWriter](prepared, writer, handler, upload_error[E]), deadline).await {
+        Outcome.Completed(value) => value
+        Outcome.Cancelled => Result.Err(UploadError.Client(Error.Timeout))
+        Outcome.Faulted(error) => {
+            fault_text(error.message)
+        }
+    }
+}
+
+// The producer is constructed inside the upload child, never captured from an
+// existing scoped owner. No producer is created for preflight errors/timeouts.
+pub fn upload[A, S Stream, E](value UploadRequest, create fn(A) Result[S, E], input A,
+    bytes fn(S.Item) Result[Bytes, E]) Task[Result[Response, UploadError[E]]] {
+    upload(value, options(), create, input, bytes)
+}
+
+pub fn upload[A, S Stream, E](value UploadRequest, configuration Options,
+    create fn(A) Result[S, E], input A, bytes fn(S.Item) Result[Bytes, E]) Task[Result[Response, UploadError[E]]] {
+    consume_upload(value, configuration, create, input, bytes, collect_response)
+}
+
+pub fn consume_upload[T, A, S Stream, E](value UploadRequest, create fn(A) Result[S, E], input A,
+    bytes fn(S.Item) Result[Bytes, E], handler fn(Incoming) Task[Result[T, Error]]) Task[Result[T, UploadError[E]]] {
+    consume_upload(value, options(), create, input, bytes, handler)
+}
+
+pub fn consume_upload[T, A, S Stream, E](value UploadRequest, configuration Options,
+    create fn(A) Result[S, E], input A, bytes fn(S.Item) Result[Bytes, E],
+    handler fn(Incoming) Task[Result[T, Error]]) Task[Result[T, UploadError[E]]] {
+    let prepared = match prepare_upload(value, configuration) {
+        Result.Ok(value) => value
+        Result.Err(error) => {
+            return upload_failed[T, E](UploadError.Client(error))
+        }
+    }
+    if configuration.timeout_ns == 0 {
+        return upload_failed[T, E](UploadError.Client(Error.Timeout))
+    }
+    upload_bounded(prepared, timeout_deadline(configuration.timeout_ns), create, input, bytes, handler)
+}

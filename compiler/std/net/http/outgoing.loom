@@ -21,6 +21,28 @@ record Outgoing {
     limits Limits
 }
 
+pub record RequestWriter {
+    state WriterState
+}
+
+record WriterState {
+    output Outgoing
+    started List[Bool]
+}
+
+// Snapshot and validate before the caller creates its network Task. Copies
+// share one owner-thread cursor, not independently replayable requests.
+pub fn request_writer(value RequestMetadata, maximum Limits) Result[RequestWriter, ProtocolError]
+requires valid_limits(maximum)
+{
+    Result.Ok(RequestWriter {
+            state = WriterState {
+                output = outgoing(value, maximum)?
+                started = [false]
+            }
+        })
+}
+
 fn outgoing(value RequestMetadata, maximum Limits) Result[Outgoing, ProtocolError] {
     let start, headers = request_fields(value.method, value.target, value.headers, maximum)?
     let shape = framing(headers, maximum.body_bytes)?
@@ -100,12 +122,23 @@ pub async fn write_request[S Stream, E, F](value RequestMetadata, source S,
     maximum Limits) Result[Int, WriteError[E, F]]
 requires valid_limits(maximum)
 {
-    let output = match outgoing(value, maximum) {
+    let writer = match request_writer(value, maximum) {
         Result.Ok(value) => value
         Result.Err(error) => {
             return Result.Err(WriteError.Protocol(error))
         }
     }
+    write_request(writer, source, bytes, sink).await
+}
+
+pub async fn write_request[S Stream, E, F](writer RequestWriter, source S,
+    bytes fn(S.Item) Result[Bytes, E], sink fn(Bytes) Task[Result[Int, F]]) Result[Int, WriteError[E, F]] {
+    if writer.state.started[0] {
+        return Result.Err(WriteError.Protocol(ProtocolError.Closed))
+    }
+    writer.state.started[0] = true
+    let output = writer.state.output
+    let maximum = output.limits
     var count = output_chunk[E, F](output.head, 0, sink).await?
     var total = 0
     while true {

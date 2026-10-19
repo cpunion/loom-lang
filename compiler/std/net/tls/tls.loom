@@ -155,6 +155,16 @@ pub fn close(stream std.net.tls.Stream) Result[Int, TlsError] {
     outcome
 }
 
+// Revoke aliases and wake active I/O, unlike close's drain-first contract.
+pub fn abort(stream std.net.tls.Stream) Result[Int, TlsError] {
+    if get(stream.state.flags, 0) == 2 {
+        return Result.Err(TlsError.Closed)
+    }
+    set(stream.state.flags, 0, 2)
+    discard tls_release(stream.state.token)
+    transport(std.net.tcp.abort(stream.state.transport))
+}
+
 fn finish_operation(stream std.net.tls.Stream, slot Int, success Bool) {
     if slot == 0 {
         set(stream.state.flags, 2, 0)
@@ -165,9 +175,7 @@ fn finish_operation(stream std.net.tls.Stream, slot Int, success Bool) {
     if !success && get(stream.state.flags, 0) != 2 {
         // A cancelled write may have sent only part of a TLS record. Retiring
         // the stream prevents later operations from reusing that broken state.
-        set(stream.state.flags, 0, 2)
-        discard tls_release(stream.state.token)
-        discard std.net.tcp.abort(stream.state.transport)
+        discard abort(stream)
     }
 }
 

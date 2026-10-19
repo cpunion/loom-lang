@@ -25,6 +25,7 @@ import std.net.tcp.write_bytes
 import std.net.tls.open
 import std.net.tls.detach
 import std.net.tls.close
+import std.net.tls.abort
 import std.net.tls.read
 import std.net.tls.write_bytes
 import std.net.tls.protocol
@@ -100,10 +101,10 @@ pub fn get(url Text, configuration Options) Task[Result[Response, Error]] {
     send(request("GET", url), configuration)
 }
 
-record Prepared {
+record Prepared[P] {
     endpoint Url
     method Text
-    wire Bytes
+    payload P
     limits Limits
     tls ClientOptions
     max_informational Int
@@ -126,13 +127,27 @@ fn tls_options(configuration Options) ClientOptions {
     }
 }
 
-fn prepare(value std.net.http.client.Request, configuration Options) Result[Prepared, Error] {
+fn prepare(value std.net.http.client.Request, configuration Options) Result[Prepared[Bytes], Error] {
+    let encode = fn(method Text, target Text, headers List[Header], maximum Limits) Result[Bytes, ProtocolError] {
+        encode_request(std.net.http.Request {
+                method = method
+                target = target
+                headers = headers
+                body = value.body
+                trailers = std.list.new[Header]()
+            }, maximum)
+    }
+    prepare[Bytes](value.method, value.url, value.headers, configuration, encode)
+}
+
+fn prepare[P](method Text, url Text, fields List[Header], configuration Options,
+    encode fn(Text, Text, List[Header], Limits) Result[P, ProtocolError]) Result[Prepared[P], Error] {
     let maximum = configuration.limits
     if configuration.timeout_ns < 0 || configuration.max_informational < 0 ||
     maximum.line_bytes < 0 || maximum.metadata_bytes < 0 || maximum.body_bytes < 0 {
         return Result.Err(Error.Options)
     }
-    let endpoint = match parse(value.url) {
+    let endpoint = match parse(url) {
         Result.Ok(parsed) => parsed
         Result.Err(error) => {
             return Result.Err(Error.Url(error))
@@ -141,13 +156,13 @@ fn prepare(value std.net.http.client.Request, configuration Options) Result[Prep
     if !endpoint.secure && !configuration.allow_http {
         return Result.Err(Error.Insecure)
     }
-    if value.method == "CONNECT" {
+    if method == "CONNECT" {
         return Result.Err(Error.Unsupported)
     }
     let headers = std.list.new[Header]()
     var index = 0
-    while index < length(value.headers) {
-        let entry = value.headers[index]
+    while index < length(fields) {
+        let entry = fields[index]
         if header_named(entry, "Host") || header_named(entry, "Connection") ||
         header_named(entry, "Upgrade") || header_named(entry, "Proxy-Authorization") {
             return Result.Err(Error.Unsupported)
@@ -166,22 +181,16 @@ fn prepare(value std.net.http.client.Request, configuration Options) Result[Prep
             name = "Connection"
             value = to_bytes("close")
         })
-    let wire = match encode_request(std.net.http.Request {
-            method = value.method
-            target = endpoint.target
-            headers = headers
-            body = value.body
-            trailers = std.list.new[Header]()
-        }, maximum) {
+    let payload = match encode(method, endpoint.target, headers, maximum) {
         Result.Ok(bytes) => bytes
         Result.Err(error) => {
             return Result.Err(Error.Protocol(error))
         }
     }
-    Result.Ok(Prepared {
+    Result.Ok(Prepared[P] {
             endpoint = endpoint
-            method = value.method
-            wire = wire
+            method = method
+            payload = payload
             limits = maximum
             tls = tls_options(configuration)
             max_informational = configuration.max_informational
@@ -194,7 +203,7 @@ async fn failed[T](error Error) Result[T, Error] {
 
 intrinsic fn fault_text(message Text)
 
-async fn bounded[T](prepared Prepared, deadline Int, handler fn(Incoming) Task[Result[T, Error]]) Result[T, Error] {
+async fn bounded[T](prepared Prepared[Bytes], deadline Int, handler fn(Incoming) Task[Result[T, Error]]) Result[T, Error] {
     if monotonic_ns() >= deadline {
         return Result.Err(Error.Timeout)
     }
@@ -232,12 +241,15 @@ pub fn consume[T](value std.net.http.client.Request, configuration Options, hand
     if configuration.timeout_ns == 0 {
         return failed[T](Error.Timeout)
     }
+    bounded[T](prepared, timeout_deadline(configuration.timeout_ns), handler)
+}
+
+fn timeout_deadline(timeout_ns Int) Int {
     let now = monotonic_ns()
     let remaining = 9223372036854775807 - now
-    let deadline = if configuration.timeout_ns > remaining {
+    if timeout_ns > remaining {
         9223372036854775807
     } else {
-        now + configuration.timeout_ns
+        now + timeout_ns
     }
-    bounded[T](prepared, deadline, handler)
 }

@@ -1,0 +1,78 @@
+import std.net.http.client.UploadRequest
+import std.net.http.client.UploadError
+import std.net.http.client.Options
+import std.net.http.client.upload_request
+import std.net.http.client.upload
+import std.net.http.client.options
+import std.net.http.Header
+import std.net.tls.Trust
+import std.file.chunks.Chunks
+import std.file.chunks.stream
+import std.file.FileError
+import std.file.read_bytes
+import std.result.Result
+import std.process.arguments
+import std.process.exit_code
+import std.text.to_bytes
+import std.bytes.set
+import std.bytes.to_text
+import std.list.length
+import std.io.write_text
+import std.io.write_error
+
+fn file_source(path Text) Result[Chunks, FileError] {
+    Result.Ok(stream(path, 8192))
+}
+
+fn file_packet(value Result[Bytes, FileError]) Result[Bytes, FileError] {
+    value
+}
+
+async fn main() {
+    let args = arguments()
+    if length(args) != 4 {
+        discard write_error("usage: http_upload_client URL CA_PEM FILE\n")
+        exit_code(2)
+        return
+    }
+    let trust = match read_bytes(args[2]) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            discard write_error("cannot read trust certificates\n")
+            exit_code(1)
+            return
+        }
+    }
+    let snapshot = to_bytes("before")
+    let value = UploadRequest {
+        headers = [Header {
+                name = "X-Snapshot"
+                value = snapshot
+            }]
+        trailers = [Header {
+                name = "X-End"
+                value = to_bytes("complete")
+            }]
+        ..upload_request("POST", args[1])
+    }
+    let pending = upload(value, Options {
+            trust = Trust.Certificates(trust)
+            timeout_ns = 5000000000
+            ..options()
+        }, file_source, args[3], file_packet)
+    set(snapshot, 0, 88)
+    match pending.await {
+        Result.Ok(response) => {
+            assert response.status == 200 && to_text(response.body) == "accepted"
+            discard write_text("HTTPS upload accepted\n")
+        }
+        Result.Err(UploadError.Input(_)) => {
+            discard write_error("upload source failed\n")
+            exit_code(1)
+        }
+        Result.Err(UploadError.Client(_)) => {
+            discard write_error("HTTP request failed\n")
+            exit_code(1)
+        }
+    }
+}

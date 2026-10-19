@@ -19,3 +19,8 @@ a manually managed `Stream` and deactivates its scoped owner. `connect`/`accept`
 also return Streams directly. Stream aliases share one TLS connection; drain
 child Tasks and close it explicitly, normally through `defer`.
 This is an explicit lifetime choice, not ownership/borrow syntax or a GC finalizer.
+
+`abort(stream)` explicitly revokes aliases and wakes active I/O with failure,
+unlike `close`, which requires borrowed operations to have drained first.
+Pending Tasks still need to be awaited or cancelled/drained before their owner
+exits. Already sent bytes are not undone; the connection cannot be reused.

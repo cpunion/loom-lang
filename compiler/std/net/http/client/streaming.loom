@@ -94,7 +94,7 @@ async fn stream_header(input std.net.http.Reader[Chunks, TransportError], method
         })
 }
 
-async fn handled_response[T](transport Transport, prepared Prepared, consume fn(Incoming) Task[Result[T, Error]]) Result[T, Error] {
+async fn handled_response[T, P](transport Transport, prepared Prepared[P], consume fn(Incoming) Task[Result[T, Error]]) Result[T, Error] {
     let input = reader(Chunks {
             transport = transport
             ended = [false]

@@ -12,6 +12,17 @@ use std::{
 mod common;
 use common::success;
 
+fn line(stream: &mut impl Read) -> String {
+    let mut bytes = Vec::new();
+    while !bytes.ends_with(b"\r\n") {
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        bytes.push(byte[0]);
+        assert!(bytes.len() < 65536);
+    }
+    String::from_utf8(bytes).unwrap()
+}
+
 fn serve(stream: impl Read + Write, mode: &str, payload: &[u8], location: &str) {
     let mut stream = stream;
     if mode == "wrong-name" {
@@ -27,14 +38,50 @@ fn serve(stream: impl Read + Write, mode: &str, payload: &[u8], location: &str) 
         assert!(metadata.len() < 65536);
     }
     let text = String::from_utf8(metadata).unwrap();
-    assert!(text.starts_with(if mode == "ok" {
-        "POST /echo?x=1 HTTP/1.1\r\n"
-    } else {
-        "GET /echo?x=1 HTTP/1.1\r\n"
-    }));
+    assert!(
+        text.starts_with(if mode == "ok" || mode.starts_with("upload") {
+            "POST /echo?x=1 HTTP/1.1\r\n"
+        } else {
+            "GET /echo?x=1 HTTP/1.1\r\n"
+        })
+    );
     assert!(text.contains("\r\nConnection: close\r\n"));
     if mode != "stream" {
         assert!(text.contains("\r\nX-Snapshot: before\r\n"));
+    }
+    if mode.starts_with("upload") {
+        assert!(text.contains("\r\nTransfer-Encoding: chunked\r\n"));
+        assert!(!text.contains("\r\nContent-Length:"));
+        if mode == "upload-error" {
+            let mut byte = [0];
+            assert!(!matches!(stream.read(&mut byte), Ok(1)));
+            return;
+        }
+        let mut body = Vec::new();
+        let mut chunks = 0;
+        loop {
+            let size = usize::from_str_radix(line(&mut stream).trim_end(), 16).unwrap();
+            if size == 0 {
+                break;
+            }
+            assert!(size <= 8192);
+            let start = body.len();
+            body.resize(start + size, 0);
+            stream.read_exact(&mut body[start..]).unwrap();
+            assert_eq!(line(&mut stream), "\r\n");
+            chunks += 1;
+        }
+        assert!(chunks > 1);
+        assert_eq!(body, payload);
+        assert_eq!(line(&mut stream), "X-End: complete\r\n");
+        assert_eq!(line(&mut stream), "\r\n");
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\naccepted")
+            .unwrap();
+        stream.flush().unwrap();
+        let mut byte = [0];
+        assert!(!matches!(stream.read(&mut byte), Ok(1)));
+        return;
     }
     let size: usize = text
         .lines()
@@ -117,6 +164,7 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
     fs::write(directory.path().join("payload"), &payload).unwrap();
     let executable = common::executable(directory.path(), "http-client");
     let streaming = common::executable(directory.path(), "http-streaming-client");
+    let uploading = common::executable(directory.path(), "http-upload-client");
     let tests = common::executable(directory.path(), "http-client-tests");
     for level in ["0", "2"] {
         success(
@@ -155,6 +203,17 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
             .output()
             .unwrap(),
         );
+        success(
+            &common::command(&[
+                "build",
+                "compiler/examples/http_upload_client",
+                "--output",
+                uploading.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
         for mode in [
             "ok",
             "wrong-name",
@@ -162,6 +221,8 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
             "interim-limit",
             "redirect",
             "stream",
+            "upload",
+            "upload-error",
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -192,7 +253,9 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
             } else {
                 "localhost"
             };
-            let mut command = Command::new(if mode == "stream" {
+            let mut command = Command::new(if mode.starts_with("upload") {
+                &uploading
+            } else if mode == "stream" {
                 &streaming
             } else {
                 &executable
@@ -201,11 +264,22 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
                 .arg(format!("https://{host}:{port}/echo?x=1#local"))
                 .arg(directory.path().join("ca.pem"))
                 .env("LOOM_GC_STRESS", "1");
-            if mode != "stream" {
+            if mode.starts_with("upload") {
+                command.arg(directory.path().join(if mode == "upload-error" {
+                    "missing-payload"
+                } else {
+                    "payload"
+                }));
+            } else if mode != "stream" {
                 command.arg(directory.path().join("payload")).arg(mode);
             }
             let output = common::run_task_command(&mut command);
             peer.join().unwrap();
+            if mode == "upload-error" {
+                assert!(!output.status.success());
+                assert_eq!(output.stderr, b"upload source failed\n");
+                continue;
+            }
             success(&output);
             assert_eq!(
                 output.stdout,
@@ -214,6 +288,7 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
                     "wrong-name" => b"peer rejected\n".as_slice(),
                     "redirect" => b"redirect returned\n".as_slice(),
                     "stream" => b"200 131079\n".as_slice(),
+                    "upload" => b"HTTPS upload accepted\n".as_slice(),
                     _ => b"bounded protocol rejection\n".as_slice(),
                 }
             );

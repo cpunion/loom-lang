@@ -114,7 +114,7 @@ test fn preparation_snapshots_request_and_tls_configuration_buffers() {
     set(roots, 0, 88)
     set(certificates, 0, 88)
     set(key, 0, 88)
-    let wire = to_text(prepared.wire)
+    let wire = to_text(prepared.payload)
     assert contains(wire, "POST /a%2Fb?q=1 HTTP/1.1\r\n")
     assert contains(wire, "Host: example.test:8443\r\n") && contains(wire, "Connection: close\r\n")
     assert contains(wire, "X-Snapshot: first\r\n") && contains(wire, "\r\n\r\nbefore")
