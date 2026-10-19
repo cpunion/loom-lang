@@ -119,3 +119,24 @@ test fn scoped_data_pack_family_parameters_shadow_outer_words_in_queries() {
     only_definition(cached_inspection(analysis, text, "Ts] ="), inner, inner + 2)
     only_type(cached_inspection(analysis, text, "Ts, Bool"), "Ts")
 }
+
+test fn whole_word_family_headers_keep_checked_labels_and_local_binders() {
+    let text = """
+        concept Family {
+            type Item[T]
+        }
+        record Rows[As..., Tail] {
+            value dyn Family[Item[U] = (As..., Tail, U)]
+        }
+        """
+    let analysis = accepted(input(text))
+    let member = query_offset(text, "Item[T]")
+    only_definition(cached_inspection(analysis, text, "Item[U] ="), member, member + 4)
+    let word = query_offset(text, "As..., Tail]")
+    only_definition(cached_inspection(analysis, text, "As..., Tail, U"), word, word + 2)
+    let fixed = query_offset(text, "Tail] {")
+    only_definition(cached_inspection(analysis, text, "Tail, U"), fixed, fixed + 4)
+    let local = query_offset(text, "U] =")
+    only_definition(cached_inspection(analysis, text, "U)]"), local, local + 1)
+    only_type(cached_inspection(analysis, text, "U)]"), "U")
+}

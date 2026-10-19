@@ -135,17 +135,22 @@ fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List
     pack_dynamic_type(context, caller, schema, obligations, budget, depth, Option.None)
 }
 
-fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List[Requirement],
-    budget List[Int], depth Int, assumptions Option[List[PackLayoutRequirement]]) Result[Int, Failure] {
-    if depth >= 64 || get(budget, 0) == 0 {
-        return Result.Ok(-1)
-    }
+fn pack_dynamic_capability(context Context, schema Node) Result[Int, Failure] {
     let capability = match std.int.parse(slice(schema.value, length("concept#"), length(schema.value))) {
         Result.Ok(value) => value
         Result.Err(_) => {
             return Result.Err(error(context, schema, "invalid symbolic dynamic type"))
         }
     }
+    Result.Ok(capability)
+}
+
+fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List[Requirement],
+    budget List[Int], depth Int, assumptions Option[List[PackLayoutRequirement]]) Result[Int, Failure] {
+    if depth >= 64 || get(budget, 0) == 0 {
+        return Result.Ok(-1)
+    }
+    let capability = pack_dynamic_capability(context, schema)?
     let bindings = new[Node]()
     var index = 0
     while index < length(schema.children) {

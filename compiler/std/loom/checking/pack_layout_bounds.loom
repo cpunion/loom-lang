@@ -61,6 +61,9 @@ fn pack_layout_well_formed(context Context, caller Node, schema Node, budget Lis
         return Result.Ok(false)
     }
     set(budget, 0, get(budget, 0) - 1)
+    if schema.kind == NodeKind.DynType && has_type_expansion(schema) {
+        return pack_dynamic_word_header(context, caller, schema, budget, depth + 1, assumptions)
+    }
     if schema.kind == NodeKind.AssociatedType && length(group(schema, NodeKind.TypeParameters)) > 0 {
         // A family body is checked under its own parameters by pack_dynamic_type.
         return Result.Ok(true)
@@ -128,6 +131,10 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
         return Result.Ok(false)
     }
     set(budget, 0, get(budget, 0) - 1)
+    if schema.kind == NodeKind.DynType && has_type_expansion(schema) &&
+    pack_dynamic_capability(context, schema)? == capability {
+        return pack_dynamic_word_header(context, caller, schema, budget, depth + 1, assumptions)
+    }
     if schema.kind == NodeKind.Select || schema.kind == NodeKind.DynType {
         let obligations = pack_projection_scope(context)
         let ty = pack_symbolic_type(context, caller, schema, obligations, budget, depth + 1, assumptions)?

@@ -185,13 +185,17 @@ matcher, including nested constructors and independent packs; no width is sample
 Associated projections and direct dyn bindings reuse ordinary member/domain and
 result-bound checks on fresh logical identities with only universally proved
 capabilities. Scoped dyn-family headers retain captures, local/nested binders and
-uniformly computed type bodies through ordinary family checking. General
-whole-word-dependent layout inspection remains open.
+uniformly computed type bodies through ordinary family checking. Structural
+family bodies can capture complete independent words, using scoped word rules
+for inherited domains and result bounds without reifying layouts. Dyn eligibility
+and proved runtime-overload separation still apply. General whole-word-dependent
+layout inspection remains open.
 Unused implementation-family method headers compare universal structural
 schemas before any call selects widths. Self and effective associated bindings,
 local generic domains, independent method words, scoped dyn families and
 overload coverage reuse the existing resolvers and word matcher. Mismatched or
 unproved headers reject; this does not universally check every deferred body.
+Whole-word family equality through implementation signatures remains limited.
 Pack-bearing preconditions compose pure family helpers through the same universal
 proof. Tuple spreads work in contracts and refinement predicates; opaque helper
 arguments provide no storage or callback-behavior evidence.

@@ -1,0 +1,219 @@
+// Whole words stay schemas while checking a dynamic header. They are never
+// represented by one rigid element or an invented concrete family result.
+fn pack_family_word_assumptions(context Context, caller Node,
+    given Option[List[PackLayoutRequirement]]) Result[List[PackLayoutRequirement], Failure] {
+    match given {
+        Option.Some(known) => {
+            return Result.Ok(std.list.clone(known))
+        }
+        Option.None => {
+        }
+    }
+    let known = new[PackLayoutRequirement]()
+    let parameters = group(caller, NodeKind.TypeParameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        var bound = 0
+        while bound < length(parameter.children) {
+            push(known, PackLayoutRequirement {
+                    schema = impl_method_variable(parameter, index)
+                    capability = required_concept(context.env, pack_layout_owner(context), child(parameter, bound))?
+                })
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(known)
+}
+
+fn pack_family_word_binding(context Context, caller Node, capability Int, member Int,
+    binding Node, budget List[Int], depth Int,
+    assumptions Option[List[PackLayoutRequirement]]) Result[Bool, Failure] {
+    if depth >= 64 || get(budget, 0) == 0 {
+        return Result.Ok(false)
+    }
+    let env = context.env
+    let owner = pack_layout_owner(context)
+    let local = dynamic_family_parameters(env, owner, member, binding)?
+    if !has_type_expansion(child(binding, 0)) {
+        // Closed/scalar captures and computed templates retain the ordinary
+        // scoped family resolver and its result-bound checks.
+        let obligations = pack_projection_scope(context)
+        let scope = pack_family_scope(context, caller, obligations, budget, depth + 1, assumptions)?
+        let prepared = computed_dynamic_node(scope,
+            pack_node(binding, NodeKind.DynType, "", source_nodes(binding)), capability)?
+        let ty = dynamic_binding(env, owner, member, child(prepared, 0), new[Int](), obligations, 0)?
+        return dynamic_family_requirements(env, owner, member, ty, obligations, binding)
+    }
+    let parameters = new[Node]()
+    let outer = group(caller, NodeKind.TypeParameters)
+    let known = pack_family_word_assumptions(context, caller, assumptions)?
+    var index = 0
+    while index < length(outer) {
+        let parameter = get(outer, index)
+        // Keep original logical indices, but hide shadowed source spellings.
+        push(parameters, if family_parameter_index(local, parameter.value) >= 0 {
+                pack_node(parameter, parameter.kind, concat("$shadow#", to_text(index)), parameter.children)
+            } else {
+                parameter
+            })
+        index = index + 1
+    }
+    let declared = member_parameters(env, member)
+    index = 0
+    while index < length(local) {
+        let parameter = get(local, index)
+        push(parameters, pack_node(parameter, parameter.kind, parameter.value, new[Node]()))
+        let bounds = get(declared, index).children
+        var bound = 0
+        while bound < length(bounds) {
+            push(known, PackLayoutRequirement {
+                    schema = impl_method_variable(parameter, length(outer) + index)
+                    capability = required_concept(env, member, get(bounds, bound))?
+                })
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(caller.children) {
+        if child(caller, index).kind != NodeKind.TypeParameters {
+            push(children, child(caller, index))
+        }
+        index = index + 1
+    }
+    push(children, pack_node(binding, NodeKind.TypeParameters, "", parameters))
+    let scope = pack_node(caller, caller.kind, caller.value, children)
+    // Expansion-scope checking has already separated outer elements from whole
+    // words. Spread nodes preserve that distinction in this common schema.
+    let body = type_pattern_schema(env, owner, child(binding, 0), true, 0, true, true, parameters)?
+    if !pack_layout_well_formed(context, scope, body, budget, depth + 1, Option.Some(known))? {
+        return Result.Ok(false)
+    }
+    let bounds = member_bounds(env, member)
+    index = 0
+    while index < length(bounds) {
+        if !pack_layout_admitted(context, scope, body, get(bounds, index),
+            new[PackLayoutRequirement](), budget, 0, Option.Some(known))? {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// An unresolved associated result can equal another argument type. Widen only
+// those leaves for the existing structural overlap rule; never infer inequality
+// from different temporary type IDs or erase independent nominal word groups.
+fn pack_dynamic_header_schema(env Environment, schema Node, depth Int) Node {
+    let identity = pack_schema_identity(env, schema)
+    if depth >= 64 || (identity >= 0 && (get(env.types, identity).kind == TypeKind.Parameter ||
+            get(env.types, identity).kind == TypeKind.Rigid || get(env.types, identity).kind == TypeKind.Associated ||
+            get(env.types, identity).kind == TypeKind.Family)) {
+        return pack_node(schema, NodeKind.Type, "$parameter", new[Node]())
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(schema.children) {
+        push(children, pack_dynamic_header_schema(env, child(schema, index), depth + 1))
+        index = index + 1
+    }
+    pack_node(schema, schema.kind, schema.value, children)
+}
+
+fn pack_dynamic_word_methods(context Context, capability Int) Result[Bool, Failure] {
+    let env = context.env
+    if !get(env.concepts, concept_index(env, capability)).ready {
+        // Unlike an ordinary Dyn type, this schema has no runtime-interface
+        // entry for fill_interfaces to revisit. A partial prefix is no proof.
+        return Result.Ok(false)
+    }
+    discard dynamic_method_pack_headers(env, capability)?
+    let methods = get(env.concepts, concept_index(env, capability)).methods
+    let headers = new[Node]()
+    var index = 0
+    while index < length(methods) {
+        let current = get(env.signatures, get(methods, index))
+        if method_receiver(env, current.symbol) {
+            discard dynamic_signature_types(env, current, capability)?
+            if current.parameters == 1 {
+                let node = symbol(env, current.symbol).node
+                let arguments = new[Node]()
+                var argument = 1
+                while argument < length(current.params) {
+                    push(arguments, pack_dynamic_header_schema(env,
+                            impl_type_schema(env, get(current.params, argument), node, true), 0))
+                    argument = argument + 1
+                }
+                let header = pack_node(node, NodeKind.TupleType, symbol(env, current.symbol).name, arguments)
+                var earlier = 0
+                while earlier < length(headers) {
+                    if impl_schemas_overlap(header, get(headers, earlier)) {
+                        return Result.Err(failure(env, current.symbol, node,
+                                "dynamic word bindings need universally distinct method signatures"))
+                    }
+                    earlier = earlier + 1
+                }
+                push(headers, header)
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn pack_dynamic_word_header(context Context, caller Node, schema Node, budget List[Int], depth Int,
+    assumptions Option[List[PackLayoutRequirement]]) Result[Bool, Failure] {
+    if depth >= 64 || get(budget, 0) == 0 {
+        return Result.Ok(false)
+    }
+    let capability = pack_dynamic_capability(context, schema)?
+    let members = get(context.env.concepts, concept_index(context.env, capability)).associated
+    let covered = new[Int]()
+    var index = 0
+    while index < length(schema.children) {
+        let binding = child(schema, index)
+        var selected = 0
+        while selected < length(members) && symbol(context.env, get(members, selected)).name != binding.value {
+            selected = selected + 1
+        }
+        if selected == length(members) {
+            return Result.Err(error(context, binding, "unknown dynamic associated type binding"))
+        }
+        if resource_seen(covered, selected) {
+            return Result.Err(error(context, binding, "duplicate dynamic associated type binding"))
+        }
+        push(covered, selected)
+        let member = get(members, selected)
+        if get(context.env.inputs, 0).declaration_queries {
+            record_declaration_reference(context.env, pack_layout_owner(context), binding, member, 0, "")
+        }
+        if length(group(binding, NodeKind.TypeParameters)) > 0 {
+            if !pack_family_word_binding(context, caller, capability, member, binding, budget, depth + 1, assumptions)? {
+                return Result.Ok(false)
+            }
+        } else {
+            discard dynamic_family_parameters(context.env, pack_layout_owner(context), member, binding)?
+            let body = child(binding, 0)
+            if !pack_layout_well_formed(context, caller, body, budget, depth + 1, assumptions)? {
+                return Result.Ok(false)
+            }
+            let bounds = member_bounds(context.env, member)
+            var bound = 0
+            while bound < length(bounds) {
+                if !pack_layout_admitted(context, caller, body, get(bounds, bound),
+                    new[PackLayoutRequirement](), budget, 0, assumptions)? {
+                    return Result.Ok(false)
+                }
+                bound = bound + 1
+            }
+        }
+        index = index + 1
+    }
+    if length(covered) != length(members) {
+        return Result.Err(error(context, schema, "dyn requires an explicit binding for every associated type"))
+    }
+    pack_dynamic_word_methods(context, capability)
+}

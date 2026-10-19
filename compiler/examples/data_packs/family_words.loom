@@ -1,0 +1,36 @@
+concept WordFactory {
+    type Item[U]
+    fn append[U](self Self, value U) Self.Item[U]
+}
+
+record WordFactoryView[Ts...] {
+    source dyn WordFactory[Item[U] = (Ts..., U)]
+}
+
+impl WordFactory for Bool {
+    type Item[U] = (Int, Bool, U)
+    fn append[U](self Bool, value U) (Int, Bool, U) {
+        (42, self, value)
+    }
+}
+
+impl WordFactory for Int {
+    type Item[U] = (U,)
+    fn append[U](self Int, value U) (U,) {
+        discard self
+        (value,)
+    }
+}
+
+async fn exercise_family_words() {
+    let empty WordFactoryView[()...] = WordFactoryView {
+        source = 0
+    }
+    assert empty.source.append("empty") == ("empty",)
+    let populated WordFactoryView[Int, Bool] = WordFactoryView {
+        source = true
+    }
+    let resumed = echo(populated).await
+    assert resumed.source.append(7) == (42, true, 7)
+    assert resumed.source.append("text") == (42, true, "text")
+}

@@ -1607,7 +1607,15 @@ result-bound checks on fresh logical identities. Those identities grant only
 capabilities proved for the complete source word, never a selected arity or a
 concrete layout. Fixed parameters stay abstract too. Scoped dyn-family headers
 retain captures, nested/local binders and uniformly computed type bodies through
-ordinary family checking. Whole-word-dependent layout inspection remains open.
+ordinary family checking. Structural bodies such as `Item[U] = (Ts..., U)`
+can capture complete independent words; scoped word rules validate their domains
+and result bounds without inventing a concrete layout. Dyn eligibility and
+universally distinct runtime method signatures remain required; unresolved
+associated results do not prove overload separation. See the
+[whole-word family example](examples/data_packs/family_words.loom).
+Whole-word-dependent layout inspection remains open.
+Whole-word family equality through implementation signatures is also still limited;
+this data-header check does not supply an opaque type equality in its place.
 Instances retain the original nominal declaration;
 no runtime pack or per-arity nominal type is introduced. See the
 [native data-pack example](examples/data_packs/main.loom).

@@ -1,0 +1,147 @@
+test fn scoped_family_words_keep_whole_words_and_local_binders_symbolic() {
+    discard accepted("""
+        concept Family {
+            type Item[U]
+            fn make[U](self Self, value U) Self.Item[U]
+        }
+        record Rows[As..., Tag, Bs...] {
+            family dyn Family[Item[U] = (As..., Tag, Bs..., U)]
+        }
+        record Nested[As..., Bs...] {
+            family dyn Family[Item[U] = dyn Family[Item[V] = (As..., U, Bs..., V)]]
+        }
+        record Shadowed[As..., Ts...] {
+            values (Ts...)
+            family dyn Family[Item[Ts] = (As..., Ts)]
+        }
+        """)
+}
+
+test fn scoped_family_words_inherit_domains_and_prove_result_bounds() {
+    let definitions = """
+        concept Tagged {}
+        impl[Us... Tagged] Tagged for (Us...) {}
+        concept Family {
+            type Item[U Tagged] Tagged
+        }
+        """
+    discard accepted(concat(definitions, """
+        record Rows[Ts... Tagged] {
+            family dyn Family[Item[U] = (Ts..., U)]
+        }
+        """))
+    rejects(concat(definitions, """
+        record Rows[Ts...] {
+            family dyn Family[Item[U] = (Ts..., U)]
+        }
+        """))
+    rejects(concat(definitions, """
+        concept Extra {}
+        record Rows[Ts... Tagged] {
+            family dyn Family[Item[U Extra] = (Ts..., U)]
+        }
+        """))
+}
+
+test fn scoped_family_words_keep_dynamic_eligibility_and_binding_coverage() {
+    rejects("""
+        concept Family {
+            type Item[U]
+            fn clone(self Self) Self
+        }
+        record Rows[Ts...] {
+            family dyn Family[Item[U] = (Ts..., U)]
+        }
+        """)
+    rejects("""
+        concept Family {
+            type Item[U]
+            type Other
+        }
+        record Rows[Ts...] {
+            family dyn Family[Item[U] = (Ts..., U)]
+        }
+        """)
+    rejects("""
+        concept Family {
+            type Item[U]
+        }
+        record Rows[Ts...] {
+            family dyn Family[Item[U] = (Ts..., U), Item[V] = (Ts..., V)]
+        }
+        """)
+}
+
+test fn scoped_family_words_materialize_only_the_selected_source_widths() {
+    discard accepted("""
+        concept Family {
+            type Item[U]
+            fn make[U](self Self, value U) Self.Item[U]
+        }
+        record Rows[Ts...] {
+            family dyn Family[Item[U] = (Ts..., U)]
+        }
+        impl Family for Bool {
+            type Item[U] = (Int, Bool, U)
+            fn make[U](self Bool, value U) (Int, Bool, U) {
+                (1, self, value)
+            }
+        }
+        fn main() {
+            let row Rows[Int, Bool] = Rows {
+                family = true
+            }
+            assert row.family.make(3) == (1, true, 3)
+        }
+        """)
+}
+
+test fn scoped_family_words_compose_nominal_bounds_and_independent_element_scopes() {
+    discard accepted("""
+        concept Family {
+            type Item[U]
+        }
+        record Box[T Family] {
+            value T
+        }
+        record Rows[As..., Bs...] {
+            boxed Box[dyn Family[Item[U] = (As..., U, Bs...)]]
+            values (dyn Family[Item[U] = (As, (Bs...), U)]...)
+        }
+        """)
+    rejects("""
+        concept Family {
+            type Item[U]
+        }
+        concept Tagged {}
+        record Box[T Tagged] {
+            value T
+        }
+        record Rows[Ts...] {
+            value dyn Family[Item[U] = (Ts..., Box[U])]
+        }
+        """)
+}
+
+test fn scoped_family_words_require_proved_dynamic_overload_separation() {
+    discard accepted("""
+        concept Family {
+            type Item[U]
+            fn read(self Self, value Int) Int
+            fn read(self Self, value Bool) Bool
+        }
+        record Rows[Ts...] {
+            value dyn Family[Item[U] = (Ts..., U)]
+        }
+        """)
+    rejects("""
+        concept Family {
+            type Item[U]
+            fn read(self Self, value Self.Item[Int]) Int
+            fn read(self Self, value Self.Item[Bool]) Int
+        }
+        record Rows[Ts...] {
+            value dyn Family[Item[U] = (Ts..., Int)]
+        }
+        """)
+}
