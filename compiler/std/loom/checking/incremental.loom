@@ -13,7 +13,13 @@ import std.option.Option
 // Only successful checks can populate this private state. Public mutable ASTs
 // and typed programs are never themselves accepted as cached proof evidence.
 pub record DefinitionCache {
-    state List[DefinitionCacheState]
+    state DefinitionCacheCell
+}
+
+// Hide the mutable singleton itself, not just its element type. A public
+// List[PrivateState] would still permit ordinary transfer/removal operations.
+record DefinitionCacheCell {
+    slot List[DefinitionCacheState]
 }
 
 record DefinitionCacheState {
@@ -64,12 +70,14 @@ pub fn definition_cache() DefinitionCache {
             body_hits = ints(0)
         })
     DefinitionCache {
-        state = state
+        state = DefinitionCacheCell {
+            slot = state
+        }
     }
 }
 
 fn definition_state(cache DefinitionCache) DefinitionCacheState {
-    get(cache.state, 0)
+    get(cache.state.slot, 0)
 }
 
 pub fn definitions_reused(cache DefinitionCache) Int {
@@ -495,7 +503,7 @@ fn check_project_reusing(project Project, tests Bool, inputs BuildInputs, cache 
     let previous = definition_state(cache)
     let saved = new[DefinitionBasis]()
     push(saved, basis)
-    set(cache.state, 0, DefinitionCacheState {
+    set(cache.state.slot, 0, DefinitionCacheState {
             basis = saved
             hits = previous.hits
             bodies = new[BodyBasis]()

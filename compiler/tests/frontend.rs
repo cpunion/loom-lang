@@ -39,6 +39,55 @@ fn source_compiler(compiler: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn definition_cache_keeps_its_mutable_state_cell_private() {
+    let compiler = common::compiler();
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join("loom.toml"),
+        "[module]\nname = \"cache_handle\"\n",
+    )
+    .unwrap();
+    let file = temp.path().join("main.loom");
+    fs::write(
+        &file,
+        r#"import std.loom.checking.definition_cache
+import std.loom.checking.definitions_reused
+
+fn main() {
+    let cache = definition_cache()
+    assert definitions_reused(cache) == 0
+}
+"#,
+    )
+    .unwrap();
+    success(&source_compiler(
+        &compiler,
+        &["check", temp.path().to_str().unwrap()],
+    ));
+    for source in [
+        r#"import std.loom.checking.definition_cache
+import std.list.transfer.take_last
+
+fn main() {
+    let cache = definition_cache()
+    discard take_last(cache.state)
+}
+"#,
+        r#"import std.loom.checking.definition_cache
+
+fn main() {
+    let cache = definition_cache()
+    discard cache.state.slot
+}
+"#,
+    ] {
+        fs::write(&file, source).unwrap();
+        let output = source_compiler(&compiler, &["check", temp.path().to_str().unwrap()]);
+        assert!(!output.status.success(), "private cache state was exposed");
+    }
+}
+
+#[test]
 fn rename_does_not_offer_dependency_edits_outside_its_checked_overlays() {
     let directory = tempfile::tempdir().unwrap();
     fs::create_dir(directory.path().join("library")).unwrap();
