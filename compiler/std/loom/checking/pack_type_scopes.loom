@@ -10,18 +10,7 @@ fn pack_type_scope(env Environment, owner Int, node Node, names List[Text], elem
         // references to an enclosing pack with the same spelling.
         return Result.Ok(true)
     }
-    var visible = names
-    if node.kind == NodeKind.AssociatedType {
-        visible = std.list.clone(names)
-        let parameters = group(node, NodeKind.TypeParameters)
-        var index = 0
-        while index < length(visible) {
-            if family_parameter_index(parameters, get(visible, index)) >= 0 {
-                set(visible, index, "")
-            }
-            index = index + 1
-        }
-    }
+    var visible = family_pack_names(node, names)
     var active = elements
     if node.kind == NodeKind.Spread {
         active = std.list.clone(elements)
@@ -41,7 +30,12 @@ fn pack_type_scope(env Environment, owner Int, node Node, names List[Text], elem
     }
     var index = 0
     while index < length(node.children) {
-        discard pack_type_scope(env, owner, child(node, index), visible, active, depth + 1)?
+        let member = child(node, index)
+        discard pack_type_scope(env, owner, member,
+            lexical_pack_names(node, index, visible, false), active, depth + 1)?
+        if node.kind == NodeKind.Block {
+            visible = lexical_pack_names(member, 0, visible, true)
+        }
         index = index + 1
     }
     Result.Ok(true)

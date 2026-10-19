@@ -34,6 +34,23 @@ test fn scoped_pack_headers_compute_uniform_types_in_the_lexical_scope() {
                 let Ts type = Bool
                 Ts
             }, U)]...)
+            captures (dyn Family[Item[U] = comptime {
+                let Ts type = List[Ts]
+                Ts
+            }]...)
+        }
+        impl Family for Bool {
+            type Item[U] = (Int, Bool, U)
+        }
+        impl Family for Int {
+            type Item[U] = List[Int]
+        }
+        fn main() {
+            let row Rows[Int] = Rows {
+                values = (true,)
+                captures = (1,)
+            }
+            discard row
         }
         """))
     rejects(concat(scoped_pack_header_definitions(), """
@@ -53,10 +70,28 @@ test fn scoped_pack_headers_local_names_do_not_refer_to_an_outer_pack() {
             sources (Ts...)
             value dyn Family[Item[Ts] = Ts]
         }
+        impl Family for Bool {
+            type Item[U] = U
+        }
+        fn main() {
+            let row Rows[Int, Bool] = Rows {
+                sources = (1, true)
+                value = true
+            }
+            discard row
+        }
         """))
     rejects(concat(scoped_pack_header_definitions(), """
         record Rows[Ts...] {
             values (dyn Family[Item[Ts] = Ts]...)
+        }
+        """))
+    rejects(concat(scoped_pack_header_definitions(), """
+        record Rows[Ts...] {
+            values (dyn Family[Item[U] = comptime {
+                let Ts type = Bool
+                Ts
+            }]...)
         }
         """))
 }
