@@ -1593,7 +1593,12 @@ an expected type or explicit arguments. Empty packs, record updates, recursive
 List-backed structures, compile-time values and Task fields retain ordinary
 rules. Each selected arity checks field/payload requirements with abstract
 elements, so concrete callers cannot supply undeclared capabilities. Unselected
-arities are not verified. Instances retain the original nominal declaration;
+arities are not verified. Even unused declarations check header fragments that
+do not depend on a pack: ordinary type names, arity, visibility and declared
+bounds cannot be deferred until a caller appears. Independent parameters on
+either side of a pack remain abstract, not sampled concrete types. This does not
+establish an unknown word's layout or its dependent associated projections.
+Instances retain the original nominal declaration;
 no runtime pack or per-arity nominal type is introduced. See the
 [native data-pack example](examples/data_packs/main.loom).
 

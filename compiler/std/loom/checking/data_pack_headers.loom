@@ -1,0 +1,60 @@
+// Check closed header obligations without choosing any pack widths. Ordinary
+// parameters are independently abstract; whole words remain unresolved until
+// the existing symbolic/concrete rules can establish their shape.
+fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text],
+    parameters List[Node], arguments List[Int], obligations List[Requirement]) Result[Bool, Failure] {
+    var dependent = false
+    var index = 0
+    while index < length(packs) {
+        dependent = dependent || mentions_pack(node, get(packs, index))
+        index = index + 1
+    }
+    if !dependent && (node.kind == NodeKind.Type || node.kind == NodeKind.TupleType ||
+        node.kind == NodeKind.FunctionType || node.kind == NodeKind.DynType) {
+        let bound = bind_data_parameters(node, parameters, arguments)
+        let ty = resolve_bound(env, owner, bound, new[Int](), obligations, 0)?
+        return well_formed(env, owner, ty, obligations, node, 0)
+    }
+    index = 0
+    while index < length(node.children) {
+        discard data_pack_header_type(env, owner, child(node, index), packs, parameters, arguments, obligations)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn data_pack_headers(env Environment) Result[Bool, Failure] {
+    let declarations = length(env.source.symbols)
+    var owner = 0
+    while owner < declarations {
+        let node = symbol(env, owner).node
+        if data_pack(node) {
+            let parameters = new[Node]()
+            let declared = group(node, NodeKind.TypeParameters)
+            var index = 0
+            while index < length(declared) {
+                if get(declared, index).kind != NodeKind.TypePack {
+                    push(parameters, get(declared, index))
+                }
+                index = index + 1
+            }
+            let arguments = abstract_arguments(env, length(parameters))
+            let obligations = requirements_parameters(env, owner, arguments, parameters)?
+            let packs = pack_names(declared_packs(node))
+            index = 0
+            while index < length(node.children) {
+                let member = child(node, index)
+                if member.kind == NodeKind.Field || member.kind == NodeKind.Variant {
+                    var field = 0
+                    while field < length(member.children) {
+                        discard data_pack_header_type(env, owner, child(member, field), packs, parameters, arguments, obligations)?
+                        field = field + 1
+                    }
+                }
+                index = index + 1
+            }
+        }
+        owner = owner + 1
+    }
+    Result.Ok(true)
+}
