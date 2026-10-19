@@ -922,6 +922,7 @@ fn main() {
     await require('./concept-rename').conceptRenameSmoke(executable, stdRoot);
     await require('./field-rename').fieldRenameSmoke(executable, stdRoot);
     await require('./binding-rename').bindingRenameSmoke(executable, stdRoot);
+    await require('./method-references').methodReferencesSmoke(executable, stdRoot);
     await buildInputSmoke(executable, stdRoot);
     await buildOptionSmoke(executable, stdRoot);
     await comptimeBlockCompletionSmoke(executable, stdRoot);

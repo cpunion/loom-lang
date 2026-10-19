@@ -243,6 +243,9 @@ fn validate_method_pack_implementation(env Environment, header Implementation) R
                 previous = previous + 1
             }
             push(matched, selected)
+            if get(env.inputs, 0).declaration_queries {
+                record_method_conformance(env, header, pack.source, selected)
+            }
             set(env.packs, index, PackInstance {
                     source = pack.source
                     declaration = selected

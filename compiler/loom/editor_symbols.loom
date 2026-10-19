@@ -104,6 +104,15 @@ fn editor_declaration_node(node Node, tokens List[Token], target Span, parent No
 }
 
 fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, tokens List[Token]) Option[Location] {
+    // A declaration token identifies itself even when expression inspection
+    // finds several same-spelled overloads. This is an exact syntax span, not
+    // a fallback guess for an ambiguous call or expression.
+    if editor_declaration(get(editor_data(analysis).bindings.files, file).tree, tokens, token.span) {
+        return Option.Some(Location {
+                file = file
+                span = token.span
+            })
+    }
     match inspect_at(analysis.snapshot, file, offset) {
         Option.Some(found) => {
             if length(found.definitions) == 1 {
@@ -123,18 +132,20 @@ fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, t
         Option.None => {
         }
     }
-    if editor_declaration(get(editor_data(analysis).bindings.files, file).tree, tokens, token.span) {
-        return Option.Some(Location {
-                file = file
-                span = token.span
-            })
-    }
     Option.None
 }
 
 fn editor_references(analysis EditorAnalysis, target Location, spelling Text) List[Location] {
+    editor_references(analysis, [target], spelling)
+}
+
+fn editor_references(analysis EditorAnalysis, targets List[Location], spelling Text) List[Location] {
     let references = new[Location]()
-    editor_push_location(references, target)
+    var declaration = 0
+    while declaration < length(targets) {
+        editor_push_location(references, get(targets, declaration))
+        declaration = declaration + 1
+    }
     var file = 0
     while file < length(editor_data(analysis).bindings.files) {
         match inspect_references(analysis.snapshot, file, spelling) {
@@ -144,8 +155,13 @@ fn editor_references(analysis EditorAnalysis, target Location, spelling Text) Li
                     let candidate = get(evidence, index)
                     match candidate.inspection {
                         Option.Some(found) => {
-                            if length(found.definitions) == 1 &&
-                            editor_same_location(get(found.definitions, 0), target) {
+                            var selected = length(found.definitions) > 0
+                            var definition = 0
+                            while selected && definition < length(found.definitions) {
+                                selected = editor_contains(targets, get(found.definitions, definition))
+                                definition = definition + 1
+                            }
+                            if selected {
                                 editor_push_location(references, Location {
                                         file = file
                                         span = Span {
@@ -677,7 +693,12 @@ fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
             return editor_no_symbols(rename)
         }
     }
-    let references = editor_references(analysis, target, token.value)
+    let family = if rename {
+        (target, [target])
+    } else {
+        editor_method_family(analysis, target, token.value)
+    }
+    let references = editor_references(analysis, family.1, token.value)
     let field_owner = editor_field_owner(analysis, target, token.value)
     let public_field = field_owner >= 0 && get(bindings.symbols, field_owner).public &&
     editor_declaration_authority(analysis, target, true)
@@ -717,7 +738,7 @@ fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
         }
         return editor_checked_rename(options, bindings, references, new_name)
     }
-    let declaration = editor_location_json(bindings, target)
+    let declaration = editor_location_json(bindings, family.0)
     EditorOutput {
         text = concat("{\"diagnostics\":[],\"declaration\":", concat(declaration,
                 concat(",\"references\":", concat(editor_locations_json(bindings, references), "}\n"))))

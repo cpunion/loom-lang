@@ -1,0 +1,72 @@
+import std.loom.analysis.method_conformances
+
+fn editor_method_declaration(analysis EditorAnalysis, target Location, spelling Text) Bool {
+    let bindings = editor_data(analysis).bindings
+    var index = 0
+    while index < length(bindings.symbols) {
+        let symbol = get(bindings.symbols, index)
+        if symbol.owner >= 0 && symbol.file == target.file && symbol.name == spelling &&
+        symbol.node.kind == NodeKind.Function &&
+        symbol.node.span.start <= target.span.start && target.span.end <= symbol.node.span.end {
+            let owner = get(bindings.symbols, symbol.owner)
+            if owner.node.kind == NodeKind.Impl || owner.node.kind == NodeKind.Concept {
+                match lex(get(bindings.files, target.file).text) {
+                    Result.Ok(tokens) => match editor_name(tokens, symbol.node) {
+                        Option.Some(span) => {
+                            if editor_same_span(span, target.span) {
+                                return true
+                            }
+                        }
+                        Option.None => {
+                        }
+                    }
+                    Result.Err(_) => {
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    false
+}
+
+// References may join positive checked edges. Editing still needs complete
+// module/test coverage, so this does not authorize a method-family rename.
+fn editor_method_family(analysis EditorAnalysis, target Location, spelling Text) (Location, List[Location]) {
+    if !editor_method_declaration(analysis, target, spelling) {
+        return (target, [target])
+    }
+    let edges = match method_conformances(analysis.snapshot) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return (target, [target])
+        }
+    }
+    var declaration = target
+    var matched = false
+    var index = 0
+    while index < length(edges) {
+        let edge = get(edges, index)
+        if editor_same_location(edge.0, target) {
+            if matched && !editor_same_location(declaration, edge.1) {
+                // One source method may participate in distinct selected
+                // pack overloads. Do not silently combine those families.
+                return (target, [target])
+            }
+            declaration = edge.1
+            matched = true
+        }
+        index = index + 1
+    }
+    let members = [declaration]
+    index = 0
+    while index < length(edges) {
+        let edge = get(edges, index)
+        if editor_same_location(edge.1, declaration) {
+            editor_push_location(members, edge.0)
+        }
+        index = index + 1
+    }
+    editor_push_location(members, target)
+    (declaration, members)
+}

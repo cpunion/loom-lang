@@ -1,0 +1,64 @@
+fn conformance_references(analysis AnalysisState) Result[List[DeclarationReference], Text] {
+    var index = 0
+    while index < length(analysis.declaration_scopes) {
+        if get(analysis.declaration_scopes, index).file < 0 {
+            return Result.Ok(get(analysis.declarations, 0))
+        }
+        index = index + 1
+    }
+    let references = match declaration_references(analysis.bindings, analysis_query_inputs(analysis)) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(failed.diagnostic.message)
+        }
+    }
+    retain_declaration_scope(analysis, Location {
+            file = -1
+            span = Span {
+                start = 0
+                end = 0
+            }
+        }, references)
+    Result.Ok(get(analysis.declarations, 0))
+}
+
+fn conformance_location(analysis AnalysisState, file Int, node Node) Result[Location, Text] {
+    if has(node, NodeKind.ExpansionId) {
+        return Result.Err("generated method conformance has no ordinary source declaration")
+    }
+    let tokens = reference_tokens(analysis, file)?
+    match name_span(tokens, node, node.value) {
+        Option.Some(span) => Result.Ok(Location {
+                file = file
+                span = span
+            })
+        Option.None => Result.Err("method conformance has no source name token")
+    }
+}
+
+// Positive, checked source edges in this analysis: (implementation, concept).
+// This is not a complete implementation registry or permission to rename a
+// family. Uninstantiated pack impls and generated source need separate coverage.
+// Returned lists are detached; source file IDs belong to this analysis only.
+pub fn method_conformances(analysis Analysis) Result[List[(Location, Location)], Text] {
+    let state = analysis.state
+    let references = conformance_references(state)?
+    let edges = new[(Location, Location)]()
+    var index = 0
+    while index < length(references) {
+        let reference = get(references, index)
+        if reference.node.kind == NodeKind.Function {
+            if reference.symbol < 0 || reference.symbol >= length(state.bindings.symbols) {
+                return Result.Err("method conformance has no original concept declaration")
+            }
+            let target = get(state.bindings.symbols, reference.symbol)
+            if target.owner < 0 || get(state.bindings.symbols, target.owner).node.kind != NodeKind.Concept {
+                return Result.Err("method conformance target is not a concept member")
+            }
+            push(edges, (conformance_location(state, reference.file, reference.node)?,
+                    conformance_location(state, target.file, target.node)?))
+        }
+        index = index + 1
+    }
+    Result.Ok(edges)
+}
