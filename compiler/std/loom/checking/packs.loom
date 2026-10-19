@@ -393,14 +393,7 @@ fn collect_expansion_packs(node Node, names List[Text], selected List[Int]) {
     }
     var visible = family_pack_names(node, names)
     let pack = pack_root_index(node, visible)
-    if pack >= 0 {
-        var index = 0
-        while index < length(selected) {
-            if get(selected, index) == pack {
-                return
-            }
-            index = index + 1
-        }
+    if pack >= 0 && !resource_seen(selected, pack) {
         push(selected, pack)
     }
     var index = 0

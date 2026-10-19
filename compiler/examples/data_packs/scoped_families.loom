@@ -33,6 +33,11 @@ record ShadowedFamily[Ts...] {
     value dyn ScopedFamily[Item[Ts] = Ts]
 }
 
+record LinkedFamilyWords[As...ScopedFamily, Bs...] {
+    sources (As...)
+    pairs ((As, As.Item[Bs])...)
+}
+
 fn exercise_scoped_families() {
     let first dyn ScopedFamily[Item[U] = (Int, U)] = ScopedCapture {
         tag = 1
@@ -59,4 +64,10 @@ fn exercise_scoped_families() {
         value = true
     }
     assert shadow.value.echo[Int](9) == 9
+    let linked LinkedFamilyWords[(Bool, Bool)..., (Int, Text)...] = LinkedFamilyWords {
+        sources = (true, false)
+        pairs = ((true, 7), (false, "value"))
+    }
+    assert linked.pairs.0.1 == 7
+    assert linked.pairs.1.1 == "value"
 }
