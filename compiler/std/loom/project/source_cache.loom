@@ -2,7 +2,6 @@ import std.map.Map
 import std.map.new
 import std.map.get
 import std.map.insert
-import std.loom.ast.snapshot
 
 // Only raw parser results populate this private cache. Returned ASTs remain
 // independent editing data; filenames and exact source bytes define each hit.
@@ -16,7 +15,50 @@ record SourceCacheState {
 
 record ParsedSource {
     text Text
-    tree Node
+    nodes List[SyntaxRow]
+}
+
+// Preorder cache storage, not another semantic model. Immutable text and source
+// spans are shared; child counts rebuild the ordinary public Node tree. One
+// dense list avoids retaining a second graph of mutable child-list allocations.
+record SyntaxRow {
+    kind NodeKind
+    value Text
+    span Span
+    children Int
+}
+
+fn save_syntax(node Node, rows List[SyntaxRow]) {
+    push(rows, SyntaxRow {
+            kind = node.kind
+            value = node.value
+            span = node.span
+            children = length(node.children)
+        })
+    var index = 0
+    while index < length(node.children) {
+        save_syntax(get(node.children, index), rows)
+        index = index + 1
+    }
+}
+
+fn restore_syntax(rows List[SyntaxRow], start Int) (Node, Int) {
+    let row = get(rows, start)
+    let children = new[Node](row.children)
+    var next = start + 1
+    var index = 0
+    while index < row.children {
+        let child, end = restore_syntax(rows, next)
+        push(children, child)
+        next = end
+        index = index + 1
+    }
+    (Node {
+            kind = row.kind
+            value = row.value
+            span = row.span
+            children = children
+        }, next)
 }
 
 pub fn source_cache() SourceCache {
@@ -37,16 +79,18 @@ fn cached_tree(previous Map[Text, ParsedSource], pending Map[Text, ParsedSource]
         Option.Some(saved) => {
             if saved.text == text {
                 discard insert(pending, path, saved)
-                return Result.Ok(std.loom.ast.snapshot(saved.tree))
+                return Result.Ok(restore_syntax(saved.nodes, 0).0)
             }
         }
         Option.None => {
         }
     }
     let tree = std.loom.parser.parse(text)?
+    let nodes = new[SyntaxRow]()
+    save_syntax(tree, nodes)
     discard insert(pending, path, ParsedSource {
             text = text
-            tree = std.loom.ast.snapshot(tree)
+            nodes = nodes
         })
     Result.Ok(tree)
 }
