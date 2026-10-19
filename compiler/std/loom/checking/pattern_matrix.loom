@@ -253,7 +253,7 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
                     ExprKind.Record
                 } else {
                     ExprKind.Variant
-                }, base, plan.source, "", if product {
+                }, base, plan.source, "pattern-rebuild", if product {
                     -1
                 } else {
                     variant
@@ -268,7 +268,9 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
             }, "", value, fields, rebuilt, depth + 1)?
         let body = pattern_decision(plan, selected, pattern_slots(values, column, fields), depth + 1)?
         if product {
-            return Result.Ok(pattern_block(plan.source, initializers, body))
+            push(initializers, body)
+            return Result.Ok(expression(ExprKind.Block, body.ty, plan.source, "pattern-product", value.index,
+                    initializers, body.falls))
         }
         falls = falls || body.falls
         let block = if body.kind == ExprKind.Block {
@@ -288,7 +290,7 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
             kind = ExprKind.Match
             ty = plan.output
             span = plan.source.span
-            text = ""
+            text = "pattern-decision"
             index = -1
             children = expressions(receiver)
             arms = arms

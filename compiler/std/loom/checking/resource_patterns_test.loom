@@ -1,0 +1,164 @@
+fn resource_nested_pattern_header() Text {
+    concat(resource_enum_header(), """
+        enum Outer {
+            Some(Bundle)
+            None
+        }
+        impl Dispose for Outer {
+            fn dispose(self Outer) {
+            }
+        }
+        record Cell {
+            flag Bool
+            inner Handle
+        }
+        impl Dispose for Cell {
+            fn dispose(self Cell) {
+            }
+        }
+        fn product(log List[Int]) (Handle, Cell) {
+            (make(log), Cell {
+                flag = true
+                inner = make(log)
+            })
+        }
+        """)
+}
+
+test fn nested_resource_patterns_transfer_container_obligations_to_all_fields() {
+    resource_accept(concat(resource_nested_pattern_header(), """
+        fn selected_enum(log List[Int]) Handle {
+            match Outer.Some(bundle(log)) {
+                Outer.Some(Bundle.Pair(first, second, 7)) => {
+                    scoped held = second
+                    first
+                }
+                Outer.Some(Bundle.Pair(first, second, _)) => {
+                    scoped held = first
+                    second
+                }
+                Outer.Some(Bundle.Empty) => make(log)
+                Outer.None => make(log)
+            }
+        }
+        fn selected_product(log List[Int]) Handle {
+            match product(log) {
+                (first, Cell { flag = true, inner = second }) => {
+                    scoped held = second
+                    first
+                }
+                (first, Cell { flag = false, inner = second }) => {
+                    scoped held = first
+                    second
+                }
+            }
+        }
+        fn reconstructed(log List[Int]) (Handle, Handle) {
+            match product(log) {
+                (first, Cell { inner = second, flag = _ }) => (second, first)
+            }
+        }
+        fn whole_row(log List[Int]) (Handle, Cell) {
+            match product(log) {
+                (first, Cell { flag = true, inner = second }) => (first, Cell {
+                    flag = true
+                    inner = second
+                })
+                rest => rest
+            }
+        }
+        fn handles(log List[Int]) (Handle, Handle) {
+            (make(log), make(log))
+        }
+        fn generic[T Dispose + MustScope](create fn(List[Int]) (T, T), log List[Int]) (T, T) {
+            match create(log) {
+                (first, second) => (second, first)
+            }
+        }
+        fn run(log List[Int]) {
+            scoped first = selected_enum(log)
+            scoped second = selected_product(log)
+            scoped third = reconstructed(log)
+            scoped fourth = whole_row(log)
+            scoped fifth = generic(handles, log)
+            scoped borrowed = product(log)
+            match borrowed {
+                (first, Cell { flag = _, inner = second }) => {
+                    assert first.use() + second.use() == 14
+                }
+            }
+        }
+        fn main() {
+            run([0])
+        }
+        """))
+}
+
+test fn nested_resource_patterns_cannot_erase_duplicate_delay_or_dismantle_explicit_owners() {
+    resource_reject_reason(concat(resource_nested_pattern_header(), """
+        fn abandoned(log List[Int]) Handle {
+            match Outer.Some(bundle(log)) {
+                Outer.Some(Bundle.Pair(first, second, 7)) => first
+                Outer.Some(Bundle.Pair(first, second, _)) => second
+                Outer.Some(Bundle.Empty) => make(log)
+                Outer.None => make(log)
+            }
+        }
+        """), "a resource payload must immediately enter scoped or transfer into a fresh result")
+    resource_reject_reason(concat(resource_nested_pattern_header(), """
+        fn abandoned_product(log List[Int]) Handle {
+            match product(log) {
+                (first, Cell { flag = true, inner = second }) => first
+                (first, Cell { flag = false, inner = second }) => second
+            }
+        }
+        """), "a resource payload must immediately enter scoped or transfer into a fresh result")
+    resource_reject(concat(resource_nested_pattern_header(), """
+        fn duplicate(log List[Int]) (Handle, Handle) {
+            match product(log) {
+                (first, Cell { inner = second, flag = _ }) => {
+                    scoped held = second
+                    (first, first)
+                }
+            }
+        }
+        """))
+    resource_reject_reason(concat(resource_nested_pattern_header(), """
+        fn delayed(log List[Int]) Handle {
+            match product(log) {
+                (first, Cell { inner = second, flag = _ }) => {
+                    discard 1
+                    scoped held = second
+                    first
+                }
+            }
+        }
+        """), "a resource payload must immediately enter scoped or transfer before any other operation")
+    resource_reject_reason(concat(resource_nested_pattern_header(), """
+        fn dismantled(log List[Int]) {
+            match product(log) {
+                (Handle { log = _ }, Cell { inner = second, flag = _ }) => {
+                    scoped held = second
+                }
+            }
+        }
+        """), "a MustScope value requires scoped; direct resource matching is not yet supported")
+    resource_reject_reason(concat(resource_nested_pattern_header(), """
+        enum Owner {
+            Only(Handle)
+        }
+        impl MustScope for Owner {
+        }
+        impl Dispose for Owner {
+            fn dispose(self Owner) {
+            }
+        }
+        fn dismantled_enum(log List[Int]) {
+            match (Owner.Only(make(log)), true) {
+                (Owner.Only(value), _) => {
+                    scoped held = value
+                }
+            }
+        }
+        """), "a MustScope value requires scoped; direct resource matching is not yet supported")
+}

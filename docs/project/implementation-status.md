@@ -358,6 +358,8 @@ MustScope freshness/escape checks and typed cleanup protect nested and recursive
 resources, partial aggregate construction and unextracted Task results.
 Compiler-generated pattern names forward fresh-resource obligations through
 decision-tree lowering, without permitting copies or delaying source adoption.
+Nested structural patterns transfer container obligations to every selected
+field; whole-row fallbacks reconstruct once, while scoped inputs retain borrows.
 Cleanup retains the first fault while draining remaining work; OOM/termination
 offer no cleanup guarantee. Existing scoped resources cannot generally transfer
 into Tasks; directly awaited borrows drain before scope exit. Synchronous Task

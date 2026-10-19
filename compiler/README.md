@@ -4297,6 +4297,11 @@ its payloads.
 
 Every selected resource payload must be accounted for: returning one owner
 cannot silently abandon a sibling. Scope or transfer the other payloads first.
+Nested enum, tuple and record patterns replace a fresh container obligation
+with obligations for its selected fields. Compiler-generated literal tests and
+whole-value reconstruction execute no source effects; a fallback whole binding
+transfers those pieces once. Matching a scoped container still borrows its
+fields. Explicit MustScope owners cannot be dismantled by a nested pattern.
 
 Runtime function values and dynamic factory methods may also return MustScope
 resources, including the supported Result/Option transfers. Each selected source

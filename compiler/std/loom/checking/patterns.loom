@@ -133,6 +133,10 @@ fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, de
                 }
             })
     }
+    let marker = resource_concept(context.env, "MustScope")
+    if !borrowed && marker >= 0 && satisfies(context, ty, marker)? {
+        return Result.Err(error(context, node, "a MustScope value requires scoped; direct resource matching is not yet supported"))
+    }
     let fields = if selected == -2 {
         shape.arguments
     } else {
