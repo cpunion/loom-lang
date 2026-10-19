@@ -1,3 +1,6 @@
+import std.task.Outcome
+import std.task.settled
+
 fn precondition_positive[Ts...](value Int, context Ts...) Bool
 ensures result == (value > 0) {
     value > 0
@@ -61,8 +64,25 @@ fn exercise_preconditions() {
     assert std.list.length(log) == 3
 }
 
-async fn precondition_later[Ts...](value Int, context Ts...) Int
+async fn precondition_later[Ts...](value Int, trace List[Int], context Ts...) Int
 requires precondition_positive(value, context...)
 ensures result > 0 {
+    std.list.push(trace, value)
     precondition_keep(value, context...)
+}
+
+async fn exercise_precondition_tasks() {
+    let trace List[Int] = []
+    assert precondition_later(14, trace, "async", false).await == 14
+    let pending = precondition_later(0, trace, mark(trace, 15))
+    assert std.list.length(trace) == 2
+    let outcomes = settled((pending,)).await
+    match outcomes.0 {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert std.list.length(trace) == 2 && trace[0] == 14 && trace[1] == 15
 }

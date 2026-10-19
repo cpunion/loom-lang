@@ -100,7 +100,7 @@ async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
 }
 
 async fn exercise_tasks() {
-    assert precondition_later(14, "async", false).await == 14
+    exercise_precondition_tasks().await
     exercise_nested_async().await
     assert async_optional_measurements(2, "ignored", true).await == 3
     assert composed_async_measurement((40,)).await == 42
