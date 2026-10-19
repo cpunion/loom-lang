@@ -100,3 +100,73 @@ test fn impl_method_headers_check_associated_domains_before_expanding_bindings()
     discard accepted(source)
     rejects(std.text.replace(source, "fn read[U Source]", "fn read[U]"))
 }
+
+test fn impl_method_headers_try_overload_domains_without_leaking_requirements() {
+    discard accepted("""
+        concept First {
+            type Item
+        }
+        concept Second {
+            type Item
+        }
+        concept Use {
+            fn use[T First](self Self, value T.Item) T.Item
+            fn use[T Second](self Self, value T.Item) T.Item
+        }
+        impl[Ts...] Use for (Ts...) {
+            fn use[U](self Self, value U.Second.Item) U.Second.Item {
+                value
+            }
+            fn use[U](self Self, value U.First.Item) U.First.Item {
+                value
+            }
+        }
+        """)
+}
+
+test fn impl_method_headers_compare_scoped_family_binders_not_source_spellings() {
+    let source = """
+        concept Family {
+            type Item[T]
+        }
+        concept Use {
+            fn use[U](self Self, value dyn Family[Item[T] = (T, U)])
+        }
+        impl[Ts...] Use for (Ts...) {
+            fn use[V](self Self, value dyn Family[Item[W] = (W, V)]) {}
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "(W, V)", "(W, Bool)"))
+    discard accepted("""
+        concept Family {
+            type Item[T]
+        }
+        concept Use {
+            type Value[T]
+            fn use[U](self Self, value Self.Value[U])
+        }
+        impl[Ts...] Use for (Ts...) {
+            type Value[T] = dyn Family[Item[T] = T]
+            fn use[V](self Self, value dyn Family[Item[W] = W]) {}
+        }
+        """)
+}
+
+test fn impl_method_headers_compare_family_captures_inside_symbolic_words() {
+    let source = """
+        concept Family {
+            type Item[T]
+        }
+        concept Use {
+            type Values
+            fn use(self Self, values Self.Values)
+        }
+        impl[Ts...] Use for (Ts...) {
+            type Values = (dyn Family[Item[U] = (U, Ts)]...)
+            fn use(self Self, values (dyn Family[Item[V] = (V, Ts)]...)) {}
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "(V, Ts)", "(V, Ts, Bool)"))
+}

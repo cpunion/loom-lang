@@ -18,7 +18,7 @@ fn pack_symbolic_type(context Context, caller Node, schema Node, obligations Lis
     if schema.kind == NodeKind.DynType {
         return pack_dynamic_type(context, caller, schema, obligations, budget, depth + 1, assumptions)
     }
-    if schema.kind == NodeKind.Type && length(schema.children) == 0 {
+    if schema.kind == NodeKind.Type {
         match std.int.parse(schema.value) {
             Result.Ok(ty) => {
                 if ty >= 0 && ty < length(context.env.types) &&
@@ -168,8 +168,29 @@ fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List
             if ty < 0 {
                 return Result.Ok(-1)
             }
-            push(bindings, pack_node(binding, NodeKind.AssociatedType, binding.value,
-                    source_nodes(meta_reference(child(binding, 0), ty))))
+            let parts = source_nodes(meta_reference(child(binding, 0), ty))
+            if get(context.env.types, ty).kind == TypeKind.Family {
+                let members = get(context.env.concepts, concept_index(context.env, capability)).associated
+                var member = 0
+                while member < length(members) && symbol(context.env, get(members, member)).name != binding.value {
+                    member = member + 1
+                }
+                if member < length(members) {
+                    // A checked family identity still enters ordinary dyn
+                    // validation under its declared domain. Do not resolve
+                    // declaration-bound concept names in the consumer's scope.
+                    let parameters = new[Node]()
+                    let declared = member_parameters(context.env, get(members, member))
+                    var parameter = 0
+                    while parameter < length(declared) {
+                        let source = get(declared, parameter)
+                        push(parameters, pack_node(source, source.kind, source.value, new[Node]()))
+                        parameter = parameter + 1
+                    }
+                    push(parts, pack_node(binding, NodeKind.TypeParameters, "", parameters))
+                }
+            }
+            push(bindings, pack_node(binding, NodeKind.AssociatedType, binding.value, parts))
         }
         index = index + 1
     }

@@ -85,3 +85,26 @@ test fn method_conformances_keep_variadic_and_generic_source_slots_after_instant
 }
 
 import std.list.transfer.take_last
+
+test fn method_conformances_include_uninstantiated_universally_checked_impl_headers() {
+    let source = """
+        concept Keep {
+            fn keep[Us...](self Self, values Us...) (Us...)
+        }
+        impl[Ts...] Keep for (Ts...) {
+            fn keep[Vs...](self Self, values Vs...) (Vs...) {
+                values
+            }
+        }
+        """
+    let edges = match method_conformances(published(input(source))) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            new[(Location, Location)]()
+        }
+    }
+    assert length(edges) == 1
+    assert get(edges, 0).0.span.start == query_offset(source, "keep[Vs...")
+    assert get(edges, 0).1.span.start == query_offset(source, "keep[Us...")
+}

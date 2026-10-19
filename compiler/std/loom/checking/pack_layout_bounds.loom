@@ -164,8 +164,9 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
         }
         return Result.Ok(false)
     }
-    // Already checked scalar/fixed parameter identities keep ordinary evidence.
-    if schema.kind == NodeKind.Type && length(schema.children) == 0 {
+    // Already checked identities (including scoped families) keep ordinary
+    // evidence only when their complete encoded structure matches.
+    if schema.kind == NodeKind.Type {
         match std.int.parse(schema.value) {
             Result.Ok(ty) => {
                 if ty >= 0 && ty < length(context.env.types) &&
