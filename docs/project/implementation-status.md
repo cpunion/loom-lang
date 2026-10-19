@@ -195,6 +195,9 @@ supported theories and boundaries. The central rules are:
   predicate retains checked Result construction. Safe weakening can omit a
   redundant check while preserving evaluation and faults. Pure predicates cannot
   depend on external mutable state.
+  Independent typed snapshots also propagate declared field/payload invariants
+  through existing records, tuples, enums and projections. They provide no
+  stale mutable observations, freshness or new alias guarantees.
 - Every declared `ensures` needs a static proof. Cheap local rules run first;
   unresolved supported obligations use compile-time SMT. Unknown, exhausted or
   failed reasoning never supplies evidence or becomes a runtime postcondition.

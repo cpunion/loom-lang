@@ -1,0 +1,32 @@
+type PositiveKey = Int where self > 0
+
+record KeyedEnvelope {
+    key PositiveKey
+    values List[Int]
+}
+
+record EnvelopeBox {
+    payload KeyedEnvelope
+}
+
+type PositiveEnvelope = KeyedEnvelope where self.key > 0
+
+fn observe_envelope(calls List[Int], value EnvelopeBox) EnvelopeBox {
+    calls[0] = calls[0] + 1
+    value
+}
+
+fn exercise_typed_snapshot() {
+    let values = [1]
+    let calls = [0]
+    let payload = KeyedEnvelope {
+        key = PositiveKey(7)
+        values = values
+    }
+    let checked = PositiveEnvelope(observe_envelope(calls, EnvelopeBox {
+                payload = payload
+            }).payload)
+    values[0] = 42
+    assert checked.key == 7 && checked.values[0] == 42
+    assert calls[0] == 1
+}
