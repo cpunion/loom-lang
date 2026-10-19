@@ -1,0 +1,158 @@
+test fn predicate_expressions_share_guarded_control_flow_and_local_bindings() {
+    discard accepted("""
+        fn keep(value Int, strict Bool) Int
+        requires if strict { value > 0 } else { value >= 0 }
+        ensures {
+            let actual = result
+            if strict { actual > 0 } else { actual >= 0 }
+        }
+        {
+            value
+        }
+        fn zero(value Int) Int
+        requires value == 0
+        ensures if value == 0 { result == 0 } else { 1 / value > 0 }
+        {
+            value
+        }
+        enum Mode {
+            Strict
+            Relaxed
+        }
+        fn selected(mode Mode) Int
+        ensures match mode {
+            Mode.Strict => result == 1
+            Mode.Relaxed => result == 0
+        }
+        {
+            match mode {
+                Mode.Strict => 1
+                Mode.Relaxed => 0
+            }
+        }
+        fn unchanged(value Int) Int
+        ensures {
+            let before = old(value)
+            result == before
+        }
+        {
+            value
+        }
+        fn main() {
+            assert keep(1, true) == 1
+            assert keep(0, false) == 0
+            assert zero(0) == 0
+            assert selected(Mode.Strict) == 1
+            assert unchanged(7) == 7
+        }
+        """)
+}
+
+test fn predicate_expressions_refine_and_weaken_through_the_same_proof() {
+    let program = accepted("""
+        type Positive = Int where if self > 0 { true } else { false }
+        type Nonnegative = Int where {
+            let boundary = 0
+            if self >= boundary { true } else { false }
+        }
+        pub fn widen(value Positive) Nonnegative {
+            Nonnegative(value)
+        }
+        """)
+    assert length(program.functions) == 1
+    let boundary = get(get(program.functions, 0).body.children, 0)
+    assert boundary.kind == ExprKind.Coerce && dynamic_count(boundary, ExprKind.If) == 0
+    rejects("""
+        type Positive = Int where if self > 0 { true } else { false }
+        fn wrong() Positive {
+            Positive(0)
+        }
+        """)
+    rejects("""
+        type Wrong = Int where if true { old(self) > 0 } else { false }
+        fn main() {}
+        """)
+}
+
+test fn predicate_expressions_do_not_supply_effect_or_evaluation_evidence() {
+    rejects("""
+        fn wrong(value Int, flag Bool) Int
+        ensures if flag { result > 0 } else { result < 0 }
+        {
+            value
+        }
+        """)
+    rejects("""
+        fn wrong(value Int) Int
+        ensures {
+            discard 1 / 0
+            true
+        }
+        {
+            value
+        }
+        """)
+    rejects("""
+        fn change(values List[Int]) Bool {
+            values[0] = 1
+            true
+        }
+        fn changed(values List[Int])
+        requires {
+            let actual = change(values)
+            actual
+        }
+        {
+            discard values
+        }
+        """)
+    rejects("""
+        fn wrong(value Int) Int
+        requires {
+            return 1
+        }
+        {
+            value
+        }
+        """)
+    rejects("""
+        fn main() {
+            var state = 0
+            let action = fn(value Int) Int
+            requires {
+                state = state + 1
+                true
+            }
+            {
+                value
+            }
+            discard action(1)
+        }
+        """)
+}
+
+test fn predicate_expressions_preserve_shared_constraints_after_every_store() {
+    let declaration = """
+        import std.list.length
+        type PositiveCell = List[Int] where {
+            let count = length(self)
+            if count == 1 { self[0] > 0 } else { false }
+        }
+
+        """
+    list_constraint_accept(concat(declaration, """
+        fn main() {
+            let cell = PositiveCell([1])
+            let alias = cell
+            alias[0] = 2
+            assert cell[0] == 2
+        }
+        """))
+    list_constraint_reject(concat(declaration, """
+        fn main() {
+            let cell = PositiveCell([1])
+            let alias = cell
+            alias[0] = 0
+        }
+        """))
+}

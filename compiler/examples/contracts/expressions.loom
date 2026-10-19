@@ -1,0 +1,56 @@
+import std.list.length
+
+enum ContractMode {
+    Positive
+    Nonnegative
+}
+
+type ExpressionPositive = Int where if self > 0 {
+    true
+} else {
+    false
+}
+
+type ExpressionNonnegative = Int where {
+    let boundary = 0
+    self >= boundary
+}
+
+type ExpressionCell = List[Int] where {
+    let count = length(self)
+    if count == 1 {
+        self[0] > 0
+    } else {
+        false
+    }
+}
+
+fn expression_widen(value ExpressionPositive) ExpressionNonnegative {
+    ExpressionNonnegative(value)
+}
+
+fn conditional_value(value Int, mode ContractMode) Int
+requires match mode {
+    ContractMode.Positive => value > 0
+    ContractMode.Nonnegative => value >= 0
+}
+ensures {
+    let actual = result
+    match mode {
+        ContractMode.Positive => actual > 0
+        ContractMode.Nonnegative => actual >= 0
+    }
+}
+{
+    value
+}
+
+fn expression_contracts() {
+    assert conditional_value(1, ContractMode.Positive) == 1
+    assert conditional_value(0, ContractMode.Nonnegative) == 0
+    assert expression_widen(ExpressionPositive(1)) == 1
+    let cell = ExpressionCell([1])
+    let alias = cell
+    alias[0] = 2
+    assert cell[0] == 2
+}

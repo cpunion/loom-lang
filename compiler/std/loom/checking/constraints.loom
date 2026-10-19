@@ -12,7 +12,6 @@ import std.list.push
 import std.list.set
 import std.list.length
 import std.text.concat
-import std.text.starts_with
 import std.float.to_text
 import std.result.Result
 import std.loom.eval.Value
@@ -23,62 +22,6 @@ import std.loom.eval.evaluate
 import std.loom.proof.implies
 import std.loom.proof.verify_with_types
 import std.loom.proof.preserves_list_append
-
-fn predicate_form(node Node, calls Bool) Bool {
-    if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text {
-        return true
-    }
-    // Closed function references are valid arguments to pure predicate helpers.
-    // Binding still exposes no runtime local other than self; purity and input
-    // observation validate their reachable call targets after typing.
-    if node.kind == NodeKind.Name {
-        return calls || node.value == "self" || starts_with(node.value, "self.")
-    }
-    if node.kind == NodeKind.Select {
-        return predicate_form(child(node, 0), calls)
-    }
-    if node.kind == NodeKind.Spread {
-        // Ordinary typing validates its call/tuple position and known shape.
-        return calls && predicate_form(child(node, 0), calls)
-    }
-    // Brackets remain ambiguous until typing selects indexing/application.
-    // Validate their receiver and arguments here; the typed observation pass
-    // still rejects external/nested mutable storage. Scalar-only fast rules do
-    // not gain hypothetical heap reads.
-    let brackets = node.kind == NodeKind.Apply || node.kind == NodeKind.Index
-    if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall || brackets {
-        if !calls {
-            return false
-        }
-        if brackets && !predicate_form(child(node, 0), calls) {
-            return false
-        }
-        let arguments = child(node, if node.kind == NodeKind.MacroCall {
-                0
-            } else {
-                1
-            }).children
-        var index = 0
-        while index < length(arguments) {
-            if !predicate_form(get(arguments, index), calls) {
-                return false
-            }
-            index = index + 1
-        }
-        return true
-    }
-    if node.kind != NodeKind.Unary && node.kind != NodeKind.Binary && node.kind != NodeKind.Tuple {
-        return false
-    }
-    var index = 0
-    while index < length(node.children) {
-        if !predicate_form(child(node, index), calls) {
-            return false
-        }
-        index = index + 1
-    }
-    true
-}
 
 fn predicate_node(env Environment, owner Int) Node {
     let declaration = symbol(env, owner).node

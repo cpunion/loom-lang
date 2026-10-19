@@ -15,6 +15,12 @@ constant. `bounded` reuses a predicate with multiple parameters, branch conditio
 and early returns. `lower` proves its result from both branches of `minimum`,
 without requiring a separate contract on the helper.
 
+`expressions.loom` uses `match`, `if/else`, nested blocks and local `let` bindings
+directly in contracts and type predicates. Their guards and scoped bindings use
+the same proof expansion as pure helpers. A proved explicit conversion removes
+its repeated boundary check, not the distinct nominal type. Nonlocal returns,
+caller-state assignments, cleanup and suspension are not clause expressions.
+
 `locals.loom` uses ordinary `var` bindings in pure helpers: a minimum selection,
 eager argument snapshots, conditional operand writes and short-circuit writes.
 The same rules prove `local_widen` without a second construction check. These
@@ -44,8 +50,9 @@ Calls without a usable result contract need bounded, nonrecursive scalar helper
 bodies with local bindings/reassignment, `if/else` and early returns from body or
 branch blocks. Reassignment cannot change earlier reads; expression blocks and
 short-circuit operands merge only executed writes. Shared-storage mutation,
-returns inside operands, cleanup, loops and indirect calls remain unsupported
-for helper expansion. Branches retain their evaluation guards;
+returns inside operands, cleanup and indirect calls remain unsupported
+for helper expansion. Bounded unit-step scans use the same guarded rules;
+broader loop shapes remain unproved. Branches retain their evaluation guards;
 eager arguments, overwritten/discarded arithmetic and assertions still create proof
 obligations. Expansion and conditional normalization have finite budgets.
 Arithmetic that executed in a body may rely on its runtime overflow check having

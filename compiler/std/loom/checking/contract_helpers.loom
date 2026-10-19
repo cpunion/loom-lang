@@ -42,15 +42,15 @@ fn postcondition_helpers(node Node) Bool {
     false
 }
 
-// Source syntax alone cannot detect temporaries introduced by typed lowering.
-// Let the ordinary guarded helper expander substitute such bindings as well.
-fn contract_block(value Expr) Bool {
-    if value.kind == ExprKind.Block {
+// Source syntax alone cannot detect bindings introduced by typed lowering.
+// Blocks and matches use the ordinary guarded expander before scalar theories.
+fn contract_scope(value Expr) Bool {
+    if value.kind == ExprKind.Block || value.kind == ExprKind.Match {
         return true
     }
     var index = 0
     while index < length(value.children) {
-        if contract_block(get(value.children, index)) {
+        if contract_scope(get(value.children, index)) {
             return true
         }
         index = index + 1
@@ -58,10 +58,10 @@ fn contract_block(value Expr) Bool {
     false
 }
 
-fn contract_blocks(conditions List[Expr]) Bool {
+fn contract_scopes(conditions List[Expr]) Bool {
     var index = 0
     while index < length(conditions) {
-        if contract_block(get(conditions, index)) {
+        if contract_scope(get(conditions, index)) {
             return true
         }
         index = index + 1
@@ -253,7 +253,7 @@ fn checked_contracts(context Context, id Int, source Function) Result[Function, 
     } else {
         function.postconditions
     }
-    if call_free && !contract_blocks(function.preconditions) && !contract_blocks(conditions) {
+    if call_free && !contract_scopes(function.preconditions) && !contract_scopes(conditions) {
         if !has_ensures {
             return Result.Ok(function)
         }

@@ -3,6 +3,13 @@ test fn positive_values_satisfy_the_helper_requirement() {
     assert good(9223372036854775807) == 9223372036854775807
 }
 
+test fn predicate_expressions_share_native_and_compile_time_rules() {
+    expression_contracts()
+    comptime {
+        expression_contracts()
+    }
+}
+
 test fn bounds_include_their_endpoints() {
     assert bounded(10, 10, 20) == 10
     assert bounded(20, 10, 20) == 20
