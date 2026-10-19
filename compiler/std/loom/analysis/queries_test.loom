@@ -132,9 +132,24 @@ test fn capture_contract_queries_follow_entry_slots_to_source_bindings() {
 }
 
 test fn static_capture_slots_do_not_shift_source_parameters_or_leak_frame_types() {
-    let text = "fn make() fn(Int) Int { let extra = 1\nfn(item Int) Int { extra + item } }\nfn use(comptime action fn(Int) Int, value Int) Int { action(value) }\nfn main() { assert use(make(), 2) == 3 }"
+    let text = """
+        fn make() fn(Int) Int {
+            let extra = 1
+            fn(item Int) Int {
+                extra + item
+            }
+        }
+
+        fn use(comptime action fn(Int) Int, value Int) Int {
+            action(value)
+        }
+
+        fn main() {
+            assert use(make(), 2) == 3
+        }
+        """
     let analysis = accepted(input(text))
-    let parameter = inspection(analysis, text, "value) }")
+    let parameter = inspection(analysis, text, "value)\n")
     only_type(parameter, "Int")
     let declared = query_offset(text, "value Int")
     only_definition(parameter, declared, declared + 5)

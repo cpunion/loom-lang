@@ -42,7 +42,13 @@ test fn public_static_bindings_and_paths_do_not_export_mutable_evidence() {
 }
 
 test fn public_import_navigation_agrees_with_regular_inspection() {
-    let text = "import helper.number\nfn main() { assert number() == 3 }"
+    let text = """
+        import helper.number
+
+        fn main() {
+            assert number() == 3
+        }
+        """
     let project = input(text)
     push(project.modules, ModuleInstance {
             name = "helper"
@@ -57,7 +63,11 @@ test fn public_import_navigation_agrees_with_regular_inspection() {
             spelling = "helper"
             target = 1
         })
-    let declaration = "pub fn number() Int { 3 }"
+    let declaration = """
+        pub fn number() Int {
+            3
+        }
+        """
     push(project.files, SourceFile {
             package = 1
             path = "/helper/main.loom"
