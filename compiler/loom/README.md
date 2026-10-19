@@ -96,7 +96,7 @@ them to separate lines. Semicolons do not terminate ordinary statements.
 
 The [VS Code development extension](../../editors/vscode/README.md) provides
 highlighting, document formatting, diagnostics, name/member completion, type hovers, definition
-navigation, checked references, local/compile-time-parameter rename and unique private-function rename
+navigation, checked references, local/compile-time-parameter, module-declaration and private-concept method rename
 for unsaved buffers. Its
 language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.

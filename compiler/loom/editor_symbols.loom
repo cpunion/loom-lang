@@ -117,7 +117,7 @@ fn editor_declaration_node(node Node, tokens List[Token], target Span, parent No
     false
 }
 
-fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, tokens List[Token], methods Bool) Option[Location] {
+fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, tokens List[Token]) Option[Location] {
     // A declaration token identifies itself even when expression inspection
     // finds several same-spelled overloads. This is an exact syntax span, not
     // a fallback guess for an ambiguous call or expression.
@@ -132,7 +132,7 @@ fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, t
             if length(found.definitions) == 1 {
                 return Option.Some(get(found.definitions, 0))
             }
-            if methods && length(found.definitions) > 1 {
+            if length(found.definitions) > 1 {
                 let family = editor_method_family(analysis, get(found.definitions, 0), token.value)
                 if editor_all_definitions(family.1, found.definitions) {
                     return Option.Some(family.0)
@@ -433,7 +433,7 @@ fn editor_top_declaration(analysis EditorAnalysis, target Location, spelling Tex
 
 // An unaccounted same-spelled token could be an unchecked use (for example in
 // an uninstantiated body). Refuse the edit even if an ordinary check succeeds.
-fn editor_private_covered(analysis EditorAnalysis, target Location, spelling Text, references List[Location], inputs BuildInputs) Bool {
+fn editor_private_covered(analysis EditorAnalysis, targets List[Location], spelling Text, references List[Location], inputs BuildInputs) Bool {
     // Raw syntax retains declaration stages erased from expanded bindings.
     var file = 0
     while file < length(editor_data(analysis).source.files) {
@@ -486,7 +486,7 @@ fn editor_private_covered(analysis EditorAnalysis, target Location, spelling Tex
                         file = file
                         span = token.span
                     }) {
-                    if !editor_other_binding(analysis, file, token, tokens, Option.Some(target)) {
+                    if !editor_binding_outside(analysis, file, token, tokens, targets) {
                         return false
                     }
                 }
@@ -701,17 +701,13 @@ fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
         Option.None => {
         }
     }
-    let target = match editor_selected(analysis, file, offset, token, tokens, !rename) {
+    let target = match editor_selected(analysis, file, offset, token, tokens) {
         Option.Some(value) => value,
         Option.None => {
             return editor_no_symbols(rename)
         }
     }
-    let family = if rename {
-        (target, [target])
-    } else {
-        editor_method_family(analysis, target, token.value)
-    }
+    let family = editor_method_family(analysis, target, token.value)
     let references = editor_references(analysis, family.1, token.value)
     let field_owner = editor_field_owner(analysis, target, token.value)
     let public_field = field_owner >= 0 && get(bindings.symbols, field_owner).public &&
@@ -722,6 +718,9 @@ fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
     if rename {
         if !editor_valid_new_name(new_name) {
             return editor_error("Rename needs a valid non-reserved Loom identifier")
+        }
+        if editor_method_declaration(analysis, family.0, token.value) {
+            return editor_private_method_rename(options, analysis, family, token.value, references, inputs)
         }
         match editor_local_scope(analysis, target) {
             Option.Some(scope) => {
@@ -744,7 +743,7 @@ fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
         if !options.tests {
             return editor_error("Private declaration rename requires --tests to account for test-file uses")
         }
-        if !editor_private_covered(analysis, target, token.value, references, inputs) {
+        if !editor_private_covered(analysis, [target], token.value, references, inputs) {
             return editor_error("Rename cannot account for every occurrence of this private declaration")
         }
         if new_name != token.value && editor_private_conflict(analysis, new_name) {
