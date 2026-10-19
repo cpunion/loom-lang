@@ -4280,13 +4280,23 @@ fn main() {
 }
 ```
 
-The empty `std.resource.MustScope` marker requires immediate scoped handling,
-not ordinary bindings, parameters, discard, or dynamic erasure. A statically
+The empty `std.resource.MustScope` marker requires immediate scoped handling
+for fresh owners, not ordinary binding copies, discard or dynamic erasure.
+Parameters borrow scoped owners rather than acquiring them. A statically
 checked factory may return a fresh resource directly; a fresh Result/Option can
 transfer its single resource through `?` or a match payload immediately bound
 with `scoped`. Already shared bindings are not silently consumed. Checks follow
 receiver calls and also validate unused concrete resource functions without
 emitting them. No ownership, borrowing, or lifetime syntax is introduced.
+
+Decision-tree pattern bindings forward a fresh payload's pending obligation;
+they do not create a shareable alias. Nested error patterns and structural
+constructor wrappers preserve immediate scoping or reconstruction. Operand
+effects still need prior resource adoption; matching a scoped owner only borrows
+its payloads.
+
+Every selected resource payload must be accounted for: returning one owner
+cannot silently abandon a sibling. Scope or transfer the other payloads first.
 
 Runtime function values and dynamic factory methods may also return MustScope
 resources, including the supported Result/Option transfers. Each selected source

@@ -16,6 +16,99 @@ fn resource_reconstruction_header() Text {
         """)
 }
 
+fn resource_pattern_result_header() Text {
+    concat(resource_header(), """
+        import std.result.Result
+        enum Issue {
+            Failed(Int)
+        }
+        fn attempt(log List[Int]) Result[Handle, Issue] {
+            Result.Ok(make(log))
+        }
+        """)
+}
+
+test fn decision_tree_pattern_names_forward_fresh_resource_obligations() {
+    resource_accept(concat(resource_pattern_result_header(), """
+        fn select(log List[Int]) Handle {
+            match attempt(log) {
+                Result.Ok(value) => value
+                Result.Err(Issue.Failed(_)) => make(log)
+            }
+        }
+        fn wrap[T Dispose + MustScope](create fn(List[Int]) Result[T, Issue], log List[Int]) Result[(T,), Issue] {
+            match create(log) {
+                Result.Err(Issue.Failed(0)) => Result.Err(Issue.Failed(1))
+                Result.Err(Issue.Failed(code)) => Result.Err(Issue.Failed(code))
+                Result.Ok(value) => Result.Ok((value,))
+            }
+        }
+        fn run(log List[Int]) {
+            scoped direct = match attempt(log) {
+                Result.Ok(value) => value
+                Result.Err(Issue.Failed(_)) => make(log)
+            }
+            scoped returned = select(log)
+            match wrap(attempt, log) {
+                Result.Ok(value) => {
+                    scoped tuple = value
+                }
+                Result.Err(Issue.Failed(_)) => {
+                }
+            }
+        }
+        fn main() {
+            run([0])
+        }
+        """))
+}
+
+test fn decision_tree_pattern_names_cannot_duplicate_delay_or_capture_resources() {
+    resource_reject_reason(concat(resource_pattern_result_header(), """
+        fn delayed(log List[Int]) {
+            match attempt(log) {
+                Result.Ok(value) => {
+                    discard 1
+                    scoped held = value
+                }
+                Result.Err(Issue.Failed(_)) => {
+                }
+            }
+        }
+        """), "a resource payload must immediately enter scoped or transfer before any other operation")
+    resource_reject_reason(concat(resource_pattern_result_header(), """
+        fn delayed_wrapper(log List[Int]) Result[(Handle,), Issue] {
+            match attempt(log) {
+                Result.Ok(value) => Result.Ok({
+                    discard 1
+                    (value,)
+                })
+                Result.Err(Issue.Failed(code)) => Result.Err(Issue.Failed(code))
+            }
+        }
+        """), "a resource payload must immediately enter scoped or transfer before any other operation")
+    resource_reject(concat(resource_pattern_result_header(), """
+        fn duplicate(log List[Int]) Result[(Handle, Handle), Issue] {
+            match attempt(log) {
+                Result.Ok(value) => Result.Ok((value, value))
+                Result.Err(Issue.Failed(code)) => Result.Err(Issue.Failed(code))
+            }
+        }
+        """))
+    resource_reject(concat(resource_pattern_result_header(), """
+        fn captured(log List[Int]) fn() Int {
+            match attempt(log) {
+                Result.Ok(value) => fn() Int {
+                    value.use()
+                }
+                Result.Err(Issue.Failed(_)) => fn() Int {
+                    0
+                }
+            }
+        }
+        """))
+}
+
 test fn fresh_match_payloads_reconstruct_through_existing_aggregate_guards() {
     resource_accept(concat(resource_reconstruction_header(), """
         fn reorder(log List[Int]) Bundle {
@@ -60,17 +153,80 @@ test fn fresh_match_payloads_reconstruct_through_existing_aggregate_guards() {
                 Option.None => make(log)
             }
         }
+        fn retained(log List[Int]) Handle {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => {
+                    scoped held = second
+                    first
+                }
+                Bundle.Empty => make(log)
+            }
+        }
+        record PendingBox {
+            inner Handle
+        }
+        impl Dispose for PendingBox {
+            fn dispose(self PendingBox) {
+            }
+        }
+        fn retained_box(log List[Int]) Handle {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => {
+                    scoped held = PendingBox {
+                        inner = second
+                    }
+                    first
+                }
+                Bundle.Empty => make(log)
+            }
+        }
         fn run(log List[Int]) {
             scoped first = reorder(log)
             scoped second = record_pair(log)
             scoped third = tuple_pair(log)
             scoped fourth = list_pair(log)
             scoped fifth = direct(log)
+            scoped sixth = retained(log)
+            scoped seventh = retained_box(log)
+        }
+        fn main() {
+            run([0])
         }
         """))
 }
 
 test fn reconstructed_payloads_cannot_copy_borrows_duplicate_or_abandon_owners() {
+    resource_reject_reason(concat(resource_reconstruction_header(), """
+        fn early_dispose(log List[Int]) Handle {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => {
+                    {
+                        scoped held = second
+                    }
+                    first
+                }
+                Bundle.Empty => make(log)
+            }
+        }
+        """), "a resource payload must immediately enter scoped or transfer before any other operation")
+    resource_reject_reason(concat(resource_reconstruction_header(), """
+        fn abandoned_tail(log List[Int]) Handle {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => first
+                Bundle.Empty => make(log)
+            }
+        }
+        """), "a resource payload must immediately enter scoped or transfer into a fresh result")
+    resource_reject_reason(concat(resource_reconstruction_header(), """
+        fn abandoned_return(log List[Int]) Handle {
+            match bundle(log) {
+                Bundle.Pair(first, second, value) => {
+                    return first
+                }
+                Bundle.Empty => make(log)
+            }
+        }
+        """), "a resource payload must immediately enter scoped or transfer into a fresh result")
     resource_reject(concat(resource_reconstruction_header(), """
         fn copied(value Handle, log List[Int]) Bundle {
             Bundle.Pair(value, make(log), 1)

@@ -1,0 +1,166 @@
+enum PatternIssue {
+    Failed(Int)
+}
+
+fn pattern_attempt(trace List[Int], fail Bool) Result[Leaf, PatternIssue] {
+    if fail {
+        return Result.Err(PatternIssue.Failed(7))
+    }
+    Result.Ok(acquire(1, trace))
+}
+
+fn pattern_forward(trace List[Int], fail Bool) Leaf {
+    match pattern_attempt(trace, fail) {
+        Result.Ok(value) => value
+        Result.Err(PatternIssue.Failed(7)) => acquire(2, trace)
+        Result.Err(PatternIssue.Failed(_)) => acquire(3, trace)
+    }
+}
+
+fn pattern_generic[T Dispose + MustScope](create fn(List[Int], Bool) Result[T, PatternIssue], trace List[Int], fail Bool) Result[(T,), PatternIssue] {
+    match create(trace, fail) {
+        Result.Err(PatternIssue.Failed(0)) => Result.Err(PatternIssue.Failed(1))
+        Result.Err(PatternIssue.Failed(code)) => Result.Err(PatternIssue.Failed(code))
+        Result.Ok(value) => Result.Ok((value,))
+    }
+}
+
+record PatternHeld {
+    inner Leaf
+}
+
+impl Dispose for PatternHeld {
+    fn dispose(self PatternHeld) {
+    }
+}
+
+fn pattern_return_one(trace List[Int]) Leaf {
+    match acquired_pair(trace) {
+        AcquiredPair.Pair(first, second) => {
+            scoped held = PatternHeld {
+                inner = second
+            }
+            first
+        }
+    }
+}
+
+fn pattern_scope_trial() Bool {
+    let successful List[Int] = []
+    {
+        scoped value = pattern_forward(successful, false)
+        assert value.id == 1
+    }
+    assert length(successful) == 2 && successful[0] == 10 && successful[1] == 1
+    let failed List[Int] = []
+    {
+        scoped value = pattern_forward(failed, true)
+        assert value.id == 2
+    }
+    assert length(failed) == 2 && failed[0] == 20 && failed[1] == 2
+    let wrapped List[Int] = []
+    {
+        scoped selected = pattern_generic(pattern_attempt, wrapped, false)
+        assert match selected {
+            Result.Ok(value) => value.0.id == 1
+            _ => false
+        }
+    }
+    assert length(wrapped) == 2 && wrapped[0] == 10 && wrapped[1] == 1
+    let rejected List[Int] = []
+    {
+        scoped selected = pattern_generic(pattern_attempt, rejected, true)
+        assert match selected {
+            Result.Err(PatternIssue.Failed(code)) => code == 7
+            _ => false
+        }
+    }
+    assert length(rejected) == 0
+    let retained List[Int] = []
+    {
+        scoped selected = pattern_return_one(retained)
+        assert length(retained) == 3 && retained[2] == 2
+        assert selected.id == 1
+    }
+    assert length(retained) == 4 && retained[3] == 1
+    true
+}
+
+test fn decision_tree_resource_transfers_dispose_once_natively_and_in_ctfe() {
+    assert pattern_scope_trial()
+    assert comptime {
+        pattern_scope_trial()
+    }
+}
+
+record PatternWrapped {
+    label Int
+    inner Leaf
+}
+
+impl Dispose for PatternWrapped {
+    fn dispose(self PatternWrapped) {
+    }
+}
+
+async fn pattern_rebuild(trace List[Int], fail Bool, wait Bool) PatternWrapped {
+    match pattern_attempt(trace, false) {
+        Result.Ok(value) => PatternWrapped {
+            label = reconstruction_label(trace, fail, wait).await
+            inner = value
+        }
+        Result.Err(PatternIssue.Failed(_)) => PatternWrapped {
+            label = 0
+            inner = acquire(2, trace)
+        }
+    }
+}
+
+async fn pattern_completed(trace List[Int], finished List[Bool]) PatternWrapped {
+    defer {
+        // No suspension follows this publication signal.
+        finished[0] = true
+    }
+    pattern_rebuild(trace, false, false).await
+}
+
+test async fn decision_tree_resource_guards_cover_fault_cancel_and_unclaimed_results() {
+    let failed List[Int] = []
+    {
+        scoped selected = outcome(pattern_rebuild(failed, true, false)).await
+        assert match selected {
+            Outcome.Faulted(_) => true
+            _ => false
+        }
+    }
+    assert length(failed) == 3 && failed[0] == 10 && failed[1] == 99 && failed[2] == 1
+
+    let cancelled List[Int] = []
+    let pending = pattern_rebuild(cancelled, false, true)
+    while length(cancelled) < 2 {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = cancel(pending)
+        assert match selected {
+            Outcome.Cancelled => true
+            _ => false
+        }
+    }
+    assert length(cancelled) == 3 && cancelled[2] == 1
+
+    let completed List[Int] = []
+    let finished = [false]
+    let unclaimed = pattern_completed(completed, finished)
+    while !finished[0] {
+        sleep_ms(0).await
+    }
+    {
+        scoped selected = cancel(unclaimed)
+        assert match selected {
+            Outcome.Completed(value) => value.label == 7 && value.inner.id == 1
+            _ => false
+        }
+    }
+    assert length(completed) == 3 && completed[2] == 1
+}
