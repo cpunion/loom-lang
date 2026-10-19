@@ -149,7 +149,7 @@ fn rename_spelling(entries List[Entry], renames List[DeclarationRename], name Te
     false
 }
 
-fn rename_edits(revision Indexed, renames List[DeclarationRename], analysis Analysis, directory Text) Result[List[RenameEdit], Text] {
+fn rename_edits(revision Indexed, renames List[DeclarationRename], analysis CheckedAnalysis, directory Text) Result[List[RenameEdit], Text] {
     let edits = new[RenameEdit]()
     var index = 0
     while index < length(revision.entries) {
@@ -324,7 +324,7 @@ fn rename_original_offset(edits List[RenameEdit], id Text, offset Int) Result[In
     Result.Ok(offset - delta)
 }
 
-fn compare_renamed(before Analysis, original Indexed, after Analysis, updated Indexed, directory Text, edits List[RenameEdit]) Result[Bool, Text] {
+fn compare_renamed(before CheckedAnalysis, original Indexed, after CheckedAnalysis, updated Indexed, directory Text, edits List[RenameEdit]) Result[Bool, Text] {
     var index = 0
     while index < length(original.entries) {
         let entry = get(original.entries, index)
@@ -367,7 +367,7 @@ fn compare_renamed(before Analysis, original Indexed, after Analysis, updated In
 }
 
 fn rename_analysis(revision Revision, directory Text, production Project, tests Project, testing Bool,
-    backend ProofBackend) Result[Analysis, Text] {
+    backend ProofBackend) Result[CheckedAnalysis, Text] {
     let project = if directory == "" {
         project_of(revision)?
     } else {
@@ -383,7 +383,7 @@ fn rename_analysis(revision Revision, directory Text, production Project, tests 
     }
 }
 
-fn checked_rename_generators(analysis Analysis, package Int, backend ProofBackend) Result[Bool, Text] {
+fn checked_rename_generators(analysis CheckedAnalysis, package Int, backend ProofBackend) Result[Bool, Text] {
     // An exported generator can retain definition-context references in Text
     // or AST output, including calls outside this package's checked closure.
     // Source-token comparison cannot account for those generated bindings.

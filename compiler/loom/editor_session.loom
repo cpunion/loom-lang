@@ -1,20 +1,29 @@
 import std.loom.analysis.is_current_with_inputs
-import std.loom.analysis.IndependentQuery
+import std.loom.analysis.Analysis
+import std.loom.analysis.snapshot
+import std.loom.analysis.analyze_cached
 import std.loom.project.BuildInput
 import std.loom.binding.Failure
 import std.io.read_chunk
 import std.loom.checking.DefinitionCache
-import std.loom.checking.DeclarationReference
-import std.loom.checking.CheckedQuery
 import std.loom.checking.definition_cache
 import std.loom.checking.definitions_reused
 import std.loom.checking.bodies_reused
-import std.loom.checking.check_project_cached
 import std.loom.checking.has_declaration_stages
 import std.loom.binding.bind_headers
 
+// Mutable metadata for editor transforms, separate from private query evidence.
+record EditorAnalysis {
+    snapshot std.loom.analysis.Analysis
+    source Project
+    bindings std.loom.binding.Program
+    functions List[Int]
+    inputs List[BuildInput]
+    targets List[std.loom.project.BuildOption]
+}
+
 record EditorCache {
-    analysis List[Analysis]
+    analysis List[EditorAnalysis]
     hits List[Int]
     definitions DefinitionCache
 }
@@ -23,7 +32,7 @@ fn editor_cache() EditorCache {
     let hits = new[Int]()
     push(hits, 0)
     EditorCache {
-        analysis = new[Analysis]()
+        analysis = new[EditorAnalysis]()
         hits = hits
         definitions = definition_cache()
     }
@@ -31,12 +40,12 @@ fn editor_cache() EditorCache {
 
 // Reload the project before asking for reuse. Never trust a file timestamp or
 // a client's change notification for source, build-input, or target freshness.
-fn editor_reuse(cache EditorCache, project Project, tests Bool, inputs BuildInputs) Option[Analysis] {
+fn editor_reuse(cache EditorCache, project Project, tests Bool, inputs BuildInputs) Option[EditorAnalysis] {
     if length(cache.analysis) == 0 {
         return Option.None
     }
     let saved = get(cache.analysis, 0)
-    if !is_current_with_inputs(saved, project, tests, saved.inputs, inputs.options, saved.targets) {
+    if !is_current_with_inputs(saved.snapshot, project, tests, saved.inputs, inputs.options, saved.targets) {
         return Option.None
     }
     let files = new[BuildInput]()
@@ -66,7 +75,7 @@ fn editor_reuse(cache EditorCache, project Project, tests Bool, inputs BuildInpu
         }
         index = index + 1
     }
-    if !is_current_with_inputs(saved, project, tests, files, inputs.options, inputs.targets) {
+    if !is_current_with_inputs(saved.snapshot, project, tests, files, inputs.options, inputs.targets) {
         return Option.None
     }
     index = 0
@@ -80,25 +89,21 @@ fn editor_reuse(cache EditorCache, project Project, tests Bool, inputs BuildInpu
     Option.Some(saved)
 }
 
-fn editor_checked(bindings std.loom.binding.Program, inputs BuildInputs, cache EditorCache) Result[Analysis, Failure] {
-    let checked = check_project_cached(Project {
+fn editor_checked(bindings std.loom.binding.Program, inputs BuildInputs, cache EditorCache) Result[EditorAnalysis, Failure] {
+    let checked = analyze_cached(Project {
             files = bindings.files
             modules = bindings.modules
             packages = bindings.packages
             root = bindings.root
         }, bindings.tests, inputs, cache.definitions)?
-    let analysis = Analysis {
-        source = checked.source
-        bindings = checked.bindings
-        program = checked.program
-        inputs = inputs.files
-        options = inputs.options
-        targets = inputs.targets
-        proof_backend = inputs.proof_backend
-        declarations = new[List[std.loom.checking.DeclarationReference]]()
-        declaration_scopes = new[Location]()
-        contract_queries = new[std.loom.checking.CheckedQuery]()
-        independent_queries = new[Option[std.loom.analysis.IndependentQuery]]()
+    let data = std.loom.analysis.snapshot(checked)
+    let analysis = EditorAnalysis {
+        snapshot = checked
+        source = data.source
+        bindings = data.bindings
+        functions = data.functions
+        inputs = data.inputs
+        targets = data.targets
     }
     if length(cache.analysis) == 0 {
         push(cache.analysis, analysis)

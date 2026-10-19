@@ -129,7 +129,7 @@ fn dependency_sources(project Project, tests Bool) Result[List[DependencySource]
     Result.Ok(sources)
 }
 
-fn dependency_target(analysis Analysis, sources List[DependencySource], location Location) Result[DependencyTarget, Text] {
+fn dependency_target(analysis CheckedAnalysis, sources List[DependencySource], location Location) Result[DependencyTarget, Text] {
     if location.file < 0 || location.file >= length(analysis.bindings.files) {
         return Result.Err("dependency reference has no source definition")
     }
@@ -181,14 +181,14 @@ fn dependency_source_union(first List[DependencySource], second List[DependencyS
     output
 }
 
-fn dependency_analysis(project Project, tests Bool, backend ProofBackend) Result[Analysis, Text] {
+fn dependency_analysis(project Project, tests Bool, backend ProofBackend) Result[CheckedAnalysis, Text] {
     match checked_analysis(project, tests, backend) {
         Result.Ok(value) => Result.Ok(value)
         Result.Err(failed) => Result.Err(concat("dependency review requires checked source: ", failed.diagnostic.message))
     }
 }
 
-fn dependency_checked_file(analysis Analysis, package Int, path Text) Result[Int, Text] {
+fn dependency_checked_file(analysis CheckedAnalysis, package Int, path Text) Result[Int, Text] {
     var index = 0
     while index < length(analysis.bindings.files) {
         let file = get(analysis.bindings.files, index)
@@ -243,8 +243,8 @@ fn dependency_bindings(before Project, after Project, tests Bool, backend ProofB
                     if length(sites.unknown) != 0 {
                         return Result.Err("dependency review has unaccounted source references")
                     }
-                    let old_evidence = inspect_references(original, original_file, sites.offsets)
-                    let new_evidence = inspect_references(current, other, sites.offsets)
+                    let old_evidence = inspect_references(original.snapshot, original_file, sites.offsets)
+                    let new_evidence = inspect_references(current.snapshot, other, sites.offsets)
                     var site = 0
                     while site < length(sites.offsets) {
                         let offset = get(sites.offsets, site)

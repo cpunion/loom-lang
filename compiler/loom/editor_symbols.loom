@@ -1,4 +1,3 @@
-import std.loom.analysis.Analysis
 import std.loom.analysis.Location
 import std.loom.analysis.inspect_at
 import std.loom.analysis.inspect_references
@@ -104,8 +103,8 @@ fn editor_declaration_node(node Node, tokens List[Token], target Span, parent No
     false
 }
 
-fn editor_selected(analysis Analysis, file Int, offset Int, token Token, tokens List[Token]) Option[Location] {
-    match inspect_at(analysis, file, offset) {
+fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, tokens List[Token]) Option[Location] {
+    match inspect_at(analysis.snapshot, file, offset) {
         Option.Some(found) => {
             if length(found.definitions) == 1 {
                 return Option.Some(get(found.definitions, 0))
@@ -133,12 +132,12 @@ fn editor_selected(analysis Analysis, file Int, offset Int, token Token, tokens 
     Option.None
 }
 
-fn editor_references(analysis Analysis, target Location, spelling Text) List[Location] {
+fn editor_references(analysis EditorAnalysis, target Location, spelling Text) List[Location] {
     let references = new[Location]()
     editor_push_location(references, target)
     var file = 0
     while file < length(analysis.bindings.files) {
-        match inspect_references(analysis, file, spelling) {
+        match inspect_references(analysis.snapshot, file, spelling) {
             Result.Ok(evidence) => {
                 var index = 0
                 while index < length(evidence) {
@@ -235,7 +234,7 @@ fn editor_pattern_local(node Node, tokens List[Token], target Span) Bool {
     false
 }
 
-fn editor_local_scope(analysis Analysis, target Location) Option[Span] {
+fn editor_local_scope(analysis EditorAnalysis, target Location) Option[Span] {
     let source = get(analysis.bindings.files, target.file)
     let tokens = match lex(source.text) {
         Result.Ok(value) => value,
@@ -249,11 +248,11 @@ fn editor_local_scope(analysis Analysis, target Location) Option[Span] {
         if symbol.file == target.file && symbol.node.value != "" && symbol.node.kind == NodeKind.Function &&
         !editor_unsafe_body(symbol.node) && editor_local(symbol.node, tokens, target.span) {
             var checked = 0
-            while checked < length(analysis.program.functions) {
-                if get(analysis.program.functions, checked).symbol == index {
+            while checked < length(analysis.functions) {
+                if get(analysis.functions, checked) == index {
                     // A bare match pattern can be a variant, not a binding.
                     // Require declaration evidence from the checked local ID.
-                    match inspect_at(analysis, target.file, target.span.start) {
+                    match inspect_at(analysis.snapshot, target.file, target.span.start) {
                         Option.Some(found) => {
                             if length(found.definitions) == 1 && editor_same_location(get(found.definitions, 0), target) {
                                 return Option.Some(symbol.node.span)
@@ -271,7 +270,7 @@ fn editor_local_scope(analysis Analysis, target Location) Option[Span] {
     Option.None
 }
 
-fn editor_covered(analysis Analysis, target Location, spelling Text, scope Span, references List[Location]) Bool {
+fn editor_covered(analysis EditorAnalysis, target Location, spelling Text, scope Span, references List[Location]) Bool {
     let text = get(analysis.bindings.files, target.file).text
     let tokens = match lex(text) {
         Result.Ok(value) => value,
@@ -289,7 +288,7 @@ fn editor_covered(analysis Analysis, target Location, spelling Text, scope Span,
                 span = token.span
             }) {
             if !editor_declaration(get(analysis.bindings.files, target.file).tree, tokens, token.span) {
-                match inspect_at(analysis, target.file, token.span.start) {
+                match inspect_at(analysis.snapshot, target.file, token.span.start) {
                     Option.Some(found) => {
                         if length(found.definitions) != 1 ||
                         editor_same_location(get(found.definitions, 0), target) {
@@ -327,7 +326,7 @@ fn editor_valid_new_name(name Text) Bool {
     }
 }
 
-fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool {
+fn editor_name_conflict(analysis EditorAnalysis, file Int, scope Span, name Text) Bool {
     let tokens = match lex(get(analysis.bindings.files, file).text) {
         Result.Ok(value) => value,
         Result.Err(_) => {
@@ -349,7 +348,7 @@ fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool
 // Private declarations cannot be imported by another package. Select an exact
 // ordinary declaration; a function may leave an overload set. Public
 // edits use module-wide package checks instead.
-fn editor_declaration_authority(analysis Analysis, target Location, public Bool) Bool {
+fn editor_declaration_authority(analysis EditorAnalysis, target Location, public Bool) Bool {
     let files = analysis.bindings.files
     let root = analysis.bindings.root
     let package = get(files, target.file).package
@@ -360,7 +359,7 @@ fn editor_declaration_authority(analysis Analysis, target Location, public Bool)
     true
 }
 
-fn editor_top_declaration(analysis Analysis, target Location, spelling Text, public Bool) Bool {
+fn editor_top_declaration(analysis EditorAnalysis, target Location, spelling Text, public Bool) Bool {
     if !editor_declaration_authority(analysis, target, public) {
         return false
     }
@@ -404,7 +403,7 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
 
 // An unaccounted same-spelled token could be an unchecked use (for example in
 // an uninstantiated body). Refuse the edit even if an ordinary check succeeds.
-fn editor_private_covered(analysis Analysis, target Location, spelling Text, references List[Location], inputs BuildInputs) Bool {
+fn editor_private_covered(analysis EditorAnalysis, target Location, spelling Text, references List[Location], inputs BuildInputs) Bool {
     // Raw syntax retains declaration stages erased from expanded bindings.
     var file = 0
     while file < length(analysis.source.files) {
@@ -469,7 +468,7 @@ fn editor_private_covered(analysis Analysis, target Location, spelling Text, ref
     true
 }
 
-fn editor_private_conflict(analysis Analysis, name Text) Bool {
+fn editor_private_conflict(analysis EditorAnalysis, name Text) Bool {
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let symbol = get(analysis.bindings.symbols, index)
@@ -651,7 +650,7 @@ fn editor_parameters(node Node) List[Node] {
     new[Node]()
 }
 
-fn editor_static_binding(analysis Analysis, file Int, token Token, tokens List[Token], inputs BuildInputs) Option[EditorStaticBinding] {
+fn editor_static_binding(analysis EditorAnalysis, file Int, token Token, tokens List[Token], inputs BuildInputs) Option[EditorStaticBinding] {
     var owner = 0
     while owner < length(analysis.bindings.symbols) {
         let item = get(analysis.bindings.symbols, owner)
@@ -709,7 +708,7 @@ fn editor_static_binding(analysis Analysis, file Int, token Token, tokens List[T
     Option.None
 }
 
-fn editor_symbols(options EditorOptions, analysis Analysis,
+fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
     file Int, offset Int, inputs BuildInputs) EditorOutput {
     let bindings = analysis.bindings
     let new_name = options.new_name

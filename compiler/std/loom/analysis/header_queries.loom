@@ -96,7 +96,7 @@ fn function_type_header(node Node, offset Int) Bool {
     false
 }
 
-fn source_header_at(analysis Analysis, file Int, offset Int) Bool {
+fn source_header_at(analysis AnalysisState, file Int, offset Int) Bool {
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let item = get(analysis.bindings.symbols, index)
@@ -110,7 +110,7 @@ fn source_header_at(analysis Analysis, file Int, offset Int) Bool {
     false
 }
 
-fn inspect_abstract_body(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
+fn inspect_abstract_body(analysis AnalysisState, file Int, offset Int, tokens List[Token]) Option[Inspection] {
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let item = get(analysis.bindings.symbols, index)

@@ -5,7 +5,7 @@ pub record ReferenceEvidence {
     inspection Option[Inspection]
 }
 
-fn reference_tokens(analysis Analysis, file Int) Result[List[Token], Text] {
+fn reference_tokens(analysis AnalysisState, file Int) Result[List[Token], Text] {
     if file < 0 || file >= length(analysis.bindings.files) {
         return Result.Err("reference query has no source file")
     }
@@ -15,7 +15,7 @@ fn reference_tokens(analysis Analysis, file Int) Result[List[Token], Text] {
     }
 }
 
-fn reference_evidence(analysis Analysis, file Int, offsets List[Int], tokens Option[List[Token]]) List[ReferenceEvidence] {
+fn reference_evidence(analysis AnalysisState, file Int, offsets List[Int], tokens Option[List[Token]]) List[ReferenceEvidence] {
     let references = new[ReferenceEvidence]()
     var index = 0
     while index < length(offsets) {
@@ -34,7 +34,7 @@ fn reference_evidence(analysis Analysis, file Int, offsets List[Int], tokens Opt
 
 // A batch reuses one source token stream. Invalid sources still retain an
 // unanswered entry for every requested position rather than dropping a site.
-pub fn inspect_references(analysis Analysis, file Int, offsets List[Int]) List[ReferenceEvidence] {
+fn inspect_references(analysis AnalysisState, file Int, offsets List[Int]) List[ReferenceEvidence] {
     match reference_tokens(analysis, file) {
         Result.Ok(tokens) => reference_evidence(analysis, file, offsets, Option.Some(tokens))
         Result.Err(_) => reference_evidence(analysis, file, offsets, Option.None)
@@ -44,7 +44,7 @@ pub fn inspect_references(analysis Analysis, file Int, offsets List[Int]) List[R
 // Scan exact source name tokens, excluding comments and text literals. This is
 // candidate evidence, not complete semantic coverage of generated/static code.
 // Consumers still need their own authority and unaccounted-use checks.
-pub fn inspect_references(analysis Analysis, file Int, spelling Text) Result[List[ReferenceEvidence], Text] {
+fn inspect_references(analysis AnalysisState, file Int, spelling Text) Result[List[ReferenceEvidence], Text] {
     let tokens = reference_tokens(analysis, file)?
     let offsets = new[Int]()
     var index = 0

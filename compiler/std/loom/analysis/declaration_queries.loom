@@ -68,7 +68,7 @@ fn inspect_declaration_references(view CheckedQuery, report Inspection, target Q
     }
 }
 
-fn analysis_query_inputs(analysis Analysis) BuildInputs {
+fn analysis_query_inputs(analysis AnalysisState) BuildInputs {
     let inputs = with_proof_backend(build_inputs(no_input_reader, analysis.options), analysis.proof_backend)
     var index = 0
     while index < length(analysis.inputs) {
@@ -106,7 +106,7 @@ fn declaration_query_scope(bindings std.loom.binding.Program, file Int, offset I
 
 // Keep the cheap nominal records after a checked body view is evicted. Both
 // query paths publish through this cache; headers never mark a body checked.
-fn retain_declaration_scope(analysis Analysis, scope Location, references List[DeclarationReference]) {
+fn retain_declaration_scope(analysis AnalysisState, scope Location, references List[DeclarationReference]) {
     var index = 0
     while index < length(analysis.declaration_scopes) {
         let previous = get(analysis.declaration_scopes, index)
@@ -133,7 +133,7 @@ fn retain_declaration_scope(analysis Analysis, scope Location, references List[D
 // A successful analysis lazily records erased bindings per checked scope. Readers
 // replay the analysis's observed input snapshots, never fresh filesystem data.
 // Ordinary body queries and ordinary compilation do not run this extra check.
-fn inspect_declaration_at(analysis Analysis, view CheckedQuery, file Int, offset Int, tokens List[Token]) Option[Inspection] {
+fn inspect_declaration_at(analysis AnalysisState, view CheckedQuery, file Int, offset Int, tokens List[Token]) Option[Inspection] {
     if file < 0 || file >= length(view.bindings.files) {
         return Option.None
     }

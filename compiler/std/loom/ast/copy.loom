@@ -1,0 +1,20 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+
+// An editable tree, independent of the source tree's child lists.
+pub fn snapshot(node Node) Node {
+    let children = new[Node](length(node.children))
+    var index = 0
+    while index < length(node.children) {
+        push(children, snapshot(get(node.children, index)))
+        index = index + 1
+    }
+    Node {
+        kind = node.kind
+        value = node.value
+        span = node.span
+        children = children
+    }
+}

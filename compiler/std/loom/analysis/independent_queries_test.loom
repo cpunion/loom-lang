@@ -1,4 +1,4 @@
-fn cached_inspection(analysis Analysis, text Text, fragment Text) Inspection {
+fn cached_inspection(analysis AnalysisState, text Text, fragment Text) Inspection {
     match inspect_independent(analysis, 0, query_offset(text, fragment)) {
         Option.Some(found) => found
         Option.None => {
@@ -42,7 +42,7 @@ test fn independent_queries_reuse_one_scope_and_retry_failed_checks() {
             solve = solve
         })
     let analysis = match analyze_with_inputs(input(text), false, inputs) {
-        Result.Ok(value) => value
+        Result.Ok(value) => value.state
         Result.Err(_) => {
             assert false
             return

@@ -331,7 +331,7 @@ fn editor_execute(args List[Text], cache EditorCache) EditorOutput {
     }
 }
 
-fn editor_analyzed(args List[Text], options EditorOptions, project Project, analysis Analysis, inputs BuildInputs) EditorOutput {
+fn editor_analyzed(args List[Text], options EditorOptions, project Project, analysis EditorAnalysis, inputs BuildInputs) EditorOutput {
     if options.query_path != "" {
         let index = match editor_source(project, options.query_path) {
             Result.Ok(value) => value

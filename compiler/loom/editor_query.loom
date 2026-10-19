@@ -1,6 +1,6 @@
 import std.loom.analysis.inspect_at
 import std.loom.analysis.inspect_independent
-import std.loom.analysis.Analysis
+
 import std.loom.analysis.Inspection
 import std.option.Option
 import std.loom.binding.Program
@@ -78,7 +78,7 @@ fn editor_inspection(bindings std.loom.binding.Program, inspection Option[Inspec
 
 // Source binding evidence takes precedence over the expression produced by
 // specialization: a callback parameter is not its concrete target function.
-fn editor_bound_inspection(analysis Analysis, file Int, offset Int, inputs BuildInputs) Option[Inspection] {
+fn editor_bound_inspection(analysis EditorAnalysis, file Int, offset Int, inputs BuildInputs) Option[Inspection] {
     match lex(get(analysis.bindings.files, file).text) {
         Result.Ok(tokens) => {
             match editor_token(tokens, offset) {
@@ -113,7 +113,7 @@ fn editor_bound_inspection(analysis Analysis, file Int, offset Int, inputs Build
         }
         Result.Err(_) => {}
     }
-    inspect_at(analysis, file, offset)
+    inspect_at(analysis.snapshot, file, offset)
 }
 
 test fn query_options_require_an_explicit_source_and_byte_offset() {

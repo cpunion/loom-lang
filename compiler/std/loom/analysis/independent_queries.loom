@@ -1,6 +1,6 @@
 // Query views own their bindings and IDs. Never reuse one as executable IR or
 // across Analysis snapshots; header evidence is not body evidence.
-pub record IndependentQuery {
+record IndependentQuery {
     scope Location
     header Bool
     view CheckedQuery
@@ -25,7 +25,7 @@ fn independent_owners(node Node, offset Int, owners List[Node]) {
     }
 }
 
-fn independent_scope(analysis Analysis, file Int, offset Int) Option[IndependentScope] {
+fn independent_scope(analysis AnalysisState, file Int, offset Int) Option[IndependentScope] {
     if file < 0 || file >= length(analysis.bindings.files) {
         return Option.None
     }
@@ -88,7 +88,7 @@ fn independent_scope(analysis Analysis, file Int, offset Int) Option[Independent
         })
 }
 
-fn independent_view(analysis Analysis, file Int, offset Int) Option[CheckedQuery] {
+fn independent_view(analysis AnalysisState, file Int, offset Int) Option[CheckedQuery] {
     let scope = independent_scope(analysis, file, offset)
     match scope {
         Option.Some(current) => {
@@ -142,14 +142,14 @@ fn independent_view(analysis Analysis, file Int, offset Int) Option[CheckedQuery
 // Replay this analysis's observed inputs, options, target and host capability.
 // Repeated references in a source scope share one successful independent check.
 // Unrecognized scopes use the ordinary fresh query, never a guessed binding.
-pub fn inspect_independent(analysis Analysis, file Int, offset Int) Option[Inspection] {
+fn inspect_independent(analysis AnalysisState, file Int, offset Int) Option[Inspection] {
     match independent_view(analysis, file, offset) {
         Option.Some(view) => inspect_view(view, file, offset)
         Option.None => Option.None
     }
 }
 
-fn independent_inspection(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
+fn independent_inspection(analysis AnalysisState, file Int, offset Int, tokens List[Token]) Option[Inspection] {
     match independent_view(analysis, file, offset) {
         Option.Some(view) => inspect_view(view, file, offset, tokens)
         Option.None => Option.None

@@ -12,7 +12,7 @@ fn import_name_seen(values List[Text], name Text) Bool {
     false
 }
 
-fn public_import_names(analysis Analysis, scopes List[PackageScope], renames List[DeclarationRename],
+fn public_import_names(analysis CheckedAnalysis, scopes List[PackageScope], renames List[DeclarationRename],
     file Int, spelling Text) List[Text] {
     let selected = candidates(analysis.bindings, file, get(analysis.bindings.files, file).test_only, spelling)
     let names = new[Text]()
@@ -54,7 +54,7 @@ fn public_import_edits(source SourceFile, node Node, names List[Text], edits Lis
     Result.Ok(true)
 }
 
-fn public_package_import_edits(analysis Analysis, scopes List[PackageScope], scope PackageScope,
+fn public_package_import_edits(analysis CheckedAnalysis, scopes List[PackageScope], scope PackageScope,
     renames List[DeclarationRename], edits List[SourceRenameEdit]) Result[Bool, Text] {
     var file = 0
     while file < length(analysis.bindings.files) {

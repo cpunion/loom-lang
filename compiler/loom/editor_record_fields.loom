@@ -1,6 +1,6 @@
 // Field identities are the source member locations already used by checked
 // receiver/initializer queries. They are not new package symbols.
-fn editor_field_owner(analysis Analysis, target Location, spelling Text) Int {
+fn editor_field_owner(analysis EditorAnalysis, target Location, spelling Text) Int {
     let source = get(analysis.bindings.files, target.file)
     if source.test_only {
         return -1
@@ -38,8 +38,8 @@ fn editor_field_owner(analysis Analysis, target Location, spelling Text) Int {
     -1
 }
 
-fn editor_other_binding(analysis Analysis, file Int, token Token, tokens List[Token], target Option[Location]) Bool {
-    match inspect_at(analysis, file, token.span.start) {
+fn editor_other_binding(analysis EditorAnalysis, file Int, token Token, tokens List[Token], target Option[Location]) Bool {
+    match inspect_at(analysis.snapshot, file, token.span.start) {
         Option.Some(found) => {
             length(found.definitions) == 1 && match target {
                 Option.Some(location) => !editor_same_location(get(found.definitions, 0), location)
@@ -52,7 +52,7 @@ fn editor_other_binding(analysis Analysis, file Int, token Token, tokens List[To
 
 // Even a package that has not loaded the owner may contain structural field
 // accesses in a deferred branch. It supplies no evidence for a partial edit.
-fn editor_field_unobserved(analysis Analysis, spelling Text) Bool {
+fn editor_field_unobserved(analysis EditorAnalysis, spelling Text) Bool {
     var file = 0
     while file < length(analysis.bindings.files) {
         let source = get(analysis.bindings.files, file)

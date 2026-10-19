@@ -39,6 +39,54 @@ fn source_compiler(compiler: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn analysis_only_exports_editable_copies_not_private_query_evidence() {
+    let compiler = common::compiler();
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join("loom.toml"),
+        "[module]\nname = \"analysis_handle\"\n",
+    )
+    .unwrap();
+    let file = temp.path().join("main.loom");
+    let header = "import std.loom.analysis.Analysis\nimport std.loom.analysis.snapshot\nimport std.list.transfer.take_last\n";
+    fs::write(
+        &file,
+        format!(
+            r#"{header}
+pub fn edit(analysis Analysis) {{
+    let data = snapshot(analysis)
+    discard std.list.transfer.take_last(data.bindings.symbols)
+}}
+"#
+        ),
+    )
+    .unwrap();
+    success(&source_compiler(
+        &compiler,
+        &["check", temp.path().to_str().unwrap()],
+    ));
+    for access in ["analysis.program", "analysis.state.program"] {
+        fs::write(
+            &file,
+            format!(
+                r#"{header}
+pub fn edit(analysis Analysis) {{
+    discard {access}
+}}
+"#
+            ),
+        )
+        .unwrap();
+        assert!(
+            !source_compiler(&compiler, &["check", temp.path().to_str().unwrap()])
+                .status
+                .success(),
+            "analysis query evidence was exposed"
+        );
+    }
+}
+
+#[test]
 fn definition_cache_keeps_its_mutable_state_cell_private() {
     let compiler = common::compiler();
     let temp = tempfile::tempdir().unwrap();

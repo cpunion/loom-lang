@@ -1,0 +1,66 @@
+import std.loom.project.snapshot
+import std.loom.ast.snapshot
+
+// Copies preserve local symbol IDs and lookup indexes, but share no mutable
+// AST, package-import, index-list or scope-map storage with the original.
+pub fn snapshot(program Program) Program {
+    let source = std.loom.project.snapshot(Project {
+            files = program.files
+            modules = program.modules
+            packages = program.packages
+            root = program.root
+        })
+    let symbols = new[Symbol](length(program.symbols))
+    var index = 0
+    while index < length(program.symbols) {
+        let symbol = get(program.symbols, index)
+        push(symbols, Symbol {
+                file = symbol.file
+                node = std.loom.ast.snapshot(symbol.node)
+                name = symbol.name
+                public = symbol.public
+                test_only = symbol.test_only
+                owner = symbol.owner
+            })
+        index = index + 1
+    }
+    let scopes = new[Scope](length(program.scopes))
+    index = 0
+    while index < length(program.scopes) {
+        let scope = get(program.scopes, index)
+        push(scopes, Scope {
+                package = scope.package
+                production = snapshot_lookups(scope.production)
+                testing = snapshot_lookups(scope.testing)
+            })
+        index = index + 1
+    }
+    Program {
+        files = source.files
+        modules = source.modules
+        packages = source.packages
+        root = program.root
+        tests = program.tests
+        symbols = symbols
+        scopes = scopes
+        file_scopes = clone(program.file_scopes)
+    }
+}
+
+fn snapshot_lookups(lookups Map[Text, List[Int]]) Map[Text, List[Int]] {
+    let copied = new[Text, List[Int]]()
+    let names = keys(lookups)
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        match get(lookups, name) {
+            Option.Some(values) => {
+                discard insert(copied, name, clone(values))
+            }
+            Option.None => {
+            }
+        }
+        index = index + 1
+    }
+    copied
+}

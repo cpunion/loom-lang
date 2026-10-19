@@ -1,0 +1,96 @@
+import std.loom.binding.snapshot
+import std.loom.checking.DefinitionCache
+import std.loom.checking.check_project_cached
+import std.list.clone
+
+// Editable metadata, not query evidence. Changing it cannot change an Analysis.
+// Function entries here are source symbol IDs, not mutable executable bodies.
+pub record AnalysisData {
+    source Project
+    bindings std.loom.binding.Program
+    functions List[Int]
+    inputs List[BuildInput]
+    targets List[BuildOption]
+}
+
+pub fn snapshot(analysis Analysis) AnalysisData {
+    let state = analysis.state
+    let functions = new[Int](length(state.program.functions))
+    var index = 0
+    while index < length(state.program.functions) {
+        push(functions, get(state.program.functions, index).symbol)
+        index = index + 1
+    }
+    let inputs = new[BuildInput](length(state.inputs))
+    index = 0
+    while index < length(state.inputs) {
+        let input = get(state.inputs, index)
+        push(inputs, BuildInput {
+                request = input.request
+                file = input_snapshot(input.file)
+            })
+        index = index + 1
+    }
+    AnalysisData {
+        source = std.loom.project.snapshot(state.source)
+        bindings = std.loom.binding.snapshot(state.bindings)
+        functions = functions
+        inputs = inputs
+        targets = clone(state.targets)
+    }
+}
+
+// A copied function is an editable draft; its IDs still address this analysis.
+pub fn function_at(analysis Analysis, index Int) std.loom.typed.Function {
+    std.loom.typed.snapshot(get(analysis.state.program.functions, index))
+}
+
+pub fn analyze_cached(project Project, tests Bool, inputs BuildInputs,
+    cache DefinitionCache) Result[Analysis, Failure] {
+    // Preserve the host's observation log, including failed input reads. The
+    // published result detaches those mutable buffers after a successful check.
+    let checked = check_project_cached(project, tests, inputs, cache)?
+    Result.Ok(analysis_result(checked.source, checked.bindings, checked.program, inputs))
+}
+
+pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
+    is_current(analysis.state, project, tests)
+}
+
+pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput]) Bool {
+    is_current_with_inputs(analysis.state, project, tests, inputs)
+}
+
+pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool,
+    inputs List[BuildInput], options List[BuildOption]) Bool {
+    is_current_with_inputs(analysis.state, project, tests, inputs, options)
+}
+
+pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool,
+    inputs List[BuildInput], options List[BuildOption], targets List[BuildOption]) Bool {
+    is_current_with_inputs(analysis.state, project, tests, inputs, options, targets)
+}
+
+pub fn type_name(analysis Analysis, ty Int) Text {
+    type_name(analysis.state, ty)
+}
+
+pub fn expressions_at(analysis Analysis, file Int, offset Int) List[Expression] {
+    expressions_at(analysis.state, file, offset)
+}
+
+pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
+    inspect_at(analysis.state, file, offset)
+}
+
+pub fn inspect_independent(analysis Analysis, file Int, offset Int) Option[Inspection] {
+    inspect_independent(analysis.state, file, offset)
+}
+
+pub fn inspect_references(analysis Analysis, file Int, offsets List[Int]) List[ReferenceEvidence] {
+    inspect_references(analysis.state, file, offsets)
+}
+
+pub fn inspect_references(analysis Analysis, file Int, spelling Text) Result[List[ReferenceEvidence], Text] {
+    inspect_references(analysis.state, file, spelling)
+}

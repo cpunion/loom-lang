@@ -808,7 +808,7 @@ fn bound_method_call(value Expr) Option[Expr] {
 // Match bindings and lowered checked constructors have types but no location. Dynamic calls
 // navigate to a unique concept signature, never a speculative implementation;
 // overloaded signatures not distinguished by name/arity omit the location.
-pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
+fn inspect_at(analysis AnalysisState, file Int, offset Int) Option[Inspection] {
     if file < 0 || file >= length(analysis.source.files) {
         return Option.None
     }
@@ -818,7 +818,7 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
     }
 }
 
-fn checked_inspection(analysis Analysis, file Int, offset Int, tokens List[Token]) Option[Inspection] {
+fn checked_inspection(analysis AnalysisState, file Int, offset Int, tokens List[Token]) Option[Inspection] {
     if file < 0 || file >= length(analysis.source.files) {
         return Option.None
     }

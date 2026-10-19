@@ -5,7 +5,7 @@ import std.loom.source.apply_edits
 
 // Public declaration edits cover this module, not external consumers or dependency
 // snapshots. Each directory keeps its own private test scope and checked IDs.
-fn editor_import_selected(analysis Analysis, file Int, token Token, tokens List[Token]) Option[Location] {
+fn editor_import_selected(analysis EditorAnalysis, file Int, token Token, tokens List[Token]) Option[Location] {
     let declarations = get(analysis.bindings.files, file).tree.children
     var index = 0
     while index < length(declarations) {
@@ -100,7 +100,7 @@ fn editor_public_edit(edits List[EditorPublicEdit], path Text, text Text, change
     true
 }
 
-fn editor_public_imports(analysis Analysis, file Int, target Location, tokens List[Token],
+fn editor_public_imports(analysis EditorAnalysis, file Int, target Location, tokens List[Token],
     spelling Text, name Text, edits List[EditorPublicEdit]) Result[List[Location], Text] {
     let source = get(analysis.bindings.files, file)
     let covered = new[Location]()
@@ -159,7 +159,7 @@ fn editor_public_imports(analysis Analysis, file Int, target Location, tokens Li
     Result.Ok(covered)
 }
 
-fn editor_public_target(analysis Analysis, path Text, span Span) Option[Location] {
+fn editor_public_target(analysis EditorAnalysis, path Text, span Span) Option[Location] {
     var file = 0
     while file < length(analysis.bindings.files) {
         if get(analysis.bindings.files, file).path == path {
@@ -173,7 +173,7 @@ fn editor_public_target(analysis Analysis, path Text, span Span) Option[Location
     Option.None
 }
 
-fn editor_public_visible(analysis Analysis, file Int, target Location, spelling Text) Bool {
+fn editor_public_visible(analysis EditorAnalysis, file Int, target Location, spelling Text) Bool {
     let candidates = std.loom.binding.candidates(analysis.bindings, file, true, spelling)
     var index = 0
     while index < length(candidates) {
@@ -186,7 +186,7 @@ fn editor_public_visible(analysis Analysis, file Int, target Location, spelling 
     false
 }
 
-fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
+fn editor_public_collect(analysis EditorAnalysis, module Text, path Text, span Span,
     spelling Text, name Text, field Bool, edits List[EditorPublicEdit]) Result[Bool, Text] {
     let target = match editor_public_target(analysis, path, span) {
         Option.Some(value) => value
@@ -303,7 +303,7 @@ fn editor_public_overlays(options EditorOptions, edits List[EditorPublicEdit]) R
 }
 
 fn editor_module_analysis(options EditorOptions, directory Text, overlays List[SourceOverlay],
-    inputs BuildInputs, cache EditorCache) Result[Analysis, Text] {
+    inputs BuildInputs, cache EditorCache) Result[EditorAnalysis, Text] {
     let project = match load_overlaid(directory, options.std_root, true, overlays) {
         Result.Ok(value) => value
         Result.Err(failed) => {
@@ -322,7 +322,7 @@ fn editor_module_analysis(options EditorOptions, directory Text, overlays List[S
     }
 }
 
-fn editor_public_symbols(options EditorOptions, initial Analysis, target Location,
+fn editor_public_symbols(options EditorOptions, initial EditorAnalysis, target Location,
     spelling Text, inputs BuildInputs) EditorOutput {
     let rename = options.new_name != ""
     let field = editor_field_owner(initial, target, spelling) >= 0
