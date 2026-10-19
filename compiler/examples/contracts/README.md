@@ -15,6 +15,12 @@ constant. `bounded` reuses a predicate with multiple parameters, branch conditio
 and early returns. `lower` proves its result from both branches of `minimum`,
 without requiring a separate contract on the helper.
 
+`expressions.loom` uses `match`, `if/else`, nested blocks and local `let` bindings
+directly in contracts and type predicates. Their guards and scoped bindings use
+the same proof expansion as pure helpers. A proved explicit conversion removes
+its repeated boundary check, not the distinct nominal type. Nonlocal returns,
+caller-state assignments, cleanup and suspension are not clause expressions.
+
 `locals.loom` uses ordinary `var` bindings in pure helpers: a minimum selection,
 eager argument snapshots, conditional operand writes and short-circuit writes.
 The same rules prove `local_widen` without a second construction check. These

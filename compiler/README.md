@@ -2534,6 +2534,15 @@ allows direct `Tag("ready")`, rejects a false constant, and checks an unknown
 input once through `Result[Tag, ConstraintError]`. Widening Tag to Text needs no
 check. Equality compares UTF-8 bytes without normalization.
 
+Function contracts and `where` predicates share expression syntax, including
+`if/else`, `match`, nested blocks and local `let` bindings. Ordinary typing,
+purity and guarded proof/evaluation rules still apply; syntax supplies no facts.
+Clauses cannot return from the enclosing function, rebind caller state, register
+cleanup or suspend. Separately checked pure helpers keep their own local
+control-flow scopes. Distinct named refinements still use an explicit target
+constructor; a proved implication can remove that check without merging their
+nominal identities. See [expression contracts](examples/contracts/expressions.loom).
+
 A record can have a `where` predicate over immutable `Int`, `Bool`, `Float`,
 `Text`, or nested inline record/refined fields. Shared siblings are allowed when
 the predicate does not observe them:

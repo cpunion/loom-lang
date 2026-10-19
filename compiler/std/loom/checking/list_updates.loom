@@ -255,7 +255,7 @@ fn proved_list_update(env Environment, value Expr, writes Int) Bool {
     }
     var before = [predicate]
     var after = before
-    if contract_block(predicate) {
+    if contract_scope(predicate) {
         // Clause temporaries belong to the predicate's own scope, not these
         // store-argument slots. Entry facts and hypothetical exit safety have
         // different obligations even though their predicate text is the same.

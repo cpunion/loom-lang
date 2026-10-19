@@ -65,6 +65,7 @@ ensures result == old(value.count)
 }
 
 fn main() {
+    expression_contracts()
     mutable_helpers()
     exercise_established_facts()
     assert good(7) == 7

@@ -593,56 +593,10 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
 }
 
 fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
-    if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text {
+    if predicate_form(node, true, true) {
         return Result.Ok(true)
     }
-    if node.kind == NodeKind.Name {
-        if package(node.value) == "" || lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 {
-            return Result.Ok(true)
-        }
-    }
-    if node.kind == NodeKind.Index || node.kind == NodeKind.Apply {
-        discard scalar_contract(context, child(node, 0))?
-        let indices = child(node, 1).children
-        var index = 0
-        while index < length(indices) {
-            discard scalar_contract(context, get(indices, index))?
-            index = index + 1
-        }
-        return Result.Ok(true)
-    }
-    if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall {
-        // Macros elaborate through ordinary typing. The checked expansion still
-        // needs pure inputs, eager definedness and the mandatory contract proof.
-        let arguments = child(node, if node.kind == NodeKind.MacroCall {
-                0
-            } else {
-                1
-            }).children
-        var index = 0
-        while index < length(arguments) {
-            discard scalar_contract(context, get(arguments, index))?
-            index = index + 1
-        }
-        return Result.Ok(true)
-    }
-    if node.kind == NodeKind.Construct {
-        var index = 1
-        while index < length(node.children) {
-            discard scalar_contract(context, child(child(node, index), 0))?
-            index = index + 1
-        }
-        return Result.Ok(true)
-    }
-    if node.kind == NodeKind.Old || node.kind == NodeKind.Unary || node.kind == NodeKind.Binary || node.kind == NodeKind.Select || node.kind == NodeKind.Tuple || node.kind == NodeKind.Spread {
-        var index = 0
-        while index < length(node.children) {
-            discard scalar_contract(context, child(node, index))?
-            index = index + 1
-        }
-        return Result.Ok(true)
-    }
-    Result.Err(error(context, node, "contracts require scalar predicates and pure helper calls"))
+    Result.Err(error(context, node, "contracts require pure predicate expressions without nonlocal control flow"))
 }
 
 // Parameters cannot be rebound. Immutable entry expressions denote the same

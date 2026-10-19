@@ -10,7 +10,7 @@ fn predicate_expansion(value Expr, depth Int) Bool {
     if depth >= 64 {
         return false
     }
-    if value.kind == ExprKind.Call || value.kind == ExprKind.Block {
+    if value.kind == ExprKind.Call || value.kind == ExprKind.Block || value.kind == ExprKind.Match {
         return true
     }
     var index = 0

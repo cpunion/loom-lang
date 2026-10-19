@@ -1,0 +1,104 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.list.get
+import std.list.length
+import std.text.starts_with
+
+fn predicate_form(node Node, calls Bool) Bool {
+    predicate_form(node, calls, false)
+}
+
+// Source admissibility is shared by refinements and function contracts. This
+// supplies no purity or proof evidence: ordinary typing, storage observation and
+// guarded helper expansion still check the resulting expression. The no-call
+// mode deliberately retains only the original scalar fast fragment.
+fn predicate_form(node Node, calls Bool, old_allowed Bool) Bool {
+    if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text {
+        return true
+    }
+    if node.kind == NodeKind.Name {
+        return calls || node.value == "self" || starts_with(node.value, "self.")
+    }
+    if node.kind == NodeKind.Select {
+        return predicate_form(child(node, 0), calls, old_allowed)
+    }
+    if node.kind == NodeKind.Old {
+        return old_allowed && predicate_form(child(node, 0), calls, old_allowed)
+    }
+    if node.kind == NodeKind.Spread {
+        return calls && predicate_form(child(node, 0), calls, old_allowed)
+    }
+    let receiver = node.kind == NodeKind.Apply || node.kind == NodeKind.Index ||
+    node.kind == NodeKind.Invoke || node.kind == NodeKind.MethodCall
+    if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall || receiver {
+        if !calls || (receiver && !predicate_form(child(node, 0), calls, old_allowed)) {
+            return false
+        }
+        let arguments = child(node, if node.kind == NodeKind.MacroCall {
+                0
+            } else {
+                if node.kind == NodeKind.MethodCall {
+                    2
+                } else {
+                    1
+                }
+            }).children
+        var index = 0
+        while index < length(arguments) {
+            if !predicate_form(get(arguments, index), calls, old_allowed) {
+                return false
+            }
+            index = index + 1
+        }
+        return true
+    }
+    if calls && node.kind == NodeKind.Construct {
+        var index = 1
+        while index < length(node.children) {
+            if !predicate_form(child(child(node, index), 0), calls, old_allowed) {
+                return false
+            }
+            index = index + 1
+        }
+        return true
+    }
+    if calls && node.kind == NodeKind.Match {
+        if !predicate_form(child(node, 0), calls, old_allowed) {
+            return false
+        }
+        var index = 1
+        while index < length(node.children) {
+            let arm = child(node, index)
+            // Patterns bind through the ordinary match checker, not as values.
+            var member = 1
+            while member < length(arm.children) {
+                if !predicate_form(child(arm, member), calls, old_allowed) {
+                    return false
+                }
+                member = member + 1
+            }
+            index = index + 1
+        }
+        return true
+    }
+    if calls && node.kind == NodeKind.Let {
+        return predicate_form(child(node, length(node.children) - 1), calls, old_allowed)
+    }
+    let expression = node.kind == NodeKind.Unary || node.kind == NodeKind.Binary || node.kind == NodeKind.Tuple ||
+    (calls && (node.kind == NodeKind.If || node.kind == NodeKind.Block || node.kind == NodeKind.List ||
+            node.kind == NodeKind.Assert || node.kind == NodeKind.Discard))
+    if !expression {
+        // In particular, predicates cannot return from their enclosing function,
+        // rebind caller state, register cleanup or suspend. Pure source helpers
+        // retain their independently checked local control-flow scopes.
+        return false
+    }
+    var index = 0
+    while index < length(node.children) {
+        if !predicate_form(child(node, index), calls, old_allowed) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
