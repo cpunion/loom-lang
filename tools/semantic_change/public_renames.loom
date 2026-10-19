@@ -58,7 +58,7 @@ fn public_rename_plan(base List[PackageRevision], plans List[PackageRenames], pr
     Result.Ok(found)
 }
 
-fn public_symbol_identity(analysis Analysis, scopes List[PackageScope], symbol Int) Text {
+fn public_symbol_identity(analysis CheckedAnalysis, scopes List[PackageScope], symbol Int) Text {
     let selected = get(analysis.bindings.symbols, symbol)
     let file = get(analysis.bindings.files, selected.file)
     var index = 0
@@ -80,7 +80,7 @@ fn public_symbol_identity(analysis Analysis, scopes List[PackageScope], symbol I
     ""
 }
 
-fn public_package_edits(analysis Analysis, scopes List[PackageScope], scope PackageScope,
+fn public_package_edits(analysis CheckedAnalysis, scopes List[PackageScope], scope PackageScope,
     renames List[DeclarationRename], edits List[SourceRenameEdit], backend ProofBackend) Result[Bool, Text] {
     discard checked_rename_generators(analysis, scope.package, backend)?
     var index = 0
@@ -178,7 +178,7 @@ fn public_original_target(target BindingTarget, before List[PackageScope], after
         })
 }
 
-fn compare_public_renamed(before Analysis, after Analysis, revisions List[PackageRevision],
+fn compare_public_renamed(before CheckedAnalysis, after CheckedAnalysis, revisions List[PackageRevision],
     updated List[PackageRevision], files List[SourceRenameFile]) Result[Bool, Text] {
     let original = package_scopes(before.source, revisions)?
     let current = package_scopes(after.source, updated)?

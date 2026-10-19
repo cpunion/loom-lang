@@ -2,21 +2,7 @@ import std.list.new
 import std.list.get
 import std.list.push
 import std.list.length
-
-fn copy_node(node Node) Node {
-    let children = new[Node](length(node.children))
-    var index = 0
-    while index < length(node.children) {
-        push(children, copy_node(get(node.children, index)))
-        index = index + 1
-    }
-    Node {
-        kind = node.kind
-        value = node.value
-        span = node.span
-        children = children
-    }
-}
+import std.loom.ast.snapshot
 
 pub fn snapshot(project Project) Project {
     let modules = new[ModuleInstance](length(project.modules))
@@ -50,7 +36,7 @@ pub fn snapshot(project Project) Project {
                 package = file.package
                 path = file.path
                 text = file.text
-                tree = copy_node(file.tree)
+                tree = std.loom.ast.snapshot(file.tree)
                 test_only = file.test_only
                 trusted_std = file.trusted_std
             })

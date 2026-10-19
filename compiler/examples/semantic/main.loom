@@ -3,6 +3,7 @@ import std.loom.analysis.analyze
 import std.loom.analysis.is_current
 import std.loom.analysis.type_name
 import std.loom.analysis.expressions_at
+import std.loom.analysis.function_at
 import std.loom.parser.parse
 import std.loom.project.Project
 import std.loom.project.SourceFile
@@ -79,8 +80,8 @@ fn inspect() Result[Text, Text] {
     assert is_current(analysis, project, false)
     let local = expression(analysis, text, "value ==")
     let call = expression(analysis, text, "pick(true)")
-    let overload = get(analysis.program.functions, call.index)
-    let generic = get(analysis.program.functions, expression(analysis, text, "identity(7)").index)
+    let overload = function_at(analysis, call.index)
+    let generic = function_at(analysis, expression(analysis, text, "identity(7)").index)
     let selected = concat("pick(", concat(type_name(analysis, get(overload.params, 0)), ")"))
     let instance = concat("identity[", concat(type_name(analysis, get(generic.arguments, 0)), "]"))
     set(files, 0, SourceFile {

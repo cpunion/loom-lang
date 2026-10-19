@@ -5,8 +5,8 @@ import std.loom.source.apply_edits
 
 // Public declaration edits cover this module, not external consumers or dependency
 // snapshots. Each directory keeps its own private test scope and checked IDs.
-fn editor_import_selected(analysis Analysis, file Int, token Token, tokens List[Token]) Option[Location] {
-    let declarations = get(analysis.bindings.files, file).tree.children
+fn editor_import_selected(analysis EditorAnalysis, file Int, token Token, tokens List[Token]) Option[Location] {
+    let declarations = get(editor_data(analysis).bindings.files, file).tree.children
     var index = 0
     while index < length(declarations) {
         let node = get(declarations, index)
@@ -24,12 +24,12 @@ fn editor_import_selected(analysis Analysis, file Int, token Token, tokens List[
             if token.value != member || !editor_same_span(token.span, last) {
                 return Option.None
             }
-            let candidates = std.loom.binding.candidates(analysis.bindings, file, true, node.value)
+            let candidates = std.loom.binding.candidates(editor_data(analysis).bindings, file, true, node.value)
             if length(candidates) != 1 {
                 return Option.None
             }
-            let symbol = get(analysis.bindings.symbols, get(candidates, 0))
-            let source = get(analysis.bindings.files, symbol.file)
+            let symbol = get(editor_data(analysis).bindings.symbols, get(candidates, 0))
+            let source = get(editor_data(analysis).bindings.files, symbol.file)
             let declared = match lex(source.text) {
                 Result.Ok(value) => value
                 Result.Err(_) => {
@@ -100,19 +100,19 @@ fn editor_public_edit(edits List[EditorPublicEdit], path Text, text Text, change
     true
 }
 
-fn editor_public_imports(analysis Analysis, file Int, target Location, tokens List[Token],
+fn editor_public_imports(analysis EditorAnalysis, file Int, target Location, tokens List[Token],
     spelling Text, name Text, edits List[EditorPublicEdit]) Result[List[Location], Text] {
-    let source = get(analysis.bindings.files, file)
+    let source = get(editor_data(analysis).bindings.files, file)
     let covered = new[Location]()
     var index = 0
     while index < length(source.tree.children) {
         let node = get(source.tree.children, index)
         if node.kind == NodeKind.Import {
-            let candidates = std.loom.binding.candidates(analysis.bindings, file, source.test_only, node.value)
+            let candidates = std.loom.binding.candidates(editor_data(analysis).bindings, file, source.test_only, node.value)
             var selected = false
             var item = 0
             while item < length(candidates) {
-                let symbol = get(analysis.bindings.symbols, get(candidates, item))
+                let symbol = get(editor_data(analysis).bindings.symbols, get(candidates, item))
                 if symbol.file == target.file && symbol.node.span.start <= target.span.start &&
                 target.span.end <= symbol.node.span.end {
                     selected = true
@@ -159,10 +159,10 @@ fn editor_public_imports(analysis Analysis, file Int, target Location, tokens Li
     Result.Ok(covered)
 }
 
-fn editor_public_target(analysis Analysis, path Text, span Span) Option[Location] {
+fn editor_public_target(analysis EditorAnalysis, path Text, span Span) Option[Location] {
     var file = 0
-    while file < length(analysis.bindings.files) {
-        if get(analysis.bindings.files, file).path == path {
+    while file < length(editor_data(analysis).bindings.files) {
+        if get(editor_data(analysis).bindings.files, file).path == path {
             return Option.Some(Location {
                     file = file
                     span = span
@@ -173,11 +173,11 @@ fn editor_public_target(analysis Analysis, path Text, span Span) Option[Location
     Option.None
 }
 
-fn editor_public_visible(analysis Analysis, file Int, target Location, spelling Text) Bool {
-    let candidates = std.loom.binding.candidates(analysis.bindings, file, true, spelling)
+fn editor_public_visible(analysis EditorAnalysis, file Int, target Location, spelling Text) Bool {
+    let candidates = std.loom.binding.candidates(editor_data(analysis).bindings, file, true, spelling)
     var index = 0
     while index < length(candidates) {
-        let symbol = get(analysis.bindings.symbols, get(candidates, index))
+        let symbol = get(editor_data(analysis).bindings.symbols, get(candidates, index))
         if symbol.file == target.file {
             return true
         }
@@ -186,7 +186,7 @@ fn editor_public_visible(analysis Analysis, file Int, target Location, spelling 
     false
 }
 
-fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
+fn editor_public_collect(analysis EditorAnalysis, module Text, path Text, span Span,
     spelling Text, name Text, field Bool, edits List[EditorPublicEdit]) Result[Bool, Text] {
     let target = match editor_public_target(analysis, path, span) {
         Option.Some(value) => value
@@ -198,7 +198,7 @@ fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
         }
     }
     let owner = editor_field_owner(analysis, target, spelling)
-    let public_field = owner >= 0 && get(analysis.bindings.symbols, owner).public &&
+    let public_field = owner >= 0 && get(editor_data(analysis).bindings.symbols, owner).public &&
     editor_declaration_authority(analysis, target, true)
     if !(if field {
             public_field
@@ -209,16 +209,16 @@ fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
     }
     let references = editor_references(analysis, target, spelling)
     var file = 0
-    while file < length(analysis.bindings.files) {
-        let source = get(analysis.bindings.files, file)
+    while file < length(editor_data(analysis).bindings.files) {
+        let source = get(editor_data(analysis).bindings.files, file)
         // Imported packages omit their tests in this analysis. Their own root
         // analysis accounts for those uses; never mistake omission for evidence.
-        if source.package == analysis.bindings.root {
+        if source.package == editor_data(analysis).bindings.root {
             if !std.text.starts_with(source.path, join_path(module, "")) {
                 return Result.Err("Public rename cannot edit an external source file")
             }
             let visible = field || editor_public_visible(analysis, file, target, spelling)
-            if name != "" && (editor_generated(source.tree) || std.loom.checking.has_declaration_stages(analysis.source, true)) {
+            if name != "" && (editor_generated(source.tree) || std.loom.checking.has_declaration_stages(editor_data(analysis).source, true)) {
                 return Result.Err("Public rename cannot account for generated source references")
             }
             let tokens = match lex(source.text) {
@@ -303,7 +303,7 @@ fn editor_public_overlays(options EditorOptions, edits List[EditorPublicEdit]) R
 }
 
 fn editor_module_analysis(options EditorOptions, directory Text, overlays List[SourceOverlay],
-    inputs BuildInputs, cache EditorCache) Result[Analysis, Text] {
+    inputs BuildInputs, cache EditorCache) Result[EditorAnalysis, Text] {
     let project = match load_overlaid(directory, options.std_root, true, overlays) {
         Result.Ok(value) => value
         Result.Err(failed) => {
@@ -322,7 +322,7 @@ fn editor_module_analysis(options EditorOptions, directory Text, overlays List[S
     }
 }
 
-fn editor_public_symbols(options EditorOptions, initial Analysis, target Location,
+fn editor_public_symbols(options EditorOptions, initial EditorAnalysis, target Location,
     spelling Text, inputs BuildInputs) EditorOutput {
     let rename = options.new_name != ""
     let field = editor_field_owner(initial, target, spelling) >= 0
@@ -332,9 +332,9 @@ fn editor_public_symbols(options EditorOptions, initial Analysis, target Locatio
     if !options.tests {
         return editor_error("Public declaration queries require --tests to account for every package's tests")
     }
-    let root = get(initial.bindings.packages, initial.bindings.root)
-    let module = get(initial.bindings.modules, root.instance).source
-    let path = get(initial.bindings.files, target.file).path
+    let root = get(editor_data(initial).bindings.packages, editor_data(initial).bindings.root)
+    let module = get(editor_data(initial).bindings.modules, root.instance).source
+    let path = get(editor_data(initial).bindings.files, target.file).path
     let extra = new[Text]()
     var index = 0
     while index < length(options.overlays) {
@@ -423,7 +423,7 @@ fn editor_public_symbols(options EditorOptions, initial Analysis, target Locatio
     let prefix = if rename {
         "{\"diagnostics\":[],\"changes\":"
     } else {
-        concat("{\"diagnostics\":[],\"declaration\":", concat(editor_location_json(initial.bindings, target), ",\"references\":"))
+        concat("{\"diagnostics\":[],\"declaration\":", concat(editor_location_json(editor_data(initial).bindings, target), ",\"references\":"))
     }
     EditorOutput {
         text = concat(prefix, concat(locations, "]}\n"))

@@ -180,7 +180,7 @@ test fn ordinary_comptime_blocks_retain_source_roles_without_hiding_nested_unkno
     let obligations = source_obligations(source)
     assert length(obligations.unknown) == 0 && length(obligations.offsets) == 4
     let analysis = match analyze(input(source), false) {
-        Result.Ok(value) => value
+        Result.Ok(value) => value.state
         Result.Err(problem) => {
             discard std.io.write_error(problem.diagnostic.message)
             assert false

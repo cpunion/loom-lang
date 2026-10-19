@@ -29,6 +29,7 @@ import std.loom.project.input_snapshot
 import std.loom.checking.type_name
 import std.loom.typed.Program
 import std.loom.typed.Expr
+import std.loom.typed.snapshot
 import std.loom.typed.TypeKind
 import std.list.new
 import std.list.get
@@ -39,9 +40,13 @@ import std.text.concat
 import std.int.to_text
 import std.result.Result
 
-// Results own a detached project/AST snapshot. Treat all result lists as read-only;
-// IDs belong to this analysis, not to later analyses or persistent declarations.
+// Query evidence is private. Editable metadata and expressions are explicit
+// detached copies; their IDs still belong to this analysis alone.
 pub record Analysis {
+    state AnalysisState
+}
+
+record AnalysisState {
     source Project
     bindings std.loom.binding.Program
     program std.loom.typed.Program
@@ -70,6 +75,13 @@ pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
 
 pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Result[Analysis, Failure] {
     let source = snapshot(project)
+    let detached = analysis_inputs(inputs)
+    let bindings = bind(expand_project(source, tests, detached)?, tests)?
+    let program = check_with_inputs(bindings, detached)?
+    Result.Ok(analysis_result(source, bindings, program, detached))
+}
+
+fn analysis_inputs(inputs BuildInputs) BuildInputs {
     let detached = with_proof_backend(
         build_inputs(inputs.read, new[BuildOption](), inputs.read_target, inputs.target_context),
         inputs.proof_backend)
@@ -93,13 +105,20 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
             })
         index = index + 1
     }
-    let bindings = bind(expand_project(source, tests, detached)?, tests)?
-    let program = check_with_inputs(bindings, detached)?
-    Result.Ok(Analysis {
+    detached
+}
+
+fn analysis_result(source Project, bindings std.loom.binding.Program,
+    program std.loom.typed.Program, inputs BuildInputs) Analysis {
+    // Input readers may retain their returned byte buffers. Publication owns
+    // the observed bytes too, including reads performed during checking.
+    let detached = analysis_inputs(inputs)
+    Analysis {
+        state = AnalysisState {
             source = source
             bindings = bindings
             program = program
-            inputs = files
+            inputs = detached.files
             options = detached.options
             targets = detached.targets
             proof_backend = detached.proof_backend
@@ -107,25 +126,26 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
             declaration_scopes = new[Location]()
             contract_queries = new[CheckedQuery]()
             independent_queries = new[Option[IndependentQuery]]()
-        })
+        }
+    }
 }
 
 // This checks the supplied project, not the filesystem. Reload first to detect
 // disk edits. Module origins and resolved edges are part of the basis, as are
 // in-memory AST edits even when the source text is unchanged.
-pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
+fn is_current(analysis AnalysisState, project Project, tests Bool) Bool {
     is_current_with_inputs(analysis, project, tests, new[BuildInput]())
 }
 
-pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput]) Bool {
+fn is_current_with_inputs(analysis AnalysisState, project Project, tests Bool, inputs List[BuildInput]) Bool {
     is_current_with_inputs(analysis, project, tests, inputs, new[BuildOption]())
 }
 
-pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput], options List[BuildOption]) Bool {
+fn is_current_with_inputs(analysis AnalysisState, project Project, tests Bool, inputs List[BuildInput], options List[BuildOption]) Bool {
     is_current_with_inputs(analysis, project, tests, inputs, options, new[BuildOption]())
 }
 
-pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput], options List[BuildOption], targets List[BuildOption]) Bool {
+fn is_current_with_inputs(analysis AnalysisState, project Project, tests Bool, inputs List[BuildInput], options List[BuildOption], targets List[BuildOption]) Bool {
     if !same_build_options(analysis.options, options) || !same_build_options(analysis.targets, targets) {
         return false
     }
@@ -191,7 +211,7 @@ pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, in
 }
 
 // Type IDs must come from this analysis.
-pub fn type_name(analysis Analysis, ty Int) Text {
+fn type_name(analysis AnalysisState, ty Int) Text {
     std.loom.checking.type_name(analysis.bindings, analysis.program.types, analysis.program.interfaces, ty)
 }
 
@@ -230,7 +250,7 @@ fn covering(value Expr, offset Int, found List[Expr]) {
 // Call.index addresses program.functions, not declaration-binding candidates.
 // Local/Let/Assign.index addresses that function's locals (including inferred ty).
 // Uninstantiated templates and signature-only positions have no typed result.
-pub fn expressions_at(analysis Analysis, file Int, offset Int) List[Expression] {
+fn expressions_at(analysis AnalysisState, file Int, offset Int) List[Expression] {
     let matches = new[Expression]()
     var index = 0
     while index < length(analysis.program.functions) {
@@ -251,7 +271,7 @@ pub fn expressions_at(analysis Analysis, file Int, offset Int) List[Expression] 
             if length(found) > 0 {
                 push(matches, Expression {
                         function = index
-                        expression = get(found, 0)
+                        expression = std.loom.typed.snapshot(get(found, 0))
                     })
             }
         }

@@ -106,7 +106,7 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
             }
         })
     let analysis = match analyze_with_inputs(project, false, inputs) {
-        Result.Ok(value) => value
+        Result.Ok(value) => value.state
         Result.Err(_) => {
             assert false
             return
@@ -131,7 +131,7 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
             value = "linux"
         })
     let targeted = match analyze_with_inputs(project, false, inputs) {
-        Result.Ok(value) => value
+        Result.Ok(value) => value.state
         Result.Err(_) => {
             assert false
             return

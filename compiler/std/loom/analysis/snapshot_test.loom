@@ -1,0 +1,79 @@
+import std.list.transfer.take_last
+import std.time.sleep_ms
+
+fn published(project Project) Analysis {
+    match analyze(project, false) {
+        Result.Ok(value) => value
+        Result.Err(problem) => {
+            discard std.io.write_error(problem.diagnostic.message)
+            assert false
+            published(project)
+        }
+    }
+}
+
+test async fn editable_analysis_data_cannot_rewrite_published_queries() {
+    let text = """
+        enum Choice {
+            Some(Int)
+            None
+        }
+
+        fn choose(value Choice) Int
+        requires true
+        ensures result == result
+        {
+            match value {
+                Choice.Some(number) => number
+                Choice.None => 0
+            }
+        }
+
+        fn main() {
+            assert choose(Choice.Some(7)) == 7
+        }
+        """
+    let project = input(text)
+    let analysis = published(project)
+    let position = offset(text, "match value")
+    let expression = get(expressions_at(analysis, 0, position), 0)
+    assert length(expression.expression.children) == 1
+    assert length(expression.expression.arms) == 2
+    let first_arm = get(expression.expression.arms, 0)
+    let bindings = length(first_arm.bindings)
+    let body = length(first_arm.body)
+    push(first_arm.bindings, 999)
+    discard take_last(first_arm.body)
+    discard take_last(expression.expression.children)
+    let function = function_at(analysis, expression.function)
+    let locals = length(function.locals)
+    let clauses = length(function.postconditions)
+    discard take_last(function.locals)
+    discard take_last(function.postconditions)
+    let data = snapshot(analysis)
+    discard take_last(get(data.source.files, 0).tree.children)
+    discard take_last(get(data.bindings.files, 0).tree.children)
+    discard take_last(get(data.bindings.symbols, 0).node.children)
+    discard take_last(data.bindings.symbols)
+    discard take_last(data.bindings.scopes)
+    discard take_last(data.functions)
+    // A later pass and a real scheduler suspension do not retire the snapshot.
+    let later = published(input("fn main() { assert true }"))
+    sleep_ms(1).await
+    assert is_current(analysis, project, false)
+    assert is_current(later, input("fn main() { assert true }"), false)
+    let retained = get(expressions_at(analysis, 0, position), 0)
+    assert length(retained.expression.children) == 1
+    assert length(retained.expression.arms) == 2
+    assert length(get(retained.expression.arms, 0).bindings) == bindings
+    assert length(get(retained.expression.arms, 0).body) == body
+    let retained_function = function_at(analysis, expression.function)
+    assert length(retained_function.locals) == locals
+    assert length(retained_function.postconditions) == clauses
+    assert type_name(analysis, retained.expression.ty) == "Int"
+    let inspection = inspect_at(analysis, 0, offset(text, "choose(Choice"))
+    assert match inspection {
+        Option.Some(value) => length(value.definitions) == 1
+        Option.None => false
+    }
+}

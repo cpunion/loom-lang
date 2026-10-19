@@ -1,0 +1,65 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.list.clone
+
+// Explicit editable copies; IDs remain local to the original checked program.
+pub fn snapshot(values List[Expr]) List[Expr] {
+    let copied = new[Expr](length(values))
+    var index = 0
+    while index < length(values) {
+        push(copied, snapshot(get(values, index)))
+        index = index + 1
+    }
+    copied
+}
+
+pub fn snapshot(value Expr) Expr {
+    let arms = new[Arm](length(value.arms))
+    var index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = clone(arm.bindings)
+                whole = arm.whole
+                body = snapshot(arm.body)
+            })
+        index = index + 1
+    }
+    Expr {
+        kind = value.kind
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = value.index
+        children = snapshot(value.children)
+        arms = arms
+        falls = value.falls
+    }
+}
+
+pub fn snapshot(value Function) Function {
+    let locals = new[Local](length(value.locals))
+    var index = 0
+    while index < length(value.locals) {
+        push(locals, get(value.locals, index))
+        index = index + 1
+    }
+    Function {
+        is_async = value.is_async
+        symbol = value.symbol
+        arguments = clone(value.arguments)
+        params = clone(value.params)
+        result = value.result
+        locals = locals
+        preconditions = snapshot(value.preconditions)
+        postconditions = snapshot(value.postconditions)
+        result_cleanup = snapshot(value.result_cleanup)
+        result_local = value.result_local
+        body = snapshot(value.body)
+        runtime_name = value.runtime_name
+        span = value.span
+    }
+}

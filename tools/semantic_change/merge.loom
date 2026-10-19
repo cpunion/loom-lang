@@ -1,4 +1,3 @@
-import std.loom.analysis.Analysis
 import std.loom.analysis.Inspection
 import std.loom.analysis.inspect_at
 import std.loom.analysis.inspect_independent
@@ -289,7 +288,7 @@ fn reference_sites(entry Entry) Result[List[Int], Text] {
     Result.Ok(obligations.offsets)
 }
 
-fn analysis_file(analysis Analysis, directory Text, path Text) Int {
+fn analysis_file(analysis CheckedAnalysis, directory Text, path Text) Int {
     let target = if directory == "" {
         path
     } else {
@@ -306,7 +305,7 @@ fn analysis_file(analysis Analysis, directory Text, path Text) Int {
     -1
 }
 
-fn binding_target(analysis Analysis, revision Indexed, directory Text, location Location) Result[BindingTarget, Text] {
+fn binding_target(analysis CheckedAnalysis, revision Indexed, directory Text, location Location) Result[BindingTarget, Text] {
     if location.file < 0 || location.file >= length(analysis.bindings.files) {
         return Result.Err("checked definition has no source file")
     }
@@ -345,16 +344,16 @@ fn same_target(left BindingTarget, right BindingTarget) Bool {
     left.end - left.anchor == right.end - right.anchor
 }
 
-fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body Bool) Result[Inspection, Text] {
-    reference_inspection(analysis, file, offset, abstract_body, inspect_at(analysis, file, offset))
+fn reference_inspection(analysis CheckedAnalysis, file Int, offset Int, abstract_body Bool) Result[Inspection, Text] {
+    reference_inspection(analysis, file, offset, abstract_body, inspect_at(analysis.snapshot, file, offset))
 }
 
-fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body Bool,
+fn reference_inspection(analysis CheckedAnalysis, file Int, offset Int, abstract_body Bool,
     observed Option[Inspection]) Result[Inspection, Text] {
     let inspected = match observed {
         Option.Some(value) => value
         Option.None => {
-            match inspect_independent(analysis, file, offset) {
+            match inspect_independent(analysis.snapshot, file, offset) {
                 Option.Some(value) => value
                 Option.None => {
                     return Result.Err(concat("retained reference has no checked binding evidence in ",
@@ -370,7 +369,7 @@ fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body B
         // Observed specializations alone cannot account for a generic body.
         // Require declaration-wide evidence too, and retain the concrete check
         // above so different observed instances cannot silently select targets.
-        let abstract = match inspect_independent(analysis, file, offset) {
+        let abstract = match inspect_independent(analysis.snapshot, file, offset) {
             Option.Some(value) => value
             Option.None => {
                 return Result.Err("generic reference has no abstract binding evidence")
@@ -389,7 +388,7 @@ fn reference_inspection(analysis Analysis, file Int, offset Int, abstract_body B
     Result.Ok(inspected)
 }
 
-fn target_at(analysis Analysis, revision Indexed, directory Text, entry Entry, offset Int) Result[BindingTarget, Text] {
+fn target_at(analysis CheckedAnalysis, revision Indexed, directory Text, entry Entry, offset Int) Result[BindingTarget, Text] {
     let file = analysis_file(analysis, directory, entry.path)
     if file < 0 {
         return Result.Err("retained reference has no analyzed source file")
@@ -398,7 +397,7 @@ fn target_at(analysis Analysis, revision Indexed, directory Text, entry Entry, o
     binding_target(analysis, revision, directory, get(inspected.definitions, 0))
 }
 
-fn compare_retained(source Analysis, source_revision Indexed, merged Analysis, merged_revision Indexed,
+fn compare_retained(source CheckedAnalysis, source_revision Indexed, merged CheckedAnalysis, merged_revision Indexed,
     directory Text) Result[Bool, Text] {
     var index = 0
     while index < length(merged_revision.entries) {
@@ -425,8 +424,8 @@ fn compare_retained(source Analysis, source_revision Indexed, merged Analysis, m
                     push(merged_offsets, after.start + get(sites, site).after)
                     site = site + 1
                 }
-                let source_evidence = inspect_references(source, source_file, source_offsets)
-                let merged_evidence = inspect_references(merged, merged_file, merged_offsets)
+                let source_evidence = inspect_references(source.snapshot, source_file, source_offsets)
+                let merged_evidence = inspect_references(merged.snapshot, merged_file, merged_offsets)
                 site = 0
                 while site < length(sites) {
                     let original = get(source_evidence, site)
@@ -648,10 +647,10 @@ fn chosen_entry(base Indexed, left Indexed, right Indexed, id Text) Result[Entry
     let base_index = entry_index(base.entries, id)
     if base_index < 0 {
         return Result.Ok(if edited_left >= 0 {
-            get(left.entries, edited_left)
-        } else {
-            get(right.entries, edited_right)
-        })
+                get(left.entries, edited_left)
+            } else {
+                get(right.entries, edited_right)
+            })
     }
     let original = get(base.entries, base_index)
     if edited_left >= 0 && edited_right >= 0 {

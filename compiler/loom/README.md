@@ -157,7 +157,7 @@ The compiler and ordinary Loom programs use the same source implementation:
 | --- | --- |
 | `std.loom.source` | `Span`, `Diagnostic`, `Position`, `position`, `render` |
 | `std.loom.lexer` | `lex`, `Token`, `Kind` |
-| `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup), `same` (exact structural equality) |
+| `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup), `same` (exact structural equality), `snapshot` (independent editable tree) |
 | `std.loom.parser` | `parse`, `parse_expression`, `parse_type`, `parse_pattern`, `parse_binding_pattern`, `parse_statement`, `parse_declaration`; editor-only `completion_source` / `CompletionSource`, lexical `import_cursor` / `ImportCursor` |
 | `std.loom.syntax` | `emit`, `expression`, `Fragment`: grammar-validated structural source emission from public ASTs |
 | `std.loom.format` | `format(Text) Result[Text, Diagnostic]` |
@@ -326,8 +326,11 @@ without the CLI, LLVM backend, or filesystem loading:
 
 | Function | Result |
 | --- | --- |
-| `analyze(project, tests)` | `Result[Analysis, Failure]`, with bindings and a checked program |
+| `analyze(project, tests)` | `Result[Analysis, Failure]`, a private checked snapshot |
 | `analyze_with_inputs(project, tests, inputs)` | Analysis with explicit `checking.BuildInputs`; owns detached dependency snapshots and retains the host's proof backend for lazy queries |
+| `analyze_cached(project, tests, inputs, cache)` | The same private snapshot using a `checking.DefinitionCache`; the host's input-observation log is preserved |
+| `snapshot(analysis)` | Editable `AnalysisData`: detached source, bindings, function-symbol IDs, inputs and targets |
+| `function_at(analysis, index)` | An independent editable function; indices refer to this analysis |
 | `type_name(analysis, ty)` | Display name for a type in that analysis |
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
@@ -348,7 +351,7 @@ without the CLI, LLVM backend, or filesystem loading:
 `analyze_with_inputs` to opt into bounded filesystem reads, or provide snapshots
 with `checking.no_input_reader`. The CLI/editor explicitly opt in. Each check
 needs a fresh input context (or deliberately frozen snapshots); reusing one does
-not refresh disk contents. `Analysis.inputs` records the detached snapshots.
+not refresh disk contents. `snapshot(analysis).inputs` exposes detached snapshots.
 For input-bearing analyses, `is_current` returns false: use
 `is_current_with_inputs` with freshly read snapshots. Neither freshness API reads
 the filesystem. `BuildInputs.requests` also retains failed read requests, allowing
@@ -365,8 +368,12 @@ target/loom test compiler/examples/semantic
 target/loom run compiler/examples/semantic
 ```
 
-`Analysis` owns a detached project/AST snapshot; treat its returned lists as
-read-only. `is_current` compares module origins, package/import edges, file
+`Analysis` owns private source, checked IR and query evidence. Use `snapshot` for
+editable metadata and `function_at` for an editable function. Returned expression
+trees are detached too; changing any of these drafts cannot affect later queries.
+Copy metadata once per editing pass, not before every query. Parser and IR builder
+types remain mutable; a draft does not become checked evidence by being edited.
+`is_current` compares module origins, package/import edges, file
 metadata, text and AST, not the disk: reload first to detect filesystem changes.
 These are result-local indices, not persistent identities or an incremental cache.
 

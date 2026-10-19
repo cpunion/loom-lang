@@ -1,5 +1,8 @@
 import std.loom.analysis.analyze_with_inputs
+import std.loom.analysis.Analysis
+import std.loom.analysis.snapshot
 import std.loom.binding.Failure
+import std.loom.binding.Program
 import std.loom.checking.BuildInputs
 import std.loom.checking.build_inputs
 import std.loom.checking.no_input_reader
@@ -7,12 +10,24 @@ import std.loom.checking.with_proof_backend
 import std.loom.proof.ProofBackend
 import std.loom.proof.no_proof_backend
 
+record CheckedAnalysis {
+    snapshot Analysis
+    source Project
+    bindings std.loom.binding.Program
+}
+
 // A proof capability does not enable ambient file or target reads. Each
 // analysis receives fresh input state; the host owns the trusted solver.
 fn proof_inputs(backend ProofBackend) BuildInputs {
     with_proof_backend(build_inputs(no_input_reader), backend)
 }
 
-fn checked_analysis(project Project, tests Bool, backend ProofBackend) Result[Analysis, Failure] {
-    analyze_with_inputs(project, tests, proof_inputs(backend))
+fn checked_analysis(project Project, tests Bool, backend ProofBackend) Result[CheckedAnalysis, Failure] {
+    let analysis = analyze_with_inputs(project, tests, proof_inputs(backend))?
+    let data = std.loom.analysis.snapshot(analysis)
+    Result.Ok(CheckedAnalysis {
+            snapshot = analysis
+            source = data.source
+            bindings = data.bindings
+        })
 }

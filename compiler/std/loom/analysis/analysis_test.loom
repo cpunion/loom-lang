@@ -27,9 +27,9 @@ fn input(text Text) Project {
     push(packages, Package { instance = 0 relative = "" imports = new[PackageImport]() })
     Project { files = files modules = modules packages = packages root = 0 }
 }
-fn accepted(project Project) Analysis {
+fn accepted(project Project) AnalysisState {
     match analyze(project, false) {
-        Result.Ok(analysis) => analysis
+        Result.Ok(analysis) => analysis.state
         Result.Err(_) => { assert false
             accepted(project) }
     }
