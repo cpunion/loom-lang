@@ -127,6 +127,53 @@ fn emit_run(
 }
 
 #[test]
+fn collecting_calls_restore_only_continuing_locals() {
+    let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
+    let source = program(
+        vec![Type::Text; 2],
+        vec![
+            statement(S::Let {
+                local: 0,
+                value: concat(text("dead"), text("value")),
+            }),
+            statement(S::Let {
+                local: 1,
+                value: concat(text("live"), text("value")),
+            }),
+            statement(S::Discard(concat(text("collect"), text("now")))),
+            equal(local(Type::Text, 1), text("livevalue")),
+        ],
+    );
+    let body = &source.functions[0].body;
+    let plan = gc_liveness::Plan::new(body, 0, BTreeSet::new(), &BTreeSet::new(), false);
+    let S::Discard(collect) = &body.statements[2].kind else {
+        unreachable!()
+    };
+    assert_eq!(
+        plan.restores[&(collect as *const checked::Expr)],
+        BTreeSet::from([1])
+    );
+    for optimization in [Optimization::O0, Optimization::O2] {
+        let (ir, output) = emit_run(&source, optimization);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if optimization == Optimization::O0 {
+            let body = ir.split("define internal void @loom.fn.0").nth(1).unwrap();
+            let body = body.split("\n}").next().unwrap();
+            assert_eq!(
+                body.lines()
+                    .filter(|line| line.contains("gc.restored") && line.contains(" = load "))
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
 fn completed_operands_expire_before_later_calls_and_keep_the_result_handoff() {
     let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
     let mut source = program(

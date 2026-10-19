@@ -346,6 +346,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 size_type: self.size_type,
                 roots,
                 liveness,
+                restore_point: None,
                 tracers: self.tracers,
                 loop_targets: Vec::new(),
                 cleanups: HashMap::new(),

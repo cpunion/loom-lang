@@ -5024,6 +5024,9 @@ page maps and base bitmaps replace per-object hash entries. Large objects remain
 separately tracked. Neither mechanism changes source layout or native callback ABI.
 Compact managed locals remain nonescaping SSA candidates; separate shadow slots
 mirror their source writes for the collector, including pattern bindings.
+After a collection, only locals needed at that expression's continuation reload
+their shadows; cleanup captures remain pinned. Statement checkpoints use their
+own conservative boundary, not an enclosing expression's continuation.
 Inline aggregates larger than two target pointers instead use their actual local
 storage as the root, avoiding whole-header copies after every possible allocation.
 Pending expression snapshots remain independent in both cases: an earlier

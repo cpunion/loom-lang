@@ -27,6 +27,9 @@ pub(super) struct Plan {
     pub entries: HashMap<*const checked::Block, Live>,
     pub retired: HashMap<*const checked::Stmt, Live>,
     pub expressions: HashMap<*const checked::Expr, Live>,
+    // Source locals needed after this expression's own collecting operation.
+    // Pending operands use their separate snapshot roots.
+    pub restores: HashMap<*const checked::Expr, Live>,
     pub pinned: Live,
 }
 
@@ -196,6 +199,9 @@ impl Plan {
         future: bool,
         collections: &mut Collections<'_>,
     ) -> Live {
+        if collections.expression(value) {
+            self.restores.insert(value, live.clone());
+        }
         match &value.kind {
             checked::ExprKind::Local(id) => {
                 let retire = future
