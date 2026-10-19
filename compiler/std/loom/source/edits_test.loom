@@ -1,0 +1,56 @@
+fn replacement(start Int, end Int, text Text) TextEdit {
+    TextEdit {
+        span = Span {
+            start = start
+            end = end
+        }
+        text = text
+    }
+}
+
+test fn edits_share_one_source_basis_preserve_unicode_and_do_not_mutate_inputs() {
+    let text = "é old\r\nlast"
+    let edits = [replacement(12, 12, "!"), replacement(3, 6, "new"), replacement(0, 0, "// ")]
+    assert match apply_edits(text, edits) {
+        Result.Ok(value) => value == "// é new\r\nlast!"
+        _ => false
+    }
+    assert edits[0].span.start == 12 && text == "é old\r\nlast"
+    assert match apply_edits(text, []) {
+        Result.Ok(value) => value == text
+        _ => false
+    }
+}
+
+test fn source_edits_reject_invalid_utf8_ranges_and_ambiguous_overlaps() {
+    let invalid = [replacement(-1, 0, ""), replacement(2, 1, ""), replacement(0, 5, ""), replacement(1, 2, "")]
+    var index = 0
+    while index < std.list.length(invalid) {
+        assert match apply_edits("éx", [invalid[index]]) {
+            Result.Err(EditError.Range) => true
+            _ => false
+        }
+        index = index + 1
+    }
+    let overlapping = [
+        [replacement(0, 2, "a"), replacement(1, 3, "b")],
+        [replacement(1, 1, "a"), replacement(1, 1, "b")],
+        [replacement(1, 1, "a"), replacement(1, 2, "b")]
+    ]
+    index = 0
+    while index < std.list.length(overlapping) {
+        assert match apply_edits("abc", overlapping[index]) {
+            Result.Err(EditError.Overlap) => true
+            _ => false
+        }
+        index = index + 1
+    }
+    assert match apply_ordered_edits("abc", [replacement(2, 3, "c"), replacement(0, 1, "a")]) {
+        Result.Err(EditError.Overlap) => true
+        _ => false
+    }
+    assert match apply_ordered_edits("abc", [replacement(0, 1, "A"), replacement(1, 1, "!")]) {
+        Result.Ok(value) => value == "A!bc"
+        _ => false
+    }
+}

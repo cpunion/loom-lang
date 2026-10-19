@@ -49,6 +49,12 @@ test('LSP semantic queries preserve all checked types/targets and cancel on sibl
       [definitions[1].uri]: [{ range: definitions[1].range, newText: 'renamed' }],
     },
   });
+  const split = await client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'split' });
+  assert.deepEqual(split.changes[params.textDocument.uri].at(-1), {
+    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+    newText: 'import demo.library.split\n',
+  });
+  await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'legacy' }), /protocol mismatch/);
   const actions = await client.rpc.sendRequest('textDocument/codeAction', {
     textDocument: params.textDocument, range: { start: position, end: { line: 0, character: position.character + 5 } },
     context: { diagnostics: [] },

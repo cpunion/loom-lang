@@ -1,0 +1,61 @@
+import std.result.Result
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.list.sorted
+import std.text.is_boundary
+import std.text.slice
+import std.text.join
+
+// Every range refers to the same original UTF-8 source, not earlier edits.
+pub record TextEdit {
+    span Span
+    text Text
+}
+
+pub enum EditError {
+    Range
+    Overlap
+}
+
+fn edit_before(a TextEdit, b TextEdit) Bool {
+    a.span.start < b.span.start || (a.span.start == b.span.start && a.span.end < b.span.end)
+}
+
+pub fn apply_edits(text Text, edits List[TextEdit]) Result[Text, EditError] {
+    if std.list.length(edits) < 2 {
+        return apply_ordered_edits(text, edits)
+    }
+    apply_ordered_edits(text, sorted(edits, edit_before))
+}
+
+// Already ordered consumers avoid sorting again. Ordering and overlap are
+// still checked; multiple insertions at one position need an explicit join.
+pub fn apply_ordered_edits(text Text, edits List[TextEdit]) Result[Text, EditError] {
+    if std.list.length(edits) == 0 {
+        return Result.Ok(text)
+    }
+    let parts = new[Text]()
+    var offset = 0
+    var previous = -1
+    var index = 0
+    while index < std.list.length(edits) {
+        let edit = get(edits, index)
+        let span = edit.span
+        if span.start < 0 || span.end < span.start || span.end > length(text) ||
+        !is_boundary(text, span.start) || !is_boundary(text, span.end) {
+            return Result.Err(EditError.Range)
+        }
+        if span.start < offset || span.start == previous {
+            return Result.Err(EditError.Overlap)
+        }
+        push(parts, slice(text, offset, span.start))
+        push(parts, edit.text)
+        offset = span.end
+        previous = span.start
+        index = index + 1
+    }
+    push(parts, slice(text, offset, length(text)))
+    Result.Ok(join(parts, ""))
+}

@@ -1,4 +1,5 @@
 import std.text.byte
+import std.loom.analysis.import_edits
 
 fn import_name_seen(values List[Text], name Text) Bool {
     var index = 0
@@ -39,77 +40,17 @@ fn public_import_names(analysis Analysis, scopes List[PackageScope], renames Lis
 }
 
 fn public_import_edits(source SourceFile, node Node, names List[Text], edits List[SourceRenameEdit]) Result[Bool, Text] {
-    if length(names) == 0 {
-        return Result.Ok(true)
-    }
-    let member = std.loom.project.name(node.value)
-    let selected = if import_name_seen(names, member) {
-        member
-    } else {
-        get(names, 0)
-    }
-    if selected != member {
-        let tokens = match lex(slice(source.text, node.span.start, node.span.end)) {
-            Result.Ok(value) => value
-            Result.Err(problem) => {
-                return Result.Err(problem.message)
-            }
-        }
-        var index = length(tokens) - 1
-        while index >= 0 && get(tokens, index).kind != Kind.Name {
-            index = index - 1
-        }
-        if index < 0 {
-            return Result.Err("public import has no member token")
-        }
-        let token = get(tokens, index)
+    let replacements = import_edits(source.text, node, names)?
+    var index = 0
+    while index < length(replacements) {
+        let edit = get(replacements, index)
         push(edits, SourceRenameEdit {
                 path = source.path
-                span = Span {
-                    start = node.span.start + token.span.start
-                    end = node.span.start + token.span.end
-                }
-                text = selected
+                span = edit.span
+                text = edit.text
             })
-    }
-    if length(names) == 1 {
-        return Result.Ok(true)
-    }
-    // Insert after the entire original line, including its trailing comment.
-    // Existing import bytes and comments stay in place; no file is reformatted.
-    var end = node.span.end
-    while end < length(source.text) && byte(source.text, end) != 10 {
-        end = end + 1
-    }
-    if end < length(source.text) {
-        end = end + 1
-    }
-    let newline = if end >= 2 && byte(source.text, end - 2) == 13 {
-        "\r\n"
-    } else {
-        "\n"
-    }
-    let lines = new[Text]()
-    if end > 0 && byte(source.text, end - 1) != 10 {
-        push(lines, newline)
-    }
-    let prefix = slice(node.value, 0, length(node.value) - length(member))
-    var index = 0
-    while index < length(names) {
-        let name = get(names, index)
-        if name != selected {
-            push(lines, concat("import ", concat(prefix, concat(name, newline))))
-        }
         index = index + 1
     }
-    push(edits, SourceRenameEdit {
-            path = source.path
-            span = Span {
-                start = end
-                end = end
-            }
-            text = join(lines, "")
-        })
     Result.Ok(true)
 }
 

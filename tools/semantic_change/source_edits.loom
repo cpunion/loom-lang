@@ -1,4 +1,6 @@
 import std.loom.source.Span
+import std.loom.source.TextEdit
+import std.loom.source.apply_ordered_edits
 import std.list.sorted
 import std.text.join
 
@@ -24,21 +26,20 @@ fn source_edits(edits List[SourceRenameEdit], path Text) List[SourceRenameEdit] 
 }
 
 fn source_renamed(text Text, edits List[SourceRenameEdit]) Result[Text, Text] {
-    let output = new[Text]()
-    var offset = 0
+    let replacements = new[TextEdit]()
     var index = 0
     while index < length(edits) {
         let edit = get(edits, index)
-        if edit.span.start < offset || edit.span.end < edit.span.start || edit.span.end > length(text) {
-            return Result.Err("rename has overlapping or stale source edits")
-        }
-        push(output, slice(text, offset, edit.span.start))
-        push(output, edit.text)
-        offset = edit.span.end
+        push(replacements, TextEdit {
+                span = edit.span
+                text = edit.text
+            })
         index = index + 1
     }
-    push(output, slice(text, offset, length(text)))
-    Result.Ok(join(output, ""))
+    match apply_ordered_edits(text, replacements) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(_) => Result.Err("rename has overlapping or stale source edits")
+    }
 }
 
 fn source_original_offset(edits List[SourceRenameEdit], offset Int) Result[Int, Text] {

@@ -53,10 +53,11 @@ unsaved diagnostics, formatting, hover/navigation, references, completion and
 checked import fixes. Checked renames cover local/parameter/pattern bindings and
 accounted function/type/concept/record-field uses across a local module, including
 each package's private tests. Virtual edits recheck before application.
-Private overloads can be individually renamed to an unused name, preserving
-checked sibling calls and typed callbacks. Public overloads, unvisited/generated
-uses and external-consumer migrations remain conservative; dependency snapshots
-are not rewritten.
+Private and public overloads can be individually renamed to an unused name,
+preserving checked sibling calls and typed callbacks. Public edits split imports
+when siblings retain the old name and recheck each local package and its private
+tests. Unvisited/generated uses and external-consumer migrations remain
+conservative; dependency snapshots are not rewritten.
 Private declaration edits reject generated references and exported macro
 generators whose definition-context uses are not a complete editable source map.
 Query-only pattern evidence retains nested record fields and enum variants

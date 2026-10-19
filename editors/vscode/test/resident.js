@@ -136,7 +136,7 @@ fn main() {
     assert.ok(generatedHover.hover.types.includes('fn() Int'));
     assert.equal(generatedHover.definitions[0].start, generated.indexOf('comptime'));
     const generatedRename = await compiler.symbols(settings, folder, file, generatedOffset, [], undefined, 'renamed');
-    assert.ok(!generatedRename.edits?.length);
+    assert.ok(!generatedRename.changes?.length);
     await fs.writeFile(input, 'fn generated() Bool {\n    true\n}\n');
     const regenerated = await compiler.check(settings, folder, []);
     assert.equal(regenerated.analysisReused, false);

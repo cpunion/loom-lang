@@ -95,7 +95,7 @@ pub fn runtime(value Int) Int {
 }
 
 #[test]
-fn public_function_rename_checks_all_module_packages_and_their_tests() {
+fn public_overload_rename_checks_all_module_packages_and_their_tests() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     for name in ["app", "library", "other", "nested"] {
@@ -105,7 +105,7 @@ fn public_function_rename_checks_all_module_packages_and_their_tests() {
         ("loom.toml", "[module]\nname = 'demo'\n"),
         (
             "app/main.loom",
-            "import demo.library.answer\n\nfn main() {\n    assert demo.library.answer(7) == 7\n}\n",
+            "import demo.library.answer // retain the sibling\n\nfn main() {\n    let boolean fn(Bool) Bool = answer\n    assert demo.library.answer(7) == 7\n    assert boolean(true) && demo.library.answer(true)\n}\n",
         ),
         (
             "app/main_test.loom",
@@ -121,6 +121,11 @@ ensures result == value
 
 test fn embedded() {
     assert answer(4) == 4
+    assert answer(true)
+}
+
+pub fn answer(value Bool) Bool {
+    value
 }
 "#,
         ),
@@ -144,7 +149,7 @@ test fn embedded() {
             app.to_str().unwrap(),
             "--at",
             source.to_str().unwrap(),
-            &sources[1].1.find("answer").unwrap().to_string(),
+            &sources[1].1.find("answer(7)").unwrap().to_string(),
             "--to",
             "identity",
             "--tests",
@@ -153,6 +158,10 @@ test fn embedded() {
     success(&output);
     let report = String::from_utf8(output.stdout).unwrap();
     assert_eq!(report.matches("\"start\":").count(), 6, "{report}");
+    assert!(
+        report.contains("\"text\":\"import demo.library.identity\\u000a\""),
+        "{report}"
+    );
     assert!(!report.contains("other"), "{report}");
     for (name, text) in sources {
         assert_eq!(fs::read_to_string(root.join(name)).unwrap(), text);
@@ -163,7 +172,19 @@ test fn embedded() {
         .iter()
         .filter(|(name, _)| name.starts_with("app/") || name.starts_with("library/"))
     {
-        fs::write(root.join(name), text.replace("answer", "identity")).unwrap();
+        let revised = match *name {
+            "app/main.loom" => text
+                .replace(
+                    "import demo.library.answer // retain the sibling\n",
+                    "import demo.library.answer // retain the sibling\nimport demo.library.identity\n",
+                )
+                .replace("demo.library.answer(7)", "demo.library.identity(7)"),
+            "library/main.loom" => text
+                .replace("pub fn answer(value Int)", "pub fn identity(value Int)")
+                .replace("answer(4)", "identity(4)"),
+            _ => text.replace("answer", "identity"),
+        };
+        fs::write(root.join(name), revised).unwrap();
     }
     for command in ["check", "test", "run"] {
         success(&source_compiler(

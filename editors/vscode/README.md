@@ -166,10 +166,13 @@ virtual edit must pass every selected package's type and contract checks before
 it is offered. Discovery uses the recursive test boundary: nested modules,
 hidden/build directories and directory symlinks are excluded. This is a local
 module edit, not an API migration for external consumers or dependency snapshots.
-A private function can leave an overload set: only its exact checked calls,
-typed callbacks and private-test references change, not sibling declarations.
-The replacement name must still be unused. Public overload renames, generated
-code, unaccounted occurrences, name collisions and invalid identifiers reject.
+A private or public function can leave an overload set: only its exact checked
+calls, typed callbacks and private-test references change, not sibling declarations.
+Public edits retain the old import for siblings and insert the new import after
+its original line, preserving comments and CRLF. Select the declaration or a
+resolved use; an overloaded import alone does not select a member.
+The replacement name must still be unused. Generated code, unaccounted occurrences,
+name collisions and invalid identifiers reject.
 Private declaration rename also rejects package-local macro calls/declaration
 generation and exported generator signatures: generated names can bind private
 helpers in their definition context, outside the ordinary reference tokens.
@@ -335,6 +338,10 @@ Completion output adds `"completion": null | { "start", "end", "items": [
 Its spans are also UTF-8 bytes; it does not run proofs or produce an executable.
 Auto-import output adds `"autoImport": null | { "path", "start": byteOffset,
 "text": "import ...\\n" }`; the server turns it into a workspace edit.
+Rename output uses `"changes": [{ "path", "start", "end", "text" }]`: every
+replacement or insertion refers to the captured original source bytes. The
+extension rejects the old span-only rename protocol; update it and the compiler
+together.
 
 The client/server use Microsoft's [Language Server SDK](https://github.com/microsoft/vscode-languageserver-node)
 and follow the [VS Code extension guide](https://code.visualstudio.com/api/language-extensions/language-server-extension-guide).
