@@ -1,3 +1,7 @@
+test async fn unrestricted_predicates_keep_list_and_bytes_aliases() {
+    unrestricted_aliases().await
+}
+
 test fn retained_ranges_agree_at_compile_time_and_runtime() {
     assert generic_pairs()
     assert comptime {

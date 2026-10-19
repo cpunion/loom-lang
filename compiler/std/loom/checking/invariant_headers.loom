@@ -22,12 +22,17 @@ fn invariant_header_types(env Environment, root Int, checking List[Int], content
             let shape = get(env.types, ty)
             if get(env.type_states, ty).phase == 2 {
                 if constrained_sequence(env, ty) && !resource_seen(checking, ty) {
-                    match validate_refinement(env, ty, Option.Some(checking)) {
-                        Result.Ok(writes) => {
+                    match validated_sequence_policy(env, ty, Option.Some(checking)) {
+                        Result.Ok(policy) => {
                             let state = get(env.type_states, ty)
                             let unique = state.sequence == SequencePolicy.StableContents ||
                             (contents && invariant_unique_contents(env, ty))
-                            if writes == 1 || unique {
+                            if policy == SequencePolicy.Unrestricted {
+                                set(env.type_states, ty, TypeState {
+                                        sequence = policy
+                                        ..state
+                                    })
+                            } else if policy == SequencePolicy.Replace || policy == SequencePolicy.StableExtent || unique {
                                 set(env.type_states, ty, TypeState {
                                         sequence = if unique {
                                             SequencePolicy.StableContents
@@ -69,27 +74,15 @@ fn invariant_header_types(env Environment, root Int, checking List[Int], content
 
 // Called only after the child passed ordinary purity, observation and mutation
 // policy validation. Use its emitted predicate, not an unbound type template.
+fn invariant_query(env Environment, ty Int) Result[(std.loom.typed.Program, Expr), Failure] {
+    let stage = staging(predicate_scope(env, ty)?, predicate_node(env, get(env.types, ty).symbol))?
+    let value = refinement_expression(stage, ty)?
+    Result.Ok((prepared_in(stage, !concrete(env, ty))?, value))
+}
+
 fn invariant_unique_contents(env Environment, ty Int) Bool {
-    let scope = match predicate_scope(env, ty) {
-        Result.Ok(value) => value
-        Result.Err(_) => {
-            return false
-        }
-    }
-    let stage = match staging(scope, predicate_node(env, get(env.types, ty).symbol)) {
-        Result.Ok(value) => value
-        Result.Err(_) => {
-            return false
-        }
-    }
-    let value = match refinement_expression(stage, ty) {
-        Result.Ok(value) => value
-        Result.Err(_) => {
-            return false
-        }
-    }
-    let program = match prepared_in(stage, !concrete(env, ty)) {
-        Result.Ok(value) => value
+    let program, value = match invariant_query(env, ty) {
+        Result.Ok(query) => query
         Result.Err(_) => {
             return false
         }

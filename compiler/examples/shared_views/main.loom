@@ -143,6 +143,7 @@ async fn suspended() {
 }
 
 async fn main() {
+    unrestricted_aliases().await
     assert generic_pairs()
     assert comptime {
         generic_pairs()

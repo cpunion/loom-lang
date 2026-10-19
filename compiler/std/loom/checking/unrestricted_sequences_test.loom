@@ -1,0 +1,132 @@
+test fn unrestricted_sequence_predicates_preserve_base_aliases_and_borrows() {
+    list_constraint_accept("""
+        import std.list.length
+        import std.list.push
+        type ValidExtent[T] = List[T] where length(self) >= 0
+        pub fn checked[T](values List[T]) ValidExtent[T] {
+            ValidExtent[T](values)
+        }
+        fn change(values List[Int]) {
+            values[0] = 7
+            push(values, 9)
+        }
+        fn expose(values ValidExtent[Int]) List[Int] {
+            values
+        }
+        fn main() {
+            let values = [1]
+            let constrained = checked(values)
+            change(values)
+            change(constrained)
+            let alias = expose(constrained)
+            push(alias, 11)
+            assert length(constrained) == 4 && constrained[0] == 7
+        }
+        """)
+    let files = list_constraint_files("""
+        import std.bytes.length
+        import std.bytes.change
+        type ValidBytes = Bytes where length(self) >= 0
+        pub fn checked(values Bytes) ValidBytes {
+            ValidBytes(values)
+        }
+        pub fn expose(values ValidBytes) Bytes {
+            change(values)
+            values
+        }
+        """)
+    push(files, source_file("std.bytes", """
+        intrinsic fn bytes_len(values Bytes) Int
+        intrinsic fn bytes_set(values Bytes, index Int, value Int)
+        intrinsic fn bytes_push(values Bytes, value Int)
+        pub fn length(values Bytes) Int {
+            bytes_len(values)
+        }
+        pub fn change(values Bytes) {
+            bytes_set(values, 0, 42)
+            bytes_push(values, 7)
+        }
+        """, true))
+    assert match checked(files) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
+test fn shared_sequence_proofs_never_invent_frozen_headers_or_safe_reads() {
+    list_constraint_reject("""
+        import std.list.length
+        type Nonempty = List[Int] where length(self) > 0
+        pub fn invalid(values List[Int]) {
+            discard Nonempty(values)
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type Pair = List[Int] where length(self) == 2
+        pub fn invalid(values List[Int]) {
+            discard Pair(values)
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type ValidExtent = List[Int] where length(self) >= 0
+        record Parent {
+            values ValidExtent
+            count Int
+        }
+        type Bound = Parent where self.count == length(self.values)
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        record Parent {
+            values List[Int]
+        }
+        type EqualReads = Parent where length(self.values) == length(self.values)
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type EqualReads = List[Int] where length(self) == length(self)
+        pub fn invalid(values List[Int]) {
+            discard EqualReads(values)
+        }
+        """)
+    list_constraint_reject("""
+        import std.list.length
+        type PositiveFirst = List[Int] where length(self) == 0 || self[0] > 0
+        pub fn invalid(values List[Int]) {
+            discard PositiveFirst(values)
+        }
+        """)
+    list_constraint_reject("""
+        type Impossible = List[Int] where false
+        pub fn invalid(values List[Int]) Impossible {
+            Impossible(values)
+        }
+        """)
+}
+
+test fn unrestricted_sequence_policy_is_rechecked_after_cache_restore() {
+    let source = """
+        import std.list.length
+        type ValidExtent = List[Int] where length(self) >= 0
+        pub fn checked(values List[Int]) ValidExtent {
+            ValidExtent(values)
+        }
+        """
+    let files = list_constraint_files(source)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    let changed = std.text.replace(source, "length(self) >= 0", "length(self) == 2")
+    set(files, 0, source_file("app", changed, false))
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
+
+import std.text.replace

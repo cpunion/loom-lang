@@ -85,6 +85,9 @@ enum SequencePolicy {
     Checked
     Replace
     Append
+    // Every ordinary base operation preserves the predicate, even through
+    // pre-existing aliases. This supplies no fixed extent or frozen contents.
+    Unrestricted
     StableExtent
     StableContents
 }
@@ -94,6 +97,7 @@ fn sequence_writes(policy SequencePolicy) Int {
         SequencePolicy.Checked => 0
         SequencePolicy.Replace => 1
         SequencePolicy.Append => 2
+        SequencePolicy.Unrestricted => 2
         SequencePolicy.StableExtent => 1
         SequencePolicy.StableContents => 0
     }
@@ -104,7 +108,7 @@ fn sequence_dependency(policy SequencePolicy) Bool {
 }
 
 fn sequence_policy(writes Int, previous SequencePolicy) SequencePolicy {
-    if sequence_dependency(previous) {
+    if sequence_dependency(previous) || previous == SequencePolicy.Unrestricted {
         return previous
     }
     if writes == 2 {

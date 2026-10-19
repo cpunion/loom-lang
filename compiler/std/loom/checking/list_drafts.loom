@@ -3,9 +3,9 @@
 // it; writes require the same preservation proof as a constrained borrow.
 // Existing origin and call-footprint analysis excludes raw publication.
 fn draft_construction(env Environment, value Expr) Bool {
-    (value.kind == ExprKind.Block && value.text == "checked sequence") ||
-    (value.kind == ExprKind.Coerce && constrained_sequence(env, value.ty) &&
-        !constraint_restored(env, value))
+    ((value.kind == ExprKind.Block && value.text == "checked sequence") ||
+        (value.kind == ExprKind.Coerce && constrained_sequence(env, value.ty) &&
+            !constraint_restored(env, value))) && !unrestricted_sequence(env, draft_type(value))
 }
 
 fn draft_input(value Expr) Expr {

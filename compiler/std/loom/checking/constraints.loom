@@ -11,6 +11,7 @@ import std.list.get
 import std.list.push
 import std.list.set
 import std.list.length
+import std.list.append
 import std.text.concat
 import std.float.to_text
 import std.result.Result
@@ -204,6 +205,36 @@ fn validate_refinement(env Environment, ty Int, checking Option[List[Int]]) Resu
     Result.Ok(writes)
 }
 
+fn validated_sequence_policy(env Environment, ty Int, checking Option[List[Int]]) Result[SequencePolicy, Failure] {
+    let writes = validate_refinement(env, ty, checking)?
+    let policy = sequence_policy(writes, get(env.type_states, ty).sequence)
+    // A published dependency guarantee cannot be weakened later. A previously
+    // proved unrestricted policy likewise cannot become an isolation promise.
+    if !constrained_sequence(env, ty) || sequence_dependency(policy) ||
+    policy == SequencePolicy.Unrestricted || env.stage_depth >= 32 {
+        return Result.Ok(policy)
+    }
+    let program, predicate = match invariant_query(env, ty) {
+        Result.Ok(query) => query
+        Result.Err(_) => {
+            return Result.Ok(policy)
+        }
+    }
+    let active = ints(ty)
+    match checking {
+        Option.Some(parents) => {
+            std.list.append(active, parents)
+        }
+        Option.None => {
+        }
+    }
+    Result.Ok(if invariant_stable(env, program, base_type(env, ty), predicate, active) {
+            SequencePolicy.Unrestricted
+        } else {
+            policy
+        })
+}
+
 fn initialize_refinement(env Environment, ty Int) Result[Bool, Failure] {
     let shape = get(env.types, ty)
     let predicate = refinement(env, ty)?
@@ -216,12 +247,12 @@ fn initialize_refinement(env Environment, ty Int) Result[Bool, Failure] {
             variants = shape.variants
             constraint = expressions(predicate)
         })
-    let writes = validate_refinement(env, ty)?
+    let policy = validated_sequence_policy(env, ty, Option.None)?
     let state = get(env.type_states, ty)
     set(env.type_states, ty, TypeState {
             phase = state.phase
             task_width = state.task_width
-            sequence = sequence_policy(writes, state.sequence)
+            sequence = policy
         })
     Result.Ok(true)
 }
@@ -255,12 +286,12 @@ fn refinements(env Environment) Result[Bool, Failure] {
     while index < length(env.types) {
         let ty = get(env.types, index)
         if ty.kind == TypeKind.Refined {
-            let writes = validate_refinement(env, index)?
+            let policy = validated_sequence_policy(env, index, Option.None)?
             let state = get(env.type_states, index)
             set(env.type_states, index, TypeState {
                     phase = state.phase
                     task_width = state.task_width
-                    sequence = sequence_policy(writes, state.sequence)
+                    sequence = policy
                 })
         }
         index = index + 1
