@@ -100,3 +100,22 @@ test fn data_pack_projection_queries_keep_source_member_and_concept_segments() {
         Option.Some(_) => false
     }
 }
+
+test fn scoped_data_pack_family_parameters_shadow_outer_words_in_queries() {
+    let text = """
+        concept Family {
+            type Item[T]
+        }
+        record Rows[Ts...] {
+            sources (Ts...)
+            value dyn Family[Item[Ts] = (Ts, Bool)]
+        }
+        """
+    let analysis = accepted(input(text))
+    let outer = query_offset(text, "Ts...]")
+    let inner = query_offset(text, "Ts] =")
+    only_definition(cached_inspection(analysis, text, "Ts...)"), outer, outer + 2)
+    only_definition(cached_inspection(analysis, text, "Ts, Bool"), inner, inner + 2)
+    only_definition(cached_inspection(analysis, text, "Ts] ="), inner, inner + 2)
+    only_type(cached_inspection(analysis, text, "Ts, Bool"), "Ts")
+}
