@@ -33,7 +33,9 @@ fn serve(stream: impl Read + Write, mode: &str, payload: &[u8], location: &str) 
         "GET /echo?x=1 HTTP/1.1\r\n"
     }));
     assert!(text.contains("\r\nConnection: close\r\n"));
-    assert!(text.contains("\r\nX-Snapshot: before\r\n"));
+    if mode != "stream" {
+        assert!(text.contains("\r\nX-Snapshot: before\r\n"));
+    }
     let size: usize = text
         .lines()
         .find_map(|line| line.strip_prefix("Content-Length: "))
@@ -42,8 +44,12 @@ fn serve(stream: impl Read + Write, mode: &str, payload: &[u8], location: &str) 
         .unwrap();
     let mut body = vec![0; size];
     stream.read_exact(&mut body).unwrap();
-    if mode == "ok" {
-        assert_eq!(body, payload);
+    if mode == "ok" || mode == "stream" {
+        if mode == "ok" {
+            assert_eq!(body, payload);
+        } else {
+            assert!(body.is_empty());
+        }
         stream
             .write_all(
                 format!(
@@ -110,6 +116,7 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
     let payload: Vec<u8> = (0..131079).map(|index| (index % 256) as u8).collect();
     fs::write(directory.path().join("payload"), &payload).unwrap();
     let executable = common::executable(directory.path(), "http-client");
+    let streaming = common::executable(directory.path(), "http-streaming-client");
     let tests = common::executable(directory.path(), "http-client-tests");
     for level in ["0", "2"] {
         success(
@@ -137,7 +144,25 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
             .output()
             .unwrap(),
         );
-        for mode in ["ok", "wrong-name", "limit", "interim-limit", "redirect"] {
+        success(
+            &common::command(&[
+                "build",
+                "compiler/examples/http_streaming_client",
+                "--output",
+                streaming.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        for mode in [
+            "ok",
+            "wrong-name",
+            "limit",
+            "interim-limit",
+            "redirect",
+            "stream",
+        ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             let cloned = listener.try_clone().unwrap();
@@ -167,14 +192,19 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
             } else {
                 "localhost"
             };
-            let output = common::run_task_command(
-                Command::new(&executable)
-                    .arg(format!("https://{host}:{port}/echo?x=1#local"))
-                    .arg(directory.path().join("ca.pem"))
-                    .arg(directory.path().join("payload"))
-                    .arg(mode)
-                    .env("LOOM_GC_STRESS", "1"),
-            );
+            let mut command = Command::new(if mode == "stream" {
+                &streaming
+            } else {
+                &executable
+            });
+            command
+                .arg(format!("https://{host}:{port}/echo?x=1#local"))
+                .arg(directory.path().join("ca.pem"))
+                .env("LOOM_GC_STRESS", "1");
+            if mode != "stream" {
+                command.arg(directory.path().join("payload")).arg(mode);
+            }
+            let output = common::run_task_command(&mut command);
             peer.join().unwrap();
             success(&output);
             assert_eq!(
@@ -183,6 +213,7 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
                     "ok" => b"HTTPS response\n".as_slice(),
                     "wrong-name" => b"peer rejected\n".as_slice(),
                     "redirect" => b"redirect returned\n".as_slice(),
+                    "stream" => b"200 131079\n".as_slice(),
                     _ => b"bounded protocol rejection\n".as_slice(),
                 }
             );

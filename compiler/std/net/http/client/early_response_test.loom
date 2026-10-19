@@ -86,7 +86,7 @@ async fn early_response() Result[Bool, TcpError] {
     }
     let consumed = [false]
     let serving = early_server(server, consumed)
-    let response = after_ns(transact(Transport.Tcp(client), prepared), 10000000000).await
+    let response = after_ns(transact[Response](Transport.Tcp(client), prepared, collect_response), 10000000000).await
     consumed[0] = true
     let served = serving.await
     Result.Ok(match response {

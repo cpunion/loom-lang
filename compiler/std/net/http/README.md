@@ -140,6 +140,8 @@ host/port, Host authority and origin-form target; it does not interpret an incom
 request's routing policy or establish that its Host is authorized.
 The [one-request client](client/README.md) adds explicit TCP/TLS acquisition,
 concurrent upload/response handling and deadlines while reusing this codec.
+It can collect a response or stream bounded chunks through an awaited scoped
+consumer; early return closes instead of draining the unread suffix.
 Applications must validate Host/target semantics for their routing policy and
 handle trailer-specific rules. TCP/TLS acquisition and trust remain separate;
 this package does not weaken TLS verification or silently send credentials over
