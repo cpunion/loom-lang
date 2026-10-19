@@ -75,27 +75,25 @@ fn editor_method_family(analysis EditorAnalysis, target Location, spelling Text)
     (declaration, members)
 }
 
-fn editor_private_method_rename(options EditorOptions, analysis EditorAnalysis,
-    family (Location, List[Location]), spelling Text, references List[Location], inputs BuildInputs) EditorOutput {
+fn editor_public_method(analysis EditorAnalysis, target Location, spelling Text) Bool {
+    let member = editor_method_symbol(analysis, target, spelling)
+    if member < 0 {
+        return false
+    }
+    let declaration = get(editor_data(analysis).bindings.symbols, member)
+    let owner = get(editor_data(analysis).bindings.symbols, declaration.owner)
+    owner.node.kind == NodeKind.Concept && owner.public &&
+    !has(declaration.node, NodeKind.ExpansionId) && !has(owner.node, NodeKind.ExpansionId) &&
+    editor_declaration_authority(analysis, target, true)
+}
+
+fn editor_method_header_coverage(analysis EditorAnalysis,
+    family (Location, List[Location]), spelling Text) Result[Bool, Text] {
     let bindings = editor_data(analysis).bindings
-    let declaration = editor_method_symbol(analysis, family.0, spelling)
-    if declaration < 0 {
-        return editor_error("Method rename needs one checked concept slot")
-    }
-    let owner = get(bindings.symbols, get(bindings.symbols, declaration).owner)
-    if owner.node.kind != NodeKind.Concept {
-        return editor_error("Method rename cannot combine ambiguous conformance slots")
-    }
-    if owner.public {
-        return editor_error("Method rename currently requires a private concept in the selected package")
-    }
-    if !options.tests {
-        return editor_error("Method rename requires --tests to account for test-file uses")
-    }
     let edges = match method_conformances(analysis.snapshot) {
         Result.Ok(value) => value
         Result.Err(_) => {
-            return editor_error("Method rename needs checked source conformance headers")
+            return Result.Err("Method rename needs checked source conformance headers")
         }
     }
     // Positive query results are not a completeness claim. Account for every
@@ -109,13 +107,13 @@ fn editor_private_method_rename(options EditorOptions, analysis EditorAnalysis,
             let tokens = match lex(get(bindings.files, member.file).text) {
                 Result.Ok(value) => value
                 Result.Err(_) => {
-                    return editor_error("Method rename cannot lex an implementation declaration")
+                    return Result.Err("Method rename cannot lex an implementation declaration")
                 }
             }
             let span = match editor_name(tokens, member.node) {
                 Option.Some(value) => value
                 Option.None => {
-                    return editor_error("Method rename needs an ordinary source declaration")
+                    return Result.Err("Method rename needs an ordinary source declaration")
                 }
             }
             let location = Location {
@@ -129,16 +127,43 @@ fn editor_private_method_rename(options EditorOptions, analysis EditorAnalysis,
                 if editor_same_location(edge.0, location) {
                     covered = true
                     if editor_contains(family.1, location) && !editor_same_location(edge.1, family.0) {
-                        return editor_error("Method rename cannot combine ambiguous conformance slots")
+                        return Result.Err("Method rename cannot combine ambiguous conformance slots")
                     }
                 }
                 index = index + 1
             }
             if !covered {
-                return editor_error("Method rename cannot account for an implementation declaration")
+                return Result.Err("Method rename cannot account for an implementation declaration")
             }
         }
         source = source + 1
+    }
+    Result.Ok(true)
+}
+
+fn editor_private_method_rename(options EditorOptions, analysis EditorAnalysis,
+    family (Location, List[Location]), spelling Text, references List[Location], inputs BuildInputs) EditorOutput {
+    let bindings = editor_data(analysis).bindings
+    let declaration = editor_method_symbol(analysis, family.0, spelling)
+    if declaration < 0 {
+        return editor_error("Method rename needs one checked concept slot")
+    }
+    let owner = get(bindings.symbols, get(bindings.symbols, declaration).owner)
+    if owner.node.kind != NodeKind.Concept {
+        return editor_error("Method rename cannot combine ambiguous conformance slots")
+    }
+    if owner.public {
+        return editor_error("Method rename target is outside the selected module")
+    }
+    if !options.tests {
+        return editor_error("Method rename requires --tests to account for test-file uses")
+    }
+    match editor_method_header_coverage(analysis, family, spelling) {
+        Result.Ok(_) => {
+        }
+        Result.Err(message) => {
+            return editor_error(message)
+        }
     }
     var index = 0
     while index < length(family.1) {

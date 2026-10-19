@@ -31,6 +31,12 @@ record EditorPublicEdit {
     changes List[TextEdit]
 }
 
+enum EditorPublicKind {
+    Declaration
+    Field
+    Method
+}
+
 fn editor_public_edit(edits List[EditorPublicEdit], path Text, text Text, change TextEdit) Bool {
     var index = 0
     while index < length(edits) {
@@ -148,12 +154,12 @@ fn editor_public_visible(analysis EditorAnalysis, file Int, target Location, spe
 }
 
 fn editor_public_collect(analysis EditorAnalysis, module Text, path Text, span Span,
-    spelling Text, name Text, field Bool, edits List[EditorPublicEdit]) Result[Bool, Text] {
+    spelling Text, name Text, kind EditorPublicKind, edits List[EditorPublicEdit]) Result[Bool, Text] {
     let target = match editor_public_target(analysis, path, span) {
         Option.Some(value) => value
         Option.None => {
-            if field && name != "" && editor_field_unobserved(analysis, spelling) {
-                return Result.Err("Rename cannot account for every occurrence of this public field")
+            if kind != EditorPublicKind.Declaration && name != "" && editor_unobserved_binding(analysis, spelling) {
+                return Result.Err("Rename cannot account for every occurrence of this public member")
             }
             return Result.Ok(true)
         }
@@ -161,14 +167,22 @@ fn editor_public_collect(analysis EditorAnalysis, module Text, path Text, span S
     let owner = editor_field_owner(analysis, target, spelling)
     let public_field = owner >= 0 && get(editor_data(analysis).bindings.symbols, owner).public &&
     editor_declaration_authority(analysis, target, true)
-    if !(if field {
-            public_field
-        } else {
-            editor_top_declaration(analysis, target, spelling, true)
+    if !(match kind {
+            EditorPublicKind.Field => public_field
+            EditorPublicKind.Method => editor_public_method(analysis, target, spelling)
+            EditorPublicKind.Declaration => editor_top_declaration(analysis, target, spelling, true)
         }) {
-        return Result.Err("Public rename requires one selected ordinary declaration or record field, not a generated declaration")
+        return Result.Err("Public rename requires one ordinary declaration or checked member, not a generated declaration")
     }
-    let references = editor_references(analysis, target, spelling)
+    let family = if kind == EditorPublicKind.Method {
+        editor_method_family(analysis, target, spelling)
+    } else {
+        (target, [target])
+    }
+    if kind == EditorPublicKind.Method && name != "" {
+        discard editor_method_header_coverage(analysis, family, spelling)?
+    }
+    let references = editor_references(analysis, family.1, spelling)
     var file = 0
     while file < length(editor_data(analysis).bindings.files) {
         let source = get(editor_data(analysis).bindings.files, file)
@@ -178,7 +192,7 @@ fn editor_public_collect(analysis EditorAnalysis, module Text, path Text, span S
             if !std.text.starts_with(source.path, join_path(module, "")) {
                 return Result.Err("Public rename cannot edit an external source file")
             }
-            let visible = field || editor_public_visible(analysis, file, target, spelling)
+            let visible = kind != EditorPublicKind.Declaration || editor_public_visible(analysis, file, target, spelling)
             if name != "" && (editor_generated(source.tree) || std.loom.checking.has_declaration_stages(editor_data(analysis).source, true)) {
                 return Result.Err("Public rename cannot account for generated source references")
             }
@@ -188,7 +202,7 @@ fn editor_public_collect(analysis EditorAnalysis, module Text, path Text, span S
                     return Result.Err("Cannot lex a module source file")
                 }
             }
-            let imports = if field {
+            let imports = if kind != EditorPublicKind.Declaration {
                 new[Location]()
             } else {
                 editor_public_imports(analysis, file, target, tokens, spelling, name, edits)?
@@ -214,7 +228,7 @@ fn editor_public_collect(analysis EditorAnalysis, module Text, path Text, span S
                     } else if visible && name != "" {
                         // A distinct checked binding is not a reference. Unknown
                         // occurrences may live in an uninstantiated body.
-                        if !editor_other_binding(analysis, file, token, tokens, Option.Some(target)) {
+                        if !editor_binding_outside(analysis, file, token, tokens, family.1) {
                             return Result.Err("Rename cannot account for every occurrence of this public declaration")
                         }
                     }
@@ -286,7 +300,13 @@ fn editor_module_analysis(options EditorOptions, directory Text, overlays List[S
 fn editor_public_symbols(options EditorOptions, initial EditorAnalysis, target Location,
     spelling Text, inputs BuildInputs) EditorOutput {
     let rename = options.new_name != ""
-    let field = editor_field_owner(initial, target, spelling) >= 0
+    let kind = if editor_field_owner(initial, target, spelling) >= 0 {
+        EditorPublicKind.Field
+    } else if editor_public_method(initial, target, spelling) {
+        EditorPublicKind.Method
+    } else {
+        EditorPublicKind.Declaration
+    }
     if rename && !editor_valid_new_name(options.new_name) {
         return editor_error("Rename needs a valid non-reserved Loom identifier")
     }
@@ -331,7 +351,7 @@ fn editor_public_symbols(options EditorOptions, initial EditorAnalysis, target L
                 }
             }
         }
-        match editor_public_collect(analysis, module, path, target.span, spelling, options.new_name, field, edits) {
+        match editor_public_collect(analysis, module, path, target.span, spelling, options.new_name, kind, edits) {
             Result.Err(message) => {
                 return editor_error(message)
             }

@@ -708,6 +708,9 @@ fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
         }
     }
     let family = editor_method_family(analysis, target, token.value)
+    if editor_public_method(analysis, family.0, token.value) {
+        return editor_public_symbols(options, analysis, family.0, token.value, inputs)
+    }
     let references = editor_references(analysis, family.1, token.value)
     let field_owner = editor_field_owner(analysis, target, token.value)
     let public_field = field_owner >= 0 && get(bindings.symbols, field_owner).public &&

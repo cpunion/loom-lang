@@ -109,7 +109,9 @@ fn unobserved() Int {
     await assert.rejects(rename(offsets[0]), /every occurrence/);
     await client.change(file, source.replace('concept Read {', 'pub concept Read {'), 4);
     assert.deepEqual((await client.wait(file, 4)).diagnostics, []);
-    await assert.rejects(rename(offsets[0]), /private concept/);
+    const publicEdit = await rename(offsets[0]);
+    assert.equal(publicEdit.changes[uri].length, 10);
+    assert.equal(publicEdit.changes[testUri].length, 1);
     const staticSource = `${source}
 concept Factory {
     fn make(value Int) Self
@@ -151,7 +153,7 @@ fn factories() Bool {
     await client.change(file, final, 7);
     assert.deepEqual((await client.wait(file, 7)).diagnostics, []);
     assert.equal(await fs.readFile(file, 'utf8'), source);
-    console.log('Method rename passed: one checked private slot, overload separation, unused impl words, generic/dyn/bound calls, tests, overlays and incomplete/public refusal.');
+    console.log('Method rename passed: checked slots, overload separation, unused impl words, generic/dyn/bound/static/default uses, tests, overlays and incomplete-use refusal.');
   } finally {
     await client.close();
     await fs.rm(temporary, { recursive: true, force: true });
