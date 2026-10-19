@@ -49,7 +49,7 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
             discard type_constructor(env, owner, node)?
             // Check symbolic nominal words through the same universal matcher
             // as variadic family proofs, never by choosing a representative arity.
-            let schema = type_pattern_schema(env, owner, node, true, 0, true)?
+            let schema = type_pattern_schema(env, owner, node, true, 0, true, true)?
             if !pack_layout_well_formed(empty_context(env, owner), symbol(env, owner).node,
                 schema, ints(512), 0)? {
                 return Result.Err(failure(env, owner, node,

@@ -158,4 +158,28 @@ test fn uninstantiated_data_pack_headers_check_symbolic_widths_and_bounds() {
             callback fn((As...), Batch[Bs...]) Batch[As...]
         }
         """)
+    discard accepted("""
+        concept Source {
+            type Item
+        }
+        record Box[T] {
+            value T
+        }
+        record Projected[Ts... Source] {
+            values List[(Ts.Item...)]
+            wrapped (Box[dyn Source[Item = Ts]]...)
+        }
+        """)
+    rejects("""
+        concept Source {
+            type Item
+        }
+        concept Tagged {}
+        record Box[T Tagged] {
+            value T
+        }
+        record Projected[Ts... Source] {
+            values (Box[Ts.Item]...)
+        }
+        """)
 }
