@@ -68,3 +68,38 @@ test fn uninstantiated_data_pack_headers_keep_fixed_parameters_and_words_separat
         }
         """)
 }
+
+test fn uninstantiated_data_pack_headers_bind_constructors_before_word_expansion() {
+    rejects("""
+        record Row[Ts...] {
+            values DoesNotExist[Ts...]
+        }
+        """)
+    rejects("""
+        enum Row[Ts...] {
+            Values(DoesNotExist[Ts]...)
+        }
+        """)
+    rejects("""
+        record Row[Ts...] {
+            values (Unit[Ts]...)
+        }
+        """)
+    rejects("""
+        record Row[Ts...] {
+            values (dyn DoesNotExist[Item = Ts]...)
+        }
+        """)
+    discard accepted("""
+        concept C {
+            type Item
+        }
+        record Box[T] {
+            value T
+        }
+        record Row[Ts...] {
+            values Box[(Ts...)]
+            views (dyn C[Item = Ts]...)
+        }
+        """)
+}

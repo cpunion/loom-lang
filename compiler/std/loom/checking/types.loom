@@ -143,6 +143,44 @@ fn find_data(env Environment, owner Int, node Node, path Text) Result[Int, Failu
     Result.Ok(found)
 }
 
+fn type_constant(env Environment, owner Int, node Node) Result[Int, Failure] {
+    if node.value == "Int" {
+        return Result.Ok(1)
+    }
+    if node.value == "Bool" {
+        return Result.Ok(2)
+    }
+    if node.value == "Text" {
+        return Result.Ok(3)
+    }
+    if node.value == "Bytes" {
+        return Result.Ok(4)
+    }
+    if node.value == "Float" {
+        return Result.Ok(5)
+    }
+    if node.value == "type" {
+        return Result.Ok(meta_type(env))
+    }
+    if node.value == "Unit" {
+        return Result.Err(failure(env, owner, node, "omit Unit; it is not a source type"))
+    }
+    Result.Ok(-1)
+}
+
+// Constructor binding is independent of its arguments' shape. Only the two
+// built-in collection constructors have no source declaration.
+fn type_constructor(env Environment, owner Int, node Node) Result[Int, Failure] {
+    if node.value == "List" || node.value == "Task" {
+        return Result.Ok(-1)
+    }
+    let selected = find_data(env, owner, node, node.value)?
+    if selected < 0 {
+        return Result.Err(failure(env, owner, node, "unknown or inaccessible type"))
+    }
+    Result.Ok(selected)
+}
+
 fn resolve(env Environment, owner Int, node Node, arguments List[Int], depth Int) Result[Int, Failure] {
     resolve_bound(env, owner, node, arguments, requirements(env, owner, arguments)?, depth)
 }
@@ -209,30 +247,9 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
         }
         return Result.Ok(index)
     }
-    var builtin = -1
+    var builtin = type_constant(env, owner, node)?
     if node.value == "Self" {
         builtin = self_type(env, owner, arguments, depth)?
-    }
-    if node.value == "Int" {
-        builtin = 1
-    }
-    if node.value == "Bool" {
-        builtin = 2
-    }
-    if node.value == "Text" {
-        builtin = 3
-    }
-    if node.value == "Bytes" {
-        builtin = 4
-    }
-    if node.value == "Float" {
-        builtin = 5
-    }
-    if node.value == "type" {
-        builtin = meta_type(env)
-    }
-    if node.value == "Unit" {
-        return Result.Err(failure(env, owner, node, "omit Unit; it is not a source type"))
     }
     let parameters = expanded_parameters(env, owner, length(arguments))
     var index = 0
@@ -252,11 +269,7 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
     if projected >= 0 {
         return Result.Ok(projected)
     }
-    let declaration = if node.value == "List" || node.value == "Task" {
-        -1
-    } else {
-        find_data(env, owner, node, node.value)?
-    }
+    let declaration = type_constructor(env, owner, node)?
     let selected = if declaration >= 0 {
         data_type_groups(env, owner, node, declaration, node.children)?
     } else {
@@ -283,9 +296,6 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
             return Result.Err(failure(env, owner, node, "List requires one element type"))
         }
         return Result.Ok(intern(env, TypeKind.List, -1, args))
-    }
-    if declaration < 0 {
-        return Result.Err(failure(env, owner, node, "unknown or inaccessible type"))
     }
     data_type_grouped(env, declaration, args, selected.widths, depth + 1)
 }

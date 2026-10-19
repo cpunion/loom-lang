@@ -16,6 +16,7 @@ record Concept {
     associated List[Int]
     bounds List[List[Int]]
 }
+
 record Implementation {
     symbol Int
     source Int
@@ -30,19 +31,31 @@ record Implementation {
 
 fn type_parameters(env Environment, owner Int) List[Node] {
     let lexical = lexical_owner(env, owner)
-    if lexical != owner { return type_parameters(env, lexical) }
+    if lexical != owner {
+        return type_parameters(env, lexical)
+    }
     let item = symbol(env, owner)
-    let declaration = if item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl { item.owner } else { owner }
+    let declaration = if item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl {
+        item.owner
+    } else {
+        owner
+    }
     let parameters = group(symbol(env, declaration).node, NodeKind.TypeParameters)
-    if declaration == owner || (item.node.kind != NodeKind.AssociatedType && item.node.kind != NodeKind.Function) { return parameters }
+    if declaration == owner || (item.node.kind != NodeKind.AssociatedType && item.node.kind != NodeKind.Function) {
+        return parameters
+    }
     let joined = new[Node]()
     var index = 0
-    while index < length(parameters) { push(joined, get(parameters, index))
-        index = index + 1 }
+    while index < length(parameters) {
+        push(joined, get(parameters, index))
+        index = index + 1
+    }
     let local = group(item.node, NodeKind.TypeParameters)
     index = 0
-    while index < length(local) { push(joined, get(local, index))
-        index = index + 1 }
+    while index < length(local) {
+        push(joined, get(local, index))
+        index = index + 1
+    }
     joined
 }
 
@@ -50,19 +63,28 @@ fn prototype(env Environment, owner Int) Bool {
     let parent = symbol(env, owner).owner
     parent >= 0 && symbol(env, parent).node.kind == NodeKind.Concept
 }
+
 // Self is a type parameter even when no runtime receiver is declared.
 // Keep the distinction in source headers, before concrete Self can equal an
 // ordinary first argument type.
 fn method_receiver(env Environment, owner Int) Bool {
-    if !prototype(env, owner) { return false }
+    if !prototype(env, owner) {
+        return false
+    }
     let parameters = group(symbol(env, owner).node, NodeKind.Parameters)
-    if length(parameters) == 0 { return false }
+    if length(parameters) == 0 {
+        return false
+    }
     let first = child(get(parameters, 0), 0)
     first.kind == NodeKind.Type && first.value == "Self" && length(first.children) == 0
 }
 
 fn explicit_call_parameters(env Environment, current Signature) Int {
-    current.parameters - if method_receiver(env, current.symbol) { 1 } else { 0 }
+    current.parameters - if method_receiver(env, current.symbol) {
+        1
+    } else {
+        0
+    }
 }
 
 fn concept_functions(env Environment, capability Int, name Text) List[Int] {
@@ -88,6 +110,7 @@ fn concept_functions(env Environment, capability Int, name Text) List[Int] {
     }
     functions
 }
+
 fn concept_named(env Environment, owner Int, node Node, path Text) Result[Int, Failure] {
     let here = symbol(env, owner)
     let options = candidates(env.source, here.file, here.test_only, path)
@@ -96,28 +119,44 @@ fn concept_named(env Environment, owner Int, node Node, path Text) Result[Int, F
     while index < length(options) {
         let candidate = get(options, index)
         if symbol(env, candidate).node.kind == NodeKind.Concept {
-            if selected >= 0 { return Result.Err(failure(env, owner, node, "ambiguous concept; qualify its name")) }
+            if selected >= 0 {
+                return Result.Err(failure(env, owner, node, "ambiguous concept; qualify its name"))
+            }
             selected = candidate
         }
         index = index + 1
     }
     Result.Ok(selected)
 }
+
 fn required_concept(env Environment, owner Int, node Node) Result[Int, Failure] {
     if length(node.children) != 0 {
         return Result.Err(failure(env, owner, node, "concepts do not yet take type arguments"))
     }
+    accessible_concept(env, owner, node)
+}
+
+// Bind the concept name without asserting anything about a dyn binding's
+// still-symbolic associated arguments.
+fn accessible_concept(env Environment, owner Int, node Node) Result[Int, Failure] {
     let selected = referenced_concept(env, owner, node, node.value, 0)?
-    if selected < 0 { return Result.Err(failure(env, owner, node, "expected an accessible concept")) }
+    if selected < 0 {
+        return Result.Err(failure(env, owner, node, "expected an accessible concept"))
+    }
     Result.Ok(selected)
 }
+
 fn requirements(env Environment, owner Int, arguments List[Int]) Result[List[Requirement], Failure] {
     requirements_parameters(env, owner, arguments, expanded_parameters(env, owner, length(arguments)))
 }
+
 fn requirements_parameters(env Environment, owner Int, arguments List[Int], parameters List[Node]) Result[List[Requirement], Failure] {
     let obligations = new[Requirement]()
     if prototype(env, owner) {
-        push(obligations, Requirement { ty = get(arguments, 0) capability = symbol(env, owner).owner })
+        push(obligations, Requirement {
+                ty = get(arguments, 0)
+                capability = symbol(env, owner).owner
+            })
     }
     var index = 0
     while index < length(parameters) {
@@ -136,17 +175,27 @@ fn requirements_parameters(env Environment, owner Int, arguments List[Int], para
                 }
                 previous = previous + 1
             }
-            if !required(obligations, ty, capability) { push(obligations, Requirement { ty = ty capability = capability }) }
+            if !required(obligations, ty, capability) {
+                push(obligations, Requirement {
+                        ty = ty
+                        capability = capability
+                    })
+            }
             bound = bound + 1
         }
         index = index + 1
     }
     let item = symbol(env, owner)
     if (item.node.kind == NodeKind.Function || item.node.kind == NodeKind.AssociatedType) &&
-        item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl {
+    item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl {
         let header = get(env.implementations, implementation_owner(env, item.owner))
         let receiver = self_type(env, owner, arguments, 0)?
-        if !required(obligations, receiver, header.capability) { push(obligations, Requirement { ty = receiver capability = header.capability }) }
+        if !required(obligations, receiver, header.capability) {
+            push(obligations, Requirement {
+                    ty = receiver
+                    capability = header.capability
+                })
+        }
         if item.node.kind == NodeKind.AssociatedType {
             let declaration = associated_declaration(env, owner)
             let offset = length(type_parameters(env, item.owner))
@@ -161,8 +210,11 @@ fn requirements_parameters(env Environment, owner Int, arguments List[Int], para
     }
     function_requirements(env, owner, obligations)
 }
+
 fn function_requirements(env Environment, owner Int, obligations List[Requirement]) Result[List[Requirement], Failure] {
-    if symbol(env, owner).node.kind != NodeKind.Function { return Result.Ok(obligations) }
+    if symbol(env, owner).node.kind != NodeKind.Function {
+        return Result.Ok(obligations)
+    }
     // Preserve direct member promises through specialization (S.Item -> Int),
     // but never supply them when establishing an impl or an associated binding.
     // Only the original requirements expand; recursive concepts stay finite.
@@ -179,7 +231,12 @@ fn function_requirements(env Environment, owner Int, obligations List[Requiremen
                 var bound = 0
                 while bound < length(bounds) {
                     let target = get(bounds, bound)
-                    if !required(obligations, ty, target) { push(obligations, Requirement { ty = ty capability = target }) }
+                    if !required(obligations, ty, target) {
+                        push(obligations, Requirement {
+                                ty = ty
+                                capability = target
+                            })
+                    }
                     bound = bound + 1
                 }
             }
@@ -189,23 +246,30 @@ fn function_requirements(env Environment, owner Int, obligations List[Requiremen
     }
     Result.Ok(obligations)
 }
+
 fn owned_signatures(env Environment, owner Int) List[Int] {
     let methods = new[Int]()
     var index = 0
     while index < length(env.signatures) {
-        if symbol(env, get(env.signatures, index).symbol).owner == owner { push(methods, index) }
+        if symbol(env, get(env.signatures, index).symbol).owner == owner {
+            push(methods, index)
+        }
         index = index + 1
     }
     methods
 }
+
 fn concept_index(env Environment, capability Int) Int {
     var index = 0
     while index < length(env.concepts) {
-        if get(env.concepts, index).symbol == capability { return index }
+        if get(env.concepts, index).symbol == capability {
+            return index
+        }
         index = index + 1
     }
     -1
 }
+
 fn conformances(env Environment) Result[Bool, Failure] {
     var owner = 0
     while owner < length(env.source.symbols) {
@@ -215,7 +279,15 @@ fn conformances(env Environment) Result[Bool, Failure] {
             let position = concept_index(env, owner)
             let previous = get(env.concepts, position)
             discard validate_method_pack_declarations(env, owner)?
-            set(env.concepts, position, Concept { symbol = owner ready = true implementations = previous.implementations families = previous.families methods = methods associated = previous.associated bounds = previous.bounds })
+            set(env.concepts, position, Concept {
+                    symbol = owner
+                    ready = true
+                    implementations = previous.implementations
+                    families = previous.families
+                    methods = methods
+                    associated = previous.associated
+                    bounds = previous.bounds
+                })
         }
         owner = owner + 1
     }
@@ -247,7 +319,7 @@ fn implementation_methods(env Environment, position Int) Result[Bool, Failure] {
         while previous < index {
             let other_declaration = get(env.signatures, get(expected, previous)).symbol
             if symbol(env, requirement.symbol).name == symbol(env, other_declaration).name &&
-                method_parameter_count(env, declaration) == method_parameter_count(env, other_declaration) {
+            method_parameter_count(env, declaration) == method_parameter_count(env, other_declaration) {
                 let other = signature_in(env, get(expected, previous), arguments, item.node, owner)?
                 if same(requirement.params, other.params) {
                     return Result.Err(failure(env, owner, item.node, "concept method signatures overlap for this implementation"))
@@ -275,7 +347,9 @@ fn implementation_methods(env Environment, position Int) Result[Bool, Failure] {
         if get(methods, index) < 0 {
             let declaration = get(expected, index)
             let pack = pack_instance(env, declaration)
-            let binding = if pack < 0 { -1 } else {
+            let binding = if pack < 0 {
+                -1
+            } else {
                 method_pack_binding(env, owner, get(env.packs, pack).source)
             }
             if binding >= 0 {
@@ -288,33 +362,66 @@ fn implementation_methods(env Environment, position Int) Result[Bool, Failure] {
         }
         index = index + 1
     }
-    set(env.implementations, position, Implementation { symbol = owner source = header.source widths = header.widths depth = header.depth capability = capability ty = ty methods = methods associated = header.associated state = 3 })
+    set(env.implementations, position, Implementation {
+            symbol = owner
+            source = header.source
+            widths = header.widths
+            depth = header.depth
+            capability = capability
+            ty = ty
+            methods = methods
+            associated = header.associated
+            state = 3
+        })
     Result.Ok(true)
 }
+
 fn evidence(context Context, ty Int, capability Int) Result[Bool, Failure] {
-    if entailed(context.env, context.signature.requirements, ty, capability) { return Result.Ok(true) }
+    if entailed(context.env, context.signature.requirements, ty, capability) {
+        return Result.Ok(true)
+    }
     promised(context.env, context.signature.symbol, context.signature.requirements, ty, capability)
 }
+
 fn with_evidence(context Context, ty Int, capability Int) Context {
     let current = context.signature
     let obligations = new[Requirement]()
     var index = 0
-    while index < length(current.requirements) { push(obligations, get(current.requirements, index))
-        index = index + 1 }
-    if !entailed(context.env, context.signature.requirements, ty, capability) { push(obligations, Requirement { ty = ty capability = capability }) }
-    let updated = Signature { symbol = current.symbol parameters = current.parameters params = current.params compile_time = current.compile_time result = current.result requirements = obligations }
+    while index < length(current.requirements) {
+        push(obligations, get(current.requirements, index))
+        index = index + 1
+    }
+    if !entailed(context.env, context.signature.requirements, ty, capability) {
+        push(obligations, Requirement {
+                ty = ty
+                capability = capability
+            })
+    }
+    let updated = Signature {
+        symbol = current.symbol
+        parameters = current.parameters
+        params = current.params
+        compile_time = current.compile_time
+        result = current.result
+        requirements = obligations
+    }
     Context {
         signature = updated
         ..context
     }
 }
+
 fn implementation(context Context, ty Int, capability Int) Result[Int, Failure] {
-    if !satisfies(context, ty, capability)? { return Result.Ok(-1) }
+    if !satisfies(context, ty, capability)? {
+        return Result.Ok(-1)
+    }
     Result.Ok(conformance(context.env, ty, capability).implementation)
 }
+
 fn satisfies(context Context, ty Int, capability Int) Result[Bool, Failure] {
     admitted(context.env, context.signature.symbol, context.signature.requirements, ty, capability)
 }
+
 fn satisfies_arguments(context Context, current Signature, arguments List[Int], node Node) Result[Bool, Failure] {
     let parent = symbol(context.env, current.symbol).owner
     if parent >= 0 && symbol(context.env, parent).node.kind == NodeKind.Impl {
@@ -324,13 +431,17 @@ fn satisfies_arguments(context Context, current Signature, arguments List[Int], 
             // Receiver evidence carries the impl header's prerequisites, not
             // the independent requirements of this method's local arguments.
             let declaration = method_declaration(context.env, current.symbol)
-            if declaration < 0 { return Result.Ok(false) }
+            if declaration < 0 {
+                return Result.Ok(false)
+            }
             let bounds = new[Requirement]()
             discard inherit_member_requirements(context.env, declaration, argument_tail(arguments, method_parameter_prefix(context.env, current.symbol)), bounds)?
             var index = 0
             while index < length(bounds) {
                 let bound = get(bounds, index)
-                if !satisfies(context, bound.ty, bound.capability)? { return Result.Ok(false) }
+                if !satisfies(context, bound.ty, bound.capability)? {
+                    return Result.Ok(false)
+                }
                 index = index + 1
             }
             return Result.Ok(true)
@@ -340,7 +451,9 @@ fn satisfies_arguments(context Context, current Signature, arguments List[Int], 
     while index < length(current.requirements) {
         let requirement = get(current.requirements, index)
         let ty = substitute(context.env, current.symbol, requirement.ty, arguments, node)?
-        if !satisfies(context, ty, requirement.capability)? { return Result.Ok(false) }
+        if !satisfies(context, ty, requirement.capability)? {
+            return Result.Ok(false)
+        }
         index = index + 1
     }
     Result.Ok(true)

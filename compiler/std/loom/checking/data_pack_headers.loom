@@ -1,6 +1,5 @@
-// Check closed header obligations without choosing any pack widths. Ordinary
-// parameters are independently abstract; whole words remain unresolved until
-// the existing symbolic/concrete rules can establish their shape.
+// Bind constructor names and check closed header obligations without choosing
+// pack widths. Whole words stay unresolved until symbolic/concrete shape checks.
 fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text],
     parameters List[Node], arguments List[Int], obligations List[Requirement]) Result[Bool, Failure] {
     var dependent = false
@@ -14,6 +13,28 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
         let bound = bind_data_parameters(node, parameters, arguments)
         let ty = resolve_bound(env, owner, bound, new[Int](), obligations, 0)?
         return well_formed(env, owner, ty, obligations, node, 0)
+    }
+    if node.kind == NodeKind.DynType {
+        discard accessible_concept(env, owner, node)?
+    }
+    if node.kind == NodeKind.Type && type_constant(env, owner, node)? < 0 {
+        let root = slice(node.value, 0, first_dot(node.value))
+        var lexical = false
+        index = 0
+        while index < length(packs) {
+            lexical = lexical || get(packs, index) == root
+            index = index + 1
+        }
+        index = 0
+        while index < length(parameters) {
+            lexical = lexical || get(parameters, index).value == root
+            index = index + 1
+        }
+        // A lexical receiver may project an associated family. Its arguments
+        // still need specialization; a global constructor must already bind.
+        if !lexical {
+            discard type_constructor(env, owner, node)?
+        }
     }
     index = 0
     while index < length(node.children) {
