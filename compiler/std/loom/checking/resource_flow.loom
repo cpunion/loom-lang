@@ -302,8 +302,13 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Res
 fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
     let kind = expr.kind
     let current = get(flow.analysis.functions, flow.function)
+    // Aggregate shells are pure; their elements still pass this check in
+    // order, so nested constructors can reach their existing pending guards
+    // without allowing an effect before adoption.
     if resource_pending(flow) && kind != ExprKind.Block && kind != ExprKind.Local && kind != ExprKind.Return &&
-    !(kind == ExprKind.Let && get(current.locals, expr.index).is_scoped) {
+    kind != ExprKind.Record && kind != ExprKind.Variant &&
+    !(kind == ExprKind.Let && (get(current.locals, expr.index).is_scoped ||
+            (expr.text == "pattern-binding" && get(expr.children, 0).kind == ExprKind.Local))) {
         return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped or transfer before any other operation"))
     }
     if kind == ExprKind.Local {
@@ -400,6 +405,14 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         }
         if kind == ExprKind.Let && (expr.text == "pattern-binding" || expr.text == "macro-input") && value.protected {
             set(flow.locals, expr.index, resource_origin(resource_value(true, false, -1), value.caller))
+            return Result.Ok(resource_value(false, false, -1))
+        }
+        if kind == ExprKind.Let && expr.text == "pattern-binding" && value.pending >= 0 && value.fresh && !value.protected {
+            // Decision trees rename a selected payload through a compiler-only
+            // local before executing its source arm. Forward the obligation,
+            // not a shareable copy; the old local becomes consumed.
+            resource_consume(flow, value)
+            set(flow.locals, expr.index, resource_value(false, true, expr.index))
             return Result.Ok(resource_value(false, false, -1))
         }
         if local.is_scoped {
