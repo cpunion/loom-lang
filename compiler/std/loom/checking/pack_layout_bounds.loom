@@ -3,6 +3,15 @@ record PackLayoutRequirement {
     capability Int
 }
 
+fn pack_layout_owner(context Context) Int {
+    let caller = pack_proof_caller(context)
+    if caller >= 0 {
+        caller
+    } else {
+        context.signature.symbol
+    }
+}
+
 fn pack_layout_bindings(context Context, caller Node, owner Int, target Node, schema Node,
     budget List[Int]) Option[PackForwardMatch] {
     let pattern = match type_pattern_schema(context.env, owner, target, false, 0, true) {
@@ -54,6 +63,10 @@ fn pack_layout_well_formed(context Context, caller Node, schema Node, budget Lis
         }
         index = index + 1
     }
+    if schema.kind == NodeKind.Select || schema.kind == NodeKind.DynType {
+        return Result.Ok(pack_symbolic_type(context, caller, schema, pack_projection_scope(context),
+                budget, depth + 1)? >= 0)
+    }
     if schema.kind != NodeKind.Type || !std.text.starts_with(schema.value, "nominal#") {
         return Result.Ok(true)
     }
@@ -98,13 +111,21 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
         return Result.Ok(false)
     }
     set(budget, 0, get(budget, 0) - 1)
+    if schema.kind == NodeKind.Select || schema.kind == NodeKind.DynType {
+        let obligations = pack_projection_scope(context)
+        let ty = pack_symbolic_type(context, caller, schema, obligations, budget, depth + 1)?
+        if ty < 0 {
+            return Result.Ok(false)
+        }
+        return admitted(context.env, pack_layout_owner(context), obligations, ty, capability)
+    }
     let source = group(caller, NodeKind.TypeParameters)
     let parameter = pack_schema_parameter(schema)
     if parameter >= 0 {
         let bounds = get(source, parameter).children
         var index = 0
         while index < length(bounds) {
-            if required_concept(context.env, pack_proof_caller(context), get(bounds, index))? == capability {
+            if required_concept(context.env, pack_layout_owner(context), get(bounds, index))? == capability {
                 return Result.Ok(true)
             }
             index = index + 1
@@ -156,7 +177,7 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
         // Materialized widths are not a proof of the original family. Test-only
         // implementations likewise cannot supply production evidence.
         if length(header.widths) == 0 &&
-        (!declaration.test_only || symbol(context.env, pack_proof_caller(context)).test_only) {
+        (!declaration.test_only || symbol(context.env, pack_layout_owner(context)).test_only) {
             let parameters = group(declaration.node, NodeKind.TypeParameters)
             match pack_layout_bindings(context, caller, owner, child(declaration.node, 1), schema, budget) {
                 Option.Some(bindings) => {

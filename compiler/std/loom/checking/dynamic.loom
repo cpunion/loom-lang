@@ -239,6 +239,13 @@ fn emitted_type(env Environment, owner Int, ty Int, node Node, seen List[Int]) R
 
 fn dynamic_type(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
     let capability = accessible_concept(env, owner, node)?
+    dynamic_type(env, owner, node, arguments, obligations, depth, capability)
+}
+
+// A symbolic header has already bound this concept at its actual source node.
+// Reuse binding/domain checks without recording a synthetic qualified use.
+fn dynamic_type(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement],
+    depth Int, capability Int) Result[Int, Failure] {
     let members = get(env.concepts, concept_index(env, capability)).associated
     let bindings = new[Int]()
     var index = 0

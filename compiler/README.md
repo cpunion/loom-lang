@@ -1597,12 +1597,16 @@ an expected type or explicit arguments. Empty packs, record updates, recursive
 List-backed structures, compile-time values and Task fields retain ordinary
 rules. Each selected arity checks field/payload requirements with abstract
 elements, so concrete callers cannot supply undeclared capabilities. Unselected
-arities are not verified. Even unused declarations bind global type constructors
-before word expansion, and check header fragments that do not depend on a pack:
-ordinary type names, arity, visibility and declared bounds cannot be deferred
-until a caller appears. Independent parameters on
-either side of a pack remain abstract, not sampled concrete types. This does not
-establish an unknown word's layout or its dependent associated projections.
+arities are not materialized. Even unused declarations bind global constructors
+and check closed types through the ordinary resolver. Symbolic nominal words
+also check parameter widths and declared bounds with the same universal matcher
+as family proofs, including nested constructors and independent packs. Ordinary
+type names, visibility and provable header obligations cannot wait for a caller.
+Associated projections and direct dyn bindings reuse ordinary member/domain and
+result-bound checks on fresh logical identities. Those identities grant only
+capabilities proved for the complete source word, never a selected arity or a
+concrete layout. Fixed parameters stay abstract too. General dependent layouts
+and scoped dyn-family header validation remain open.
 Instances retain the original nominal declaration;
 no runtime pack or per-arity nominal type is introduced. See the
 [native data-pack example](examples/data_packs/main.loom).

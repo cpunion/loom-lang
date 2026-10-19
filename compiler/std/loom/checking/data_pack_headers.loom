@@ -1,5 +1,5 @@
-// Bind constructor names and check closed header obligations without choosing
-// pack widths. Whole words stay unresolved until symbolic/concrete shape checks.
+// Check closed obligations and symbolic nominal words without choosing pack
+// widths. Reuse the ordinary resolver and universal family-shape matcher.
 fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text],
     parameters List[Node], arguments List[Int], obligations List[Requirement],
     headers Option[List[TypeHeader]]) Result[Bool, Failure] {
@@ -29,6 +29,18 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
     }
     if node.kind == NodeKind.DynType {
         discard accessible_concept(env, owner, node)?
+        let schema = type_pattern_schema(env, owner, node, true, 0, true, true)?
+        if !pack_layout_well_formed(empty_context(env, owner), symbol(env, owner).node,
+            schema, ints(512), 0)? {
+            return Result.Err(failure(env, owner, node,
+                    "variadic dynamic binding needs its declared member requirements"))
+        }
+    }
+    if node.kind == NodeKind.Type && type_constant(env, owner, node)? >= 0 {
+        // The ordinary resolver rejects arguments on a scalar before trying
+        // to resolve them; a dependent child cannot turn it into a template.
+        discard resolve_bound(env, owner, node, new[Int](), obligations, 0)?
+        return Result.Ok(true)
     }
     if node.kind == NodeKind.Type && type_constant(env, owner, node)? < 0 {
         let root = slice(node.value, 0, first_dot(node.value))
@@ -45,8 +57,27 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
         }
         // A lexical receiver may project an associated family. Its arguments
         // still need specialization; a global constructor must already bind.
+        if lexical && node.value == root && length(node.children) != 0 {
+            return Result.Err(failure(env, owner, node, "this type takes no arguments"))
+        }
+        if lexical && node.value != root {
+            let schema = type_pattern_schema(env, owner, node, true, 0, true, true)?
+            if !pack_layout_well_formed(empty_context(env, owner), symbol(env, owner).node,
+                schema, ints(512), 0)? {
+                return Result.Err(failure(env, owner, node,
+                        "variadic data projection needs its declared member requirements"))
+            }
+        }
         if !lexical {
             discard type_constructor(env, owner, node)?
+            // Check symbolic nominal words through the same universal matcher
+            // as variadic family proofs, never by choosing a representative arity.
+            let schema = type_pattern_schema(env, owner, node, true, 0, true, true)?
+            if !pack_layout_well_formed(empty_context(env, owner), symbol(env, owner).node,
+                schema, ints(512), 0)? {
+                return Result.Err(failure(env, owner, node,
+                        "variadic data header needs well-formed type arguments for every member"))
+            }
         }
     }
     index = 0
