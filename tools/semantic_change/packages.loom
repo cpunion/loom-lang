@@ -360,8 +360,8 @@ fn package_changes(base List[PackageRevision], branch List[PackageRevision], oth
                 deleted = deleted || shared >= 0
             } else {
                 let changed = get(after.entries, selected)
-                headers = headers || (changed.header != entry.header &&
-                    (shared < 0 || changed.header != get(peer.entries, shared).header))
+                headers = headers || (!same_entry_header(changed, entry) &&
+                    (shared < 0 || !same_entry_header(changed, get(peer.entries, shared))))
                 edited = edited || (changed.body != entry.body &&
                     (shared < 0 || changed.body != get(peer.entries, shared).body))
             }

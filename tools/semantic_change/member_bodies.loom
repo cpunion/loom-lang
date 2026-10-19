@@ -13,16 +13,17 @@ fn container(entry Entry) Bool {
     entry.kind == NodeKind.Impl || entry.kind == NodeKind.Concept
 }
 
-fn aligned_members(before Entry, after Entry) Bool {
-    if !container(before) || before.kind != after.kind || before.header != after.header ||
-    length(before.members) != length(after.members) {
-        return false
+fn member_trivia(text Text) Bool {
+    let tokens = match lex(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
     }
     var index = 0
-    while index < length(before.members) {
-        let a = get(before.members, index)
-        let b = get(after.members, index)
-        if a.locator != b.locator || (a.body.start < 0) != (b.body.start < 0) {
+    while index < length(tokens) {
+        let kind = get(tokens, index).kind
+        if kind != Kind.Newline && kind != Kind.Eof {
             return false
         }
         index = index + 1
@@ -30,8 +31,59 @@ fn aligned_members(before Entry, after Entry) Bool {
     true
 }
 
+fn same_entry_header(before Entry, after Entry) Bool {
+    before.header == after.header || aligned_members(before, after)
+}
+
+fn aligned_members(before Entry, after Entry) Bool {
+    if !container(before) || before.kind != after.kind ||
+    length(before.members) != length(after.members) {
+        return false
+    }
+    var previous = 0
+    var current = 0
+    var index = 0
+    while index < length(before.members) {
+        let a = get(before.members, index)
+        let b = get(after.members, index)
+        if a.locator != b.locator || (a.body.start < 0) != (b.body.start < 0) {
+            return false
+        }
+        let gap = slice(before.body, previous, a.span.start - before.start)
+        let changed = slice(after.body, current, b.span.start - after.start)
+        // Only inter-member trivia may change. Container and member headers,
+        // contracts, associated bindings and all other source remain exact.
+        if gap != changed && (index == 0 || !member_trivia(gap) || !member_trivia(changed)) {
+            return false
+        }
+        let end = if a.body.start >= 0 {
+            a.body.start
+        } else {
+            a.span.end
+        }
+        let last = if b.body.start >= 0 {
+            b.body.start
+        } else {
+            b.span.end
+        }
+        if slice(before.body, a.span.start - before.start, end - before.start) !=
+        slice(after.body, b.span.start - after.start, last - after.start) {
+            return false
+        }
+        if a.body.start >= 0 &&
+        slice(before.body, a.body.end - before.start, a.span.end - before.start) !=
+        slice(after.body, b.body.end - after.start, b.span.end - after.start) {
+            return false
+        }
+        previous = a.span.end - before.start
+        current = b.span.end - after.start
+        index = index + 1
+    }
+    slice(before.body, previous, length(before.body)) == slice(after.body, current, length(after.body))
+}
+
 // These are existing checked API slots, not inferred new persistent identities.
-// Header/member changes still require resolution; only method blocks compose.
+// Headers stay exact; method blocks and inter-member trivia join independently.
 fn joined_member_bodies(base Entry, left Entry, right Entry) Result[Text, Text] {
     if !aligned_members(base, left) || !aligned_members(base, right) {
         return Result.Err(concat("concurrent body edits require unchanged container headers: ", base.id))
@@ -43,14 +95,22 @@ fn joined_member_bodies(base Entry, left Entry, right Entry) Result[Text, Text] 
     var index = 0
     while index < length(base.members) {
         let member = get(base.members, index)
+        let first_member = get(left.members, index)
+        let second_member = get(right.members, index)
+        let gap = joined_source_gap(slice(base.body, original, member.span.start - base.start),
+            slice(left.body, a, first_member.span.start - left.start),
+            slice(right.body, b, second_member.span.start - right.start), base.id)?
+        let header_end = if member.body.start >= 0 {
+            member.body.start
+        } else {
+            member.span.end
+        }
+        output = concat(output, concat(gap,
+                slice(base.body, member.span.start - base.start, header_end - base.start)))
         if member.body.start >= 0 {
             let previous_span = member.body
-            let l = get(left.members, index).body
-            let r = get(right.members, index).body
-            let gap = slice(base.body, original, previous_span.start - base.start)
-            if gap != slice(left.body, a, l.start - left.start) || gap != slice(right.body, b, r.start - right.start) {
-                return Result.Err("container scaffolding changed around a method body")
-            }
+            let l = first_member.body
+            let r = second_member.body
             let previous = slice(base.body, previous_span.start - base.start, previous_span.end - base.start)
             let first = slice(left.body, l.start - left.start, l.end - left.start)
             let second = slice(right.body, r.start - right.start, r.end - right.start)
@@ -61,11 +121,12 @@ fn joined_member_bodies(base Entry, left Entry, right Entry) Result[Text, Text] 
             } else {
                 return Result.Err(concat("concurrent method body edits: ", concat(base.id, concat(" / ", member.locator))))
             }
-            output = concat(output, concat(gap, selected))
-            original = previous_span.end - base.start
-            a = l.end - left.start
-            b = r.end - right.start
+            output = concat(output, concat(selected,
+                    slice(base.body, previous_span.end - base.start, member.span.end - base.start)))
         }
+        original = member.span.end - base.start
+        a = first_member.span.end - left.start
+        b = second_member.span.end - right.start
         index = index + 1
     }
     let tail = slice(base.body, original, length(base.body))
@@ -90,6 +151,17 @@ fn retained_region(regions List[RetainedRegion], before Entry, after Entry,
     Result.Ok(true)
 }
 
+fn retained_member_gap(regions List[RetainedRegion], before Entry, after Entry,
+    start Int, end Int, current Int, last Int) Result[Bool, Text] {
+    let original = slice(before.body, start, end)
+    let changed = slice(after.body, current, last)
+    if original != changed && member_trivia(original) && member_trivia(changed) {
+        // No reference can be hidden in skipped whitespace or comments.
+        return Result.Ok(true)
+    }
+    retained_region(regions, before, after, start, end, current, last)
+}
+
 fn retained_regions(before Entry, after Entry) Result[List[RetainedRegion], Text] {
     let regions = new[RetainedRegion]()
     if before.body == after.body {
@@ -99,20 +171,34 @@ fn retained_regions(before Entry, after Entry) Result[List[RetainedRegion], Text
         var current = 0
         var index = 0
         while index < length(before.members) {
-            let a = get(before.members, index).body
-            let b = get(after.members, index).body
-            if a.start >= 0 {
-                let start = a.start - before.start
-                let end = a.end - before.start
-                let next = b.start - after.start
-                let last = b.end - after.start
-                discard retained_region(regions, before, after, previous, start, current, next)?
-                if slice(before.body, start, end) == slice(after.body, next, last) {
-                    discard retained_region(regions, before, after, start, end, next, last)?
-                }
-                previous = end
-                current = last
+            let a = get(before.members, index)
+            let b = get(after.members, index)
+            let start = a.span.start - before.start
+            let next = b.span.start - after.start
+            let end = if a.body.start >= 0 {
+                a.body.start
+            } else {
+                a.span.end
             }
+            let last = if b.body.start >= 0 {
+                b.body.start
+            } else {
+                b.span.end
+            }
+            discard retained_member_gap(regions, before, after, previous, start, current, next)?
+            discard retained_region(regions, before, after, start, end - before.start, next, last - after.start)?
+            if a.body.start >= 0 {
+                let original_body = slice(before.body, a.body.start - before.start, a.body.end - before.start)
+                let changed_body = slice(after.body, b.body.start - after.start, b.body.end - after.start)
+                if original_body == changed_body {
+                    discard retained_region(regions, before, after, a.body.start - before.start,
+                        a.body.end - before.start, b.body.start - after.start, b.body.end - after.start)?
+                }
+                discard retained_region(regions, before, after, a.body.end - before.start,
+                    a.span.end - before.start, b.body.end - after.start, b.span.end - after.start)?
+            }
+            previous = a.span.end - before.start
+            current = b.span.end - after.start
             index = index + 1
         }
         discard retained_region(regions, before, after, previous, length(before.body), current, length(after.body))?

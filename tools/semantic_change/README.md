@@ -49,9 +49,11 @@ comparison. Anonymous impls use explicit IDs, a `-` locator label and a key for
 their concept, target and generic declarations. Moves compose with method-body
 edits. Member bindings normalize within the identified owner and checked member
 signature rather than sibling-body byte offsets. Independent method-body edits
-within one impl or concept combine when its headers, contracts, member order and
-surrounding source are unchanged. Competing edits to the same method still
-require resolution. Retained method bodies and headers keep their checked
+within one impl or concept combine when its headers, contracts and member order
+are unchanged. Whitespace and comments between members join independently by
+the same three-way equality rules, preserving their exact bytes. Conflicting
+edits to one gap or method still require resolution; other container scaffolding
+stays unchanged. Retained method bodies and headers keep their checked
 bindings even when another method changes length. This does not synthesize
 durable member IDs: member renames, interface/default-presence changes and
 ambiguous member slots still require resolution.

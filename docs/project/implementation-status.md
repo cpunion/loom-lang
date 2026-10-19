@@ -536,7 +536,9 @@ Anonymous impls now participate through explicit owner IDs and header locators.
 Method bodies are separate from interface headers; member positions normalize
 within checked slots, so an earlier body edit does not retarget a later method.
 Independent method-body edits in one impl or concept compose under unchanged
-headers, contracts, member order and surrounding source. Retained regions keep
+headers, contracts and member order. Inter-member whitespace/comments join by
+three-way equality, preserving bytes; conflicting gap edits and other container
+scaffolding changes require resolution. Retained regions keep
 their checked bindings across shifted body offsets. Same-method conflicts and
 member/interface changes still require resolution, not inferred member identity.
 Symbolic impl/associated headers need no concrete caller;

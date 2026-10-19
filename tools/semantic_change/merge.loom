@@ -574,10 +574,10 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
             if edited_right.body != original.body && edited_right.body != edited_left.body {
                 right_edited = true
             }
-            if edited_left.header != original.header && edited_left.header != edited_right.header {
+            if !same_entry_header(edited_left, original) && !same_entry_header(edited_left, edited_right) {
                 left_header_changed = true
             }
-            if edited_right.header != original.header && edited_right.header != edited_left.header {
+            if !same_entry_header(edited_right, original) && !same_entry_header(edited_right, edited_left) {
                 right_header_changed = true
             }
             if ends_with(edited_left.path, "_test.loom") != ends_with(original.path, "_test.loom") ||
