@@ -63,6 +63,7 @@ async fn exercise() {
     exercise_scoped_families()
     exercise_family_words().await
     exercise_family_schema().await
+    exercise_constant_maps().await
     exercise_groups().await
     exercise_functions()
     exercise_dynamic().await

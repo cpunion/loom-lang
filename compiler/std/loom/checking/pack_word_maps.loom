@@ -1,0 +1,63 @@
+// A word map has an element schema and, when erasure hides it, an independent
+// width origin. Origins are logical variables, never representative elements.
+fn pack_word_origin_add(origins List[Node], origin Node) {
+    var index = 0
+    while index < length(origins) {
+        if pack_schema_equal(get(origins, index), origin) {
+            return
+        }
+        index = index + 1
+    }
+    push(origins, origin)
+    index = length(origins) - 1
+    while index > 0 && pack_schema_parameter(get(origins, index - 1)) > pack_schema_parameter(origin) {
+        set(origins, index, get(origins, index - 1))
+        index = index - 1
+    }
+    set(origins, index, origin)
+}
+
+fn pack_word_map(node Node, body Node, origins List[Node]) Node {
+    var retained = true
+    var index = 0
+    while index < length(origins) {
+        retained = retained && length(expansion_packs(body, [get(origins, index).value])) > 0
+        index = index + 1
+    }
+    let children = source_nodes(body)
+    if !retained {
+        push(children, pack_node(node, NodeKind.Type, "$word-origin", origins))
+    }
+    pack_node(node, NodeKind.Spread, "", children)
+}
+
+fn impl_method_word_origins(env Environment, owner Int, schema Node, frame List[Node],
+    values List[Node]) Result[List[Node], Failure] {
+    let origins = new[Node]()
+    var index = 0
+    while index < length(frame) {
+        let parameter = get(frame, index)
+        if parameter.kind == NodeKind.TypePack && length(expansion_packs(schema,
+                [parameter.value, impl_method_variable(parameter, index).value])) > 0 {
+            let value = get(values, index)
+            if value.kind == NodeKind.Spread && value.value == "$computed-word" {
+                let selected = child(value, 1).children
+                var origin = 0
+                while origin < length(selected) {
+                    pack_word_origin_add(origins, get(selected, origin))
+                    origin = origin + 1
+                }
+            } else if pack_schema_parameter(value) >= 0 {
+                pack_word_origin_add(origins, value)
+            } else {
+                return Result.Err(failure(env, owner, schema, "symbolic expansion needs an established source word"))
+            }
+        }
+        index = index + 1
+    }
+    if length(origins) > 1 {
+        return Result.Err(failure(env, owner, schema,
+                "elementwise expansion needs proved equal source widths"))
+    }
+    Result.Ok(origins)
+}

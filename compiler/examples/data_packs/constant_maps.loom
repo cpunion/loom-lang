@@ -1,0 +1,43 @@
+fn constant_word_item[T]() type {
+    Int
+}
+
+concept ConstantWordRelay {
+    type Value
+    fn relay_constants(self Self, value Self.Value) Self.Value
+}
+
+impl[Ts...] ConstantWordRelay for (Ts...) {
+    type Value = dyn WordFactory[Item[U] = (comptime {
+                constant_word_item[Ts]()
+            }..., U)]
+    fn relay_constants(self Self, value Self.Value) Self.Value {
+        discard self
+        value
+    }
+}
+
+record ConstantPrefix {
+    seed Int
+}
+
+impl WordFactory for ConstantPrefix {
+    type Item[U] = (Int, Int, U)
+    fn append[U](self ConstantPrefix, value U) (Int, Int, U) {
+        (self.seed, 42, value)
+    }
+}
+
+async fn exercise_constant_maps() {
+    let empty = packet()
+    let first dyn WordFactory[Item[U] = (U,)] = 0
+    let forwarded = empty.values.relay_constants(first)
+    assert forwarded.append(11) == (11,)
+    let factory dyn WordFactory[Item[U] = (Int, Int, U)] = ConstantPrefix {
+        seed = 19
+    }
+    let selected = (false, "origin").relay_constants(factory)
+    let resumed = echo(selected).await
+    let values = resumed.append([7, 11])
+    assert values.0 == 19 && values.1 == 42 && values.2[0] + values.2[1] == 18
+}

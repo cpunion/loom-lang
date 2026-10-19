@@ -50,20 +50,21 @@ fn impl_method_computed_parts(env Environment, scope ImplMethodScope, owner Int,
         discard well_formed(env, owner, ty, scope.evidence, node, 0)?
         let schema = impl_method_family_canonical(env, scope,
             impl_method_resolved_schema(env, scope, ty, node, depth + 1)?, depth + 1)?
-        var word = false
+        let origins = new[Node]()
         index = 0
         while index < length(frame) {
             let parameter = get(frame, index)
             if parameter.kind == NodeKind.TypePack && mentions_pack(node, parameter.value) {
                 let mapped = pack_schema_parameter(get(values, index))
-                if mapped < 0 || !mentions_pack(schema, impl_method_variable(node, mapped).value) {
+                if mapped < 0 {
                     return Result.Err(failure(env, owner, node,
-                            "computed expansion must retain its source word"))
+                            "computed expansion needs an established source word"))
                 }
-                word = true
+                pack_word_origin_add(origins, impl_method_variable(node, mapped))
             }
             index = index + 1
         }
+        let word = length(origins) > 0
         let parameter = pack_node(node, if word {
                 NodeKind.TypePack
             } else {
@@ -71,7 +72,12 @@ fn impl_method_computed_parts(env Environment, scope ImplMethodScope, owner Int,
             },
             concat("$component#", to_text(length(frame))), new[Node]())
         push(frame, parameter)
-        push(values, schema)
+        push(values, if word {
+                pack_node(node, NodeKind.Spread, "$computed-word",
+                    [schema, pack_node(node, NodeKind.Type, "$word-origin", origins)])
+            } else {
+                schema
+            })
         return Result.Ok(pack_node(node, NodeKind.Type, parameter.value, new[Node]()))
     }
     let children = new[Node]()

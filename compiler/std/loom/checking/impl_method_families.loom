@@ -41,6 +41,10 @@ fn impl_method_family_canonical(env Environment, scope ImplMethodScope, schema N
         push(children, impl_method_family_canonical(env, scope, child(schema, index), depth + 1)?)
         index = index + 1
     }
+    if schema.kind == NodeKind.Spread && length(children) == 2 &&
+    get(children, 1).value == "$word-origin" {
+        return Result.Ok(pack_word_map(schema, get(children, 0), get(children, 1).children))
+    }
     Result.Ok(pack_node(schema, schema.kind, schema.value, children))
 }
 

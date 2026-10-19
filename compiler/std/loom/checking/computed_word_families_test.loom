@@ -43,7 +43,7 @@ test fn computed_word_families_preserve_element_maps_and_reject_erased_word_sour
                     "list_type[Ts]()", "list_type[As]()"),
                 "List[Ts]...", "comptime { list_type[Bs]() }..."), "List[T]", "Int"))
     assert match checked(source_files(erased)) {
-        Result.Err(failed) => failed.diagnostic.message == "computed expansion must retain its source word"
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "implementation method signature")
         Result.Ok(_) => false
     }
 }
