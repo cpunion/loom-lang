@@ -15,7 +15,6 @@ import std.net.tls.Identity
 import std.net.tls.ClientOptions
 import std.net.http.encode_request
 import std.net.http.reader
-import std.net.http.read_response
 import std.net.http.ReadError
 import std.net.tcp.open
 import std.net.tcp.detach
@@ -189,17 +188,17 @@ fn prepare(value std.net.http.client.Request, configuration Options) Result[Prep
         })
 }
 
-async fn failed(error Error) Result[Response, Error] {
+async fn failed[T](error Error) Result[T, Error] {
     Result.Err(error)
 }
 
 intrinsic fn fault_text(message Text)
 
-async fn bounded(prepared Prepared, deadline Int) Result[Response, Error] {
+async fn bounded[T](prepared Prepared, deadline Int, handler fn(Incoming) Task[Result[T, Error]]) Result[T, Error] {
     if monotonic_ns() >= deadline {
         return Result.Err(Error.Timeout)
     }
-    match at(exchange(prepared), deadline).await {
+    match at(exchange[T](prepared, handler), deadline).await {
         Outcome.Completed(value) => value
         Outcome.Cancelled => Result.Err(Error.Timeout)
         Outcome.Faulted(error) => {
@@ -214,14 +213,24 @@ pub fn send(value std.net.http.client.Request) Task[Result[Response, Error]] {
 
 // Encode and detach caller buffers before creating the hot network Task.
 pub fn send(value std.net.http.client.Request, configuration Options) Task[Result[Response, Error]] {
+    consume[Response](value, configuration, collect_response)
+}
+
+// T is ordinary result data; resource-valued callback results are unsupported.
+pub fn consume[T](value std.net.http.client.Request, handler fn(Incoming) Task[Result[T, Error]]) Task[Result[T, Error]] {
+    consume[T](value, options(), handler)
+}
+
+// The same deadline covers acquisition, upload and the awaited body consumer.
+pub fn consume[T](value std.net.http.client.Request, configuration Options, handler fn(Incoming) Task[Result[T, Error]]) Task[Result[T, Error]] {
     let prepared = match prepare(value, configuration) {
         Result.Ok(value) => value
         Result.Err(error) => {
-            return failed(error)
+            return failed[T](error)
         }
     }
     if configuration.timeout_ns == 0 {
-        return failed(Error.Timeout)
+        return failed[T](Error.Timeout)
     }
     let now = monotonic_ns()
     let remaining = 9223372036854775807 - now
@@ -230,5 +239,5 @@ pub fn send(value std.net.http.client.Request, configuration Options) Task[Resul
     } else {
         now + configuration.timeout_ns
     }
-    bounded(prepared, deadline)
+    bounded[T](prepared, deadline, handler)
 }
