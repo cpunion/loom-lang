@@ -1,0 +1,192 @@
+import std.stream.Stream
+import std.net.tcp.Stream
+import std.net.tls.Stream
+
+enum Transport {
+    Tcp(std.net.tcp.Stream)
+    Tls(std.net.tls.Stream)
+}
+
+record Chunks {
+    transport Transport
+    ended List[Bool]
+}
+
+fn close_transport(transport Transport) {
+    match transport {
+        Transport.Tcp(stream) => {
+            discard close_stream(stream)
+        }
+        Transport.Tls(stream) => {
+            discard std.net.tls.close(stream)
+        }
+    }
+}
+
+async fn write_request(transport Transport, bytes Bytes) Result[Int, TransportError] {
+    var success = false
+    defer {
+        if !success {
+            match transport {
+                Transport.Tcp(stream) => {
+                    discard std.net.tcp.abort(stream)
+                }
+                // TLS writes already retire their connection on failure.
+                Transport.Tls(_) => {
+                }
+            }
+        }
+    }
+    let outcome Result[Int, TransportError] = match transport {
+        Transport.Tcp(stream) => match std.net.tcp.write_bytes(stream, bytes).await {
+            Result.Ok(count) => Result.Ok(count)
+            Result.Err(error) => Result.Err(TransportError.Tcp(error))
+        }
+        Transport.Tls(stream) => match std.net.tls.write_bytes(stream, bytes).await {
+            Result.Ok(count) => Result.Ok(count)
+            Result.Err(error) => Result.Err(TransportError.Tls(error))
+        }
+    }
+    success = match outcome {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    outcome
+}
+
+impl std.stream.Stream for Chunks {
+    type Item = Result[Bytes, TransportError]
+
+    async fn next(self Chunks) Option[Result[Bytes, TransportError]] {
+        if self.ended[0] {
+            return Option.None
+        }
+        let bytes = std.bytes.new()
+        let outcome Result[Int, TransportError] = match self.transport {
+            Transport.Tcp(stream) => match std.net.tcp.read(stream, bytes, 16384).await {
+                Result.Ok(count) => Result.Ok(count)
+                Result.Err(error) => Result.Err(TransportError.Tcp(error))
+            }
+            Transport.Tls(stream) => match std.net.tls.read(stream, bytes, 16384).await {
+                Result.Ok(count) => Result.Ok(count)
+                Result.Err(error) => Result.Err(TransportError.Tls(error))
+            }
+        }
+        match outcome {
+            Result.Ok(count) => {
+                if count == 0 {
+                    self.ended[0] = true
+                    return Option.None
+                }
+                Option.Some(Result.Ok(bytes))
+            }
+            Result.Err(error) => {
+                self.ended[0] = true
+                Option.Some(Result.Err(error))
+            }
+        }
+    }
+}
+
+fn packet(value Result[Bytes, TransportError]) Result[Bytes, TransportError] {
+    value
+}
+
+async fn final_response(transport Transport, prepared Prepared) Result[Response, Error] {
+    let input = reader(Chunks {
+            transport = transport
+            ended = [false]
+        }, packet, prepared.limits)
+    var interim = 0
+    while true {
+        let response = match read_response(input, prepared.method).await {
+            Result.Ok(Option.Some(value)) => value
+            Result.Ok(Option.None) => {
+                return Result.Err(Error.Protocol(ProtocolError.Truncated))
+            }
+            Result.Err(ReadError.Protocol(error)) => {
+                return Result.Err(Error.Protocol(error))
+            }
+            Result.Err(ReadError.Input(error)) => {
+                return Result.Err(Error.Transport(error))
+            }
+        }
+        if response.status == 101 {
+            return Result.Err(Error.Unsupported)
+        }
+        if response.status >= 200 {
+            return Result.Ok(response)
+        }
+        if interim == prepared.max_informational {
+            return Result.Err(Error.Protocol(ProtocolError.Limit))
+        }
+        interim = interim + 1
+    }
+}
+
+async fn transact(transport Transport, prepared Prepared) Result[Response, Error] {
+    // Read while uploading too: an early final response must not wait for a
+    // peer that refuses the remaining request body to drain our send window.
+    let writing = write_request(transport, prepared.wire)
+    let response = final_response(transport, prepared).await
+    match cancel(writing) {
+        Outcome.Faulted(error) => {
+            fault_text(error.message)
+        }
+        Outcome.Completed(Result.Err(error)) => match response {
+            Result.Err(_) => Result.Err(Error.Transport(error))
+            Result.Ok(_) => response
+        }
+        _ => response
+    }
+}
+
+async fn exchange(prepared Prepared) Result[Response, Error] {
+    if prepared.endpoint.secure {
+        scoped acquired = match std.net.tls.open(prepared.endpoint.host, prepared.endpoint.port, prepared.tls).await {
+            Result.Ok(value) => value
+            Result.Err(error) => {
+                return Result.Err(Error.Transport(TransportError.Tls(error)))
+            }
+        }
+        let stream = match std.net.tls.detach(acquired) {
+            Result.Ok(value) => value
+            Result.Err(error) => {
+                return Result.Err(Error.Transport(TransportError.Tls(error)))
+            }
+        }
+        defer {
+            discard std.net.tls.close(stream)
+        }
+        match std.net.tls.protocol(stream) {
+            Result.Ok(Option.None) => {
+            }
+            Result.Ok(Option.Some(value)) => {
+                if value != "http/1.1" {
+                    return Result.Err(Error.Unsupported)
+                }
+            }
+            Result.Err(error) => {
+                return Result.Err(Error.Transport(TransportError.Tls(error)))
+            }
+        }
+        transact(Transport.Tls(stream), prepared).await
+    } else {
+        scoped acquired = match std.net.tcp.open(prepared.endpoint.host, prepared.endpoint.port).await {
+            Result.Ok(value) => value
+            Result.Err(error) => {
+                return Result.Err(Error.Transport(TransportError.Tcp(error)))
+            }
+        }
+        let stream = match std.net.tcp.detach(acquired) {
+            Result.Ok(value) => value
+            Result.Err(error) => {
+                return Result.Err(Error.Transport(TransportError.Tcp(error)))
+            }
+        }
+        defer {
+            discard close_stream(stream)
+        }
+        transact(Transport.Tcp(stream), prepared).await
+    }
+}

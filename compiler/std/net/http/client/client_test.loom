@@ -1,0 +1,145 @@
+import std.text.contains
+import std.bytes.to_text
+import std.bytes.set
+
+fn insecure(error Error) Bool {
+    match error {
+        Error.Insecure => true
+        _ => false
+    }
+}
+
+fn unsupported(error Error) Bool {
+    match error {
+        Error.Unsupported => true
+        _ => false
+    }
+}
+
+fn invalid_options(error Error) Bool {
+    match error {
+        Error.Options => true
+        _ => false
+    }
+}
+
+fn invalid_syntax(error Error) Bool {
+    match error {
+        Error.Protocol(ProtocolError.Syntax) => true
+        _ => false
+    }
+}
+
+fn rejected(value std.net.http.client.Request, configuration Options, expected fn(Error) Bool) {
+    assert match prepare(value, configuration) {
+        Result.Err(error) => expected(error)
+        Result.Ok(_) => false
+    }
+}
+
+test fn policy_errors_are_checked_before_network_io() {
+    let defaults = options()
+    let plaintext = Options {
+        allow_http = true
+        ..defaults
+    }
+    rejected(request("GET", "http://127.0.0.1/"), defaults, insecure)
+    rejected(request("CONNECT", "https://example.test/"), defaults, unsupported)
+    let reserved = ["hOsT", "Connection", "Upgrade", "Proxy-Authorization"]
+    var index = 0
+    while index < length(reserved) {
+        rejected(std.net.http.client.Request {
+                headers = [Header {
+                        name = reserved[index]
+                        value = to_bytes("opaque")
+                    }]
+                ..request("GET", "https://example.test/")
+            }, defaults, unsupported)
+        index = index + 1
+    }
+    let credentials = ["AUTHORIZATION", "cooKie"]
+    index = 0
+    while index < length(credentials) {
+        rejected(std.net.http.client.Request {
+                headers = [Header {
+                        name = credentials[index]
+                        value = to_bytes("private")
+                    }]
+                ..request("GET", "http://127.0.0.1/")
+            }, plaintext, insecure)
+        index = index + 1
+    }
+    rejected(request("GET", "https://example.test/"), Options {
+            timeout_ns = -1
+            ..defaults
+        }, invalid_options)
+    rejected(std.net.http.client.Request {
+            headers = [Header {
+                    name = "X-Test"
+                    value = to_bytes("one\r\nInjected: two")
+                }]
+            ..request("GET", "https://example.test/")
+        }, defaults, invalid_syntax)
+}
+
+test fn preparation_snapshots_request_and_tls_configuration_buffers() {
+    let body = to_bytes("before")
+    let field = to_bytes("first")
+    let roots = to_bytes("roots")
+    let certificates = to_bytes("certs")
+    let key = to_bytes("key")
+    let prepared = match prepare(std.net.http.client.Request {
+            headers = [Header {
+                    name = "X-Snapshot"
+                    value = field
+                }]
+            body = body
+            ..request("POST", "https://EXAMPLE.test:8443/a%2Fb?q=1#local")
+        }, Options {
+            trust = Trust.Certificates(roots)
+            identity = Option.Some(Identity {
+                    certificates = certificates
+                    private_key = key
+                })
+            ..options()
+        }) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    set(body, 0, 88)
+    set(field, 0, 88)
+    set(roots, 0, 88)
+    set(certificates, 0, 88)
+    set(key, 0, 88)
+    let wire = to_text(prepared.wire)
+    assert contains(wire, "POST /a%2Fb?q=1 HTTP/1.1\r\n")
+    assert contains(wire, "Host: example.test:8443\r\n") && contains(wire, "Connection: close\r\n")
+    assert contains(wire, "X-Snapshot: first\r\n") && contains(wire, "\r\n\r\nbefore")
+    assert !contains(wire, "#local")
+    assert match prepared.tls.trust {
+        Trust.Certificates(value) => to_text(value) == "roots"
+        _ => false
+    }
+    assert match prepared.tls.identity {
+        Option.Some(value) => to_text(value.certificates) == "certs" && to_text(value.private_key) == "key"
+        _ => false
+    }
+}
+
+test async fn invalid_and_immediately_expired_requests_have_typed_results() {
+    assert match get("http://127.0.0.1:0/").await {
+        Result.Err(Error.Insecure) => true
+        _ => false
+    }
+    assert match get("http://127.0.0.1:0/", Options {
+            allow_http = true
+            timeout_ns = 0
+            ..options()
+        }).await {
+        Result.Err(Error.Timeout) => true
+        _ => false
+    }
+}

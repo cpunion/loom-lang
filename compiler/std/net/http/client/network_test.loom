@@ -1,0 +1,155 @@
+import std.net.tcp.ListenerHandle
+import std.net.tcp.close_listener
+import std.net.http.read_request
+import std.text.concat
+import std.text.replace
+
+async fn public_server(listener ListenerHandle, reply Bool, observed List[Bool]) Result[Bool, TcpError] {
+    scoped acquired = std.net.tcp.accept_owned(listener).await?
+    let stream = std.net.tcp.detach(acquired)?
+    defer {
+        discard close_stream(stream)
+    }
+    let input = reader(std.net.tcp.chunks.read(stream, 16384), tcp_packet, std.net.http.limits())
+    let message = match read_request(input).await {
+        Result.Ok(Option.Some(value)) => value
+        _ => {
+            return Result.Ok(false)
+        }
+    }
+    observed[0] = true
+    if !reply {
+        return Result.Ok(match std.net.tcp.read(stream, std.bytes.new(), 1).await {
+                Result.Ok(count) => count == 0
+                Result.Err(_) => true
+            })
+    }
+    var snapshot = false
+    var index = 0
+    while index < length(message.headers) {
+        let field = message.headers[index]
+        if header_named(field, "X-Snapshot") {
+            snapshot = to_text(field.value) == "before"
+        }
+        index = index + 1
+    }
+    if message.method != "POST" || message.target != "/a%2Fb?q=1" || !snapshot || to_text(message.body) != "upload" {
+        return Result.Ok(false)
+    }
+    let response = """
+        HTTP/1.1 100 Continue
+
+        HTTP/1.1 200 OK
+        Transfer-Encoding: chunked
+
+        5
+        hello
+        0
+        X-End: yes
+
+
+        """
+    discard std.net.tcp.write_bytes(stream, to_bytes(replace(response, "\n", "\r\n"))).await?
+    // The response is framed independently of EOF. Observe the client's close
+    // instead of closing the server first and accidentally supplying its boundary.
+    Result.Ok(match std.net.tcp.read(stream, std.bytes.new(), 1).await {
+            Result.Ok(count) => count == 0
+            Result.Err(_) => true
+        })
+}
+
+async fn public_roundtrip() Result[Bool, TcpError] {
+    scoped owner = listen("127.0.0.1:0").await?
+    let listener = std.net.tcp.detach(owner)?
+    defer {
+        discard close_listener(listener)
+    }
+    let address = std.net.tcp.local_address(listener)?
+    let observed = [false]
+    let serving = public_server(listener, true, observed)
+    let value = to_bytes("before")
+    let body = to_bytes("upload")
+    let pending = send(std.net.http.client.Request {
+            headers = [Header {
+                    name = "X-Snapshot"
+                    value = value
+                }]
+            body = body
+            ..request("POST", concat("http://", concat(address, "/a%2Fb?q=1#local")))
+        }, Options {
+            allow_http = true
+            timeout_ns = 10000000000
+            ..options()
+        })
+    set(value, 0, 88)
+    set(body, 0, 88)
+    let response = pending.await
+    let served = serving.await
+    Result.Ok(match response {
+            Result.Ok(value) => value.status == 200 && to_text(value.body) == "hello" &&
+            length(value.trailers) == 1 && header_named(value.trailers[0], "X-End") && to_text(value.trailers[0].value) == "yes"
+            _ => false
+        } && match served {
+            Result.Ok(value) => value && observed[0]
+            _ => false
+        })
+}
+
+async fn public_retirement(timeout Bool) Result[Bool, TcpError] {
+    scoped owner = listen("127.0.0.1:0").await?
+    let listener = std.net.tcp.detach(owner)?
+    defer {
+        discard close_listener(listener)
+    }
+    let address = std.net.tcp.local_address(listener)?
+    let observed = [false]
+    let serving = public_server(listener, false, observed)
+    let pending = std.net.http.client.get(concat("http://", concat(address, "/wait")), Options {
+            allow_http = true
+            timeout_ns = if timeout {
+                5000000000
+            } else {
+                30000000000
+            }
+            ..options()
+        })
+    let retired = if timeout {
+        match pending.await {
+            Result.Err(Error.Timeout) => true
+            _ => false
+        }
+    } else {
+        let deadline = monotonic_ns() + 5000000000
+        while !observed[0] && monotonic_ns() < deadline {
+            sleep_ms(0).await
+        }
+        match cancel(pending) {
+            Outcome.Cancelled => true
+            _ => false
+        }
+    }
+    assert observed[0]
+    let closed = serving.await
+    Result.Ok(retired && match closed {
+            Result.Ok(value) => value
+            _ => false
+        })
+}
+
+test async fn public_request_snapshots_inputs_reads_interim_chunked_data_and_closes() {
+    assert match public_roundtrip().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
+
+test async fn deadline_and_cancellation_retire_established_connections() {
+    assert match public_retirement(false).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match public_retirement(true).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}

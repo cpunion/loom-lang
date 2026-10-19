@@ -138,6 +138,8 @@ decompression and connection pools are not supplied.
 The separate pure [HTTP(S) URL parser](url/README.md) supplies a bounded outbound
 host/port, Host authority and origin-form target; it does not interpret an incoming
 request's routing policy or establish that its Host is authorized.
+The [one-request client](client/README.md) adds explicit TCP/TLS acquisition,
+concurrent upload/response handling and deadlines while reusing this codec.
 Applications must validate Host/target semantics for their routing policy and
 handle trailer-specific rules. TCP/TLS acquisition and trust remain separate;
 this package does not weaken TLS verification or silently send credentials over

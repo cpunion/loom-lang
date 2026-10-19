@@ -1,0 +1,107 @@
+import std.net.tcp.Stream
+import std.net.tcp.TcpError
+import std.net.tcp.listen
+import std.net.tcp.local_address
+import std.net.tcp.connect
+import std.net.tcp.accept_owned
+import std.net.tcp.set_receive_buffer_size
+import std.net.tcp.set_send_buffer_size
+import std.net.tcp.set_nodelay
+import std.net.tcp.chunks.read
+import std.net.http.open_request
+import std.time.sleep_ms
+import std.task.deadline.after_ns
+import std.bytes.length
+import std.bytes.get
+import std.bytes.push
+
+fn tcp_packet(value Result[Bytes, TcpError]) Result[Bytes, TcpError] {
+    value
+}
+
+fn filled(size Int, value Int) Bytes {
+    let output = std.bytes.new()
+    var index = 0
+    while index < size {
+        std.bytes.push(output, value)
+        index = index + 1
+    }
+    output
+}
+
+async fn early_server(stream std.net.tcp.Stream, consumed List[Bool]) Result[Int, TcpError] {
+    let input = reader(std.net.tcp.chunks.read(stream, 16384), tcp_packet, std.net.http.limits())
+    scoped incoming = open_request(input, 16384).await
+    assert match incoming {
+        Result.Ok(Option.Some(value)) => value.method == "POST"
+        _ => false
+    }
+    // Do not consume the upload. Both directions exceed the configured socket
+    // windows, so a write-then-read client cannot receive this final response.
+    let wire = to_bytes("HTTP/1.1 413 Content Too Large\r\nContent-Length: 262144\r\n\r\n")
+    let body = filled(262144, 71)
+    var index = 0
+    while index < std.bytes.length(body) {
+        std.bytes.push(wire, std.bytes.get(body, index))
+        index = index + 1
+    }
+    let sent = std.net.tcp.write_bytes(stream, wire).await?
+    // Keep the peer open until the response is consumed; closing with unread
+    // upload bytes could reset TCP and hide the concurrency property being tested.
+    while !consumed[0] {
+        sleep_ms(0).await
+    }
+    Result.Ok(sent)
+}
+
+async fn early_response() Result[Bool, TcpError] {
+    scoped listener = listen("127.0.0.1:0").await?
+    let address = std.net.tcp.local_address(listener)?
+    let client = std.net.tcp.connect(address).await?
+    defer {
+        discard close_stream(client)
+    }
+    scoped acquired = std.net.tcp.accept_owned(listener).await?
+    let server = std.net.tcp.detach(acquired)?
+    defer {
+        discard close_stream(server)
+    }
+    discard set_receive_buffer_size(client, 32768)?
+    discard set_send_buffer_size(client, 32768)?
+    discard set_receive_buffer_size(server, 32768)?
+    discard set_send_buffer_size(server, 32768)?
+    discard set_nodelay(client, true)?
+    discard set_nodelay(server, true)?
+    let prepared = match prepare(std.net.http.client.Request {
+            body = filled(1048576, 65)
+            ..request("POST", "http://localhost/upload")
+        }, Options {
+            allow_http = true
+            ..options()
+        }) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Ok(false)
+        }
+    }
+    let consumed = [false]
+    let serving = early_server(server, consumed)
+    let response = after_ns(transact(Transport.Tcp(client), prepared), 10000000000).await
+    consumed[0] = true
+    let served = serving.await
+    Result.Ok(match response {
+            Outcome.Completed(Result.Ok(value)) => value.status == 413 && std.bytes.length(value.body) == 262144 &&
+            std.bytes.get(value.body, 0) == 71 && std.bytes.get(value.body, 262143) == 71
+            _ => false
+        } && match served {
+            Result.Ok(_) => true
+            _ => false
+        })
+}
+
+test async fn final_response_does_not_wait_for_a_peer_to_consume_the_upload() {
+    assert match early_response().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
