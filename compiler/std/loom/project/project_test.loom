@@ -249,6 +249,7 @@ test fn production_cycles_still_reject_before_loading_files() {
         overrides = new[Dependency]()
         overlays = new[OverlayFile]()
         failures = new[LoadFailure]()
+        parse_file = file_tree
     }
     push(loader.modules, ModuleRoot {
             name = "app"
@@ -294,6 +295,7 @@ test fn module_roots_reuse_identity_independently_of_display_names() {
         overrides = new[Dependency]()
         overlays = new[OverlayFile]()
         failures = new[LoadFailure]()
+        parse_file = file_tree
     }
     let standard = ModuleRoot {
         name = "std"

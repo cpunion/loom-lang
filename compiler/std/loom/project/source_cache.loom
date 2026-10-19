@@ -1,0 +1,116 @@
+import std.map.Map
+import std.map.new
+import std.map.get
+import std.map.insert
+
+// Only raw parser results populate this private cache. Returned ASTs remain
+// independent editing data; filenames and exact source bytes define each hit.
+pub record SourceCache {
+    state SourceCacheState
+}
+
+record SourceCacheState {
+    files List[Map[Text, ParsedSource]]
+}
+
+record ParsedSource {
+    text Text
+    nodes List[SyntaxRow]
+}
+
+// Preorder cache storage, not another semantic model. Immutable text and source
+// spans are shared; child counts rebuild the ordinary public Node tree. One
+// dense list avoids retaining a second graph of mutable child-list allocations.
+record SyntaxRow {
+    kind NodeKind
+    value Text
+    span Span
+    children Int
+}
+
+fn save_syntax(node Node, rows List[SyntaxRow]) {
+    push(rows, SyntaxRow {
+            kind = node.kind
+            value = node.value
+            span = node.span
+            children = length(node.children)
+        })
+    var index = 0
+    while index < length(node.children) {
+        save_syntax(get(node.children, index), rows)
+        index = index + 1
+    }
+}
+
+fn restore_syntax(rows List[SyntaxRow], start Int) (Node, Int) {
+    let row = get(rows, start)
+    let children = new[Node](row.children)
+    var next = start + 1
+    var index = 0
+    while index < row.children {
+        let child, end = restore_syntax(rows, next)
+        push(children, child)
+        next = end
+        index = index + 1
+    }
+    (Node {
+            kind = row.kind
+            value = row.value
+            span = row.span
+            children = children
+        }, next)
+}
+
+pub fn source_cache() SourceCache {
+    SourceCache {
+        state = SourceCacheState {
+            files = [new[Text, ParsedSource]()]
+        }
+    }
+}
+
+fn file_tree(path Text, text Text) Result[Node, Diagnostic] {
+    std.loom.parser.parse(text)
+}
+
+fn cached_tree(previous Map[Text, ParsedSource], pending Map[Text, ParsedSource],
+    path Text, text Text) Result[Node, Diagnostic] {
+    match get(previous, path) {
+        Option.Some(saved) => {
+            if saved.text == text {
+                discard insert(pending, path, saved)
+                return Result.Ok(restore_syntax(saved.nodes, 0).0)
+            }
+        }
+        Option.None => {
+        }
+    }
+    let tree = std.loom.parser.parse(text)?
+    let nodes = new[SyntaxRow]()
+    save_syntax(tree, nodes)
+    discard insert(pending, path, ParsedSource {
+            text = text
+            nodes = nodes
+        })
+    Result.Ok(tree)
+}
+
+pub fn load_overlaid(path Text, std_root Text, tests Bool,
+    overlays List[SourceOverlay], cache SourceCache) Result[Project, LoadFailure] {
+    let previous = get(cache.state.files, 0)
+    let pending = new[Text, ParsedSource]()
+    let reader = fn(path Text, text Text) Result[Node, Diagnostic] {
+        cached_tree(previous, pending, path, text)
+    }
+    let loaded = load_overlaid(path, std_root, tests, overlays, reader)
+    match loaded {
+        Result.Ok(_) => {
+            // Retain only this successful closure. Failed/partial loads do not
+            // replace it, and deleted files do not accumulate across successes.
+            set(cache.state.files, 0, pending)
+        }
+        Result.Err(_) => {
+        }
+    }
+    loaded
+}

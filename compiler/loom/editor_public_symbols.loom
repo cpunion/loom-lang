@@ -265,7 +265,7 @@ fn editor_public_overlays(options EditorOptions, edits List[EditorPublicEdit]) R
 
 fn editor_module_analysis(options EditorOptions, directory Text, overlays List[SourceOverlay],
     inputs BuildInputs, cache EditorCache) Result[EditorAnalysis, Text] {
-    let project = match load_overlaid(directory, options.std_root, true, overlays) {
+    let project = match load_overlaid(directory, options.std_root, true, overlays, cache.sources) {
         Result.Ok(value) => value
         Result.Err(failed) => {
             return Result.Err(failed.diagnostic.message)

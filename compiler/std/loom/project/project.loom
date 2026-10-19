@@ -72,6 +72,7 @@ record Loader {
     overrides List[Dependency]
     overlays List[OverlayFile]
     failures List[LoadFailure]
+    parse_file fn(Text, Text) Result[Node, Diagnostic]
 }
 
 pub fn package_label(modules List[ModuleInstance], packages List[Package], id Int) Text {
@@ -371,7 +372,7 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
                 } else {
                     get(loader.overlays, overlay).text
                 }
-                let tree = match std.loom.parser.parse(text) {
+                let tree = match loader.parse_file(source_path, text) {
                     Result.Ok(value) => select_source(value, tests)
                     Result.Err(error) => {
                         push(loader.failures, LoadFailure {
@@ -524,6 +525,7 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
         overrides = graph_dependencies(module.dependencies)
         overlays = overlays
         failures = failures
+        parse_file = file_tree
     }
     discard register_module(loader, ModuleRoot {
             name = "std"
@@ -537,7 +539,16 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
 }
 
 fn load_selected(path Text, std_root Text, tests Bool, overlays List[OverlayFile], failures List[LoadFailure]) Result[Project, Text] {
-    let loader, root, directory = prepare_loader(path, std_root, "git", "", overlays, failures)?
+    load_selected(path, std_root, tests, overlays, failures, file_tree)
+}
+
+fn load_selected(path Text, std_root Text, tests Bool, overlays List[OverlayFile], failures List[LoadFailure],
+    parse_file fn(Text, Text) Result[Node, Diagnostic]) Result[Project, Text] {
+    let initial, root, directory = prepare_loader(path, std_root, "git", "", overlays, failures)?
+    let loader = Loader {
+        parse_file = parse_file
+        ..initial
+    }
     discard visit(loader, root, directory, tests, 0, false)?
     Result.Ok(loaded_project(loader, root))
 }
