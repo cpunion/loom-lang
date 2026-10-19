@@ -123,7 +123,7 @@ fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, t
         Option.None => {
         }
     }
-    if editor_declaration(get(analysis.bindings.files, file).tree, tokens, token.span) {
+    if editor_declaration(get(editor_data(analysis).bindings.files, file).tree, tokens, token.span) {
         return Option.Some(Location {
                 file = file
                 span = token.span
@@ -136,7 +136,7 @@ fn editor_references(analysis EditorAnalysis, target Location, spelling Text) Li
     let references = new[Location]()
     editor_push_location(references, target)
     var file = 0
-    while file < length(analysis.bindings.files) {
+    while file < length(editor_data(analysis).bindings.files) {
         match inspect_references(analysis.snapshot, file, spelling) {
             Result.Ok(evidence) => {
                 var index = 0
@@ -235,7 +235,7 @@ fn editor_pattern_local(node Node, tokens List[Token], target Span) Bool {
 }
 
 fn editor_local_scope(analysis EditorAnalysis, target Location) Option[Span] {
-    let source = get(analysis.bindings.files, target.file)
+    let source = get(editor_data(analysis).bindings.files, target.file)
     let tokens = match lex(source.text) {
         Result.Ok(value) => value,
         Result.Err(_) => {
@@ -243,13 +243,13 @@ fn editor_local_scope(analysis EditorAnalysis, target Location) Option[Span] {
         }
     }
     var index = 0
-    while index < length(analysis.bindings.symbols) {
-        let symbol = get(analysis.bindings.symbols, index)
+    while index < length(editor_data(analysis).bindings.symbols) {
+        let symbol = get(editor_data(analysis).bindings.symbols, index)
         if symbol.file == target.file && symbol.node.value != "" && symbol.node.kind == NodeKind.Function &&
         !editor_unsafe_body(symbol.node) && editor_local(symbol.node, tokens, target.span) {
             var checked = 0
-            while checked < length(analysis.functions) {
-                if get(analysis.functions, checked) == index {
+            while checked < length(editor_data(analysis).functions) {
+                if get(editor_data(analysis).functions, checked) == index {
                     // A bare match pattern can be a variant, not a binding.
                     // Require declaration evidence from the checked local ID.
                     match inspect_at(analysis.snapshot, target.file, target.span.start) {
@@ -271,7 +271,7 @@ fn editor_local_scope(analysis EditorAnalysis, target Location) Option[Span] {
 }
 
 fn editor_covered(analysis EditorAnalysis, target Location, spelling Text, scope Span, references List[Location]) Bool {
-    let text = get(analysis.bindings.files, target.file).text
+    let text = get(editor_data(analysis).bindings.files, target.file).text
     let tokens = match lex(text) {
         Result.Ok(value) => value,
         Result.Err(_) => {
@@ -287,7 +287,7 @@ fn editor_covered(analysis EditorAnalysis, target Location, spelling Text, scope
                 file = target.file
                 span = token.span
             }) {
-            if !editor_declaration(get(analysis.bindings.files, target.file).tree, tokens, token.span) {
+            if !editor_declaration(get(editor_data(analysis).bindings.files, target.file).tree, tokens, token.span) {
                 match inspect_at(analysis.snapshot, target.file, token.span.start) {
                     Option.Some(found) => {
                         if length(found.definitions) != 1 ||
@@ -327,7 +327,7 @@ fn editor_valid_new_name(name Text) Bool {
 }
 
 fn editor_name_conflict(analysis EditorAnalysis, file Int, scope Span, name Text) Bool {
-    let tokens = match lex(get(analysis.bindings.files, file).text) {
+    let tokens = match lex(get(editor_data(analysis).bindings.files, file).text) {
         Result.Ok(value) => value,
         Result.Err(_) => {
             return true
@@ -349,11 +349,11 @@ fn editor_name_conflict(analysis EditorAnalysis, file Int, scope Span, name Text
 // ordinary declaration; a function may leave an overload set. Public
 // edits use module-wide package checks instead.
 fn editor_declaration_authority(analysis EditorAnalysis, target Location, public Bool) Bool {
-    let files = analysis.bindings.files
-    let root = analysis.bindings.root
+    let files = editor_data(analysis).bindings.files
+    let root = editor_data(analysis).bindings.root
     let package = get(files, target.file).package
     if (!public && package != root) ||
-    get(analysis.bindings.packages, package).instance != get(analysis.bindings.packages, root).instance {
+    get(editor_data(analysis).bindings.packages, package).instance != get(editor_data(analysis).bindings.packages, root).instance {
         return false
     }
     true
@@ -363,14 +363,14 @@ fn editor_top_declaration(analysis EditorAnalysis, target Location, spelling Tex
     if !editor_declaration_authority(analysis, target, public) {
         return false
     }
-    let files = analysis.bindings.files
+    let files = editor_data(analysis).bindings.files
     let package = get(files, target.file).package
     var matches = 0
     var selected = false
     var selected_function = false
     var index = 0
-    while index < length(analysis.bindings.symbols) {
-        let symbol = get(analysis.bindings.symbols, index)
+    while index < length(editor_data(analysis).bindings.symbols) {
+        let symbol = get(editor_data(analysis).bindings.symbols, index)
         if symbol.owner < 0 && symbol.name == spelling &&
         get(files, symbol.file).package == package {
             matches = matches + 1
@@ -406,16 +406,16 @@ fn editor_top_declaration(analysis EditorAnalysis, target Location, spelling Tex
 fn editor_private_covered(analysis EditorAnalysis, target Location, spelling Text, references List[Location], inputs BuildInputs) Bool {
     // Raw syntax retains declaration stages erased from expanded bindings.
     var file = 0
-    while file < length(analysis.source.files) {
-        let source = get(analysis.source.files, file)
-        if source.package == analysis.source.root && editor_generated(source.tree) {
+    while file < length(editor_data(analysis).source.files) {
+        let source = get(editor_data(analysis).source.files, file)
+        if source.package == editor_data(analysis).source.root && editor_generated(source.tree) {
             return false
         }
         file = file + 1
     }
     // Exported generators can refer to private declarations in their definition
     // context, even when no invocation occurs in this package's import closure.
-    let generators = match std.loom.checking.macro_generator_candidates(analysis.bindings, inputs) {
+    let generators = match std.loom.checking.macro_generator_candidates(editor_data(analysis).bindings, inputs) {
         Result.Ok(value) => value
         Result.Err(_) => {
             return false
@@ -423,14 +423,14 @@ fn editor_private_covered(analysis EditorAnalysis, target Location, spelling Tex
     }
     var generator = 0
     while generator < length(generators) {
-        let item = get(analysis.bindings.symbols, get(generators, generator))
-        if item.public && item.owner < 0 && get(analysis.bindings.files, item.file).package == analysis.bindings.root {
+        let item = get(editor_data(analysis).bindings.symbols, get(generators, generator))
+        if item.public && item.owner < 0 && get(editor_data(analysis).bindings.files, item.file).package == editor_data(analysis).bindings.root {
             return false
         }
         generator = generator + 1
     }
-    let files = analysis.bindings.files
-    let root = analysis.bindings.root
+    let files = editor_data(analysis).bindings.files
+    let root = editor_data(analysis).bindings.root
     var index = 0
     while index < length(references) {
         if get(files, get(references, index).file).package != root {
@@ -470,17 +470,17 @@ fn editor_private_covered(analysis EditorAnalysis, target Location, spelling Tex
 
 fn editor_private_conflict(analysis EditorAnalysis, name Text) Bool {
     var index = 0
-    while index < length(analysis.bindings.symbols) {
-        let symbol = get(analysis.bindings.symbols, index)
+    while index < length(editor_data(analysis).bindings.symbols) {
+        let symbol = get(editor_data(analysis).bindings.symbols, index)
         if symbol.owner < 0 && symbol.name == name {
             return true
         }
         index = index + 1
     }
     var file = 0
-    while file < length(analysis.bindings.files) {
-        let source = get(analysis.bindings.files, file)
-        if source.package == analysis.bindings.root && editor_name_conflict(analysis, file,
+    while file < length(editor_data(analysis).bindings.files) {
+        let source = get(editor_data(analysis).bindings.files, file)
+        if source.package == editor_data(analysis).bindings.root && editor_name_conflict(analysis, file,
             Span {
                 start = 0
                 end = length(source.text)
@@ -652,8 +652,8 @@ fn editor_parameters(node Node) List[Node] {
 
 fn editor_static_binding(analysis EditorAnalysis, file Int, token Token, tokens List[Token], inputs BuildInputs) Option[EditorStaticBinding] {
     var owner = 0
-    while owner < length(analysis.bindings.symbols) {
-        let item = get(analysis.bindings.symbols, owner)
+    while owner < length(editor_data(analysis).bindings.symbols) {
+        let item = get(editor_data(analysis).bindings.symbols, owner)
         if item.file == file && item.node.kind == NodeKind.Function && item.node.value != "" &&
         item.node.span.start <= token.span.start && token.span.end <= item.node.span.end &&
         !has(item.node, NodeKind.ExpansionId) {
@@ -668,7 +668,7 @@ fn editor_static_binding(analysis EditorAnalysis, file Int, token Token, tokens 
                             return Option.None
                         }
                     }
-                    let information = match static_parameter_info(analysis.bindings, owner, parameter, inputs) {
+                    let information = match static_parameter_info(editor_data(analysis).bindings, owner, parameter, inputs) {
                         Result.Ok(value) => value
                         Result.Err(_) => {
                             return Option.None
@@ -710,7 +710,7 @@ fn editor_static_binding(analysis EditorAnalysis, file Int, token Token, tokens 
 
 fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
     file Int, offset Int, inputs BuildInputs) EditorOutput {
-    let bindings = analysis.bindings
+    let bindings = editor_data(analysis).bindings
     let new_name = options.new_name
     let rename = new_name != ""
     let tokens = match lex(get(bindings.files, file).text) {

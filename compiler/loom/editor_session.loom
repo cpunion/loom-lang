@@ -1,5 +1,6 @@
 import std.loom.analysis.is_current_with_inputs
 import std.loom.analysis.Analysis
+import std.loom.analysis.AnalysisData
 import std.loom.analysis.snapshot
 import std.loom.analysis.analyze_cached
 import std.loom.project.BuildInput
@@ -12,14 +13,20 @@ import std.loom.checking.bodies_reused
 import std.loom.checking.has_declaration_stages
 import std.loom.binding.bind_headers
 
-// Mutable metadata for editor transforms, separate from private query evidence.
+// Diagnostics need only private evidence. Materialize editable metadata once,
+// when a navigation or edit actually asks for it, never for every diagnostic.
 record EditorAnalysis {
     snapshot std.loom.analysis.Analysis
-    source Project
-    bindings std.loom.binding.Program
-    functions List[Int]
+    data List[AnalysisData]
     inputs List[BuildInput]
     targets List[std.loom.project.BuildOption]
+}
+
+fn editor_data(analysis EditorAnalysis) AnalysisData {
+    if length(analysis.data) == 0 {
+        push(analysis.data, std.loom.analysis.snapshot(analysis.snapshot))
+    }
+    get(analysis.data, 0)
 }
 
 record EditorCache {
@@ -96,14 +103,13 @@ fn editor_checked(bindings std.loom.binding.Program, inputs BuildInputs, cache E
             packages = bindings.packages
             root = bindings.root
         }, bindings.tests, inputs, cache.definitions)?
-    let data = std.loom.analysis.snapshot(checked)
     let analysis = EditorAnalysis {
         snapshot = checked
-        source = data.source
-        bindings = data.bindings
-        functions = data.functions
-        inputs = data.inputs
-        targets = data.targets
+        data = new[AnalysisData]()
+        // Host observation logs are not proof evidence: reuse validates them
+        // against the analysis's independently owned bytes/options first.
+        inputs = inputs.files
+        targets = inputs.targets
     }
     if length(cache.analysis) == 0 {
         push(cache.analysis, analysis)

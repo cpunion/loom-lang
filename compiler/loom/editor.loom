@@ -32,18 +32,25 @@ fn editor_input_report(inputs BuildInputs, report EditorOutput) EditorOutput {
     var paths = "["
     var index = 0
     while index < length(inputs.requests) {
-        if index > 0 { paths = concat(paths, ",") }
+        if index > 0 {
+            paths = concat(paths, ",")
+        }
         paths = concat(paths, editor_quoted(input_path(get(inputs.requests, index))))
         index = index + 1
     }
     var file = 0
     while file < length(inputs.files) {
-        if index > 0 || file > 0 { paths = concat(paths, ",") }
+        if index > 0 || file > 0 {
+            paths = concat(paths, ",")
+        }
         paths = concat(paths, editor_quoted(get(inputs.files, file).file.path))
         file = file + 1
     }
-    EditorOutput { text = concat("{\"buildInputs\":", concat(paths,
-        concat("],", slice(report.text, 1, std.text.length(report.text))))) failed = report.failed }
+    EditorOutput {
+        text = concat("{\"buildInputs\":", concat(paths,
+                concat("],", slice(report.text, 1, std.text.length(report.text)))))
+        failed = report.failed
+    }
 }
 
 // This fixed editor protocol belongs to the compiler driver, not the runtime
@@ -281,7 +288,8 @@ fn editor_execute(args List[Text], cache EditorCache) EditorOutput {
             Option.Some(analysis) => {
                 return editor_analyzed(args, options, project, analysis, inputs)
             }
-            Option.None => {}
+            Option.None => {
+            }
         }
     }
     let staging = std.loom.checking.has_declaration_stages(project, options.tests)
@@ -290,8 +298,14 @@ fn editor_execute(args List[Text], cache EditorCache) EditorOutput {
             Result.Ok(value) => value
             Result.Err(_) => project
         }
-    } else { project }
-    let bound = match (if staging { std.loom.binding.bind_headers(completion_project, options.tests) } else { bind(project, options.tests) }) {
+    } else {
+        project
+    }
+    let bound = match (if staging {
+            std.loom.binding.bind_headers(completion_project, options.tests)
+        } else {
+            bind(project, options.tests)
+        }) {
         Result.Ok(value) => value
         Result.Err(failed) => {
             if recovery.changed {
@@ -320,11 +334,13 @@ fn editor_execute(args List[Text], cache EditorCache) EditorOutput {
             if get(args, 1) == "editor-query" {
                 let index = match editor_source(project, options.query_path) {
                     Result.Ok(value) => value
-                    Result.Err(message) => { return editor_error(message) }
+                    Result.Err(message) => {
+                        return editor_error(message)
+                    }
                 }
                 let diagnostic = editor_diagnostic_json(get(project.files, failed.source).path, failed.diagnostic)
                 return editor_input_report(inputs, editor_inspection(bound,
-                    inspect_independent(bound, index, options.offset, inputs), diagnostic))
+                        inspect_independent(bound, index, options.offset, inputs), diagnostic))
             }
             editor_input_report(inputs, editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic))
         }
@@ -335,7 +351,9 @@ fn editor_analyzed(args List[Text], options EditorOptions, project Project, anal
     if options.query_path != "" {
         let index = match editor_source(project, options.query_path) {
             Result.Ok(value) => value
-            Result.Err(message) => { return editor_error(message) }
+            Result.Err(message) => {
+                return editor_error(message)
+            }
         }
         if options.offset > std.text.length(get(project.files, index).text) {
             return editor_error("query byte offset is outside the source")
@@ -343,14 +361,14 @@ fn editor_analyzed(args List[Text], options EditorOptions, project Project, anal
         let output = if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
             editor_symbols(options, analysis, index, options.offset, inputs)
         } else {
-            editor_inspection(analysis.bindings, editor_bound_inspection(analysis, index, options.offset, inputs), "")
+            editor_inspection(editor_data(analysis).bindings, editor_bound_inspection(analysis, index, options.offset, inputs), "")
         }
         return editor_input_report(inputs, output)
     }
     editor_input_report(inputs, EditorOutput {
-        text = "{\"diagnostics\":[]}\n"
-        failed = false
-    })
+            text = "{\"diagnostics\":[]}\n"
+            failed = false
+        })
 }
 
 test fn editor_protocol_quotes_control_bytes_without_reencoding_unicode() {
