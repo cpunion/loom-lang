@@ -42,6 +42,20 @@ fn editor_push_location(locations List[Location], location Location) {
     }
 }
 
+fn editor_all_definitions(targets List[Location], definitions List[Location]) Bool {
+    if length(definitions) == 0 {
+        return false
+    }
+    var index = 0
+    while index < length(definitions) {
+        if !editor_contains(targets, get(definitions, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
 fn editor_token(tokens List[Token], offset Int) Option[Token] {
     var index = 0
     while index < length(tokens) {
@@ -103,7 +117,7 @@ fn editor_declaration_node(node Node, tokens List[Token], target Span, parent No
     false
 }
 
-fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, tokens List[Token]) Option[Location] {
+fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, tokens List[Token], methods Bool) Option[Location] {
     // A declaration token identifies itself even when expression inspection
     // finds several same-spelled overloads. This is an exact syntax span, not
     // a fallback guess for an ambiguous call or expression.
@@ -117,6 +131,12 @@ fn editor_selected(analysis EditorAnalysis, file Int, offset Int, token Token, t
         Option.Some(found) => {
             if length(found.definitions) == 1 {
                 return Option.Some(get(found.definitions, 0))
+            }
+            if methods && length(found.definitions) > 1 {
+                let family = editor_method_family(analysis, get(found.definitions, 0), token.value)
+                if editor_all_definitions(family.1, found.definitions) {
+                    return Option.Some(family.0)
+                }
             }
             // A checked expression with ambiguous definitions must not fall
             // through to a spelling-based declaration guess.
@@ -155,13 +175,7 @@ fn editor_references(analysis EditorAnalysis, targets List[Location], spelling T
                     let candidate = get(evidence, index)
                     match candidate.inspection {
                         Option.Some(found) => {
-                            var selected = length(found.definitions) > 0
-                            var definition = 0
-                            while selected && definition < length(found.definitions) {
-                                selected = editor_contains(targets, get(found.definitions, definition))
-                                definition = definition + 1
-                            }
-                            if selected {
+                            if editor_all_definitions(targets, found.definitions) {
                                 editor_push_location(references, Location {
                                         file = file
                                         span = Span {
@@ -687,7 +701,7 @@ fn editor_symbols(options EditorOptions, analysis EditorAnalysis,
         Option.None => {
         }
     }
-    let target = match editor_selected(analysis, file, offset, token, tokens) {
+    let target = match editor_selected(analysis, file, offset, token, tokens, !rename) {
         Option.Some(value) => value,
         Option.None => {
             return editor_no_symbols(rename)
