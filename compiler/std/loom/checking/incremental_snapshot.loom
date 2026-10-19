@@ -18,7 +18,7 @@ pub fn check_project_snapshot(project Project, tests Bool, inputs BuildInputs, c
         Result.Err(_) => Option.None
     }
     let state = definition_state(cache)
-    set(cache.state, 0, DefinitionCacheState {
+    set(cache.state.slot, 0, DefinitionCacheState {
             basis = new[DefinitionBasis]()
             hits = state.hits
             bodies = new[BodyBasis]()

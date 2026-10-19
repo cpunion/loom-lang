@@ -1,3 +1,23 @@
+test fn copied_cache_handles_share_the_private_singleton() {
+    let cache = definition_cache()
+    let alias = cache
+    let source = """
+        pub fn answer() Int {
+            42
+        }
+        """
+    assert match cached_source(cache, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match cached_source(alias, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert definitions_reused(cache) == definitions_reused(alias)
+    assert bodies_reused(alias) >= 1
+}
+
 fn cached_source(cache DefinitionCache, text Text) Result[CachedCheck, Failure] {
     check_project_cached(fixture_project(source_files(text)), false, build_inputs(no_input_reader), cache)
 }
