@@ -33,6 +33,19 @@ test fn computed_word_families_preserve_element_maps_and_reject_erased_word_sour
         "(Ts..., List[W])", "(List[Ts]..., W)")
     discard accepted(source)
     rejects(std.text.replace(source, "List[T]", "Int"))
+    let erased = concat("""
+            record Pair[As..., Bs...] {
+                first (As...)
+                second (Bs...)
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(std.text.replace(source,
+                        "impl[Ts...] Pass for (Ts...)", "impl[As..., Bs...] Pass for Pair[(As...)..., (Bs...)...]"),
+                    "list_type[Ts]()", "list_type[As]()"),
+                "List[Ts]...", "comptime { list_type[Bs]() }..."), "List[T]", "Int"))
+    assert match checked(source_files(erased)) {
+        Result.Err(failed) => failed.diagnostic.message == "computed expansion must retain its source word"
+        Result.Ok(_) => false
+    }
 }
 
 test fn computed_word_families_reject_unknown_type_decisions_and_word_layouts() {
