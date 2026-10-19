@@ -1,0 +1,85 @@
+import std.net.http.RequestMetadata
+import std.net.http.Header
+import std.net.http.write_request
+import std.net.http.reader
+import std.net.http.read_response
+import std.net.http.limits
+import std.net.tcp.TcpError
+import std.net.tcp.connect
+import std.net.tcp.close_stream
+import std.net.tcp.write_bytes
+import std.net.tcp.chunks.read
+import std.file.chunks.stream
+import std.file.FileError
+import std.result.Result
+import std.option.Option
+import std.text.to_bytes
+import std.bytes.to_text
+import std.process.arguments
+import std.process.exit_code
+import std.list.length
+import std.io.write_text
+import std.io.write_error
+
+fn file_packet(value Result[Bytes, FileError]) Result[Bytes, FileError] {
+    value
+}
+
+fn tcp_packet(value Result[Bytes, TcpError]) Result[Bytes, TcpError] {
+    value
+}
+
+async fn upload(address Text, path Text) Bool {
+    let connection = match connect(address).await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    defer {
+        discard close_stream(connection)
+    }
+    scoped source = stream(path, 8192)
+    let sink = async fn(chunk Bytes) Result[Int, TcpError] {
+        write_bytes(connection, chunk).await
+    }
+    let metadata = RequestMetadata {
+        method = "POST"
+        target = "/upload"
+        headers = [Header {
+                name = "Host"
+                value = to_bytes(address)
+            }]
+        trailers = [Header {
+                name = "X-End"
+                value = to_bytes("complete")
+            }]
+    }
+    match write_request(metadata, source, file_packet, sink, limits()).await {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let input = reader(read(connection, 4096), tcp_packet, limits())
+    match read_response(input, "POST").await {
+        Result.Ok(Option.Some(value)) => value.status == 200 && to_text(value.body) == "accepted"
+        _ => false
+    }
+}
+
+async fn main() {
+    let args = arguments()
+    if length(args) != 3 {
+        discard write_error("usage: http_upload ADDRESS FILE\n")
+        exit_code(2)
+        return
+    }
+    if upload(args[1], args[2]).await {
+        discard write_text("streamed upload accepted\n")
+    } else {
+        discard write_error("upload failed\n")
+        exit_code(1)
+    }
+}

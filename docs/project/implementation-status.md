@@ -329,7 +329,12 @@ buffered protocol handoff. Scoped incoming bodies stream bounded fresh chunks
 with backpressure and keep their message lease until completion; partial exit
 or cancellation retires the reader without draining the transport. Buffered
 reads collect that same stream. A real TCP application exercises a persistent
-binary pipeline without collecting its response. It is not a complete HTTP
+binary pipeline without collecting its response. The request writer borrows
+ordinary/scoped producers, snapshots each chunk, and awaits sink backpressure
+without collecting the body. Fixed/chunked lengths, trailers and aggregate
+quotas share the codec's framing rules; partial failures are not retried.
+An independent Rust peer checks real streamed file uploads at O0/O2 with GC stress.
+It is not a complete HTTP
 client/server: routing, authority validation and connection policy remain library work.
 The separate pure HTTP(S) URL parser splits connection host/port, Host authority,
 origin-form target and local fragment without decoding path escapes. It rejects

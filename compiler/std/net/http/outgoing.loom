@@ -1,0 +1,149 @@
+// Message metadata is separate from the incrementally produced body.
+pub record RequestMetadata {
+    method Text
+    target Text
+    headers List[Header]
+    trailers List[Header]
+}
+
+pub enum WriteError[E, F] {
+    Input(E)
+    Sink(F)
+    Protocol(ProtocolError)
+    Count(Int, Int)
+}
+
+record Outgoing {
+    head Bytes
+    tail Bytes
+    shape Framing
+    budget List[Int]
+    limits Limits
+}
+
+fn outgoing(value RequestMetadata, maximum Limits) Result[Outgoing, ProtocolError] {
+    let start, headers = request_fields(value.method, value.target, value.headers, maximum)?
+    let shape = framing(headers, maximum.body_bytes)?
+    let chunked = shape.chunked || shape.size < 0
+    let suffix = snapshot(value.trailers, maximum)?
+    var index = 0
+    while index < std.list.length(suffix) {
+        if !chunked || !trailer(suffix[index]) {
+            return Result.Err(ProtocolError.Framing)
+        }
+        index = index + 1
+    }
+    let head = std.bytes.new()
+    let tail = std.bytes.new()
+    let budget = [maximum.metadata_bytes]
+    discard emit_line(head, start, budget, maximum)?
+    discard emit_fields(head, headers, budget, maximum)?
+    if !shape.chunked && shape.size < 0 {
+        discard emit_line(head, to_bytes("Transfer-Encoding: chunked"), budget, maximum)?
+    }
+    discard emit_line(head, std.bytes.new(), budget, maximum)?
+    // Reserve and validate the terminating section before any output escapes.
+    if chunked {
+        discard emit_line(tail, to_bytes("0"), budget, maximum)?
+        discard emit_fields(tail, suffix, budget, maximum)?
+        discard emit_line(tail, std.bytes.new(), budget, maximum)?
+    }
+    Result.Ok(Outgoing {
+            head = head
+            tail = tail
+            shape = Framing {
+                size = shape.size
+                chunked = chunked
+            }
+            budget = budget
+            limits = maximum
+        })
+}
+
+fn outgoing_chunk(output Outgoing, value Bytes, size Int) Result[Bytes, ProtocolError] {
+    // Snapshot producer-owned bytes before the first sink suspension.
+    if !output.shape.chunked {
+        return Result.Ok(portion(value, 0, size))
+    }
+    let wire = std.bytes.new()
+    discard emit_line(wire, hexadecimal(size), output.budget, output.limits)?
+    var index = 0
+    while index < size {
+        push(wire, get(value, index))
+        index = index + 1
+    }
+    discard emit_line(wire, std.bytes.new(), output.budget, output.limits)?
+    Result.Ok(wire)
+}
+
+async fn output_chunk[E, F](wire Bytes, count Int, sink fn(Bytes) Task[Result[Int, F]]) Result[Int, WriteError[E, F]] {
+    let expected = length(wire)
+    if expected > 9223372036854775807 - count {
+        return Result.Err(WriteError.Protocol(ProtocolError.Limit))
+    }
+    let actual = match sink(wire).await {
+        Result.Ok(value) => value
+        Result.Err(error) => {
+            return Result.Err(WriteError.Sink(error))
+        }
+    }
+    if actual != expected {
+        return Result.Err(WriteError.Count(expected, actual))
+    }
+    Result.Ok(count + expected)
+}
+
+// A sink consumes each complete buffer or reports failure; partial writes are
+// not retried. Source pulls and sink calls are serial and never prefetched.
+pub async fn write_request[S Stream, E, F](value RequestMetadata, source S,
+    bytes fn(S.Item) Result[Bytes, E], sink fn(Bytes) Task[Result[Int, F]],
+    maximum Limits) Result[Int, WriteError[E, F]]
+requires valid_limits(maximum)
+{
+    let output = match outgoing(value, maximum) {
+        Result.Ok(value) => value
+        Result.Err(error) => {
+            return Result.Err(WriteError.Protocol(error))
+        }
+    }
+    var count = output_chunk[E, F](output.head, 0, sink).await?
+    var total = 0
+    while true {
+        let payload = match source.next().await {
+            Option.None => {
+                break
+            }
+            Option.Some(value) => match bytes(value) {
+                Result.Ok(value) => value
+                Result.Err(error) => {
+                    return Result.Err(WriteError.Input(error))
+                }
+            }
+        }
+        let size = length(payload)
+        if size > maximum.body_bytes - total {
+            return Result.Err(WriteError.Protocol(ProtocolError.Limit))
+        }
+        if output.shape.size >= 0 && size > output.shape.size - total {
+            return Result.Err(WriteError.Protocol(ProtocolError.Framing))
+        }
+        total = total + size
+        // Empty producer buffers are not a chunked message terminator.
+        if size > 0 {
+            let wire = match outgoing_chunk(output, payload, size) {
+                Result.Ok(value) => value
+                Result.Err(error) => {
+                    return Result.Err(WriteError.Protocol(error))
+                }
+            }
+            count = output_chunk[E, F](wire, count, sink).await?
+        }
+    }
+    if output.shape.size >= 0 && total != output.shape.size {
+        return Result.Err(WriteError.Protocol(ProtocolError.Truncated))
+    }
+    if output.shape.chunked {
+        count = output_chunk[E, F](output.tail, count, sink).await?
+    }
+    Result.Ok(count)
+}

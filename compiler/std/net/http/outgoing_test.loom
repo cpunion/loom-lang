@@ -1,0 +1,266 @@
+fn upload_metadata(fields List[Header], suffix List[Header]) RequestMetadata {
+    RequestMetadata {
+        method = "POST"
+        target = "/upload"
+        headers = fields
+        trailers = suffix
+    }
+}
+
+test async fn streamed_requests_snapshot_chunks_and_metadata_with_serial_backpressure() {
+    let first = to_bytes("ab")
+    let binary = std.bytes.new()
+    push(binary, 0)
+    push(binary, 255)
+    let source = observed([first, std.bytes.new(), binary])
+    let host = to_bytes("local")
+    let ending = to_bytes("done")
+    let calls = [0]
+    let wire = std.bytes.new()
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        let size = length(chunk)
+        if calls[0] == 0 {
+            assert source.position[0] == 0
+            set(host, 0, 88)
+            set(ending, 0, 88)
+        } else if calls[0] == 1 {
+            assert source.position[0] == 1
+            sleep_ms(0).await
+            set(first, 0, 88)
+        } else {
+            assert source.position[0] == 3
+        }
+        append(wire, chunk)
+        // The completed sink may mutate its own buffer without changing counts.
+        push(chunk, 33)
+        calls[0] = calls[0] + 1
+        Result.Ok(size)
+    }
+    let metadata = upload_metadata([Header {
+                name = "Host"
+                value = host
+            }], [Header {
+                name = "X-End"
+                value = ending
+            }])
+    assert match write_request(metadata, source, raw, sink, limits()).await {
+        Result.Ok(count) => count == length(wire)
+        _ => false
+    }
+    assert calls[0] == 4 && to_text(first) == "Xb"
+    let input = reader(from_iter(from_list(fragments(wire, 1))), raw, limits())
+    assert match read_request(input).await {
+        Result.Ok(Option.Some(value)) => value.method == "POST" && value.target == "/upload" &&
+        length(value.body) == 4 && get(value.body, 0) == 97 && get(value.body, 1) == 98 &&
+        get(value.body, 2) == 0 && get(value.body, 3) == 255 &&
+        to_text(value.headers[0].value) == "local" && std.list.length(value.trailers) == 1 &&
+        to_text(value.trailers[0].value) == "done"
+        _ => false
+    }
+}
+
+test async fn streamed_request_failures_do_not_pull_or_write_a_suffix() {
+    let metadata = upload_metadata([checked_header("Host", "local")], [])
+    let source = observed([to_bytes("a"), to_bytes("unused")])
+    let calls = [0]
+    let short = async fn(chunk Bytes) Result[Int, Text] {
+        calls[0] = calls[0] + 1
+        Result.Ok(if calls[0] == 2 {
+                0
+            } else {
+                length(chunk)
+            })
+    }
+    assert match write_request(metadata, source, raw, short, limits()).await {
+        Result.Err(WriteError.Count(expected, actual)) => expected == 6 && actual == 0
+        _ => false
+    }
+    assert calls[0] == 2 && source.position[0] == 1
+    let items List[Result[Bytes, Text]] = [Result.Err("input"), Result.Ok(to_bytes("unused"))]
+    let supplied_source = from_iter(from_list(items))
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        calls[0] = calls[0] + 1
+        Result.Ok(length(chunk))
+    }
+    assert match write_request(metadata, supplied_source, supplied, sink, limits()).await {
+        Result.Err(WriteError.Input(value)) => value == "input"
+        _ => false
+    }
+    assert calls[0] == 3
+    assert match supplied_source.next().await {
+        Option.Some(Result.Ok(value)) => to_text(value) == "unused"
+        _ => false
+    }
+    let forbidden = observed([to_bytes("untouched")])
+    let failed = async fn(chunk Bytes) Result[Int, Int] {
+        Result.Err(17)
+    }
+    assert match write_request(metadata, forbidden, raw, failed, limits()).await {
+        Result.Err(WriteError.Sink(value)) => value == 17
+        _ => false
+    }
+    assert forbidden.position[0] == 0
+}
+
+test async fn streamed_requests_check_fixed_lengths_and_total_body_and_framing_quotas() {
+    let fixed = upload_metadata([checked_header("Host", "local"), checked_header("Content-Length", "2")], [])
+    var mode = 0
+    while mode < 3 {
+        let source = observed([to_bytes(if mode == 0 {
+                        "ab"
+                    } else if mode == 1 {
+                        "a"
+                    } else {
+                        "abc"
+                    })])
+        let wire = std.bytes.new()
+        let sink = async fn(chunk Bytes) Result[Int, Text] {
+            append(wire, chunk)
+            Result.Ok(length(chunk))
+        }
+        let outcome = write_request(fixed, source, raw, sink, limits()).await
+        assert match outcome {
+            Result.Ok(count) => mode == 0 && count == length(wire) &&
+            std.text.contains(to_text(wire), "\r\n\r\nab")
+            Result.Err(WriteError.Protocol(ProtocolError.Truncated)) => mode == 1
+            Result.Err(WriteError.Protocol(ProtocolError.Framing)) => mode == 2 &&
+            !std.text.contains(to_text(wire), "abc")
+            _ => false
+        }
+        mode = mode + 1
+    }
+    let chunked = upload_metadata([checked_header("Host", "local")], [])
+    let baseline = match outgoing(chunked, limits()) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    mode = 0
+    while mode < 2 {
+        let source = observed([to_bytes("ab"), to_bytes("unused")])
+        let calls = [0]
+        let sink = async fn(chunk Bytes) Result[Int, Text] {
+            calls[0] = calls[0] + 1
+            Result.Ok(length(chunk))
+        }
+        let maximum = Limits {
+            body_bytes = if mode == 0 {
+                1
+            } else {
+                20
+            }
+            metadata_bytes = if mode == 1 {
+                limits().metadata_bytes - baseline.budget[0] + 4
+            } else {
+                limits().metadata_bytes
+            }
+            ..limits()
+        }
+        assert match write_request(chunked, source, raw, sink, maximum).await {
+            Result.Err(WriteError.Protocol(ProtocolError.Limit)) => true
+            _ => false
+        }
+        assert source.position[0] == 1 && calls[0] == 1
+        mode = mode + 1
+    }
+}
+
+test async fn invalid_streamed_metadata_rejects_before_source_or_sink_effects() {
+    let fields = [
+        [checked_header("Host", "local"), checked_header("Content-Length", "1"), checked_header("Transfer-Encoding", "chunked")],
+        [checked_header("Host", "local"), checked_header("Content-Length", "1"), checked_header("Content-Length", "1")],
+        [checked_header("Host", "local"), checked_header("Transfer-Encoding", "gzip")],
+        std.list.new[Header]()
+    ]
+    var index = 0
+    while index < std.list.length(fields) + 1 {
+        let source = observed([to_bytes("unused")])
+        let sink = async fn(chunk Bytes) Result[Int, Text] {
+            assert false
+            Result.Ok(length(chunk))
+        }
+        let metadata = if index < std.list.length(fields) {
+            upload_metadata(fields[index], [])
+        } else {
+            upload_metadata([checked_header("Host", "local")], [checked_header("Content-Length", "1")])
+        }
+        assert match write_request(metadata, source, raw, sink, limits()).await {
+            Result.Err(WriteError.Protocol(_)) => true
+            _ => false
+        }
+        assert source.position[0] == 0
+        index = index + 1
+    }
+}
+
+test async fn cancelling_a_streamed_request_drains_the_sink_before_pulling_again() {
+    let source = observed([to_bytes("a"), to_bytes("unused")])
+    let started = [false]
+    let drained = [0]
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        if source.position[0] == 1 {
+            started[0] = true
+            defer {
+                drained[0] = drained[0] + 1
+            }
+            sleep_ms(60000).await
+        }
+        Result.Ok(length(chunk))
+    }
+    let pending = write_request(upload_metadata([checked_header("Host", "local")], []), source, raw, sink, limits())
+    while !started[0] {
+        sleep_ms(0).await
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert source.position[0] == 1 && drained[0] == 1
+}
+
+import std.text.contains
+import std.resource.MustScope
+import std.resource.Dispose
+
+record OwnedUpload {
+    input ObservedInput
+    closed List[Bool]
+}
+
+impl MustScope for OwnedUpload {
+}
+
+impl Dispose for OwnedUpload {
+    fn dispose(self OwnedUpload) {
+        self.closed[0] = true
+    }
+}
+
+impl Stream for OwnedUpload {
+    type Item = Bytes
+
+    async fn next(self OwnedUpload) Option[Bytes] {
+        self.input.next().await
+    }
+}
+
+test async fn streamed_request_writers_borrow_scoped_producers_without_retaining_them() {
+    let closed = [false]
+    {
+        scoped source = OwnedUpload {
+            input = observed([to_bytes("owned")])
+            closed = closed
+        }
+        let sink = async fn(chunk Bytes) Result[Int, Text] {
+            Result.Ok(length(chunk))
+        }
+        assert match write_request(upload_metadata([checked_header("Host", "local")], []), source, raw, sink, limits()).await {
+            Result.Ok(_) => true
+            _ => false
+        }
+        assert !closed[0]
+    }
+    assert closed[0]
+}
