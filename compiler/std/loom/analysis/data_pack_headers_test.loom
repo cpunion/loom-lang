@@ -73,3 +73,30 @@ test fn data_pack_header_queries_recover_unrelated_bodies_but_reject_invalid_hea
         Option.Some(_) => false
     }
 }
+
+test fn data_pack_projection_queries_keep_source_member_and_concept_segments() {
+    let text = """
+        concept Tagged {}
+        concept Source {
+            type Item Tagged
+        }
+        record Box[T Tagged] {
+            value T
+        }
+        record Rows[Ts... Source] {
+            values (Box[Ts.Source.Item]...)
+            views (dyn Source[Item = Ts.Item]...)
+        }
+        """
+    let analysis = accepted(input(text))
+    let member = query_offset(text, "Item Tagged")
+    only_definition(cached_inspection(analysis, text, "Item]..."), member, member + 4)
+    only_definition(cached_inspection(analysis, text, "Item = Ts"), member, member + 4)
+    let capability = query_offset(text, "Source {")
+    only_definition(cached_inspection(analysis, text, "Source.Item"), capability, capability + 6)
+    let invalid = std.text.replace(text, "Ts.Source.Item", "Ts.Missing")
+    assert match inspect_independent(query_bindings(input(invalid)), 0, query_offset(invalid, "Ts... Source")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}

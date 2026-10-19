@@ -175,7 +175,9 @@ Unused data-pack headers bind global constructors and check closed field/payload
 types through the ordinary resolver. Nominal structural words also discharge
 parameter widths and capability prerequisites through the universal family-shape
 matcher, including nested constructors and independent packs; no width is sampled.
-Unsupported dependent projections and layouts still require further checking.
+Associated projections and direct dyn bindings reuse ordinary member/domain and
+result-bound checks on fresh logical identities with only universally proved
+capabilities. General dependent layouts and scoped dyn-family headers remain open.
 Pack-bearing preconditions compose pure family helpers through the same universal
 proof. Tuple spreads work in contracts and refinement predicates; opaque helper
 arguments provide no storage or callback-behavior evidence.

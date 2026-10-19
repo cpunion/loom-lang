@@ -1,0 +1,122 @@
+// Bridge symbolic words to the ordinary associated-member resolver. A rigid
+// identity is an arbitrary type, not a selected width or a representative
+// element. Only capabilities proved for the complete schema enter its scope.
+fn pack_symbolic_type(context Context, caller Node, schema Node, obligations List[Requirement],
+    budget List[Int], depth Int) Result[Int, Failure] {
+    if depth >= 64 || get(budget, 0) == 0 {
+        return Result.Ok(-1)
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    if schema.kind == NodeKind.Select {
+        return pack_projection_type(context, caller, schema, obligations, budget, depth + 1)
+    }
+    if schema.kind == NodeKind.DynType {
+        return pack_dynamic_type(context, caller, schema, obligations, budget, depth + 1)
+    }
+    if schema.kind == NodeKind.Type && length(schema.children) == 0 {
+        match std.int.parse(schema.value) {
+            Result.Ok(ty) => {
+                if ty >= 0 && ty < length(context.env.types) &&
+                pack_schema_equal(impl_type_schema(context.env, ty, schema, true), schema) {
+                    return Result.Ok(ty)
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    let ty = intern(context.env, TypeKind.Rigid, length(context.env.types), new[Int]())
+    let parameter = pack_schema_parameter(schema)
+    if parameter >= 0 {
+        let source = get(group(caller, NodeKind.TypeParameters), parameter)
+        var bound = 0
+        while bound < length(source.children) {
+            push(obligations, Requirement {
+                    ty = ty
+                    capability = required_concept(context.env, pack_layout_owner(context), child(source, bound))?
+                })
+            bound = bound + 1
+        }
+        return Result.Ok(ty)
+    }
+    var index = 0
+    while index < length(context.env.concepts) {
+        let capability = get(context.env.concepts, index).symbol
+        let declaration = symbol(context.env, capability)
+        let spelling = qualify(package_label(context.env.source.modules, context.env.source.packages,
+                get(context.env.source.files, declaration.file).package), declaration.name)
+        // Derived implementation evidence must not make a hidden concept
+        // visible merely by attaching it to a fresh logical receiver.
+        if concept_named(context.env, pack_layout_owner(context), schema, spelling)? == capability &&
+        pack_layout_admitted(context, caller, schema, capability,
+            new[PackLayoutRequirement](), budget, 0)? {
+            push(obligations, Requirement {
+                    ty = ty
+                    capability = capability
+                })
+        }
+        index = index + 1
+    }
+    Result.Ok(ty)
+}
+
+fn pack_projection_type(context Context, caller Node, schema Node, obligations List[Requirement],
+    budget List[Int], depth Int) Result[Int, Failure] {
+    if depth >= 64 || get(budget, 0) == 0 || length(schema.children) == 0 {
+        return Result.Ok(-1)
+    }
+    let receiver = pack_symbolic_type(context, caller, child(schema, 0), obligations, budget, depth + 1)?
+    if receiver < 0 {
+        return Result.Ok(-1)
+    }
+    let arguments = new[Node]()
+    var index = 1
+    while index < length(schema.children) {
+        let argument = child(schema, index)
+        if argument.kind == NodeKind.Spread {
+            // An unknown number of arguments cannot satisfy a fixed member
+            // domain; don't materialize a width just to try the member.
+            return Result.Ok(-1)
+        }
+        let ty = pack_symbolic_type(context, caller, argument, obligations, budget, depth + 1)?
+        if ty < 0 {
+            return Result.Ok(-1)
+        }
+        push(arguments, meta_reference(argument, ty))
+        index = index + 1
+    }
+    let node = pack_node(schema, NodeKind.Type,
+        concat(concat("$type#", to_text(receiver)), schema.value), arguments)
+    projection(context.env, pack_layout_owner(context), node, new[Int](), obligations, 0)
+}
+
+fn pack_projection_scope(context Context) List[Requirement] {
+    std.list.clone(context.signature.requirements)
+}
+
+fn pack_dynamic_type(context Context, caller Node, schema Node, obligations List[Requirement],
+    budget List[Int], depth Int) Result[Int, Failure] {
+    if depth >= 64 || get(budget, 0) == 0 {
+        return Result.Ok(-1)
+    }
+    let capability = match std.int.parse(slice(schema.value, length("concept#"), length(schema.value))) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(error(context, schema, "invalid symbolic dynamic type"))
+        }
+    }
+    let bindings = new[Node]()
+    var index = 0
+    while index < length(schema.children) {
+        let binding = child(schema, index)
+        let ty = pack_symbolic_type(context, caller, child(binding, 0), obligations, budget, depth + 1)?
+        if ty < 0 {
+            return Result.Ok(-1)
+        }
+        push(bindings, pack_node(binding, NodeKind.AssociatedType, binding.value,
+                source_nodes(meta_reference(child(binding, 0), ty))))
+        index = index + 1
+    }
+    dynamic_type(context.env, pack_layout_owner(context),
+        pack_node(schema, NodeKind.DynType, schema.value, bindings), new[Int](), obligations, 0, capability)
+}

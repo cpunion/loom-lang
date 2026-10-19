@@ -193,3 +193,72 @@ test fn uninstantiated_data_pack_headers_check_symbolic_widths_and_bounds() {
         }
         """)
 }
+
+test fn data_pack_projections_use_declared_result_bounds_and_member_domains() {
+    let definitions = """
+        concept Tagged {}
+        concept Source {
+            type Item Tagged
+            type Family[T Tagged] Tagged
+        }
+        impl[Us... Tagged] Tagged for (Us...) {}
+        record Box[T Tagged] {
+            value T
+        }
+        """
+    discard accepted(concat(definitions, """
+        record Row[Ts... Source, Args... Tagged] {
+            values (Box[Ts.Item]...)
+            nested List[(Ts.Source.Item...)]
+            families (Box[Ts.Family[(Args...)]]...)
+        }
+        """))
+    rejects("""
+        record Row[Ts...] {
+            values (Ts.Missing...)
+        }
+        """)
+    rejects(concat(definitions, """
+        record Row[Ts... Source] {
+            values (Ts.Family[Int]...)
+        }
+        """))
+    rejects(concat(definitions, """
+        record Row[Ts... Source] {
+            values (Ts.Item[Int]...)
+        }
+        """))
+}
+
+test fn data_pack_dynamic_bindings_check_the_declared_associated_domain() {
+    let definitions = """
+        concept Tagged {}
+        concept Source {
+            type Item Tagged
+            fn read(self Self) Self.Item
+        }
+        record Box[T Source] {
+            value T
+        }
+        """
+    discard accepted(concat(definitions, """
+        record Row[Ts... Tagged] {
+            values (Box[dyn Source[Item = Ts]]...)
+        }
+        """))
+    rejects(concat(definitions, """
+        record Row[Ts...] {
+            values (dyn Source[Item = Ts]...)
+        }
+        """))
+    rejects(concat(definitions, """
+        record Row[Ts... Tagged] {
+            values (dyn Source[Unknown = Ts]...)
+        }
+        """))
+    rejects(concat(definitions, """
+        record Row[Ts... Tagged] {
+            values (dyn Source[Item = Ts, Item = Ts]...)
+        }
+        """))
+}
