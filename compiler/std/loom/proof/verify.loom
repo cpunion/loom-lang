@@ -945,7 +945,16 @@ pub fn verify_expression_with_helpers(program Program, function Function, backen
 
 pub fn verify_expression_with_helpers(program Program, function Function, backend ProofBackend,
     protected List[InputGuarantee]) Result[List[Expr], Text] {
-    let proof = contract_verification(program, function, backend, false)?
+    verify_expression_with_helpers(program, function, backend, protected, false)
+}
+
+pub fn verify_expression_with_helpers(program Program, function Function, backend ProofBackend,
+    protected List[InputGuarantee], shared Bool) Result[List[Expr], Text] {
+    let ordinary = contract_verification(program, function, backend, false)?
+    let proof = Verification {
+        shared = shared
+        ..ordinary
+    }
     if length(function.postconditions) != 0 {
         discard verify_body(proof, protected, [], [], true)?
     }

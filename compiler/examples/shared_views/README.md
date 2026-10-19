@@ -10,6 +10,12 @@ target/loom run compiler/examples/shared_views
 fixed, half-open range. Omitting the bounds captures the whole current List.
 `length`, `get` and `set` operate on the view. Copies share those identities.
 
+[Unrestricted predicates](unrestricted.loom) demonstrate a different boundary:
+when a predicate survives every legal base write, strengthening a List or Bytes
+keeps existing aliases and ordinary borrows, including worker writes and
+suspension. This does not capture a range or promise a fixed length. Inputs
+still evaluate once; the compiler installs no alias monitor or implicit copy.
+
 The explicit-range overload proves `length(result) == end - start` on normal
 return, together with valid scalar bounds. `exact_pair` uses this contract to
 construct a length-two refinement directly, without a `Result` or a second

@@ -1,9 +1,9 @@
 import std.loom.proof.fresh_list_factory
 import std.loom.proof.single_list_write
 
-// A constrained sequence has no pre-existing writable outer aliases. Content
-// predicates may observe immutable fields and proved-stable child extents,
-// not nested shared mutable contents.
+// Predicates requiring controlled writes exclude pre-existing writable aliases.
+// Proved unrestricted predicates retain ordinary base aliases. Content reads
+// still require immutable fields or proved-stable child observations.
 // Copies retain the constrained type and ordinary sharing.
 // Plain List borrows must not escape. Stores require a proved preserving
 // operation; no runtime monitor is needed.
@@ -12,6 +12,10 @@ fn constrained_sequence(env Environment, ty Int) Bool {
     shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
     (get(env.types, get(shape.fields, 0).ty).kind == TypeKind.List ||
         get(env.types, get(shape.fields, 0).ty).kind == TypeKind.Bytes)
+}
+
+fn unrestricted_sequence(env Environment, ty Int) Bool {
+    constrained_sequence(env, ty) && get(env.type_states, ty).sequence == SequencePolicy.Unrestricted
 }
 
 fn closed_list_value(value Expr) Bool {
@@ -71,6 +75,7 @@ fn list_constraint_error(env Environment, owner Int, value Expr, message Text) F
 fn constraint_weakened(env Environment, value Expr) Bool {
     value.kind == ExprKind.Coerce && length(value.children) == 1 &&
     constrained_sequence(env, get(value.children, 0).ty) &&
+    !unrestricted_sequence(env, get(value.children, 0).ty) &&
     value.ty == base_type(env, get(value.children, 0).ty)
 }
 
@@ -269,7 +274,8 @@ fn list_constraint_expression(env Environment, functions List[Function], locals 
     // only by the validated predicate and the successful refined result.
     if value.kind == ExprKind.Block && value.text == "checked sequence" {
         let input = get(get(value.children, 0).children, 0)
-        if !constraint_fresh(env, functions, input) && !established_draft(value, drafts) {
+        if !unrestricted_sequence(env, draft_type(value)) &&
+        !constraint_fresh(env, functions, input) && !established_draft(value, drafts) {
             return Result.Err(list_constraint_error(env, owner, input,
                     "a sequence constraint requires fresh unpublished storage; use a fresh literal, a proved factory, an unpublished local draft or an explicit copy"))
         }
@@ -278,6 +284,7 @@ fn list_constraint_expression(env Environment, functions List[Function], locals 
         return Result.Ok(true)
     }
     if value.kind == ExprKind.Coerce && constrained_sequence(env, value.ty) &&
+    !unrestricted_sequence(env, value.ty) &&
     !constraint_restored(env, value) && !constraint_fresh(env, functions, get(value.children, 0)) &&
     !established_draft(value, drafts) {
         return Result.Err(list_constraint_error(env, owner, value,

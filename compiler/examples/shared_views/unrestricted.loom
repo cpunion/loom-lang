@@ -1,0 +1,49 @@
+import std.list.length
+import std.list.push
+import std.bytes.new
+import std.bytes.length
+import std.bytes.get
+import std.bytes.set
+import std.bytes.push
+import std.task.worker.run
+
+// These predicates survive every legal base write. They preserve sharing,
+// rather than acquiring the fixed metadata of a captured View.
+type AnyExtent[T] = List[T] where std.list.length(self) >= 0
+
+type AnyBuffer = Bytes where std.bytes.length(self) >= 0
+
+fn checked_extent[T](values List[T]) AnyExtent[T] {
+    AnyExtent[T](values)
+}
+
+fn expose_extent(values AnyExtent[Int]) List[Int] {
+    values
+}
+
+fn observe_extent(values List[Int], calls List[Int]) List[Int] {
+    calls[0] = calls[0] + 1
+    values
+}
+
+async fn unrestricted_aliases() {
+    let values = [1]
+    let calls = [0]
+    let constrained = checked_extent(observe_extent(values, calls))
+    assert calls[0] == 1
+    values[0] = 42
+    let escaped = expose_extent(constrained)
+    std.list.push(escaped, 2)
+    assert constrained[0] == 42 && std.list.length(constrained) == 2
+    let count = run(fn() Int {
+            std.list.push(escaped, 3)
+            std.list.length(escaped)
+        }).await
+    assert count == 3 && std.list.length(constrained) == 3
+    let buffer = new()
+    std.bytes.push(buffer, 65)
+    let checked = AnyBuffer(buffer)
+    std.bytes.set(buffer, 0, 90)
+    std.bytes.push(checked, 66)
+    assert std.bytes.length(checked) == 2 && std.bytes.get(checked, 0) == 90
+}

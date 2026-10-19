@@ -257,8 +257,10 @@ supported theories and boundaries. The central rules are:
   Shared atomic element reads can use the continuing predicate at that snapshot;
   separate reads still cannot assume equal contents.
 - Fresh drafts and selected known aliases can publish a constrained outer header
-  after checked construction and escape analysis. Raw writable aliases cannot
-  escape. Shared builds independently revalidate preservation; no implicit copy,
+  after checked construction and escape analysis. A separately proved predicate
+  that survives arbitrary legal base writes admits pre-existing aliases and
+  ordinary base borrows/escapes, without fixed-extent or frozen-content evidence.
+  Other raw writable aliases cannot escape. Shared builds independently revalidate preservation; no implicit copy,
   monitor, ownership syntax or sampled reservation is introduced.
   Bounded body provenance also admits unrelated input effects and callbacks
   that cannot reach the fresh output, including successful source Task results,

@@ -152,7 +152,7 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
         runtime_name = ""
         span = node.span
     }
-    Result.Ok(proves_with_input_invariants(stage, program, proof, true))
+    Result.Ok(proves_with_input_invariants(stage, program, proof, true, unrestricted_sequence(stage.env, target)))
 }
 
 // An immutable outer value can keep its nominal input facts while exposing its

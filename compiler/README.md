@@ -2671,7 +2671,8 @@ immutable element fields even beside unobserved shared fields. Reads through
 those fields into nested mutable List/Bytes contents reject, including a recursive
 List with the same stored type as the outer header. Resize-protected child
 extents use the header-only rule above, not permission to read their contents.
-Construction must use a fresh List literal, a factory proved to return a
+Unless the predicate is proved to survive arbitrary legal base-alias writes,
+construction must use a fresh List literal, a factory proved to return a
 fresh unpublished outer header, or a proved unpublished local draft. Elements may retain their specified sharing;
 the existing header cannot be returned through a nested input either.
 Effects on unrelated inputs and unknown callbacks are permitted only when the
@@ -2927,7 +2928,12 @@ predicate checks. The proof infers the continuing predicate at loop heads and
 checks each store inductively; a callee's return contract cannot replace that
 check. Borrowed headers still cannot escape or be published. Unknown effects,
 unsupported bodies and mutating fault cleanup reject conservatively.
-Strengthening pre-existing writable aliases remains later analysis work.
+Predicates proved safe under arbitrary legal base writes may strengthen existing
+aliases and retain ordinary base borrows and escapes. This adds no fixed extent
+or frozen-content guarantee; downstream predicates cannot infer either from
+that sharing permission. Constructor proof uses shared observations before
+eliminating its check. See the [unrestricted alias example](examples/shared_views/unrestricted.loom).
+Other strengthening of pre-existing writable aliases remains open.
 Shared builds with admitted content writes no longer treat that nominal type's
 contents as read-only; old-cell equality still requires interference-safe proof.
 Admitted appends also withdraw fixed-extent evidence across all aliases. A
