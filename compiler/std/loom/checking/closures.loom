@@ -43,6 +43,8 @@ record Lexical {
 }
 
 record ClosurePlan {
+    // Checker-only lexical scope, rebuilt with the plan, never body-cache IR.
+    type_computation Int
     signature Signature
     arguments List[Int]
     constants List[StaticValue]
@@ -340,7 +342,8 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
     index = 0
     while index < length(context.env.closures) {
         let saved = get(context.env.closures, index)
-        if saved.checked && saved.signature.symbol == owner && same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) {
+        if saved.checked && saved.type_computation == context.type_computation && saved.signature.symbol == owner &&
+        same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) {
             plan = index
         }
         index = index + 1
@@ -356,6 +359,7 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
                 sequence = SequencePolicy.Checked
             })
         push(context.env.closures, ClosurePlan {
+                type_computation = context.type_computation
                 signature = signature
                 arguments = context.arguments
                 constants = context.constants
@@ -373,12 +377,8 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
     }
     let completed = get(context.env.closures, plan)
     std.list.set(context.env.closures, plan, ClosurePlan {
-            signature = completed.signature
-            arguments = completed.arguments
-            constants = completed.constants
-            captures = completed.captures
-            environment = completed.environment
             checked = true
+            ..completed
         })
     let saved = get(context.env.closures, plan)
     let fields = new[Expr]()
@@ -436,7 +436,7 @@ fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Resul
     push(scopes, scope)
     var context = Context {
         lexical = scopes
-        type_computation = -1
+        type_computation = saved.type_computation
         env = env
         signature = saved.signature
         arguments = saved.arguments

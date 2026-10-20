@@ -42,6 +42,23 @@ test fn checked_type_aliases_retain_local_word_assembly_navigation() {
     only_type(found, "type")
 }
 
+test fn checked_type_aliases_retain_word_inputs_captured_by_local_functions() {
+    let source = std.text.replace(type_alias_header_source(), "identity_type[Whole]()", """
+        let assemble = fn() type {
+            let Captured = Whole
+            identity_type[(Ts..., Captured)]()
+        }
+        assemble()
+        """)
+    let bindings = query_bindings(input(source))
+    let whole = query_offset(source, "Whole =")
+    only_definition(independent_found(bindings, source, "Whole\n"), whole, whole + 5)
+    let captured = query_offset(source, "Captured =")
+    let found = independent_found(bindings, source, "Captured)]")
+    only_definition(found, captured, captured + 8)
+    only_type(found, "type")
+}
+
 test fn checked_type_aliases_preserve_lexical_shadowing_and_erased_uses() {
     let source = """
         record Box {

@@ -237,6 +237,67 @@ test fn computed_layouts_assemble_words_with_checked_local_type_values() {
     }
 }
 
+test fn computed_layouts_preserve_lexical_inputs_across_local_pure_functions() {
+    let source = std.text.replace(computed_local_word_source(), "identity_type[(Ts..., Suffix)]()", """
+        let assemble = fn() type {
+            let Captured = Suffix
+            identity_type[(Ts..., Captured)]()
+        }
+        assemble()
+        """)
+    discard accepted(source)
+    let nested = std.text.replace(source, "let Captured = Suffix\n    identity_type[(Ts..., Captured)]()", """
+        let Captured = Suffix
+        let inner = fn() type {
+            identity_type[(Ts..., Captured)]()
+        }
+        inner()
+        """)
+    assert nested != source
+    discard accepted(nested)
+    rejects(std.text.replace(source, "let Captured = Suffix", "let Ts = Bool\nlet Captured = Suffix"))
+    rejects(std.text.replace(source, "identity_type[(Ts..., Captured)]()", "identity_type[Ts]()"))
+    let named = concat("record Ts {}\n", source)
+    discard accepted(named)
+    assert match checked(source_files(std.text.replace(named,
+                    "identity_type[(Ts..., Captured)]()", "identity_type[Ts]()"))) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "expand a type pack")
+        Result.Ok(_) => false
+    }
+    let independent = std.text.replace(computed_independent_local_source(),
+        "identity_type[(As..., Suffix, Bs...)]()", """
+        let assemble = fn() type {
+            let Captured = Suffix
+            let Second = identity_type[(Bs...)]()
+            discard Second
+            identity_type[(As..., Captured, Bs...)]()
+        }
+        assemble()
+        """)
+    discard accepted(independent)
+    rejects(std.text.replace(independent, "(As..., Captured, Bs...)", "(Bs..., Captured, As...)"))
+}
+
+test fn computed_layouts_preserve_captured_element_origins_after_input_erasure() {
+    let source = std.text.replace(std.text.replace(std.text.replace(std.text.replace(
+                    computed_independent_local_source(),
+                    "let Suffix = List[U]\nidentity_type[(As..., Suffix, Bs...)]()", """
+                    let assemble = fn() type {
+                        let Suffix = Bs
+                        identity_type[(As..., Suffix)]()
+                    }
+                    assemble()
+                    """), "}, U)]", "}..., U)]"),
+            "((As..., List[V], Bs...), V)", "((As..., Bs)..., V)"),
+        "((As..., List[W], Bs...), W)", "((As..., Bs)..., W)")
+    discard accepted(source)
+    rejects(std.text.replace(source, "(As..., Bs)...", "(Bs..., As)..."))
+    let erased = std.text.replace(std.text.replace(source, "\n    T\n", "\n    Int\n"),
+        "(As..., Bs)...", "comptime { identity_type[Bs]() }...")
+    discard accepted(erased)
+    rejects(std.text.replace(erased, "identity_type[Bs]()", "identity_type[As]()"))
+}
+
 fn computed_independent_local_source() Text {
     concat("""
             record Pair[As..., Bs...] {

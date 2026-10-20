@@ -39,8 +39,11 @@ impl[Ts...] MappedWholeRelay for (Ts...) {
     type Value = dyn WordFactory[Item[U] = (comptime {
                 let Gate = Bool
                 comptime if Gate == Bool {
-                    let Suffix = Ts
-                    word_item_type[((Ts...), Suffix)]()
+                    let map = fn() type {
+                        let Suffix = Ts
+                        word_item_type[((Ts...), Suffix)]()
+                    }
+                    map()
                 } else {
                     Missing
                 }
@@ -63,7 +66,11 @@ concept LocalWordRelay {
 impl[Ts...] LocalWordRelay for (Ts...) {
     type Value = dyn WordFactory[Item[U] = comptime {
             let Suffix = List[U]
-            word_item_type[(Ts..., Suffix)]()
+            let assemble = fn() type {
+                let Captured = Suffix
+                word_item_type[(Ts..., Captured)]()
+            }
+            assemble()
         }]
     fn relay_local(self Self, value dyn WordFactory[Item[V] = (Ts..., List[V])])
     dyn WordFactory[Item[W] = (Ts..., List[W])] {

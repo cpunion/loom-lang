@@ -17,7 +17,7 @@ fn impl_method_computation_context(env Environment, scope ImplMethodScope, owner
     let bindings = new[Int]()
     index = 0
     while index < length(frame) {
-        push(bindings, lookup(context, get(frame, index).value))
+        push(bindings, impl_computation_binding(context, get(frame, index).value))
         index = index + 1
     }
     let computations = get(env.inputs, 0).type_computations

@@ -237,8 +237,7 @@ fn impl_method_source_context(env Environment, scope ImplMethodScope, owner Int,
         let parameter = get(frame, index)
         if mentions_pack(node, parameter.value) {
             if words && parameter.kind == NodeKind.TypePack && !element {
-                let opaque = intern(env, TypeKind.Rigid, length(env.types), new[Int]())
-                context = bind_local(context, parameter, parameter.value, opaque, false, -1)?
+                context = bind_computation_word(context, parameter, boundary)?
                 index = index + 1
                 continue
             }

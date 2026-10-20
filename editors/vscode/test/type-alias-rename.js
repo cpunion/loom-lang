@@ -32,7 +32,11 @@ impl[Ts...] Pass for (Ts...) {
     }, U)]
     type Composed = dyn Family[Item[U] = (comptime {
         let Suffix = List[U]
-        identity_type[(Ts..., Suffix)]()
+        let assemble = fn() type {
+            let Captured = Suffix
+            identity_type[(Ts..., Captured)]()
+        }
+        assemble()
     }, U)]
 }
 
@@ -59,7 +63,8 @@ fn main() {
     const document = TextDocument.create(uri, 'loom', version, source);
     for (const [fragment, declaration, count, conflict] of [
       ['Whole]()', 'Whole = Self', 2, 'identity_type'],
-      ['Suffix)]', 'Suffix = List[U]', 2, 'identity_type'],
+      ['Suffix\n', 'Suffix = List[U]', 2, 'identity_type'],
+      ['Captured)]', 'Captured = Suffix', 2, 'identity_type'],
       ['Chosen {', 'Chosen = Box', 3, 'made'],
       ['Chosen = Bool', 'Chosen = Bool', 2, 'flag'],
     ]) {

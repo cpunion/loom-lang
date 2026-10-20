@@ -8,6 +8,29 @@ record ImplTypeComputation {
     element Bool
 }
 
+// Static aliases have session-wide identity; closure-local binding slots do
+// not. Capturing a type input preserves this identity without a runtime field.
+fn impl_computation_binding(context Context, name Text) Int {
+    let selected = lookup(context, name)
+    if selected < 0 {
+        return -1
+    }
+    let binding = get(context.bindings, selected)
+    if binding.constant < -1 {
+        return -2 - binding.constant
+    }
+    -1
+}
+
+fn bind_computation_word(context Context, node Node, boundary Int) Result[Context, Failure] {
+    let alias = length(context.env.static_aliases)
+    push(context.env.static_aliases, StaticAlias {
+            node = pack_node(node, NodeKind.Type, "$word-input", new[Node]())
+            ty = meta_type(context.env)
+        })
+    bind_name(context, node, node.value, -1, -2 - alias, boundary)
+}
+
 fn impl_computation_scope(scope ImplMethodScope, computation ImplComputation) ImplMethodScope {
     let types = new[Int]()
     var index = 0
@@ -52,7 +75,7 @@ fn impl_computation_reference(context Context, source Node) Result[Bool, Failure
     while index < length(input.frame) {
         let parameter = get(input.frame, index)
         if parameter.kind == NodeKind.TypePack && pack_root(source, parameter.value) &&
-        get(input.bindings, index) >= 0 && lookup(context, parameter.value) == get(input.bindings, index) {
+        get(input.bindings, index) >= 0 && impl_computation_binding(context, parameter.value) == get(input.bindings, index) {
             return impl_computation_origins(context, source, input)
         }
         index = index + 1
@@ -71,7 +94,7 @@ fn impl_computation_source(context Context, source Node, input ImplTypeComputati
         let parameter = get(input.frame, index)
         let name = get(names, index)
         if parameter.kind == NodeKind.TypePack && name != "" && pack_root(source, name) &&
-        get(input.bindings, index) >= 0 && lookup(context, name) == get(input.bindings, index) {
+        get(input.bindings, index) >= 0 && impl_computation_binding(context, name) == get(input.bindings, index) {
             if spread {
                 value = concat(concat("$layout-input#", to_text(index)), slice(value, length(name), length(value)))
                 set(changed, 0, true)

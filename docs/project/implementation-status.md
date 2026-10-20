@@ -228,7 +228,10 @@ a whole captured word and a selected element; only free element references
 determine its width, even when the helper erases its input type. Local aliases
 use ordinary CTFE lookup, not global-name substitution. Checked local type values
 also participate in unknown-width tuple, function and nominal assembly, including
-independent words and nested family captures. The type-checking boundary preserves
+independent words and nested family captures. Local pure functions retain these
+lexical inputs across capture order and nested closures, without runtime word
+storage; shadowed bindings do not inherit the outer pack's identity or width.
+The type-checking boundary preserves
 their schemas without materializing a layout or admitting an unproved fresh
 opaque result. Static guards reuse
 ordinary lazy input preparation and short-circuit selection, without resolving
