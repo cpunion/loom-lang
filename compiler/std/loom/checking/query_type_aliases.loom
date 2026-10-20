@@ -1,0 +1,67 @@
+// Query-only lexical type bindings survive erasure without adding executable
+// locals or interpreting a symbolic type identity as a runtime layout.
+fn retain_type_alias_binding(context Context, node Node, alias Int) {
+    let inputs = get(context.env.inputs, 0)
+    while length(inputs.type_alias_queries) <= alias {
+        push(inputs.type_alias_queries, new[ParameterHeader]())
+    }
+    push(get(inputs.type_alias_queries, alias), ParameterHeader {
+            symbol = context.signature.symbol
+            node = node
+            parameter = node
+        })
+}
+
+fn retain_type_alias_reference(context Context, node Node) {
+    let inputs = get(context.env.inputs, 0)
+    if node.kind == NodeKind.Apply {
+        retain_type_alias_reference(context, child(node, 0))
+        return
+    }
+    let local = lookup(context, slice(node.value, 0, first_dot(node.value)))
+    if local < 0 {
+        return
+    }
+    let binding = get(context.bindings, local)
+    let alias = -2 - binding.constant
+    if binding.constant >= -1 || alias >= length(inputs.type_alias_queries) {
+        return
+    }
+    let references = get(inputs.type_alias_queries, alias)
+    if length(references) == 0 {
+        return
+    }
+    let declaration = get(references, 0)
+    if symbol(context.env, declaration.symbol).file != symbol(context.env, context.signature.symbol).file {
+        return
+    }
+    var index = 0
+    while index < length(references) {
+        let previous = get(references, index).node
+        if previous.span.start == node.span.start && previous.span.end == node.span.end {
+            return
+        }
+        index = index + 1
+    }
+    push(references, ParameterHeader {
+            node = node
+            ..declaration
+        })
+}
+
+// Call only after the requested check succeeds; failed computations must not
+// publish their partially checked aliases.
+fn type_alias_headers(env Environment, output List[ParameterHeader]) List[ParameterHeader] {
+    let aliases = get(env.inputs, 0).type_alias_queries
+    var index = 0
+    while index < length(aliases) {
+        let references = get(aliases, index)
+        var reference = 0
+        while reference < length(references) {
+            push(output, get(references, reference))
+            reference = reference + 1
+        }
+        index = index + 1
+    }
+    output
+}

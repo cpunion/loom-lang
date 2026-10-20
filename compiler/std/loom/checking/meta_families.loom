@@ -76,6 +76,9 @@ fn meta_family_node(context Context, node Node, outer List[Node]) Result[Node, F
     family_parameter_index(parameters, slice(node.value, 0, first_dot(node.value))) < 0 {
         let selected = meta_binding(context, slice(node.value, 0, first_dot(node.value)))
         if selected >= 0 {
+            if get(context.env.inputs, 0).declaration_queries {
+                retain_type_alias_reference(context, node)
+            }
             let reference = meta_reference(node, selected)
             return Result.Ok(pack_node(node, node.kind,
                     concat(reference.value, slice(node.value, first_dot(node.value), length(node.value))), node.children))

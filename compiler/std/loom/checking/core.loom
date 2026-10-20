@@ -487,6 +487,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, decl
             declaration_queries = declaration_queries
             declaration_references = new[DeclarationReference]()
             staged_queries = new[StagedQuery]()
+            type_alias_queries = new[List[ParameterHeader]]()
             reference_indices = new[List[Int]]()
             template_queries = new[Int]()
             template_seen = new[Bool]()

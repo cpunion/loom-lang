@@ -113,6 +113,9 @@ fn meta_binding(context Context, name Text) Int {
 fn meta_constructor_type(context Context, node Node, path Text) Result[Int, Failure] {
     let selected = meta_binding(context, path)
     if selected >= 0 {
+        if get(context.env.inputs, 0).declaration_queries {
+            retain_type_alias_reference(context, node)
+        }
         return Result.Ok(selected)
     }
     let first = slice(path, 0, first_dot(path))
@@ -164,6 +167,9 @@ fn meta_type_node(context Context, node Node) Result[Node, Failure] {
         let end = first_dot(node.value)
         let selected = meta_binding(context, slice(node.value, 0, end))
         if selected >= 0 {
+            if get(context.env.inputs, 0).declaration_queries {
+                retain_type_alias_reference(context, node)
+            }
             if length(get(context.env.inputs, 0).static_queries) != 0 {
                 let binding = get(context.bindings, lookup(context, slice(node.value, 0, end)))
                 if binding.constant >= 0 {
@@ -199,6 +205,9 @@ fn bind_meta(context Context, node Node, value Expr, boundary Int) Result[Step, 
             ty = value.ty
         })
     let next = bind_name(context, node, node.value, -1, -2 - index, boundary)?
+    if get(context.env.inputs, 0).declaration_queries && node.kind == NodeKind.Let {
+        retain_type_alias_binding(context, node, index)
+    }
     Result.Ok(Step {
             context = next
             expression = expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)
