@@ -40,10 +40,12 @@ fn impl_method_computation_context(env Environment, scope ImplMethodScope, owner
     }
     let computations = get(env.inputs, 0).type_computations
     let selected = length(computations)
+    // The caller appends its computed component after this scope finishes.
+    // Retained lexical inputs must not follow those later frame mutations.
     push(computations, ImplTypeComputation {
             scope = scope
-            frame = frame
-            values = values
+            frame = std.list.clone(frame)
+            values = std.list.clone(values)
             bindings = bindings
             computation = computation
             element = element
