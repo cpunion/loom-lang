@@ -1,21 +1,13 @@
 // A checked erased Let is only a candidate. Resolve it through the cached
 // source check before a concrete constructor can report its underlying record
 // as the definition of a lexical alias. Never publish a binding from spelling.
-fn erased_type_binding(source Node, value Expr, name Text) Bool {
-    if value.kind == ExprKind.Block && value.ty == 0 && length(value.children) == 0 {
-        match source_binding(source, value.span) {
-            Option.Some(binding) => {
-                if binding.kind == NodeKind.Let && binding.value == name {
-                    return true
-                }
-            }
-            Option.None => {
-            }
-        }
+fn erased_binding_span(value Expr, span Span) Bool {
+    if value.kind == ExprKind.Block && value.ty == 0 && length(value.children) == 0 && same_span(value.span, span) {
+        return true
     }
     var index = 0
     while index < length(value.children) {
-        if erased_type_binding(source, get(value.children, index), name) {
+        if erased_binding_span(get(value.children, index), span) {
             return true
         }
         index = index + 1
@@ -25,10 +17,24 @@ fn erased_type_binding(source Node, value Expr, name Text) Bool {
         let arm = get(value.arms, index)
         var part = 0
         while part < length(arm.body) {
-            if erased_type_binding(source, get(arm.body, part), name) {
+            if erased_binding_span(get(arm.body, part), span) {
                 return true
             }
             part = part + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn erased_type_binding(source Node, body Expr, name Text) Bool {
+    if source.kind == NodeKind.Let && source.value == name && erased_binding_span(body, source.span) {
+        return true
+    }
+    var index = 0
+    while index < length(source.children) {
+        if erased_type_binding(get(source.children, index), body, name) {
+            return true
         }
         index = index + 1
     }

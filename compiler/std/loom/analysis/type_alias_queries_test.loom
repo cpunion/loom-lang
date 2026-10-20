@@ -76,6 +76,11 @@ test fn checked_type_aliases_preserve_lexical_shadowing_and_erased_uses() {
     only_definition(inspection(analysis, source, "Direct\n"), direct, direct + 6)
     assert length(analysis.program.functions) == functions && length(analysis.program.types) == types &&
     length(analysis.bindings.symbols) == symbols
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => !saved.header && saved.scope.span.start == query_offset(source, "fn main()") &&
+        length(saved.view.parameter_headers) > 0
+        Option.None => false
+    }
 }
 
 test fn checked_type_aliases_do_not_publish_failed_or_unselected_bindings() {
