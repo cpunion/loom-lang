@@ -33,7 +33,7 @@ fn source_timers_resume_typed_frames_and_evaluate_deadlines_once() {
     fs::write(
         package.path().join("main.loom"),
         r#"
-import std.time.monotonic_ns
+import std.time.clock.monotonic_ns
 import std.time.sleep_until_ns
 import std.time.sleep_ns
 import std.time.sleep_ms

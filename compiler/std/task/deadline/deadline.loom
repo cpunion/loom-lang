@@ -1,6 +1,6 @@
 import std.task.Outcome
 import std.task.cancel_when
-import std.time.monotonic_ns
+import std.time.clock.monotonic_ns
 import std.time.sleep_until_ns
 
 // Request cancellation at an absolute process-local monotonic deadline.

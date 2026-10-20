@@ -135,6 +135,21 @@ test fn test_dependencies_can_import_the_completed_production_package() {
     }
 }
 
+test fn synchronous_clock_does_not_import_task_policy() {
+    let project = match load("compiler/std/time/clock", "compiler/std", false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    var index = 0
+    while index < length(project.packages) {
+        assert package_label(project.modules, project.packages, index) != "std.task"
+        index = index + 1
+    }
+}
+
 test fn implicit_production_await_still_participates_in_cycle_checks() {
     let directory = match canonical("compiler/std/list") {
         Result.Ok(value) => value

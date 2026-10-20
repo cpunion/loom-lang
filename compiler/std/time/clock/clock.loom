@@ -1,0 +1,7 @@
+intrinsic fn clock_monotonic_ns() Int
+
+// Nanoseconds on this process's monotonic clock, not calendar time.
+// Values are meaningful only within the same process execution.
+pub fn monotonic_ns() Int {
+    clock_monotonic_ns()
+}

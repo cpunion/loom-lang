@@ -1,6 +1,6 @@
 import std.task.deadline.at
 import std.task.deadline.after_ns
-import std.time.monotonic_ns
+import std.time.clock.monotonic_ns
 
 test async fn deadlines_preserve_completed_faulted_and_empty_outcomes() {
     match after_ns(successful(), 10000000000).await {

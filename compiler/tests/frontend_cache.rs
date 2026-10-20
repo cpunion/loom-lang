@@ -29,6 +29,18 @@ fn checked(output: &Output, hit: bool) {
     );
 }
 
+fn reused_bodies(trace: &str) -> usize {
+    trace
+        .lines()
+        .find_map(|line| line.strip_prefix("loom cache: definitions reused "))
+        .unwrap()
+        .split_once(", bodies reused ")
+        .unwrap()
+        .1
+        .parse()
+        .unwrap()
+}
+
 #[test]
 fn dynamic_family_snapshots_recheck_changed_bindings_and_keep_native_captures() {
     let directory = tempfile::tempdir().unwrap();
@@ -58,6 +70,24 @@ fn dynamic_family_snapshots_recheck_changed_bindings_and_keep_native_captures() 
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
+    for phase in [
+        "compiler identity",
+        "closure key",
+        "frontend lookup",
+        "definition load",
+        "definition check/snapshot",
+        "definition prepare",
+        "definition publish",
+        "frontend publish",
+    ] {
+        let prefix = format!("loom cache: timing {phase} ns ");
+        assert!(
+            trace.lines().any(|line| line
+                .strip_prefix(&prefix)
+                .is_some_and(|value| value.parse::<u64>().is_ok())),
+            "{trace}"
+        );
+    }
     assert!(
         trace.contains("bodies reused ") && !trace.contains("bodies reused 0"),
         "{trace}"
@@ -66,6 +96,15 @@ fn dynamic_family_snapshots_recheck_changed_bindings_and_keep_native_captures() 
     // not a semantic requirement. Both artifacts must preserve native behavior.
     checked(&cached("run", &package, &cache, &[]), true);
     success(&common::loom(&["run", package.to_str().unwrap()]));
+    let quiet = common::command(&["check"])
+        .arg(&package)
+        .arg("--frontend-cache")
+        .arg(&cache)
+        .env_remove("LOOM_NATIVE_TIMINGS")
+        .output()
+        .unwrap();
+    success(&quiet);
+    assert!(!String::from_utf8_lossy(&quiet.stderr).contains("loom cache: timing "));
 
     let invalid = source.replace(
         "Item[Renamed] = List[Renamed]",
@@ -443,13 +482,7 @@ fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 8, "{trace}");
     checked(&cached("run", &package, &cache, &[]), true);
     // Replacing an entry guard with post-state length must not reuse its proof.
@@ -519,13 +552,7 @@ async fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 4, "{trace}");
     let executable = common::executable(directory.path(), "cached-closures");
     checked(
@@ -577,13 +604,7 @@ test fn excluded() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 2, "{trace}");
     // Fresh abstract checks may intern additional unused types; compare native
     // behavior, not private type-table numbering.
@@ -651,13 +672,7 @@ async fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 5, "{trace}");
     let executed = common::command(&["run"])
         .arg(&package)
@@ -799,13 +814,7 @@ async fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 4, "{trace}");
     let executed = common::command(&["run"])
         .arg(&package)
@@ -1292,13 +1301,7 @@ fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies > 0, "{trace}");
     let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
     success(&fresh);

@@ -498,7 +498,8 @@ implementation, not a compatibility ledger for previous prototypes.
   `loom run` now preserves application exit codes in the portable 0–255 range
   without appending a compiler error to a normal nonzero exit.
 
-- Add `std.time.monotonic_ns`, `sleep_ns`, `sleep_ms` and `sleep_until_ns`.
+- Add `std.time.clock.monotonic_ns`, plus `std.time` sleep functions
+  `sleep_ns`, `sleep_ms` and `sleep_until_ns`.
   Loom timer states preserve a single evaluated deadline; runtime notifications
   requeue them through a lazily created reactor. Idle waits block without spinning
   or creating per-task threads. Relative delays begin when the task body runs;

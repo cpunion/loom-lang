@@ -287,6 +287,7 @@ fn frontend_payload(text Text, start Int, end Int, project Project, format Text,
 }
 
 fn frontend_cached(options Options, project Project, inputs BuildInputs) Result[Prepared, Text] {
+    let identifying = cache_timer()
     let identity = match frontend_identity() {
         Option.Some(value) => value
         Option.None => {
@@ -294,12 +295,16 @@ fn frontend_cached(options Options, project Project, inputs BuildInputs) Result[
             return prepare_loaded(options, project, inputs)
         }
     }
+    cache_elapsed("compiler identity", identifying)
+    let keying = cache_timer()
     let key = frontend_key(options, project, identity)
+    cache_elapsed("closure key", keying)
     let prefix = frontend_prefix(key)
     discard cache_directory(options.frontend_cache)?
     let root = join_path(options.frontend_cache, "checked-v3")
     discard cache_directory(root)?
     let path = join_path(root, concat(key, ".lchecked"))
+    let loading = cache_timer()
     if match entry_kind(path) {
         Result.Ok(value) => value == FileKind.File,
         _ => false
@@ -308,6 +313,7 @@ fn frontend_cached(options Options, project Project, inputs BuildInputs) Result[
             Result.Ok(bytes) => {
                 match frontend_decode(bytes, prefix, project, options.command == "check", inputs) {
                     Option.Some(value) => {
+                        cache_elapsed("frontend lookup", loading)
                         cache_trace("frontend hit")
                         return Result.Ok(value)
                     }
@@ -319,11 +325,14 @@ fn frontend_cached(options Options, project Project, inputs BuildInputs) Result[
             }
         }
     }
+    cache_elapsed("frontend lookup", loading)
     cache_trace("frontend miss")
     let checked = prepare_incremental(options, project, inputs, identity)?
     // Publish only successful checks. Readers see one complete, content-checked
     // bundle; concurrent producers own separate staging directories.
+    let publishing = cache_timer()
     frontend_publish(root, path, prefix, checked)
+    cache_elapsed("frontend publish", publishing)
     Result.Ok(checked)
 }
 

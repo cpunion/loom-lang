@@ -17,7 +17,7 @@ import std.list.push
 import std.result.Result
 import std.text.concat
 import std.text.starts_with
-import std.time.monotonic_ns
+import std.time.clock.monotonic_ns
 
 fn loaded(text Text, sidecar Text, commit Text) Loaded {
     Loaded {
