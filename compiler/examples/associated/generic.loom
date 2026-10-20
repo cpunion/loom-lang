@@ -1,16 +1,14 @@
 concept Family {
-    type Item[T]
+    type Item[T] = comptime {
+        family_list_type[T]()
+    }
 }
 
 record FamilyBox[X] {
     value X
 }
 
-impl Family for Bool {
-    type Item[T] = comptime {
-        family_list_type[T]()
-    }
-}
+impl Family for Bool {}
 
 impl[X] Family for FamilyBox[X] {
     type Item[T] = comptime {
