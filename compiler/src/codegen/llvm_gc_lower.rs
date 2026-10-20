@@ -237,24 +237,35 @@ pub(super) fn lower<'ctx>(
             "",
         )?;
         builder.build_unconditional_branch(entry)?;
+        let mut active_block = None;
+        let mut active = HashMap::new();
         for (instruction, region) in active_markers {
             let end = matches!(region, Region::End);
             if !matches!(region, Region::Declare) && (!end || !ends_at_return(instruction)) {
                 let slot = operand(instruction, 0)?;
                 let index = positions.get(&slot).ok_or("unregistered GC region")?;
-                builder.position_before(&instruction);
-                // SAFETY: each region refers to one entry in this fixed table.
-                #[allow(unsafe_code)]
-                let item = unsafe {
-                    builder.build_in_bounds_gep(
-                        table_type,
-                        table,
-                        &[size.const_zero(), size.const_int(*index as u64, false)],
-                        "gc.root",
-                    )?
-                };
-                let address = builder.build_struct_gep(root, item, 0, "gc.address")?;
-                builder.build_store(address, if end { pointer.const_null() } else { slot })?;
+                let block = instruction.get_parent().ok_or("missing GC region block")?;
+                if active_block != Some(block) {
+                    active.clear();
+                    active_block = Some(block);
+                }
+                // Collection changes rooted payloads, never descriptor addresses.
+                // Only reuse knowledge within this straight-line basic block.
+                if active.insert(slot, !end) != Some(!end) {
+                    builder.position_before(&instruction);
+                    // SAFETY: each region refers to one entry in this fixed table.
+                    #[allow(unsafe_code)]
+                    let item = unsafe {
+                        builder.build_in_bounds_gep(
+                            table_type,
+                            table,
+                            &[size.const_zero(), size.const_int(*index as u64, false)],
+                            "gc.root",
+                        )?
+                    };
+                    let address = builder.build_struct_gep(root, item, 0, "gc.address")?;
+                    builder.build_store(address, if end { pointer.const_null() } else { slot })?;
+                }
             }
             instruction.erase_from_basic_block();
         }
@@ -429,5 +440,77 @@ mod tests {
         assert!(!ir.contains("call void @loom.gc."));
         assert_eq!(ir.matches("call void @loom_rt_roots_enter(").count(), 1);
         assert_eq!(ir.matches("call void @loom_rt_roots_leave(").count(), 1);
+    }
+
+    #[test]
+    fn descriptor_writes_reuse_only_known_state_within_one_basic_block() {
+        let context = Context::create();
+        let input = MemoryBuffer::create_from_memory_range_copy(
+            br#"
+                declare void @trace(ptr)
+                declare void @allocate()
+                declare void @loom.gc.begin(ptr, ptr)
+                declare void @loom.gc.end(ptr)
+
+                define void @straight() {
+                entry:
+                    %slot = alloca ptr
+                    store ptr null, ptr %slot
+                    call void @loom.gc.begin(ptr %slot, ptr @trace)
+                    call void @allocate()
+                    call void @loom.gc.begin(ptr %slot, ptr @trace)
+                    call void @allocate()
+                    call void @loom.gc.end(ptr %slot)
+                    call void @allocate()
+                    call void @loom.gc.end(ptr %slot)
+                    call void @allocate()
+                    call void @loom.gc.begin(ptr %slot, ptr @trace)
+                    call void @allocate()
+                    ret void
+                }
+
+                define void @joined(i1 %condition) {
+                entry:
+                    %slot = alloca ptr
+                    store ptr null, ptr %slot
+                    call void @loom.gc.begin(ptr %slot, ptr @trace)
+                    br i1 %condition, label %expire, label %live
+                expire:
+                    call void @loom.gc.end(ptr %slot)
+                    br label %done
+                live:
+                    call void @loom.gc.begin(ptr %slot, ptr @trace)
+                    br label %done
+                done:
+                    call void @loom.gc.begin(ptr %slot, ptr @trace)
+                    call void @allocate()
+                    ret void
+                }
+            "#,
+            "gc.repeated",
+        );
+        let module = context.create_module_from_ir(input).unwrap();
+        let target = NativeTarget::new(Optimization::O0).unwrap();
+        lower(&context, &module, &target.machine).unwrap();
+        module.verify().unwrap();
+        let ir = module.print_to_string().to_string();
+        let straight = ir.split("define void @straight").nth(1).unwrap();
+        let straight = straight.split("define void @joined").next().unwrap();
+        assert_eq!(
+            straight.matches("store ptr %slot, ptr %gc.address").count(),
+            2
+        );
+        assert_eq!(
+            straight.matches("store ptr null, ptr %gc.address").count(),
+            1
+        );
+        let joined = ir.split("define void @joined").nth(1).unwrap();
+        assert_eq!(
+            joined.matches("store ptr %slot, ptr %gc.address").count(),
+            3
+        );
+        assert_eq!(joined.matches("store ptr null, ptr %gc.address").count(), 1);
+        assert_eq!(ir.matches("call void @allocate()").count(), 6);
+        assert!(!ir.contains("call void @loom.gc."));
     }
 }
