@@ -10,6 +10,7 @@ use inkwell::{
     attributes::{Attribute, AttributeLoc},
     values::{BasicValue, CallSiteValue, InstructionOpcode, InstructionValue},
 };
+use std::collections::HashSet;
 
 const BEGIN: &str = "loom.gc.begin";
 const END: &str = "loom.gc.end";
@@ -116,6 +117,7 @@ pub(super) fn lower<'ctx>(
         let mut positions = HashMap::new();
         let mut markers = Vec::new();
         let mut returns = Vec::new();
+        let mut captures = HashSet::new();
         for block in function.get_basic_blocks() {
             for instruction in block.get_instructions() {
                 if instruction.get_opcode() == InstructionOpcode::Return {
@@ -131,6 +133,9 @@ pub(super) fn lower<'ctx>(
                 if name == BEGIN.as_bytes() || name == DECLARE.as_bytes() {
                     let slot = operand(instruction, 0)?;
                     let trace = operand(instruction, 1)?;
+                    if name == BEGIN.as_bytes() {
+                        captures.insert(slot);
+                    }
                     if let Some(index) = positions.get(&slot) {
                         if slots[*index] != (slot, trace) {
                             return Err("conflicting GC tracers".into());
@@ -152,6 +157,29 @@ pub(super) fn lower<'ctx>(
                 }
             }
         }
+        // Declarations keep storage visible to early optimization, but do not
+        // activate it. A slot without any surviving capture cannot be a root.
+        let inactive = slots
+            .iter()
+            .filter(|(slot, _)| !captures.contains(slot))
+            .map(|(slot, _)| *slot)
+            .collect::<HashSet<_>>();
+        let mut active_markers = Vec::with_capacity(markers.len());
+        for (instruction, region) in markers {
+            if inactive.contains(&operand(instruction, 0)?) {
+                instruction.erase_from_basic_block();
+            } else {
+                active_markers.push((instruction, region));
+            }
+        }
+        slots.retain(|(slot, _)| !inactive.contains(slot));
+        positions.clear();
+        positions.extend(
+            slots
+                .iter()
+                .enumerate()
+                .map(|(index, (slot, _))| (*slot, index)),
+        );
         if slots.is_empty() {
             continue;
         }
@@ -209,7 +237,7 @@ pub(super) fn lower<'ctx>(
             "",
         )?;
         builder.build_unconditional_branch(entry)?;
-        for (instruction, region) in markers {
+        for (instruction, region) in active_markers {
             let end = matches!(region, Region::End);
             if !matches!(region, Region::Declare) && (!end || !ends_at_return(instruction)) {
                 let slot = operand(instruction, 0)?;
@@ -310,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_storage_stays_inactive_when_optimization_removes_its_capture() {
+    fn eliminated_captures_do_not_require_a_physical_root_frame() {
         let context = Context::create();
         let input = MemoryBuffer::create_from_memory_range_copy(
             br#"
@@ -356,9 +384,49 @@ mod tests {
         lower(&context, &module, &target.machine).unwrap();
         module.verify().unwrap();
         let ir = module.print_to_string().to_string();
-        assert!(ir.contains("{ ptr null, ptr @trace }"));
         assert!(!ir.contains("call void @loom.gc."));
         assert!(!ir.contains("store ptr %"));
+        assert!(!ir.contains("loom_rt_roots_enter"));
+        assert!(!ir.contains("loom_rt_roots_leave"));
+    }
+
+    #[test]
+    fn pruning_inactive_slots_preserves_the_remaining_descriptor_indices() {
+        let context = Context::create();
+        let input = MemoryBuffer::create_from_memory_range_copy(
+            br#"
+                declare void @unused_trace(ptr)
+                declare void @live_trace(ptr)
+                declare void @allocate()
+                declare void @loom.gc.slot(ptr, ptr)
+                declare void @loom.gc.begin(ptr, ptr)
+                declare void @loom.gc.end(ptr)
+
+                define void @mixed() {
+                entry:
+                    %unused = alloca ptr
+                    %live = alloca ptr
+                    call void @loom.gc.slot(ptr %unused, ptr @unused_trace)
+                    store ptr null, ptr %live
+                    call void @loom.gc.begin(ptr %live, ptr @live_trace)
+                    call void @allocate()
+                    call void @loom.gc.end(ptr %unused)
+                    call void @allocate()
+                    call void @loom.gc.end(ptr %live)
+                    ret void
+                }
+            "#,
+            "gc.mixed",
+        );
+        let module = context.create_module_from_ir(input).unwrap();
+        let target = NativeTarget::new(Optimization::O0).unwrap();
+        lower(&context, &module, &target.machine).unwrap();
+        module.verify().unwrap();
+        let ir = module.print_to_string().to_string();
+        assert!(ir.contains("alloca [1 x { ptr, ptr }]"));
+        assert!(ir.contains("{ ptr null, ptr @live_trace }"));
+        assert!(!ir.contains("{ ptr null, ptr @unused_trace }"));
+        assert!(!ir.contains("call void @loom.gc."));
         assert_eq!(ir.matches("call void @loom_rt_roots_enter(").count(), 1);
         assert_eq!(ir.matches("call void @loom_rt_roots_leave(").count(), 1);
     }
