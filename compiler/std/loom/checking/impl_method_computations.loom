@@ -15,8 +15,8 @@ fn impl_method_computation_spreads(node Node, name Text) Bool {
     false
 }
 
-// Evaluate only components whose free inputs have singular logical types.
-// A selected spread element is such a type; its containing word is not.
+// Scalar inputs and complete structural types have singular logical identities.
+// A free word still needs an element scope; it is never sampled or expanded.
 // Nested family binders are normalized later under their own fresh frame.
 fn impl_method_computed_parts(env Environment, scope ImplMethodScope, owner Int, node Node,
     frame List[Node], values List[Node], element Bool, depth Int) Result[Node, Failure] {
@@ -28,41 +28,49 @@ fn impl_method_computed_parts(env Environment, scope ImplMethodScope, owner Int,
         return Result.Ok(node)
     }
     if node.kind == NodeKind.Comptime {
+        let layouts = new[ImplComputationLayout]()
+        let evidence = std.list.clone(scope.evidence)
+        let prepared = impl_computation_layouts(env, scope, owner, node, frame, values,
+            layouts, evidence, element, 0)?
+        let types = std.list.clone(scope.types)
         var index = 0
+        while index < length(layouts) {
+            push(types, get(layouts, index).ty)
+            index = index + 1
+        }
+        let computing = ImplMethodScope {
+            types = types
+            evidence = evidence
+            ..scope
+        }
+        index = 0
         while index < length(frame) {
             let parameter = get(frame, index)
-            if mentions_pack(node, parameter.value) &&
+            if impl_computation_mentions(prepared, parameter.value) &&
             (has_type_expansion(get(values, index)) || (parameter.kind == NodeKind.TypePack &&
-                    (!element || impl_method_computation_spreads(node, parameter.value)))) {
+                    (!element || impl_method_computation_spreads(prepared, parameter.value)))) {
                 return Result.Err(failure(env, owner, node,
                         "compile-time type computation needs a known word layout"))
             }
             index = index + 1
         }
-        let context = impl_method_source_context(env, scope, owner, node, frame, values)?
+        let context = impl_method_source_context(env, computing, owner, prepared, frame, values)?
         let prior = length(env.types)
-        let resolved = computed_family_body(context, node)?
-        let ty = resolve_bound(env, owner, resolved, new[Int](), scope.evidence, 0)?
+        let resolved = computed_family_body(context, prepared)?
+        let ty = resolve_bound(env, owner, resolved, new[Int](), computing.evidence, 0)?
         if !computed_family_closed(env, ty, prior, new[FamilyAliases](), -1, new[(Int, Int)](), 0) {
             return Result.Err(failure(env, owner, node,
                     "dynamic associated family needs a uniform symbolic type template"))
         }
-        discard well_formed(env, owner, ty, scope.evidence, node, 0)?
+        discard well_formed(env, owner, ty, computing.evidence, node, 0)?
+        let canonical = impl_method_family_canonical(env, computing,
+            impl_method_resolved_schema(env, computing, ty, node, depth + 1)?, depth + 1)?
         let schema = impl_method_family_canonical(env, scope,
-            impl_method_resolved_schema(env, scope, ty, node, depth + 1)?, depth + 1)?
-        let origins = new[Node]()
-        index = 0
-        while index < length(frame) {
-            let parameter = get(frame, index)
-            if parameter.kind == NodeKind.TypePack && mentions_pack(node, parameter.value) {
-                let mapped = pack_schema_parameter(get(values, index))
-                if mapped < 0 {
-                    return Result.Err(failure(env, owner, node,
-                            "computed expansion needs an established source word"))
-                }
-                pack_word_origin_add(origins, impl_method_variable(node, mapped))
-            }
-            index = index + 1
+            impl_computation_restore(canonical, length(scope.types), layouts), depth + 1)?
+        let origins = if element {
+            impl_method_word_origins(env, owner, node, frame, values)?
+        } else {
+            new[Node]()
         }
         let word = length(origins) > 0
         let parameter = pack_node(node, if word {

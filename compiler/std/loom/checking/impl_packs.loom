@@ -118,6 +118,19 @@ fn type_pattern_schema(env Environment, owner Int, node Node, element Bool, dept
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "implementation target nesting limit exceeded"))
     }
+    // Explicit type arguments use expression syntax, just as in resolve_bound.
+    if node.kind == NodeKind.Apply {
+        return type_pattern_schema(env, owner,
+            pack_node(node, NodeKind.Type, child(node, 0).value, child(node, 1).children),
+            element, depth + 1, identities, header, parameters)
+    }
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Tuple {
+        return type_pattern_schema(env, owner, pack_node(node, if node.kind == NodeKind.Name {
+                    NodeKind.Type
+                } else {
+                    NodeKind.TupleType
+                }, node.value, node.children), element, depth + 1, identities, header, parameters)
+    }
     if header && node.kind == NodeKind.AssociatedType && length(group(node, NodeKind.TypeParameters)) > 0 {
         // Keep the lexical binder intact; the ordinary family checker consumes
         // it with logical captures before the enclosing dyn supplies evidence.

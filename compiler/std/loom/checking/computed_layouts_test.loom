@@ -1,0 +1,148 @@
+fn computed_layout_source() Text {
+    """
+        concept Family {
+            type Item[U]
+        }
+        fn identity_type[T]() type {
+            T
+        }
+        concept Pass {
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        impl[Ts...] Pass for (Ts...) {
+            type Out = dyn Family[Item[U] = (comptime { identity_type[Self]() }, U)]
+            fn pass(self Self, value dyn Family[Item[V] = ((Ts...), V)])
+                dyn Family[Item[W] = ((Ts...), W)] {
+                discard self
+                value
+            }
+        }
+        """
+}
+
+test fn computed_layouts_preserve_the_complete_input_type() {
+    discard accepted(computed_layout_source())
+    discard accepted(std.text.replace(computed_layout_source(), "identity_type[Self]()", "identity_type[(Ts...)]()"))
+    rejects(std.text.replace(computed_layout_source(), "identity_type[Self]()", "identity_type[Ts]()"))
+    rejects(std.text.replace(computed_layout_source(), "identity_type[Self]()", "identity_type[(Bool, Ts...)]()"))
+    discard accepted(std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                    "fn identity_type[T]()", "fn identity_type[T, Same]()"),
+                "identity_type[Self]()", "identity_type[Self, (Ts...)]()"),
+            "\n    T\n", "\n    if T == Same { T } else { Int }\n"))
+}
+
+test fn computed_layouts_compose_constructors_and_lexical_captures() {
+    let source = std.text.replace(computed_layout_source(), "identity_type[Self]()", "identity_type[(Ts..., U)]()")
+    discard accepted(std.text.replace(std.text.replace(source, "((Ts...), V)", "((Ts..., V), V)"),
+            "((Ts...), W)", "((Ts..., W), W)"))
+    let wrapped = concat("""
+            record Box[T] {
+                value T
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                    "\n    T\n", "\n    Box[List[T]]\n"),
+                "((Ts...), V)", "(Box[List[(Ts...)]], V)"),
+            "((Ts...), W)", "(Box[List[(Ts...)]], W)"))
+    discard accepted(wrapped)
+    let callable = std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                "identity_type[Self]()", "identity_type[fn(Ts...) U]()"),
+            "((Ts...), V)", "(fn(Ts...) V, V)"),
+        "((Ts...), W)", "(fn(Ts...) W, W)")
+    discard accepted(callable)
+    let nested = std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                "\n    T\n", "\n    dyn Family[Item[X] = (T, X)]\n"),
+            "((Ts...), V)", "(dyn Family[Item[X] = ((Ts...), X)], V)"),
+        "((Ts...), W)", "(dyn Family[Item[X] = ((Ts...), X)], W)")
+    discard accepted(nested)
+}
+
+test fn computed_layouts_reuse_only_proved_whole_type_requirements() {
+    let source = concat("""
+            concept Tagged {}
+            impl[Us... Tagged] Tagged for (Us...) {}
+            """, std.text.replace(computed_layout_source(), "fn identity_type[T]()", "fn identity_type[T Tagged]()"))
+    rejects(source)
+    discard accepted(std.text.replace(source, "impl[Ts...] Pass", "impl[Ts... Tagged] Pass"))
+    let hidden = concat("""
+            concept Tagged {}
+            impl[Us... Tagged] Tagged for (Us...) {}
+            record Bounded[T Tagged] {
+                value T
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                        "identity_type[Self]()", "identity_type[Bounded[(Ts...)]]()"),
+                    "\n    T\n", "\n    Int\n"),
+                "((Ts...), V)", "(Int, V)"), "((Ts...), W)", "(Int, W)"))
+    rejects(hidden)
+}
+
+test fn computed_layouts_separate_whole_captures_from_selected_element_widths() {
+    let source = std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                "(comptime { identity_type[Self]() }, U)", "(comptime { identity_type[((Ts...), Ts)]() }..., U)"),
+            "((Ts...), V)", "(((Ts...), Ts)..., V)"),
+        "((Ts...), W)", "(((Ts...), Ts)..., W)")
+    discard accepted(source)
+    discard accepted(std.text.replace(source, "((Ts...), Ts)", "(Ts..., Ts)"))
+    let bounded = concat("""
+            concept Tagged {}
+            impl[Us... Tagged] Tagged for (Us...) {}
+            """, std.text.replace(std.text.replace(source, "fn identity_type[T]()", "fn identity_type[T Tagged]()"),
+            "impl[Ts...] Pass", "impl[Ts... Tagged] Pass"))
+    discard accepted(bounded)
+    let independent = concat("""
+            record Pair[As..., Bs...] {
+                first (As...)
+                second (Bs...)
+            }
+            """, std.text.replace(std.text.replace(source,
+                "impl[Ts...] Pass for (Ts...)", "impl[As..., Bs...] Pass for Pair[(As...)..., (Bs...)...]"),
+            "((Ts...), Ts)", "((As...), Bs)"))
+    discard accepted(independent)
+    let erased = std.text.replace(std.text.replace(std.text.replace(independent,
+                "\n    T\n", "\n    Int\n"),
+            "(((As...), Bs)..., V)", "(comptime { identity_type[Bs]() }..., V)"),
+        "(((As...), Bs)..., W)", "(comptime { identity_type[Bs]() }..., W)")
+    discard accepted(erased)
+    rejects(std.text.replace(erased, "identity_type[Bs]()", "identity_type[As]()"))
+}
+
+test fn computed_layouts_keep_independent_nominal_words_distinct() {
+    let target = "Pair[(As...)..., (Bs...)...]"
+    let source = concat("""
+            record Pair[As..., Bs...] {
+                first (As...)
+                second (Bs...)
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                    "impl[Ts...] Pass for (Ts...)", concat("impl[As..., Bs...] Pass for ", target)),
+                "((Ts...), V)", concat(concat("(", target), ", V)")),
+            "((Ts...), W)", concat(concat("(", target), ", W)")))
+    discard accepted(source)
+    discard accepted(std.text.replace(source, "identity_type[Self]()", concat(concat("identity_type[", target), "]()")))
+    rejects(std.text.replace(source, "identity_type[Self]()", "identity_type[Pair[(Bs...)..., (As...)...]]()"))
+}
+
+test fn computed_layouts_keep_unknown_decisions_unproved() {
+    let source = computed_layout_source()
+    discard accepted(std.text.replace(source, "\n    T\n", "\n    if T == T { T } else { Bool }\n"))
+    rejects(std.text.replace(source, "\n    T\n", "\n    if T == Int { Bool } else { T }\n"))
+    let reflected_source = std.text.replace(source, "\n    T\n",
+        "\n    if describe[T]().types[0].kind == Kind.Opaque { T } else { Bool }\n")
+    assert match reflected(reflected_source) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "uniform symbolic type template")
+        Result.Ok(_) => false
+    }
+}
+
+test fn computed_layouts_respect_lexical_type_value_shadowing() {
+    discard accepted(std.text.replace(computed_layout_source(), "identity_type[Self]()",
+            "let Whole = Self\nidentity_type[Whole]()"))
+    let source = std.text.replace(computed_layout_source(), "identity_type[Self]()",
+        "let Self = Int\nidentity_type[Self]()")
+    rejects(source)
+    discard accepted(std.text.replace(std.text.replace(source, "((Ts...), V)", "(Int, V)"),
+            "((Ts...), W)", "(Int, W)"))
+    rejects(std.text.replace(computed_layout_source(), "identity_type[Self]()",
+            "let Self = Int\nidentity_type[(Self, Ts...)]()"))
+}

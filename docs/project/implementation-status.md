@@ -212,9 +212,18 @@ schemas, including nested family results and selected element maps. Word maps
 retain their width origin independently of their element result, including
 constant maps and associated-type erasure. Independent origins are not equated;
 zipped expansions need proved equal widths. Extent queries exclude nested whole
-words, and output bounds grant no constraints to erased inputs. Unknown layout
-reads and unresolved type decisions remain unproved; no representative word or
-opaque answer is used.
+words, and output bounds grant no constraints to erased inputs. Complete tuple,
+function and nominal word-bearing types can pass through uniform compile-time
+helpers as single symbolic inputs, including constructors and nested family
+captures. Only capabilities proved for the complete input are available; its
+original schema is restored in the result. A computed element map may combine
+a whole captured word and a selected element; only free element references
+determine its width, even when the helper erases its input type. Local aliases
+use ordinary CTFE
+lookup, not global-name substitution. Reifying new word layouts after local
+bindings and arbitrary unknown-layout inspection remain unsupported. Unknown
+reflection and type decisions stay unproved; no representative width or opaque
+answer is used as a proof.
 Pack-bearing preconditions compose pure family helpers through the same universal
 proof. Tuple spreads work in contracts and refinement predicates; opaque helper
 arguments provide no storage or callback-behavior evidence.
