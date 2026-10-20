@@ -32,7 +32,6 @@ fn pending_plain_return(trace List[Int]) Result[Int, Text] {
                 push(trace, 8)
             }
             return Result.Err("plain")
-            acquire(2, trace)
         }
     }
     Result.Ok(pair.first.id)
@@ -50,7 +49,6 @@ fn pending_leaf_return(trace List[Int]) Leaf {
                 push(trace, 8)
             }
             return acquire(3, trace)
-            acquire(2, trace)
         }
     }
     acquire(4, trace)
@@ -64,9 +62,8 @@ fn pending_nested_return(trace List[Int]) Result[Int, Text] {
         fault_on_dispose = false
         first = acquire(1, trace)
         second = {
-            scoped nested = (acquire(2, trace), {
+            scoped nested (Leaf, Int) = (acquire(2, trace), {
                     return Result.Err("nested")
-                    0
                 })
             acquire(3, trace)
         }
@@ -92,7 +89,6 @@ fn pending_loop_exits(trace List[Int]) {
                     continue
                 }
                 break
-                acquire(2, trace)
             }
         }
     }
@@ -107,7 +103,6 @@ fn pending_loop_exits(trace List[Int]) {
                     continue
                 }
                 break
-                acquire(2, trace)
             }
         }
     }
@@ -119,14 +114,12 @@ fn pending_enum_return(trace List[Int]) Resources {
     }
     Resources.Pair(acquire(1, trace), acquire(2, trace), {
             return Resources.Empty(trace)
-            false
         })
 }
 
 fn pending_list_return(trace List[Int]) Result[List[Leaf], Text] {
     Result.Ok([acquire(1, trace), {
                 return Result.Err("list")
-                acquire(2, trace)
             }])
 }
 
@@ -213,13 +206,12 @@ async fn pending_awaited_loop(trace List[Int]) {
     var round = 0
     while round < 2 {
         round = round + 1
-        scoped values = (acquire(1, trace), {
+        scoped values (Leaf, Leaf) = (acquire(1, trace), {
                 sleep_ms(0).await
                 if round == 1 {
                     continue
                 }
                 break
-                acquire(2, trace)
             })
     }
 }
@@ -243,7 +235,6 @@ fn pending_fault_return(trace List[Int]) Leaf {
         first = wrap(trace, true)
         second = {
             return acquire(3, trace)
-            acquire(2, trace)
         }
     }
     acquire(4, trace)

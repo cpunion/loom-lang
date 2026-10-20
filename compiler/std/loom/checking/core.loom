@@ -343,6 +343,14 @@ fn all_fall(values List[Expr]) Bool {
 }
 
 fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Failure] {
+    // An outward exit produces no value to convert. Retain its control flow
+    // while supplying the known type to bindings and aggregate operands.
+    if expected >= 0 && !value.falls && value.ty != expected {
+        return Result.Ok(Expr {
+                ty = expected
+                ..value
+            })
+    }
     if expected >= 0 && value.ty != expected && value.falls && get(context.env.types, expected).kind == TypeKind.Dyn {
         return boxed(context, node, value, expected)
     }
