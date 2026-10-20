@@ -108,3 +108,46 @@ test fn method_conformances_include_uninstantiated_universally_checked_impl_head
     assert get(edges, 0).0.span.start == query_offset(source, "keep[Vs...")
     assert get(edges, 0).1.span.start == query_offset(source, "keep[Us...")
 }
+
+test fn word_family_headers_keep_source_member_roles_after_schema_normalization() {
+    let source = """
+        concept Source {
+            type Item
+        }
+        concept Family {
+            type Item[T Source]
+        }
+        record Item[As..., Bs...] {
+            left (As...)
+            right (Bs...)
+        }
+        concept Pass {
+            type Wrap[T Source]
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        impl[Ts...] Pass for (Ts...) {
+            type Wrap[T] = Item[(T.Item,)..., (dyn Family[Item[V] = (T.Item, V.Item)],)...]
+            type Out = dyn Family[Item[U] = (Ts..., Self.Wrap[U])]
+            fn pass(self Self, value Self.Out) Self.Out {
+                discard self
+                value
+            }
+        }
+        """
+    let analysis = accepted(input(source))
+    let record_start = query_offset(source, "Item[As...")
+    only_definition(inspection(analysis, source, "Item[(T.Item"), record_start, record_start + 4)
+    let family = query_offset(source, "Item[T Source]")
+    only_definition(inspection(analysis, source, "Item[U] ="), family, family + 4)
+    let edges = match method_conformances(published(input(source))) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            new[(Location, Location)]()
+        }
+    }
+    assert length(edges) == 1
+    assert get(edges, 0).0.span.start == query_offset(source, "pass(self Self, value Self.Out) Self.Out {")
+    assert get(edges, 0).1.span.start == query_offset(source, "pass(self Self, value Self.Out) Self.Out\n")
+}

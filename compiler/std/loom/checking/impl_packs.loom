@@ -172,6 +172,9 @@ fn type_pattern_schema(env Environment, owner Int, node Node, element Bool, dept
     if node.kind == NodeKind.Type && node.value != "List" && node.value != "Task" {
         let nominal = find_data(env, owner, node, node.value)?
         if nominal >= 0 && type_pack_count(symbol(env, nominal).node) > 1 {
+            if header && get(env.inputs, 0).declaration_queries {
+                record_declaration_reference(env, owner, node, nominal, reference_path_segment(node.value), "")
+            }
             let slots = group(symbol(env, nominal).node, NodeKind.TypeParameters)
             if length(node.children) != length(slots) {
                 return Result.Err(failure(env, owner, node, "independent data packs need one explicit group per declared slot"))
@@ -239,6 +242,9 @@ fn type_pattern_schema(env Environment, owner Int, node Node, element Bool, dept
     } else {
         let selected = find_data(env, owner, node, node.value)?
         if selected >= 0 {
+            if header && get(env.inputs, 0).declaration_queries {
+                record_declaration_reference(env, owner, node, selected, reference_path_segment(node.value), "")
+            }
             let declaration = symbol(env, selected).node
             let count = length(group(declaration, NodeKind.TypeParameters))
             if !has_type_expansion(node) && ((data_pack(declaration) && length(children) < count - 1) ||

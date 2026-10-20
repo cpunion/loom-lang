@@ -1,0 +1,177 @@
+// Proof schemas use lexical lambda indices, never a runtime type identity for
+// an unknown word. Free $parameter indices continue to name the caller frame.
+fn pack_family_schema(node Node, count Int, body Node) Node {
+    pack_node(node, NodeKind.Type, concat("$family#", to_text(count)), source_nodes(body))
+}
+
+fn pack_family_schema_arity(node Node) Int {
+    if node.kind != NodeKind.Type || !std.text.starts_with(node.value, "$family#") ||
+    length(node.children) != 1 {
+        return -1
+    }
+    match std.int.parse(slice(node.value, length("$family#"), length(node.value))) {
+        Result.Ok(count) => if count >= 0 {
+            count
+        } else {
+            -1
+        }
+        Result.Err(_) => -1
+    }
+}
+
+fn pack_family_schema_bound(node Node) (Int, Int) {
+    if node.kind != NodeKind.Type || !std.text.starts_with(node.value, "$bound#") {
+        return (-1, -1)
+    }
+    let parts = std.text.split(slice(node.value, length("$bound#"), length(node.value)), ":")
+    if length(parts) != 2 {
+        return (-1, -1)
+    }
+    let level = match std.int.parse(get(parts, 0)) {
+        Result.Ok(value) => value
+        Result.Err(_) => -1
+    }
+    let slot = match std.int.parse(get(parts, 1)) {
+        Result.Ok(value) => value
+        Result.Err(_) => -1
+    }
+    (level, slot)
+}
+
+fn pack_family_bound(node Node, level Int, slot Int) Node {
+    pack_node(node, NodeKind.Type, concat("$bound#", concat(to_text(level), concat(":", to_text(slot)))),
+        new[Node]())
+}
+
+fn pack_family_schema_close(schema Node, first Int, count Int, level Int) Node {
+    let parameter = pack_schema_parameter(schema)
+    if parameter >= first && parameter < first + count {
+        return pack_family_bound(schema, level, parameter - first)
+    }
+    let children = new[Node]()
+    let nested = level + if pack_family_schema_arity(schema) >= 0 {
+        1
+    } else {
+        0
+    }
+    var index = 0
+    while index < length(schema.children) {
+        push(children, pack_family_schema_close(child(schema, index), first, count, nested))
+        index = index + 1
+    }
+    pack_node(schema, schema.kind, schema.value, children)
+}
+
+// Opening substitutes fresh, free eigenvariables, so nesting cannot capture
+// an argument. It does not evaluate a lambda over a sampled concrete type.
+fn pack_family_schema_open(schema Node, first Int, count Int, level Int, depth Int) Option[Node] {
+    if depth >= 64 {
+        return Option.None
+    }
+    let bound = pack_family_schema_bound(schema)
+    if bound.0 >= 0 {
+        if bound.1 < 0 {
+            return Option.None
+        }
+        if bound.0 == level {
+            return if bound.1 < count {
+                Option.Some(impl_method_variable(schema, first + bound.1))
+            } else {
+                Option.None
+            }
+        }
+        return Option.Some(if bound.0 > level {
+                pack_family_bound(schema, bound.0 - 1, bound.1)
+            } else {
+                schema
+            })
+    }
+    let children = new[Node]()
+    let nested = level + if pack_family_schema_arity(schema) >= 0 {
+        1
+    } else {
+        0
+    }
+    var index = 0
+    while index < length(schema.children) {
+        match pack_family_schema_open(child(schema, index), first, count, nested, depth + 1) {
+            Option.Some(value) => push(children, value)
+            Option.None => {
+                return Option.None
+            }
+        }
+        index = index + 1
+    }
+    Option.Some(pack_node(schema, schema.kind, schema.value, children))
+}
+
+fn pack_has_family_schema(schema Node) Bool {
+    if pack_family_schema_arity(schema) >= 0 {
+        return true
+    }
+    var index = 0
+    while index < length(schema.children) {
+        if pack_has_family_schema(child(schema, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn pack_family_schema_well_formed(context Context, caller Node, member Int, schema Node,
+    budget List[Int], depth Int, assumptions Option[List[PackLayoutRequirement]]) Result[Bool, Failure] {
+    let count = pack_family_schema_arity(schema)
+    let declared = member_parameters(context.env, member)
+    if depth >= 64 || count < 0 || count != length(declared) {
+        return Result.Ok(false)
+    }
+    let parameters = std.list.clone(group(caller, NodeKind.TypeParameters))
+    let first = length(parameters)
+    let known = pack_family_word_assumptions(context, caller, assumptions)?
+    var index = 0
+    while index < count {
+        let parameter = get(declared, index)
+        let variable = impl_method_variable(schema, length(parameters))
+        push(parameters, pack_node(parameter, NodeKind.Name, concat("$family-param#", to_text(length(parameters))),
+                new[Node]()))
+        var bound = 0
+        while bound < length(parameter.children) {
+            push(known, PackLayoutRequirement {
+                    schema = variable
+                    capability = required_concept(context.env, member, child(parameter, bound))?
+                })
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(caller.children) {
+        if child(caller, index).kind != NodeKind.TypeParameters {
+            push(children, child(caller, index))
+        }
+        index = index + 1
+    }
+    push(children, pack_node(schema, NodeKind.TypeParameters, "", parameters))
+    let scope = pack_node(caller, caller.kind, caller.value, children)
+    let body = match pack_family_schema_open(child(schema, 0), first, count, 0, 0) {
+        Option.Some(value) => value
+        Option.None => {
+            return Result.Ok(false)
+        }
+    }
+    if !pack_layout_well_formed(context, scope, body, budget, depth + 1, Option.Some(known))? {
+        return Result.Ok(false)
+    }
+    let bounds = member_bounds(context.env, member)
+    index = 0
+    while index < length(bounds) {
+        if !pack_layout_admitted(context, scope, body, get(bounds, index),
+            new[PackLayoutRequirement](), budget, 0, Option.Some(known))? {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

@@ -1,0 +1,149 @@
+fn family_schema_header_source() Text {
+    """
+        concept Family {
+            type Item[U]
+        }
+        concept Pass {
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        impl[Tag, Ts...] Pass for (Tag, Ts...) {
+            type Out = dyn Family[Item[U] = (Tag, Ts..., U)]
+            fn pass(self Self, value dyn Family[Item[V] = (Tag, Ts..., V)])
+                dyn Family[Item[W] = (Tag, Ts..., W)] {
+                discard self
+                value
+            }
+        }
+        """
+}
+
+test fn family_schema_headers_alpha_normalize_words_without_equating_captures() {
+    let source = family_schema_header_source()
+    discard accepted(source)
+    rejects(std.text.replace(source, "Item[V] = (Tag, Ts..., V)", "Item[Tag] = (Tag, Ts..., Tag)"))
+    rejects(std.text.replace(source, "(Tag, Ts..., W)", "(Tag, Ts..., Bool)"))
+}
+
+test fn family_schema_headers_keep_nested_lambda_depth_and_captured_arguments() {
+    let source = """
+        concept Family {
+            type Item[U]
+        }
+        concept Pass {
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        impl[Ts...] Pass for (Ts...) {
+            type Out = dyn Family[Item[U] = dyn Family[Item[V] = (Ts..., U, V)]]
+            fn pass(self Self,
+                value dyn Family[Item[A] = dyn Family[Item[B] = (Ts..., A, B)]])
+                dyn Family[Item[C] = dyn Family[Item[D] = (Ts..., C, D)]] {
+                discard self
+                value
+            }
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "Item[B] = (Ts..., A, B)", "Item[A] = (Ts..., A, A)"))
+    let nested = std.text.replace(std.text.replace(std.text.replace(source,
+                "dyn Family[Item[V] = (Ts..., U, V)]", "(Ts..., dyn Family[Item[V] = (U, V)])"),
+            "dyn Family[Item[B] = (Ts..., A, B)]", "(Ts..., dyn Family[Item[B] = (A, B)])"),
+        "dyn Family[Item[D] = (Ts..., C, D)]", "(Ts..., dyn Family[Item[D] = (C, D)])")
+    discard accepted(nested)
+}
+
+test fn family_schema_headers_inherit_domains_and_check_them_before_erasure() {
+    let definitions = """
+        concept Tagged {}
+        impl Tagged for Int {}
+        impl[Us... Tagged] Tagged for (Us...) {}
+        concept Family {
+            type Item[U Tagged] Tagged
+        }
+        concept Pass {
+            type Ignore[T Tagged]
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        """
+    let source = concat(definitions, """
+        impl[Ts... Tagged] Pass for (Ts...) {
+            type Ignore[T] = Int
+            type Out = dyn Family[Item[U] = (Ts..., U)]
+            fn pass(self Self, value dyn Family[Item[V] = (Ts..., V)])
+                dyn Family[Item[W] = (Ts..., W)] {
+                discard self
+                value
+            }
+        }
+        """)
+    discard accepted(source)
+    rejects(std.text.replace(source, "impl[Ts... Tagged] Pass", "impl[Ts...] Pass"))
+    let erased = concat(definitions, """
+        impl[Ts...] Pass for (Ts...) {
+            type Ignore[T] = Int
+            type Out = dyn Family[Item[U] = Self.Ignore[(Ts..., U)]]
+            fn pass(self Self, value Self.Out) Self.Out {
+                discard self
+                value
+            }
+        }
+        """)
+    rejects(erased)
+    discard accepted(concat(definitions, """
+        impl[Ts... Tagged] Pass for (Ts...) {
+            type Ignore[T] = Int
+            type Out = dyn Family[Item[U] = Self.Ignore[(Ts..., U)]]
+            fn pass(self Self, value dyn Family[Item[V] = Int])
+                dyn Family[Item[W] = Int] {
+                discard self
+                value
+            }
+        }
+        """))
+}
+
+test fn family_schema_headers_reject_cyclic_associated_closures() {
+    rejects("""
+        concept Family {
+            type Item[U]
+        }
+        concept Pass {
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        impl[Ts...] Pass for (Ts...) {
+            type Out = dyn Family[Item[U] = Self.Out]
+            fn pass(self Self, value Self.Out) Self.Out {
+                discard self
+                value
+            }
+        }
+        """)
+}
+
+test fn family_schema_headers_keep_scoped_captures_inside_independent_nominal_groups() {
+    discard accepted("""
+        concept Family {
+            type Item[U]
+        }
+        record Groups[As..., Bs...] {
+            left (As...)
+            right (Bs...)
+        }
+        concept Pass {
+            type Wrap[T]
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        impl[Ts...] Pass for (Ts...) {
+            type Wrap[T] = Groups[(Int,)..., (dyn Family[Item[V] = (T, V)],)...]
+            type Out = dyn Family[Item[U] = (Ts..., Self.Wrap[U])]
+            fn pass(self Self, value Self.Out) Self.Out {
+                discard self
+                value
+            }
+        }
+        """)
+}

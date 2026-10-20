@@ -187,10 +187,16 @@ fn pack_dynamic_word_header(context Context, caller Node, schema Node, budget Li
         }
         push(covered, selected)
         let member = get(members, selected)
-        if get(context.env.inputs, 0).declaration_queries {
+        let normalized = length(binding.children) == 1 && pack_family_schema_arity(child(binding, 0)) >= 0
+        if !normalized && get(context.env.inputs, 0).declaration_queries {
             record_declaration_reference(context.env, pack_layout_owner(context), binding, member, 0, "")
         }
-        if length(group(binding, NodeKind.TypeParameters)) > 0 {
+        if normalized {
+            if !pack_family_schema_well_formed(context, caller, member, child(binding, 0), budget, depth + 1,
+                assumptions)? {
+                return Result.Ok(false)
+            }
+        } else if length(group(binding, NodeKind.TypeParameters)) > 0 {
             if !pack_family_word_binding(context, caller, capability, member, binding, budget, depth + 1, assumptions)? {
                 return Result.Ok(false)
             }

@@ -195,7 +195,14 @@ schemas before any call selects widths. Self and effective associated bindings,
 local generic domains, independent method words, scoped dyn families and
 overload coverage reuse the existing resolvers and word matcher. Mismatched or
 unproved headers reject; this does not universally check every deferred body.
-Whole-word family equality through implementation signatures remains limited.
+Whole-word dyn families in method headers use lexical binder schemas for
+alpha-equivalence, preserving outer captures, nested binders and independent
+nominal groups. Their declared input domains are checked before substitution
+can erase an argument; result bounds remain obligations. Closed family values
+reuse the ordinary hygienic application rule. Cyclic normalization rejects;
+this is structural equality, not arbitrary extensional equality or layout
+evaluation over unknown words. Successful source analysis retains checked
+declaration references where a symbolic header has no singular runtime type.
 Pack-bearing preconditions compose pure family helpers through the same universal
 proof. Tuple spreads work in contracts and refinement predicates; opaque helper
 arguments provide no storage or callback-behavior evidence.

@@ -61,8 +61,12 @@ fn pack_layout_well_formed(context Context, caller Node, schema Node, budget Lis
         return Result.Ok(false)
     }
     set(budget, 0, get(budget, 0) - 1)
-    if schema.kind == NodeKind.DynType && has_type_expansion(schema) {
+    if schema.kind == NodeKind.DynType && (has_type_expansion(schema) || pack_has_family_schema(schema)) {
         return pack_dynamic_word_header(context, caller, schema, budget, depth + 1, assumptions)
+    }
+    if pack_family_schema_arity(schema) >= 0 {
+        // A template is checked at its associated member, not as one value type.
+        return Result.Ok(false)
     }
     if schema.kind == NodeKind.AssociatedType && length(group(schema, NodeKind.TypeParameters)) > 0 {
         // A family body is checked under its own parameters by pack_dynamic_type.
@@ -131,7 +135,7 @@ fn pack_layout_admitted(context Context, caller Node, schema Node, capability In
         return Result.Ok(false)
     }
     set(budget, 0, get(budget, 0) - 1)
-    if schema.kind == NodeKind.DynType && has_type_expansion(schema) &&
+    if schema.kind == NodeKind.DynType && (has_type_expansion(schema) || pack_has_family_schema(schema)) &&
     pack_dynamic_capability(context, schema)? == capability {
         return pack_dynamic_word_header(context, caller, schema, budget, depth + 1, assumptions)
     }

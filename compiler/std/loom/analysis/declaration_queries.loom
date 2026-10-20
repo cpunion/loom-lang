@@ -163,7 +163,8 @@ fn inspect_declaration_at(analysis AnalysisState, view CheckedQuery, file Int, o
     index = 0
     while index < length(view.bindings.symbols) {
         let symbol = get(view.bindings.symbols, index)
-        possible = possible || ((symbol.node.kind == NodeKind.Function || symbol.node.kind == NodeKind.Concept || symbol.node.kind == NodeKind.AssociatedType) &&
+        possible = possible || ((symbol.node.kind == NodeKind.Function || symbol.node.kind == NodeKind.Concept || symbol.node.kind == NodeKind.AssociatedType ||
+                symbol.node.kind == NodeKind.Record || symbol.node.kind == NodeKind.Enum || symbol.node.kind == NodeKind.Refined) &&
             symbol.name == token.value)
         index = index + 1
     }
