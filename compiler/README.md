@@ -302,7 +302,10 @@ The harness does not enable the opt-in object cache described below. Native deco
 timings separate backend costs; remaining build wall time also includes
 serialization and process/pipe overhead, not just frontend analysis. Peak RSS
 is the operating system's reported maximum, not summed concurrent process
-memory. `--extended` adds fresh-process startup (`--version`), actual
+memory. Set `LOOM_NATIVE_PASS_TIMINGS=1` for detailed LLVM optimization and
+machine-pass reports on stderr. This adds measurement overhead without changing
+artifact bytes; cached object hits do not run those passes.
+`--extended` adds fresh-process startup (`--version`), actual
 `test --no-run` compilation, and configurable generated package sizes. Growth
 cases exercise multiple files, an imported package, records, generics and Lists;
 the reported size is the helper count, not lines of code. Reports record input,
