@@ -7,7 +7,7 @@ use inkwell::{
     attributes::{Attribute, AttributeLoc},
     basic_block::BasicBlock,
     builder::Builder,
-    context::Context,
+    context::{AsContextRef, Context},
     intrinsics::Intrinsic,
     module::{Linkage, Module},
     passes::PassBuilderOptions,
@@ -213,6 +213,15 @@ fn emit_checked(
     let target_data = machine.get_target_data();
     let optimization = native.optimization;
     let context = Context::create();
+    if llvm_ir.is_none() {
+        // Local SSA names are for diagnostics, not code generation. Global
+        // names used by the runtime, witnesses and exports remain intact.
+        // SAFETY: this owned context is live and has no IR objects yet.
+        #[allow(unsafe_code)]
+        unsafe {
+            inkwell::llvm_sys::core::LLVMContextSetDiscardValueNames((&context).as_ctx_ref(), 1);
+        }
+    }
     let module = context.create_module("loom");
     module.set_triple(&machine.get_triple());
     module.set_data_layout(&target_data.get_data_layout());
