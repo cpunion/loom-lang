@@ -1,0 +1,81 @@
+// Fields were checked before their pending guards were introduced. Splice only
+// this construction's guards into outward exits, after operand-local cleanup
+// and before the caller's existing lexical cleanup. Return-result guards remain
+// live until all those disposals succeed.
+fn pending_exit_cleanups(context Context, node Node, values List[Expr], cleanups List[Int]) {
+    var index = length(cleanups)
+    while index > 0 {
+        index = index - 1
+        let head = get(cleanups, index)
+        let body = get(context.cleanups, head).body
+        push(values, expression(ExprKind.Cleanup, 0, node, "", head, expressions(body), body.falls))
+    }
+}
+
+fn pending_resource_exits(context Context, value Expr, cleanups List[Int], loops Int) Result[Expr, Failure] {
+    let node = Node {
+        kind = NodeKind.Name
+        value = ""
+        span = value.span
+        children = new[Node]()
+    }
+    if value.kind == ExprKind.Cleanup {
+        if value.index == context.cleanup_head {
+            let values = new[Expr]()
+            pending_exit_cleanups(context, node, values, cleanups)
+            push(values, value)
+            return Result.Ok(expression(ExprKind.Block, value.ty, node, "", -1, values, value.falls))
+        }
+        return Result.Ok(value)
+    }
+    // A registration's callback is latent, not part of evaluating this operand.
+    if value.kind == ExprKind.Defer {
+        return Result.Ok(value)
+    }
+    let children = new[Expr](length(value.children))
+    var index = 0
+    while index < length(value.children) {
+        let nested = if value.kind == ExprKind.While && index == 1 {
+            loops + 1
+        } else {
+            loops
+        }
+        push(children, pending_resource_exits(context, get(value.children, index), cleanups, nested)?)
+        index = index + 1
+    }
+    let arms = new[Arm](length(value.arms))
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let body = new[Expr](length(arm.body))
+        var item = 0
+        while item < length(arm.body) {
+            push(body, pending_resource_exits(context, get(arm.body, item), cleanups, loops)?)
+            item = item + 1
+        }
+        push(arms, Arm {
+                body = body
+                ..arm
+            })
+        index = index + 1
+    }
+    let rewritten = Expr {
+        children = children
+        arms = arms
+        ..value
+    }
+    if value.kind == ExprKind.Return && context.cleanup_head < 0 {
+        return returning(Context {
+                cleanup_head = get(cleanups, length(cleanups) - 1)
+                ..context
+            }, node, children)
+    }
+    if loops == 0 && (value.kind == ExprKind.Break || value.kind == ExprKind.Continue) &&
+    context.cleanup_head == context.loop_boundary {
+        let values = new[Expr]()
+        pending_exit_cleanups(context, node, values, cleanups)
+        push(values, rewritten)
+        return Result.Ok(expression(ExprKind.Block, value.ty, node, "", -1, values, value.falls))
+    }
+    Result.Ok(rewritten)
+}

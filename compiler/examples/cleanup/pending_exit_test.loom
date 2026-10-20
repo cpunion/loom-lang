@@ -1,0 +1,211 @@
+fn pending_later(trace List[Int], fail Bool) Result[Leaf, Text] {
+    if fail {
+        Result.Err("unavailable")
+    } else {
+        Result.Ok(acquire(2, trace))
+    }
+}
+
+fn pending_result(trace List[Int], fail Bool) Result[Int, Text] {
+    defer {
+        push(trace, 9)
+    }
+    scoped pair = Pair {
+        fault_on_dispose = false
+        first = acquire(1, trace)
+        second = {
+            defer {
+                push(trace, 8)
+            }
+            pending_later(trace, fail)?
+        }
+    }
+    Result.Ok(pair.first.id + pair.second.id)
+}
+
+fn pending_plain_return(trace List[Int]) Result[Int, Text] {
+    scoped pair = Pair {
+        fault_on_dispose = false
+        first = acquire(1, trace)
+        second = {
+            defer {
+                push(trace, 8)
+            }
+            return Result.Err("plain")
+            acquire(2, trace)
+        }
+    }
+    Result.Ok(pair.first.id)
+}
+
+fn pending_leaf_return(trace List[Int]) Leaf {
+    defer {
+        push(trace, 9)
+    }
+    scoped pair = Pair {
+        fault_on_dispose = false
+        first = acquire(1, trace)
+        second = {
+            defer {
+                push(trace, 8)
+            }
+            return acquire(3, trace)
+            acquire(2, trace)
+        }
+    }
+    acquire(4, trace)
+}
+
+fn pending_nested_return(trace List[Int]) Result[Int, Text] {
+    defer {
+        push(trace, 9)
+    }
+    scoped pair = Pair {
+        fault_on_dispose = false
+        first = acquire(1, trace)
+        second = {
+            scoped nested = (acquire(2, trace), {
+                return Result.Err("nested")
+                0
+            })
+            acquire(3, trace)
+        }
+    }
+    Result.Ok(pair.first.id)
+}
+
+fn pending_loop_exits(trace List[Int]) {
+    defer {
+        push(trace, 9)
+    }
+    var round = 0
+    while round < 2 {
+        defer {
+            push(trace, 8)
+        }
+        round = round + 1
+        scoped pair = Pair {
+            fault_on_dispose = false
+            first = acquire(1, trace)
+            second = {
+                if round == 1 {
+                    continue
+                }
+                break
+                acquire(2, trace)
+            }
+        }
+    }
+    round = 0
+    while round < 2 {
+        round = round + 1
+        scoped pair = Pair {
+            fault_on_dispose = false
+            first = acquire(1, trace)
+            second = {
+                if round == 1 {
+                    continue
+                }
+                break
+                acquire(2, trace)
+            }
+        }
+    }
+}
+
+fn exercise_pending_exits() Bool {
+    let failed List[Int] = []
+    discard pending_result(failed, true)
+    assert length(failed) == 4
+    assert failed[0] == 10 && failed[1] == 8 && failed[2] == 1 && failed[3] == 9
+    let success List[Int] = []
+    assert match pending_result(success, false) {
+        Result.Ok(value) => value == 3
+        _ => false
+    }
+    assert length(success) == 7
+    assert success[0] == 10 && success[1] == 20 && success[2] == 8
+    assert success[3] == 3 && success[4] == 2 && success[5] == 1 && success[6] == 9
+    let plain List[Int] = []
+    discard pending_plain_return(plain)
+    assert length(plain) == 3 && plain[0] == 10 && plain[1] == 8 && plain[2] == 1
+    let returned List[Int] = []
+    {
+        scoped value = pending_leaf_return(returned)
+        assert value.id == 3 && length(returned) == 5
+    }
+    assert length(returned) == 6
+    assert returned[0] == 10 && returned[1] == 30 && returned[2] == 8
+    assert returned[3] == 1 && returned[4] == 9 && returned[5] == 3
+    let nested List[Int] = []
+    discard pending_nested_return(nested)
+    assert length(nested) == 5
+    assert nested[0] == 10 && nested[1] == 20 && nested[2] == 2 && nested[3] == 1 && nested[4] == 9
+    let loops List[Int] = []
+    pending_loop_exits(loops)
+    assert length(loops) == 11
+    assert loops[0] == 10 && loops[1] == 1 && loops[2] == 8
+    assert loops[3] == 10 && loops[4] == 1 && loops[5] == 8
+    assert loops[6] == 10 && loops[7] == 1 && loops[8] == 10 && loops[9] == 1 && loops[10] == 9
+    true
+}
+
+test fn pending_resource_exits_keep_lexical_order() {
+    assert exercise_pending_exits()
+    assert comptime {
+        exercise_pending_exits()
+    }
+}
+
+async fn pending_awaited_exit(trace List[Int]) Result[Int, Text] {
+    defer {
+        push(trace, 9)
+    }
+    scoped pair = Pair {
+        fault_on_dispose = false
+        first = acquire(1, trace)
+        second = {
+            defer {
+                push(trace, 8)
+            }
+            sleep_ms(0).await
+            pending_later(trace, true)?
+        }
+    }
+    Result.Ok(pair.first.id)
+}
+
+test async fn pending_resource_exits_survive_suspension() {
+    let trace List[Int] = []
+    discard pending_awaited_exit(trace).await
+    assert length(trace) == 4
+    assert trace[0] == 10 && trace[1] == 8 && trace[2] == 1 && trace[3] == 9
+}
+
+fn pending_fault_return(trace List[Int]) Leaf {
+    defer {
+        push(trace, 9)
+    }
+    scoped pair = NestedPair {
+        first = wrap(trace, true)
+        second = {
+            return acquire(3, trace)
+            acquire(2, trace)
+        }
+    }
+    acquire(4, trace)
+}
+
+async fn pending_fault_owner(trace List[Int]) {
+    scoped value = pending_fault_return(trace)
+}
+
+test async fn pending_resource_exits_preserve_the_untransferred_result() {
+    let trace List[Int] = []
+    assert match outcome(pending_fault_owner(trace)).await {
+        Outcome.Faulted(_) => true
+        _ => false
+    }
+    assert length(trace) == 5
+    assert trace[0] == 30 && trace[1] == 2 && trace[2] == 3 && trace[3] == 1 && trace[4] == 9
+}
