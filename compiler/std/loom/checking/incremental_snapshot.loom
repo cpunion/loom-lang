@@ -48,14 +48,33 @@ fn reuse_source_selection(basis DefinitionBasis, cache DefinitionCache) {
     let prior = get(previous, 0)
     let before = raw_definition_source(prior)
     let after = raw_definition_source(basis)
+    // File insertion/reordering changes array slots, not unchanged syntax.
+    // Ambiguous paths supplied by a public host simply require fresh parsing.
+    let paths = std.map.new[Text, Int]()
     var index = 0
-    while index < length(after.files) && index < length(before.files) {
-        let selection = get(prior.source_selection, index)
-        if selection >= 0 {
-            let old_file = get(before.files, index)
-            let file = get(after.files, index)
-            if old_file.text == file.text && std.loom.ast.same(old_file.tree, file.tree) {
-                set(basis.source_selection, index, selection)
+    while index < length(before.files) {
+        let path = get(before.files, index).path
+        let slot = match std.map.get(paths, path) {
+            Option.None => index
+            Option.Some(_) => -1
+        }
+        discard std.map.insert(paths, path, slot)
+        index = index + 1
+    }
+    index = 0
+    while index < length(after.files) {
+        let file = get(after.files, index)
+        match std.map.get(paths, file.path) {
+            Option.Some(slot) => {
+                if slot >= 0 {
+                    let selection = get(prior.source_selection, slot)
+                    let old_file = get(before.files, slot)
+                    if selection >= 0 && old_file.text == file.text && std.loom.ast.same(old_file.tree, file.tree) {
+                        set(basis.source_selection, index, selection)
+                    }
+                }
+            }
+            Option.None => {
             }
         }
         index = index + 1

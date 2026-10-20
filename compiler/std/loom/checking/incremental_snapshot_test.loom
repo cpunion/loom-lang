@@ -379,6 +379,18 @@ test fn cached_source_validation_requires_matching_text_and_complete_syntax() {
     }
     assert get(get(definition_state(restored).basis, 0).source_selection, 0) == 1
 
+    let added = source_file("app", "fn unrelated() {}", false)
+    let reordered = [TestFile {
+            path = "added.loom"
+            ..added
+        }, source_file("app", text, false)]
+    assert match check_project_cached(fixture_project(reordered), false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let selection = get(definition_state(restored).basis, 0).source_selection
+    assert get(selection, 0) == -1 && get(selection, 1) == 1
+
     let source = fixture_project(source_files("fn value() Int { 2 }"))
     let file = get(source.files, 0)
     set(source.files, 0, SourceFile {
