@@ -1,0 +1,76 @@
+fn operand_use(value Leaf, extra Int) Int {
+    push(value.trace, 99)
+    extra
+}
+
+fn operand_late(trace List[Int]) Int {
+    push(trace, 99)
+    0
+}
+
+fn operand_exit(trace List[Int], indirect Bool) Int {
+    defer {
+        push(trace, 9)
+    }
+    scoped held = acquire(1, trace)
+    if indirect {
+        let callback = operand_use
+        callback({
+                defer {
+                    push(trace, 8)
+                }
+                return 7
+            }, operand_late(trace))
+    } else {
+        operand_use({
+                defer {
+                    push(trace, 8)
+                }
+                return 7
+            }, operand_late(trace))
+    }
+}
+
+fn exercise_operand_exits() Bool {
+    var round = 0
+    while round < 2 {
+        let trace List[Int] = []
+        assert operand_exit(trace, round == 1) == 7
+        assert length(trace) == 4
+        assert trace[0] == 10 && trace[1] == 8 && trace[2] == 1 && trace[3] == 9
+        round = round + 1
+    }
+    true
+}
+
+test fn resource_operand_exits_stop_arguments_and_preserve_cleanup() {
+    assert exercise_operand_exits()
+    assert comptime {
+        exercise_operand_exits()
+    }
+}
+
+async fn operand_use_async(value Leaf, extra Int) Int {
+    operand_use(value, extra)
+}
+
+async fn operand_async_exit(trace List[Int]) Int {
+    defer {
+        push(trace, 9)
+    }
+    scoped held = acquire(1, trace)
+    operand_use_async({
+            defer {
+                push(trace, 8)
+            }
+            sleep_ms(0).await
+            return 7
+        }, operand_late(trace)).await
+}
+
+test async fn resource_operand_exits_survive_suspension_without_creating_a_task() {
+    let trace List[Int] = []
+    assert operand_async_exit(trace).await == 7
+    assert length(trace) == 4
+    assert trace[0] == 10 && trace[1] == 8 && trace[2] == 1 && trace[3] == 9
+}

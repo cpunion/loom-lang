@@ -97,3 +97,86 @@ test fn outward_exits_use_the_expected_value_type() {
         }
         """)
 }
+
+test fn outward_exits_stop_resource_operand_evaluation() {
+    resource_accept(concat(resource_header(), """
+        fn inspect(value Handle, extra Int) Int {
+            extra
+        }
+        fn direct_exit() Int {
+            inspect({
+                    return 7
+                }, make([0]).use())
+        }
+        fn indirect_exit(callback fn(Handle, Int) Int) Int {
+            callback({
+                    return 8
+                }, make([0]).use())
+        }
+        async fn inspect_async(value Handle, extra Int) Int {
+            extra
+        }
+        async fn async_exit() Int {
+            inspect_async({
+                    return 9
+                }, make([0]).use()).await
+        }
+        fn condition_exit() {
+            scoped value = make([0])
+            if {
+                return
+            } {
+                value.dispose()
+            } else {
+                value.dispose()
+            }
+        }
+        fn loop_exit() {
+            scoped value = make([0])
+            while {
+                return
+            } {
+                value.dispose()
+            }
+        }
+        fn match_exit() {
+            scoped value = make([0])
+            match {
+                return
+            } {
+                _ => value.dispose()
+            }
+        }
+        fn list_exit() {
+            scoped value = make([0])
+            let values List[Int] = [{
+                    return
+                }, make([0]).use()]
+        }
+        fn main() {
+            assert direct_exit() == 7 && indirect_exit(inspect) == 8
+            condition_exit()
+            loop_exit()
+            match_exit()
+            list_exit()
+        }
+        """))
+    resource_reject_reason(concat(resource_header(), """
+        fn inspect(value Handle) {}
+        fn main() {
+            scoped held = make([0])
+            inspect({
+                    held.dispose()
+                    return
+                })
+        }
+        """), "a scoped value is disposed automatically; manual Dispose calls are forbidden")
+    resource_reject_reason(concat(resource_header(), """
+        fn inspect(value Handle, extra Int) {}
+        fn main() {
+            inspect(make([0]), {
+                    return
+                })
+        }
+        """), "a resource must enter scoped before a method call")
+}

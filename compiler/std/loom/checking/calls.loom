@@ -827,7 +827,7 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
                 get(values, index)
             }
             let identity = get(context.env.types, target).kind == TypeKind.Function &&
-                (static_identity_input(context, input) || match saved_input(inputs, index) {
+            (static_identity_input(context, input) || match saved_input(inputs, index) {
                     Option.Some(_) => true
                     Option.None => false
                 })
@@ -920,11 +920,6 @@ fn invoke_ready(context Context, node Node, instance Instance, signature Signatu
         }
     } else {
         discard validate_static(context.env, instance.signature, constants, node)?
-    }
-    var resource_argument = 0
-    while resource_argument < length(runtime_values) {
-        discard resource_receiver(context, node, get(runtime_values, resource_argument))?
-        resource_argument = resource_argument + 1
     }
     let logical_output = substitute(context.env, context.signature.symbol, signature.result, instance.arguments, node)?
     let asynchronous = async_signature(context.env, signature)
