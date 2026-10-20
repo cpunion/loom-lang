@@ -265,11 +265,11 @@ fn body_source_supported(reuse BodyReuse, previous Int) Bool {
     if owner >= length(reuse.allowed) || !get(reuse.allowed, owner) {
         return false
     }
-    match std.map.get(reuse.changed, get(reuse.current, owner).node.value) {
-        Option.Some(_) => {
+    match std.map.get(reuse.changed, definition_change_key(get(reuse.current, owner))) {
+        Option.Some(true) => {
             return false
         }
-        Option.None => {
+        _ => {
         }
     }
     true

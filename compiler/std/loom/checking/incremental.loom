@@ -277,13 +277,63 @@ fn definition_opaque(node Node) Bool {
     false
 }
 
-fn definition_depends(node Node, changed Map[Text, Bool], header Bool) Bool {
+// Private top-level names cannot bind in another package. Public functions and
+// member lookup keep the conservative name-wide dependency boundary.
+fn definition_change_key(entry DefinitionEntry) Text {
+    if entry.owner < 0 && !has(entry.node, NodeKind.Public) {
+        definition_bucket(entry)
+    } else {
+        entry.node.value
+    }
+}
+
+fn definition_mark_changed(changed Map[Text, Bool], entry DefinitionEntry) {
+    let key = definition_change_key(entry)
+    discard std.map.insert(changed, key, true)
+    // Bare names are a cheap gate: false means only package-private changes;
+    // true means the name-wide public/member boundary. Never downgrade true.
+    if key != entry.node.value {
+        match std.map.get(changed, entry.node.value) {
+            Option.None => {
+                discard std.map.insert(changed, entry.node.value, false)
+            }
+            Option.Some(_) => {
+            }
+        }
+    }
+}
+
+fn definition_dependency_scope(basis DefinitionBasis, index Int) Int {
+    var owner = index
+    while owner >= 0 {
+        let entry = get(basis.entries, owner)
+        if has(entry.node, NodeKind.ExpansionId) {
+            return -1
+        }
+        owner = entry.owner
+    }
+    get(basis.entries, index).package
+}
+
+fn definition_depends(node Node, changed Map[Text, Bool], header Bool, package Int) Bool {
     let kind = node.kind
     if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.MethodCall ||
     kind == NodeKind.Construct || kind == NodeKind.Type || kind == NodeKind.Select {
-        match std.map.get(changed, std.loom.project.name(node.value)) {
-            Option.Some(_) => {
-                return true
+        let name = std.loom.project.name(node.value)
+        match std.map.get(changed, name) {
+            Option.Some(global) => {
+                // Generated source and invariant headers retain broad lookup.
+                if global || package < 0 {
+                    return true
+                }
+                let key = concat(std.int.to_text(package), concat("/", name))
+                match std.map.get(changed, key) {
+                    Option.Some(true) => {
+                        return true
+                    }
+                    _ => {
+                    }
+                }
             }
             Option.None => {
             }
@@ -294,7 +344,7 @@ fn definition_depends(node Node, changed Map[Text, Bool], header Bool) Bool {
         let child = get(node.children, index)
         if !(header && kind == NodeKind.Function && child.kind == NodeKind.Block) &&
         definition_depends(child, changed, header &&
-            (kind == NodeKind.File || kind == NodeKind.Concept || kind == NodeKind.Impl)) {
+            (kind == NodeKind.File || kind == NodeKind.Concept || kind == NodeKind.Impl), package) {
             return true
         }
         index = index + 1
@@ -361,7 +411,7 @@ fn definition_matches(previous DefinitionBasis, basis DefinitionBasis, changed M
                 }
             }
             if found < 0 {
-                discard std.map.insert(changed, entry.node.value, true)
+                definition_mark_changed(changed, entry)
             }
         }
         push(matches, found)
@@ -371,7 +421,7 @@ fn definition_matches(previous DefinitionBasis, basis DefinitionBasis, changed M
     while index < length(previous.entries) {
         let entry = get(previous.entries, index)
         if entry.node.kind == NodeKind.Function && !get(used, index) {
-            discard std.map.insert(changed, entry.node.value, true)
+            definition_mark_changed(changed, entry)
         }
         index = index + 1
     }
@@ -414,7 +464,7 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         let matched = get(matches, index)
         let stable = matched >= 0 && !definition_opaque(body) && !build
         if item.node.kind == NodeKind.Function && !stable {
-            discard std.map.insert(changed, item.name, true)
+            definition_mark_changed(changed, get(basis.entries, index))
         }
         // A successful concrete instance is its own evidence. A declaration
         // with deferred/variadic validation need not have a reusable abstract
@@ -429,14 +479,15 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         index = 0
         while index < length(basis.entries) {
             let item = get(source.symbols, index)
-            if item.node.kind == NodeKind.Function && definition_depends(get(basis.entries, index).node, changed, false) {
+            if item.node.kind == NodeKind.Function && definition_depends(get(basis.entries, index).node,
+                changed, false, definition_dependency_scope(basis, index)) {
                 set(reuse.checks, index, false)
                 set(reuse.bodies, index, false)
-                match std.map.get(changed, item.name) {
-                    Option.Some(_) => {
+                match std.map.get(changed, definition_change_key(get(basis.entries, index))) {
+                    Option.Some(true) => {
                     }
-                    Option.None => {
-                        discard std.map.insert(changed, item.name, true)
+                    _ => {
+                        definition_mark_changed(changed, get(basis.entries, index))
                         more = true
                     }
                 }
@@ -448,7 +499,7 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
     index = 0
     while index < length(basis.project.files) {
         let header = get(basis.project.files, index).tree
-        if definition_depends(header, changed, true) {
+        if definition_depends(header, changed, true, -1) {
             var item = 0
             while item < length(reuse.checks) {
                 set(reuse.checks, item, false)

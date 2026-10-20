@@ -433,6 +433,8 @@ Fresh bindings rekey types, static
 arguments, calls and source locations;
 changed definitions and overloads invalidate transitive consumers. Nominal/import
 changes and syntax-producing macro or unsupported bodies recheck conservatively.
+Private top-level helper changes stay within their package; public/member names,
+generated scopes and invariant headers retain conservative name-wide invalidation.
 Within one check, each saved body's eligibility is computed once, and each
 replayed concrete callee is validated and scheduled once in the current
 environment. These lookup tables are rebuilt after every edit, never persisted
