@@ -72,28 +72,38 @@ fn computed_family_closed(env Environment, ty Int, prior Int, scopes List[Family
     true
 }
 
-fn computed_family_body(context Context, node Node) Result[Node, Failure] {
-    if node.kind == NodeKind.Comptime {
-        var source = child(node, 0)
-        var selected = context
-        if source.kind == NodeKind.If {
-            match guard_condition(context, node, child(source, 0), 0)? {
-                GuardDecision.Pending => {
-                    return Result.Err(error(context, node, "dynamic associated family needs a uniform symbolic type template"))
-                }
-                GuardDecision.Known(yes, chosen) => {
-                    selected = chosen
-                    if yes {
-                        source = child(source, 1)
-                    } else if length(source.children) == 3 {
-                        source = child(source, 2)
-                    } else {
-                        return Result.Err(error(context, node, "type expression must have a compile-time identity"))
-                    }
+fn computed_family_selection(context Context, node Node) Result[(Context, Node), Failure] {
+    computed_family_selection(context, node, Option.None)
+}
+
+fn computed_family_selection(context Context, node Node,
+    prepare Option[fn(Context, Node) Result[(Context, Node), Failure]]) Result[(Context, Node), Failure] {
+    var source = child(node, 0)
+    var selected = context
+    if source.kind == NodeKind.If {
+        match guard_condition(context, node, child(source, 0), 0, prepare)? {
+            GuardDecision.Pending => {
+                return Result.Err(error(context, node, "dynamic associated family needs a uniform symbolic type template"))
+            }
+            GuardDecision.Known(yes, chosen) => {
+                selected = chosen
+                if yes {
+                    source = child(source, 1)
+                } else if length(source.children) == 3 {
+                    source = child(source, 2)
+                } else {
+                    return Result.Err(error(context, node, "type expression must have a compile-time identity"))
                 }
             }
         }
-        let value = computed_type(selected, node, source)?
+    }
+    Result.Ok((selected, source))
+}
+
+fn computed_family_body(context Context, node Node) Result[Node, Failure] {
+    if node.kind == NodeKind.Comptime {
+        let selected = computed_family_selection(context, node)?
+        let value = computed_type(selected.0, node, selected.1)?
         if value.kind != ExprKind.TypeValue {
             return Result.Err(error(context, node, "dynamic associated family needs a uniform symbolic type template"))
         }

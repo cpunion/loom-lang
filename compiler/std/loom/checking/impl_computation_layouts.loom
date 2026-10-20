@@ -3,6 +3,12 @@ record ImplComputationLayout {
     ty Int
 }
 
+record ImplComputation {
+    layouts List[ImplComputationLayout]
+    evidence List[Requirement]
+    origins List[Node]
+}
+
 fn impl_computation_mentions(node Node, name Text) Bool {
     if pack_root(node, name) {
         return true
@@ -21,12 +27,45 @@ fn impl_computation_mentions(node Node, name Text) Bool {
     false
 }
 
+fn impl_computation_local(node Node, bindings List[Node]) Bool {
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Type ||
+    node.kind == NodeKind.Call || node.kind == NodeKind.Construct {
+        let root = slice(node.value, 0, first_dot(node.value))
+        var index = 0
+        while index < length(bindings) {
+            if pack_local_binds(get(bindings, index), root) {
+                return true
+            }
+            index = index + 1
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        if impl_computation_local(child(node, index), bindings) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn impl_computation_evidence(env Environment, source List[Requirement], target List[Requirement]) {
+    var index = 0
+    while index < length(source) {
+        let known = get(source, index)
+        if !entailed(env, target, known.ty, known.capability) {
+            push(target, known)
+        }
+        index = index + 1
+    }
+}
+
 // Give a complete word-bearing type one identity, never a representative
 // element or tuple width. Only capabilities proved for that whole type enter
 // the evaluator; reflection and unknown equality keep their ordinary rules.
 fn impl_computation_layouts(env Environment, scope ImplMethodScope, owner Int, node Node,
-    frame List[Node], values List[Node], layouts List[ImplComputationLayout],
-    evidence List[Requirement], element Bool, depth Int) Result[Node, Failure] {
+    frame List[Node], values List[Node], computation ImplComputation,
+    element Bool, bindings List[Node], depth Int) Result[Node, Failure] {
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "implementation method computation must be finite"))
     }
@@ -35,6 +74,31 @@ fn impl_computation_layouts(env Environment, scope ImplMethodScope, owner Int, n
     node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap ||
     (node.kind == NodeKind.AssociatedType && length(group(node, NodeKind.TypeParameters)) > 0) {
         return Result.Ok(node)
+    }
+    if node.kind == NodeKind.Comptime && child(node, 0).kind == NodeKind.If {
+        let source = child(node, 0)
+        if impl_computation_local(child(source, 0), bindings) {
+            return Result.Ok(node)
+        }
+        let context = impl_method_context(env, ImplMethodScope {
+                evidence = computation.evidence
+                ..scope
+            }, owner)
+        let selected = computed_family_selection(context, node,
+            Option.Some(fn(checked Context, input Node) Result[(Context, Node), Failure] {
+                    impl_computation_evidence(env, checked.signature.requirements, computation.evidence)
+                    let prepared = impl_computation_layouts(env, scope, owner, input, frame, values,
+                        computation, element, bindings, depth + 1)?
+                    let context = impl_method_computation_context(env, ImplMethodScope {
+                            evidence = computation.evidence
+                            ..scope
+                        }, owner, prepared, frame, values, element)?
+                    Result.Ok((context, prepared))
+                }))?
+        impl_computation_evidence(env, selected.0.signature.requirements, computation.evidence)
+        return Result.Ok(pack_node(node, node.kind, node.value,
+                source_nodes(impl_computation_layouts(env, scope, owner, selected.1, frame, values,
+                        computation, element, bindings, depth + 1)?)))
     }
     let structural = node.kind == NodeKind.Type || node.kind == NodeKind.Name ||
     node.kind == NodeKind.Tuple || node.kind == NodeKind.TupleType ||
@@ -45,45 +109,59 @@ fn impl_computation_layouts(env Environment, scope ImplMethodScope, owner Int, n
         whole = whole || (pack_root(node, get(frame, index).value) && has_type_expansion(get(values, index)))
         index = index + 1
     }
-    if whole {
+    let local = (whole || (element && (node.kind == NodeKind.Type || node.kind == NodeKind.Name))) &&
+    length(bindings) > 0 && impl_computation_local(node, bindings)
+    if element && !local && (whole || node.kind == NodeKind.Type || node.kind == NodeKind.Name) {
+        let origins = impl_method_word_origins(env, owner, node, frame, values)?
+        index = 0
+        while index < length(origins) {
+            pack_word_origin_add(computation.origins, get(origins, index))
+            index = index + 1
+        }
+        if length(computation.origins) > 1 {
+            return Result.Err(failure(env, owner, node, "elementwise expansion needs proved equal source widths"))
+        }
+    }
+    if whole && !local {
         let schema = impl_method_substitute(env, scope, owner,
             type_pattern_schema(env, owner, node, element, 0, true, true, frame)?, frame, values, 0)?
         discard impl_method_well_formed(env, scope, owner, schema)?
         index = 0
-        while index < length(layouts) {
-            let layout = get(layouts, index)
+        while index < length(computation.layouts) {
+            let layout = get(computation.layouts, index)
             if pack_schema_equal(layout.schema, schema) {
                 return Result.Ok(meta_reference(node, layout.ty))
             }
             index = index + 1
         }
         let ty = pack_symbolic_type(impl_method_context(env, scope, owner), scope.caller,
-            schema, evidence, ints(512), 0, Option.Some(scope.assumptions))?
+            schema, computation.evidence, ints(512), 0, Option.Some(scope.assumptions))?
         if ty < 0 {
             return Result.Err(failure(env, owner, node, "compile-time input needs an established type identity"))
         }
-        push(layouts, ImplComputationLayout {
+        push(computation.layouts, ImplComputationLayout {
                 schema = schema
                 ty = ty
             })
         return Result.Ok(meta_reference(node, ty))
     }
     let children = new[Node]()
-    var local = false
+    var locals = bindings
+    var copied = false
     index = 0
     while index < length(node.children) {
         let member = child(node, index)
-        // A local initializer still sees the outer frame. After it binds,
-        // ordinary CTFE owns lookup; do not resolve local names as globals.
-        push(children, if local {
-                member
-            } else {
-                impl_computation_layouts(env, scope, owner, member, frame,
-                    values, layouts, evidence, element, depth + 1)?
-            })
+        // Only closed type islands may use the outer schema frame. Local
+        // aliases and their enclosing constructors stay with ordinary CTFE.
+        push(children, impl_computation_layouts(env, scope, owner, member, frame,
+                values, computation, element && node.kind != NodeKind.Spread, locals, depth + 1)?)
         if node.kind == NodeKind.Block && (member.kind == NodeKind.Let || member.kind == NodeKind.Var ||
             member.kind == NodeKind.Scoped || member.kind == NodeKind.Destructure) {
-            local = true
+            if !copied {
+                locals = std.list.clone(bindings)
+                copied = true
+            }
+            push(locals, member)
         }
         index = index + 1
     }

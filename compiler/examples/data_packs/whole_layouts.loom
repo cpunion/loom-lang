@@ -4,9 +4,14 @@ concept WholeWordRelay {
 }
 
 impl[Ts...] WholeWordRelay for (Ts...) {
-    type Value = dyn WordFactory[Item[U] = (comptime {
-                word_item_type[Self]()
-            }, U)]
+    type Value = dyn WordFactory[Item[U] = comptime {
+            let Suffix = U
+            comptime if true {
+                word_item_type[((Ts...), Suffix)]()
+            } else {
+                Bool
+            }
+        }]
     fn relay_whole(self Self, value dyn WordFactory[Item[V] = ((Ts...), V)])
     dyn WordFactory[Item[W] = ((Ts...), W)] {
         discard self
