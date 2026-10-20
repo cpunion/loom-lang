@@ -1,3 +1,33 @@
+test fn snapshot_enum_tags_preserve_declaration_order_and_reject_unknowns() {
+    assert cache_type_tag(TypeKind.Unit) == 0 && cache_type_tag(TypeKind.Rigid) == 19
+    assert cache_expression_tag(ExprKind.Integer) == 0
+    assert cache_expression_tag(ExprKind.ClosureEnvironment) == 40
+    var index = 0
+    while index < 20 {
+        assert match cache_type_kind(index) {
+            Result.Ok(kind) => cache_type_tag(kind) == index
+            Result.Err(_) => false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < 41 {
+        assert match cache_expression_kind(index) {
+            Result.Ok(kind) => cache_expression_tag(kind) == index
+            Result.Err(_) => false
+        }
+        index = index + 1
+    }
+    assert match cache_type_kind(-1) {
+        Result.Err(message) => message == "unknown cached type kind"
+        Result.Ok(_) => false
+    }
+    assert match cache_expression_kind(41) {
+        Result.Err(message) => message == "unknown cached expression kind"
+        Result.Ok(_) => false
+    }
+}
+
 test fn snapshot_numbers_keep_the_canonical_counted_encoding() {
     let values = [0, 1, -1, 9, 10, -10, 999, 1000, -1000,
         9223372036854775807, -9223372036854775808]
