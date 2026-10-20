@@ -65,9 +65,9 @@ fn pending_nested_return(trace List[Int]) Result[Int, Text] {
         first = acquire(1, trace)
         second = {
             scoped nested = (acquire(2, trace), {
-                return Result.Err("nested")
-                0
-            })
+                    return Result.Err("nested")
+                    0
+                })
             acquire(3, trace)
         }
     }

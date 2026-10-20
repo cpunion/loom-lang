@@ -4412,9 +4412,11 @@ if a later initializer or a cleanup faults. See the
 [generic cleanup tests](examples/cleanup/generic_resource_test.loom).
 Later fields may create closures or use field-local loops: a closure's return
 and a local loop's break/continue do not escape aggregate construction. Discarded
-`comptime if` branches do not participate in this check. Actual
-enclosing returns, propagation and loop exits still reject while a resource
-field is pending. Pending fields remain protected across awaits and are drained
+`comptime if` branches do not participate in this check. Enclosing returns,
+propagation and loop exits dispose pending fields after operand-local cleanup
+and before enclosing cleanup. A returned resource stays protected if that
+disposal faults. See the [exit tests](examples/cleanup/pending_exit_test.loom).
+Pending fields remain protected across awaits and are drained
 on cancellation; NoSuspend fields still forbid suspension. Tuple literals and
 `comptime map` use the same checked construction path. Source `std.resource`
 provides structural tuple and Option/Result container hooks, without making
