@@ -281,6 +281,22 @@ test fn computed_layouts_keep_selected_widths_through_local_type_values() {
         """)
     assert guarded != source
     discard accepted(guarded)
+    discard accepted(std.text.replace(guarded, "List[Bs]", "Bs"))
+    let captured = std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                "(comptime { identity_type[Self]() }, U)", """
+                (comptime {
+                    let Gate = Bool
+                    comptime if Gate == Bool {
+                        let Suffix = Ts
+                        identity_type[((Ts...), Suffix)]()
+                    } else {
+                        Missing
+                    }
+                }..., U)
+                """),
+            "((Ts...), V)", "(((Ts...), Ts)..., V)"),
+        "((Ts...), W)", "(((Ts...), Ts)..., W)")
+    discard accepted(captured)
     let erased = std.text.replace(std.text.replace(std.text.replace(guarded,
                 "\n    T\n", "\n    Int\n"),
             "identity_type[(As..., Suffix)]()", "identity_type[Suffix]()"),

@@ -29,6 +29,37 @@ fn impl_computation_scope(scope ImplMethodScope, computation ImplComputation) Im
 
 // Only the original checked binding can supply a word. Local/family binders
 // mask it; staging and branches remain the ordinary evaluator's responsibility.
+fn impl_computation_origins(context Context, source Node, input ImplTypeComputation) Result[Bool, Failure] {
+    let origins = impl_method_word_origins(context.env, context.signature.symbol, source,
+        input.frame, input.values)?
+    var origin = 0
+    while origin < length(origins) {
+        pack_word_origin_add(input.computation.origins, get(origins, origin))
+        origin = origin + 1
+    }
+    if length(input.computation.origins) > 1 {
+        return Result.Err(error(context, source, "elementwise expansion needs proved equal source widths"))
+    }
+    Result.Ok(true)
+}
+
+fn impl_computation_reference(context Context, source Node) Result[Bool, Failure] {
+    let input = get(get(context.env.inputs, 0).type_computations, context.type_computation)
+    if !input.element {
+        return Result.Ok(false)
+    }
+    var index = 0
+    while index < length(input.frame) {
+        let parameter = get(input.frame, index)
+        if parameter.kind == NodeKind.TypePack && pack_root(source, parameter.value) &&
+        get(input.bindings, index) >= 0 && lookup(context, parameter.value) == get(input.bindings, index) {
+            return impl_computation_origins(context, source, input)
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
+
 fn impl_computation_source(context Context, source Node, input ImplTypeComputation,
     names List[Text], spread Bool, changed List[Bool]) Result[Node, Failure] {
     if source.kind == NodeKind.Comptime || source.kind == NodeKind.Function || source.kind == NodeKind.TypeParameters {
@@ -45,16 +76,7 @@ fn impl_computation_source(context Context, source Node, input ImplTypeComputati
                 value = concat(concat("$layout-input#", to_text(index)), slice(value, length(name), length(value)))
                 set(changed, 0, true)
             } else if input.element {
-                let origins = impl_method_word_origins(context.env, context.signature.symbol, source,
-                    input.frame, input.values)?
-                var origin = 0
-                while origin < length(origins) {
-                    pack_word_origin_add(input.computation.origins, get(origins, origin))
-                    origin = origin + 1
-                }
-                if length(input.computation.origins) > 1 {
-                    return Result.Err(error(context, source, "elementwise expansion needs proved equal source widths"))
-                }
+                discard impl_computation_origins(context, source, input)?
             }
         }
         index = index + 1
