@@ -181,9 +181,18 @@ test fn computed_layouts_compose_after_local_bindings_without_rebinding_them() {
                 identity_type[Whole]()
             }
             """))
-    discard accepted(callback)
-    rejects(std.text.replace(std.text.replace(callback, "((Ts...), V)", "(Bool, V)"),
-            "((Ts...), W)", "(Bool, W)"))
+    // Inner staging cannot capture this callback. In particular, its spelling
+    // must not silently select the same-named global and make Bool acceptable.
+    assert match checked(source_files(callback)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "runtime binding")
+        Result.Ok(_) => false
+    }
+    let wrong_global = std.text.replace(std.text.replace(callback, "((Ts...), V)", "(Bool, V)"),
+        "((Ts...), W)", "(Bool, W)")
+    assert match checked(source_files(wrong_global)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "runtime binding")
+        Result.Ok(_) => false
+    }
 }
 
 test fn computed_layouts_resolve_only_the_selected_static_branch() {
