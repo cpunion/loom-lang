@@ -1,0 +1,107 @@
+record ImplComputationLayout {
+    schema Node
+    ty Int
+}
+
+fn impl_computation_mentions(node Node, name Text) Bool {
+    if pack_root(node, name) {
+        return true
+    }
+    var visible = family_pack_names(node, [name])
+    var index = 0
+    while index < length(node.children) {
+        if impl_computation_mentions(child(node, index), get(lexical_pack_names(node, index, visible, false), 0)) {
+            return true
+        }
+        if node.kind == NodeKind.Block {
+            visible = lexical_pack_names(child(node, index), 0, visible, true)
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Give a complete word-bearing type one identity, never a representative
+// element or tuple width. Only capabilities proved for that whole type enter
+// the evaluator; reflection and unknown equality keep their ordinary rules.
+fn impl_computation_layouts(env Environment, scope ImplMethodScope, owner Int, node Node,
+    frame List[Node], values List[Node], layouts List[ImplComputationLayout],
+    evidence List[Requirement], depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, node, "implementation method computation must be finite"))
+    }
+    if node.kind == NodeKind.TypeParameters ||
+    node.kind == NodeKind.Function || node.kind == NodeKind.Arm ||
+    node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap ||
+    (node.kind == NodeKind.AssociatedType && length(group(node, NodeKind.TypeParameters)) > 0) {
+        return Result.Ok(node)
+    }
+    let structural = node.kind == NodeKind.Type || node.kind == NodeKind.Name ||
+    node.kind == NodeKind.Tuple || node.kind == NodeKind.TupleType ||
+    node.kind == NodeKind.FunctionType || node.kind == NodeKind.Apply
+    var whole = structural && has_type_expansion(node)
+    var index = 0
+    while structural && index < length(frame) {
+        whole = whole || (pack_root(node, get(frame, index).value) && has_type_expansion(get(values, index)))
+        index = index + 1
+    }
+    if whole {
+        let schema = impl_method_substitute(env, scope, owner,
+            type_pattern_schema(env, owner, node, false, 0, true, true, frame)?, frame, values, 0)?
+        discard impl_method_well_formed(env, scope, owner, schema)?
+        index = 0
+        while index < length(layouts) {
+            let layout = get(layouts, index)
+            if pack_schema_equal(layout.schema, schema) {
+                return Result.Ok(meta_reference(node, layout.ty))
+            }
+            index = index + 1
+        }
+        let ty = pack_symbolic_type(impl_method_context(env, scope, owner), scope.caller,
+            schema, evidence, ints(512), 0, Option.Some(scope.assumptions))?
+        if ty < 0 {
+            return Result.Err(failure(env, owner, node, "compile-time input needs an established type identity"))
+        }
+        push(layouts, ImplComputationLayout {
+                schema = schema
+                ty = ty
+            })
+        return Result.Ok(meta_reference(node, ty))
+    }
+    let children = new[Node]()
+    var local = false
+    index = 0
+    while index < length(node.children) {
+        let member = child(node, index)
+        // A local initializer still sees the outer frame. After it binds,
+        // ordinary CTFE owns lookup; do not resolve local names as globals.
+        push(children, if local {
+                member
+            } else {
+                impl_computation_layouts(env, scope, owner, member, frame,
+                    values, layouts, evidence, depth + 1)?
+            })
+        if node.kind == NodeKind.Block && (member.kind == NodeKind.Let || member.kind == NodeKind.Var ||
+            member.kind == NodeKind.Scoped || member.kind == NodeKind.Destructure) {
+            local = true
+        }
+        index = index + 1
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}
+
+// Canonical family binders have already been closed lexically. Substituting
+// these temporary free identities cannot capture a nested family's variables.
+fn impl_computation_restore(schema Node, first Int, layouts List[ImplComputationLayout]) Node {
+    let parameter = pack_schema_parameter(schema)
+    if parameter >= first && parameter < first + length(layouts) {
+        return get(layouts, parameter - first).schema
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(schema.children) {
+        push(children, impl_computation_restore(child(schema, index), first, layouts))
+        index = index + 1
+    }
+    pack_node(schema, schema.kind, schema.value, children)
+}

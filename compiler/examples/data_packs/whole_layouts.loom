@@ -1,0 +1,44 @@
+concept WholeWordRelay {
+    type Value
+    fn relay_whole(self Self, value Self.Value) Self.Value
+}
+
+impl[Ts...] WholeWordRelay for (Ts...) {
+    type Value = dyn WordFactory[Item[U] = (comptime {
+                word_item_type[Self]()
+            }, U)]
+    fn relay_whole(self Self, value dyn WordFactory[Item[V] = ((Ts...), V)])
+    dyn WordFactory[Item[W] = ((Ts...), W)] {
+        discard self
+        value
+    }
+}
+
+record WholePrefix[Ts...] {
+    values (Ts...)
+}
+
+impl[Ts...] WordFactory for WholePrefix[Ts...] {
+    type Item[U] = ((Ts...), U)
+    fn append[U](self Self, value U) ((Ts...), U) {
+        (self.values, value)
+    }
+}
+
+async fn exercise_whole_layouts() {
+    let empty = packet()
+    let first WholePrefix[()...] = WholePrefix {
+        values = empty.values
+    }
+    let forwarded = empty.values.relay_whole(first)
+    assert forwarded.append(11).1 == 11
+    let shared = [7]
+    let factory dyn WordFactory[Item[U] = ((List[Int], Bool), U)] = WholePrefix {
+        values = (shared, true)
+    }
+    let selected = (shared, false).relay_whole(factory)
+    let resumed = echo(selected).await
+    let values = resumed.append("whole")
+    values.0.0[0] = 42
+    assert values.0.1 && values.1 == "whole" && shared[0] == 42
+}
