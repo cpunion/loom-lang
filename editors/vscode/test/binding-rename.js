@@ -21,6 +21,18 @@ record Pair {
     right Int
 }
 
+record GenericBox[Element] {
+    value Element
+}
+
+concept Family {
+    type Item[U]
+}
+
+fn family_forward[S Family, Item](value S.Item[Item]) S.Family.Item[Item] {
+    value
+}
+
 record Guard {
     count Int
 }
@@ -202,6 +214,10 @@ fn main() {
       ['computed = input', 'computed', 2],
       ['sample T', 'sample', 2],
       ['selected == Int', 'selected', 3],
+      ['T](comptime sample', 'T', 3],
+      ['Element] {', 'Element', 2],
+      ['S.Family.Item[Item]', 'S', 3],
+      ['Item](value S.Item', 'Item', 3],
     ]) {
       const document = TextDocument.create(uri, 'loom', version, source);
       const start = source.indexOf(fragment) + (fragment.startsWith('-') ? 1 : 0);
@@ -246,6 +262,9 @@ fn main() {
     const params = { textDocument: { uri }, position: document.positionAt(source.indexOf('amount >=')) };
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'identity' }), /conflict/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('S.Family.Item[Item]')), newName: 'Item',
+    }), /conflict/);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('missing Int')), newName: 'renamed',
     }), /every occurrence of this compile-time parameter/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
@@ -267,7 +286,7 @@ fn main() {
     assert.deepEqual((await client.wait(file, version)).diagnostics, []);
     await client.change(file, source, ++version);
     await assert.rejects(fs.readFile(file), { code: 'ENOENT' });
-    console.log('Binding rename smoke passed: runtime/static parameters, specialization coverage, contracts, patterns and method locals.');
+    console.log('Binding rename smoke passed: runtime/static/type parameters, projection arguments, specialization coverage, contracts, patterns and method locals.');
   } finally {
     await client.close();
     await fs.rm(temporary, { recursive: true, force: true });

@@ -171,6 +171,8 @@ record and match bindings in ordinary named functions and methods. Contracts
 and guarded arms use the same local identities as bodies; field labels and
 enum variants are not local bindings. Every local edit is checked again in an
 in-memory package before it is offered. It also renames
+ordinary generic type parameters with complete checked lexical coverage; type-pack
+parameter rename remains unsupported. It renames
 one production package-private top-level function, nominal type or concept across files in the selected package when
 every same-spelled token is an exact checked reference and the virtual edits pass
 a full in-memory package check with test files included. One public top-level
