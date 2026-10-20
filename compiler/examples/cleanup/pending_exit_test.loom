@@ -113,6 +113,23 @@ fn pending_loop_exits(trace List[Int]) {
     }
 }
 
+fn pending_enum_return(trace List[Int]) Resources {
+    defer {
+        push(trace, 9)
+    }
+    Resources.Pair(acquire(1, trace), acquire(2, trace), {
+            return Resources.Empty(trace)
+            false
+        })
+}
+
+fn pending_list_return(trace List[Int]) Result[List[Leaf], Text] {
+    Result.Ok([acquire(1, trace), {
+                return Result.Err("list")
+                acquire(2, trace)
+            }])
+}
+
 fn exercise_pending_exits() Bool {
     let failed List[Int] = []
     discard pending_result(failed, true)
@@ -147,6 +164,23 @@ fn exercise_pending_exits() Bool {
     assert loops[0] == 10 && loops[1] == 1 && loops[2] == 8
     assert loops[3] == 10 && loops[4] == 1 && loops[5] == 8
     assert loops[6] == 10 && loops[7] == 1 && loops[8] == 10 && loops[9] == 1 && loops[10] == 9
+    let variant List[Int] = []
+    {
+        scoped value = pending_enum_return(variant)
+        assert length(variant) == 5
+    }
+    assert length(variant) == 6
+    assert variant[0] == 10 && variant[1] == 20 && variant[2] == 2
+    assert variant[3] == 1 && variant[4] == 9 && variant[5] == 3
+    let list List[Int] = []
+    {
+        scoped value = pending_list_return(list)
+        assert match value {
+            Result.Err(_) => true
+            _ => false
+        }
+    }
+    assert length(list) == 2 && list[0] == 10 && list[1] == 1
     true
 }
 
