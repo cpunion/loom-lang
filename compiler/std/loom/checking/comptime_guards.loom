@@ -12,27 +12,42 @@ fn guard_type_operand(context Context, node Node) Result[Int, Failure] {
 }
 
 fn guard_condition(context Context, node Node, condition Node, depth Int) Result[GuardDecision, Failure] {
-    if depth >= 256 { return Result.Err(error(context, condition, "compile-time condition depth exhausted")) }
-    if condition.kind == NodeKind.Unary && condition.value == "!" {
-        return match guard_condition(context, node, child(condition, 0), depth + 1)? {
+    guard_condition(context, node, condition, depth, Option.None)
+}
+
+// Prepare atomic inputs only when control reaches them. Symbolic type inputs
+// share the same short-circuit and branch rules as ordinary compile-time code.
+fn guard_condition(outer Context, node Node, source Node, depth Int,
+    prepare Option[fn(Context, Node) Result[GuardDecision, Failure]]) Result[GuardDecision, Failure] {
+    if depth >= 256 { return Result.Err(error(outer, source, "compile-time condition depth exhausted")) }
+    if source.kind == NodeKind.Unary && source.value == "!" {
+        return match guard_condition(outer, node, child(source, 0), depth + 1, prepare)? {
             GuardDecision.Pending => Result.Ok(GuardDecision.Pending)
             GuardDecision.Known(value, checked) => Result.Ok(GuardDecision.Known(!value, checked))
         }
     }
-    if condition.kind == NodeKind.Binary && (condition.value == "&&" || condition.value == "||") {
-        return match guard_condition(context, node, child(condition, 0), depth + 1)? {
+    if source.kind == NodeKind.Binary && (source.value == "&&" || source.value == "||") {
+        return match guard_condition(outer, node, child(source, 0), depth + 1, prepare)? {
             // Do not inspect the right side to simplify an unresolved left:
             // its evaluation may fault or still require specialization.
             GuardDecision.Pending => Result.Ok(GuardDecision.Pending)
             GuardDecision.Known(value, checked) => {
-                if (condition.value == "&&" && !value) || (condition.value == "||" && value) {
+                if (source.value == "&&" && !value) || (source.value == "||" && value) {
                     Result.Ok(GuardDecision.Known(value, checked))
                 } else {
-                    guard_condition(checked, node, child(condition, 1), depth + 1)
+                    guard_condition(checked, node, child(source, 1), depth + 1, prepare)
                 }
             }
         }
     }
+    match prepare {
+        Option.Some(resolve) => {
+            return resolve(outer, source)
+        }
+        Option.None => {}
+    }
+    let context = outer
+    let condition = source
     if condition.kind == NodeKind.Implements {
         if !type_operand(context, child(condition, 0)) {
             return Result.Err(error(context, condition, "implements requires an unshadowed type operand"))

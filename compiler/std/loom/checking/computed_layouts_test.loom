@@ -146,3 +146,82 @@ test fn computed_layouts_respect_lexical_type_value_shadowing() {
     rejects(std.text.replace(computed_layout_source(), "identity_type[Self]()",
             "let Self = Int\nidentity_type[(Self, Ts...)]()"))
 }
+
+test fn computed_layouts_compose_after_local_bindings_without_rebinding_them() {
+    discard accepted(std.text.replace(computed_layout_source(), "identity_type[Self]()",
+            "let Marker = Bool\nidentity_type[(Ts...)]()"))
+    let local = std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                "identity_type[Self]()", "let Suffix = List[U]\nidentity_type[((Ts...), Suffix)]()"),
+            "((Ts...), V)", "(((Ts...), List[V]), V)"),
+        "((Ts...), W)", "(((Ts...), List[W]), W)")
+    discard accepted(local)
+    rejects(std.text.replace(local, "let Suffix = List[U]", "let Suffix = Bool"))
+    let shadowed = concat("""
+            record Box[T] {
+                value T
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                    "identity_type[Self]()", "let Box = 7\nidentity_type[Box[(Ts...)]]()"),
+                "((Ts...), V)", "(Box[(Ts...)], V)"),
+            "((Ts...), W)", "(Box[(Ts...)], W)"))
+    discard accepted(shadowed)
+    rejects(std.text.replace(shadowed, "let Box = 7", "let Box = Int"))
+    let callback = concat("""
+            fn choose() Bool {
+                true
+            }
+            """, std.text.replace(computed_layout_source(), "identity_type[Self]()", """
+            let Whole = Self
+            let choose = fn() Bool {
+                false
+            }
+            comptime if choose() {
+                Bool
+            } else {
+                identity_type[Whole]()
+            }
+            """))
+    // Inner staging cannot capture this callback. In particular, its spelling
+    // must not silently select the same-named global and make Bool acceptable.
+    assert match checked(source_files(callback)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "runtime binding")
+        Result.Ok(_) => false
+    }
+    let wrong_global = std.text.replace(std.text.replace(callback, "((Ts...), V)", "(Bool, V)"),
+        "((Ts...), W)", "(Bool, W)")
+    assert match checked(source_files(wrong_global)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "runtime binding")
+        Result.Ok(_) => false
+    }
+}
+
+test fn computed_layouts_resolve_only_the_selected_static_branch() {
+    let source = std.text.replace(computed_layout_source(), "comptime { identity_type[Self]() }",
+        "comptime if true { identity_type[Self]() } else { Missing[(Ts...)] }")
+    discard accepted(source)
+    discard accepted(std.text.replace(source, "if true", "if true || Missing[(Ts...)] == Int"))
+    discard accepted(std.text.replace(std.text.replace(source,
+                "if true", "if false && Missing[(Ts...)] == Int"),
+            "{ identity_type[Self]() } else { Missing[(Ts...)] }", "{ Missing[(Ts...)] } else { identity_type[Self]() }"))
+    discard accepted(std.text.replace(source,
+            "if true { identity_type[Self]() } else { Missing[(Ts...)] }",
+            "if false { Missing[(Ts...)] } else { identity_type[Self]() }"))
+    rejects(std.text.replace(source, "if true", "if U == Int"))
+    rejects(std.text.replace(source, "if true", "if Ts == Ts"))
+    let bounded = concat("concept Source {}\n", std.text.replace(std.text.replace(source,
+                "type Item[U]", "type Item[U Source]"), "if true", "if U implements Source"))
+    discard accepted(bounded)
+    let independent = concat("""
+            record Pair[As..., Bs...] {
+                first (As...)
+                second (Bs...)
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                        "impl[Ts...] Pass for (Ts...)", "impl[As..., Bs...] Pass for Pair[(As...)..., (Bs...)...]"),
+                    "(comptime { identity_type[Self]() }, U)",
+                    "(comptime if true { identity_type[As]() } else { identity_type[Bs]() }..., U)"),
+                "((Ts...), V)", "(As..., V)"), "((Ts...), W)", "(As..., W)"))
+    discard accepted(independent)
+    rejects(std.text.replace(std.text.replace(independent, "(As..., V)", "(Bs..., V)"),
+            "(As..., W)", "(Bs..., W)"))
+}

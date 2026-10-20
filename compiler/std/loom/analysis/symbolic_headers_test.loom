@@ -111,7 +111,14 @@ test fn symbolic_computed_layout_queries_retain_source_bindings() {
             type Out
         }
         impl[Ts...] Pass for (Ts...) {
-            type Out = dyn Family[Item[U] = (comptime { identity_type[Self]() }, U)]
+            type Out = dyn Family[Item[U] = (comptime {
+                        let Marker = Bool
+                        comptime if true {
+                            identity_type[Self]()
+                        } else {
+                            Missing[(Ts...)]
+                        }
+                    }, U)]
         }
         fn broken() Int {
             false
