@@ -221,6 +221,11 @@ fn impl_method_type_schema(env Environment, scope ImplMethodScope, owner Int, no
 
 fn impl_method_source_context(env Environment, scope ImplMethodScope, owner Int, node Node,
     frame List[Node], values List[Node]) Result[Context, Failure] {
+    impl_method_source_context(env, scope, owner, node, frame, values, false, false)
+}
+
+fn impl_method_source_context(env Environment, scope ImplMethodScope, owner Int, node Node,
+    frame List[Node], values List[Node], words Bool, element Bool) Result[Context, Failure] {
     let base = family_header_context(env, owner, new[Int](), scope.evidence)?
     var context = Context {
         emit = false
@@ -231,6 +236,12 @@ fn impl_method_source_context(env Environment, scope ImplMethodScope, owner Int,
     while index < length(frame) {
         let parameter = get(frame, index)
         if mentions_pack(node, parameter.value) {
+            if words && parameter.kind == NodeKind.TypePack && !element {
+                let opaque = intern(env, TypeKind.Rigid, length(env.types), new[Int]())
+                context = bind_local(context, parameter, parameter.value, opaque, false, -1)?
+                index = index + 1
+                continue
+            }
             let mapped = pack_schema_parameter(get(values, index))
             let ty = if index == 0 {
                 get(scope.types, 0)

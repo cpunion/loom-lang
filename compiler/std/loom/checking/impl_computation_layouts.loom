@@ -4,9 +4,36 @@ record ImplComputationLayout {
 }
 
 record ImplComputation {
+    first Int
+    prior Int
     layouts List[ImplComputationLayout]
     evidence List[Requirement]
     origins List[Node]
+}
+
+// Early closed islands and types assembled after lexical lookup use exactly
+// the same admission, identity and capability rules.
+fn impl_computation_input(context Context, scope ImplMethodScope, node Node,
+    schema Node, computation ImplComputation) Result[Int, Failure] {
+    discard impl_method_well_formed(context.env, scope, context.signature.symbol, schema)?
+    var index = 0
+    while index < length(computation.layouts) {
+        let layout = get(computation.layouts, index)
+        if pack_schema_equal(layout.schema, schema) {
+            return Result.Ok(layout.ty)
+        }
+        index = index + 1
+    }
+    let ty = pack_symbolic_type(context, scope.caller, schema, computation.evidence,
+        ints(512), 0, Option.Some(scope.assumptions))?
+    if ty < 0 {
+        return Result.Err(error(context, node, "compile-time input needs an established type identity"))
+    }
+    push(computation.layouts, ImplComputationLayout {
+            schema = schema
+            ty = ty
+        })
+    Result.Ok(ty)
 }
 
 fn impl_computation_mentions(node Node, name Text) Bool {
@@ -92,7 +119,7 @@ fn impl_computation_layouts(env Environment, scope ImplMethodScope, owner Int, n
                     let context = impl_method_computation_context(env, ImplMethodScope {
                             evidence = computation.evidence
                             ..scope
-                        }, owner, prepared, frame, values, element)?
+                        }, owner, prepared, frame, values, element, computation)?
                     guard_condition(context, node, prepared, 0)
                 }))?
         impl_computation_evidence(env, selected.0.signature.requirements, computation.evidence)
@@ -125,24 +152,7 @@ fn impl_computation_layouts(env Environment, scope ImplMethodScope, owner Int, n
     if whole && !local {
         let schema = impl_method_substitute(env, scope, owner,
             type_pattern_schema(env, owner, node, element, 0, true, true, frame)?, frame, values, 0)?
-        discard impl_method_well_formed(env, scope, owner, schema)?
-        index = 0
-        while index < length(computation.layouts) {
-            let layout = get(computation.layouts, index)
-            if pack_schema_equal(layout.schema, schema) {
-                return Result.Ok(meta_reference(node, layout.ty))
-            }
-            index = index + 1
-        }
-        let ty = pack_symbolic_type(impl_method_context(env, scope, owner), scope.caller,
-            schema, computation.evidence, ints(512), 0, Option.Some(scope.assumptions))?
-        if ty < 0 {
-            return Result.Err(failure(env, owner, node, "compile-time input needs an established type identity"))
-        }
-        push(computation.layouts, ImplComputationLayout {
-                schema = schema
-                ty = ty
-            })
+        let ty = impl_computation_input(impl_method_context(env, scope, owner), scope, node, schema, computation)?
         return Result.Ok(meta_reference(node, ty))
     }
     let children = new[Node]()

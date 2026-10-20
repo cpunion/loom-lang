@@ -105,9 +105,23 @@ fn staging(context Context, node Node) Result[Context, Failure] {
     index = 0
     while index < length(context.bindings) { push(bindings, get(context.bindings, index))
         index = index + 1 }
-    Result.Ok(Context { lexical = copy_lexical(context.lexical) env = env signature = context.signature arguments = context.arguments
-        constants = context.constants locals = locals bindings = bindings head = context.head
-        cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = true })
+    Result.Ok(Context {
+            type_computation = context.type_computation
+            lexical = copy_lexical(context.lexical)
+            env = env
+            signature = context.signature
+            arguments = context.arguments
+            constants = context.constants
+            locals = locals
+            bindings = bindings
+            head = context.head
+            cleanups = new[Cleanup]()
+            cleanup_head = -1
+            loop_boundary = -2
+            facts = new[Fact]()
+            fact_head = -1
+            emit = true
+        })
 }
 fn isolated(context Context, node Node, value Expr, boundary Int) Result[Bool, Failure] {
     if value.kind == ExprKind.Local && value.index < boundary {

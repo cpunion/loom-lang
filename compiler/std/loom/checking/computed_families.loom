@@ -40,11 +40,23 @@ fn family_header_context(env Environment, owner Int, arguments List[Int], eviden
 // retains nested binders and legitimate captures without concrete sampling.
 fn computed_family_closed(env Environment, ty Int, prior Int, scopes List[FamilyAliases],
     scope Int, seen List[(Int, Int)], depth Int) Bool {
+    computed_family_closed(env, ty, prior, scopes, scope, seen, depth, new[Int]())
+}
+
+fn computed_family_closed(env Environment, ty Int, prior Int, scopes List[FamilyAliases],
+    scope Int, seen List[(Int, Int)], depth Int, inputs List[Int]) Bool {
     if depth >= 64 {
         return false
     }
     let shape = get(env.types, ty)
     if shape.kind == TypeKind.Rigid {
+        var index = 0
+        while index < length(inputs) {
+            if get(inputs, index) == ty {
+                return true
+            }
+            index = index + 1
+        }
         return ty < prior || family_alias(scopes, scope, ty, true) >= 0
     }
     var index = 0
@@ -60,11 +72,11 @@ fn computed_family_closed(env Environment, ty Int, prior Int, scopes List[Family
         let parameters = family_parameters(env, ty)
         let nested = family_scope(scopes, scope, parameters, parameters)
         return computed_family_closed(env, get(shape.arguments, shape.symbol), prior,
-            scopes, nested, seen, depth + 1)
+            scopes, nested, seen, depth + 1, inputs)
     }
     index = 0
     while index < length(shape.arguments) {
-        if !computed_family_closed(env, get(shape.arguments, index), prior, scopes, scope, seen, depth + 1) {
+        if !computed_family_closed(env, get(shape.arguments, index), prior, scopes, scope, seen, depth + 1, inputs) {
             return false
         }
         index = index + 1

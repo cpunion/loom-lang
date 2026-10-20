@@ -112,6 +112,7 @@ fn macro_context(context Context, current Signature, env Environment) Context {
         })
     Context {
         lexical = scopes
+        type_computation = -1
         env = env
         signature = current
         arguments = new[Int]()

@@ -8,6 +8,7 @@ record CheckInputs {
     declaration_references List[DeclarationReference]
     staged_queries List[StagedQuery]
     type_alias_queries List[List[ParameterHeader]]
+    type_computations List[ImplTypeComputation]
     reference_indices List[List[Int]]
     template_queries List[Int]
     template_seen List[Bool]

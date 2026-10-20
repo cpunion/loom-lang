@@ -31,6 +31,17 @@ test fn checked_type_aliases_retain_header_navigation_without_a_runtime_local() 
     only_definition(independent_found(bindings, source, "Whole ="), declared, declared + 5)
 }
 
+test fn checked_type_aliases_retain_local_word_assembly_navigation() {
+    let source = std.text.replace(type_alias_header_source(),
+        "let Whole = Self\n                identity_type[Whole]()",
+        "let Suffix = List[U]\nidentity_type[(Ts..., Suffix)]()")
+    assert source != type_alias_header_source()
+    let declared = query_offset(source, "Suffix =")
+    let found = independent_found(query_bindings(input(source)), source, "Suffix)]")
+    only_definition(found, declared, declared + 6)
+    only_type(found, "type")
+}
+
 test fn checked_type_aliases_preserve_lexical_shadowing_and_erased_uses() {
     let source = """
         record Box {

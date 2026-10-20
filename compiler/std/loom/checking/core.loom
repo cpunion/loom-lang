@@ -182,6 +182,7 @@ record Fact {
 }
 
 record Context {
+    type_computation Int
     lexical List[Lexical]
     env Environment
     signature Signature
@@ -203,6 +204,7 @@ record Context {
 // actual arguments/requirements; this supplies no inferred conformance facts.
 fn empty_context(env Environment, owner Int) Context {
     Context {
+        type_computation = -1
         lexical = new_lexical()
         env = env
         signature = Signature {
@@ -488,6 +490,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, decl
             declaration_references = new[DeclarationReference]()
             staged_queries = new[StagedQuery]()
             type_alias_queries = new[List[ParameterHeader]]()
+            type_computations = new[ImplTypeComputation]()
             reference_indices = new[List[Int]]()
             template_queries = new[Int]()
             template_seen = new[Bool]()

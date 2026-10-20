@@ -226,9 +226,11 @@ captures. Only capabilities proved for the complete input are available; its
 original schema is restored in the result. A computed element map may combine
 a whole captured word and a selected element; only free element references
 determine its width, even when the helper erases its input type. Local aliases
-use ordinary CTFE lookup, not global-name substitution. Closed word-bearing
-type islands compose after local bindings and inside local type constructors;
-layout assembly depending on local values remains bounded. Static guards reuse
+use ordinary CTFE lookup, not global-name substitution. Checked local type values
+also participate in unknown-width tuple, function and nominal assembly, including
+independent words and nested family captures. The type-checking boundary preserves
+their schemas without materializing a layout or admitting an unproved fresh
+opaque result. Static guards reuse
 ordinary lazy input preparation and short-circuit selection, without resolving
 unselected branches or importing their width origins. Arbitrary unknown-layout
 inspection remains unsupported. Unknown

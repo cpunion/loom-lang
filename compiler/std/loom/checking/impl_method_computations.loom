@@ -16,19 +16,42 @@ fn impl_method_computation_spreads(node Node, name Text) Bool {
 }
 
 fn impl_method_computation_context(env Environment, scope ImplMethodScope, owner Int, node Node,
-    frame List[Node], values List[Node], element Bool) Result[Context, Failure] {
+    frame List[Node], values List[Node], element Bool, computation ImplComputation) Result[Context, Failure] {
+    var words = false
     var index = 0
     while index < length(frame) {
         let parameter = get(frame, index)
         if impl_computation_mentions(node, parameter.value) &&
         (has_type_expansion(get(values, index)) || (parameter.kind == NodeKind.TypePack &&
                 (!element || impl_method_computation_spreads(node, parameter.value)))) {
-            return Result.Err(failure(env, owner, node,
-                    "compile-time type computation needs a known word layout"))
+            words = true
         }
         index = index + 1
     }
-    impl_method_source_context(env, scope, owner, node, frame, values)
+    let context = impl_method_source_context(env, scope, owner, node, frame, values, words, element)?
+    if !words {
+        return Result.Ok(context)
+    }
+    let bindings = new[Int]()
+    index = 0
+    while index < length(frame) {
+        push(bindings, lookup(context, get(frame, index).value))
+        index = index + 1
+    }
+    let computations = get(env.inputs, 0).type_computations
+    let selected = length(computations)
+    push(computations, ImplTypeComputation {
+            scope = scope
+            frame = frame
+            values = values
+            bindings = bindings
+            computation = computation
+            element = element
+        })
+    Result.Ok(Context {
+            type_computation = selected
+            ..context
+        })
 }
 
 // Scalar inputs and complete structural types have singular logical identities.
@@ -45,34 +68,32 @@ fn impl_method_computed_parts(env Environment, scope ImplMethodScope, owner Int,
     }
     if node.kind == NodeKind.Comptime {
         let computation = ImplComputation {
+            first = length(scope.types)
+            prior = length(env.types)
             layouts = new[ImplComputationLayout]()
             evidence = std.list.clone(scope.evidence)
             origins = new[Node]()
         }
         let prepared = impl_computation_layouts(env, scope, owner, node, frame, values,
             computation, element, new[Node](), 0)?
-        let types = std.list.clone(scope.types)
-        var index = 0
-        while index < length(computation.layouts) {
-            push(types, get(computation.layouts, index).ty)
-            index = index + 1
-        }
-        let computing = ImplMethodScope {
-            types = types
-            evidence = computation.evidence
-            ..scope
-        }
-        let context = impl_method_computation_context(env, computing, owner, prepared, frame, values, element)?
-        let prior = length(env.types)
+        let computing = impl_computation_scope(scope, computation)
+        let context = impl_method_computation_context(env, computing, owner, prepared, frame, values, element, computation)?
         let resolved = computed_family_body(context, prepared)?
         let ty = resolve_bound(env, owner, resolved, new[Int](), computing.evidence, 0)?
-        if !computed_family_closed(env, ty, prior, new[FamilyAliases](), -1, new[(Int, Int)](), 0) {
+        let inputs = new[Int]()
+        var index = 0
+        while index < length(computation.layouts) {
+            push(inputs, get(computation.layouts, index).ty)
+            index = index + 1
+        }
+        if !computed_family_closed(env, ty, computation.prior, new[FamilyAliases](), -1, new[(Int, Int)](), 0, inputs) {
             return Result.Err(failure(env, owner, node,
                     "dynamic associated family needs a uniform symbolic type template"))
         }
         discard well_formed(env, owner, ty, computing.evidence, node, 0)?
-        let canonical = impl_method_family_canonical(env, computing,
-            impl_method_resolved_schema(env, computing, ty, node, depth + 1)?, depth + 1)?
+        let final_scope = impl_computation_scope(computing, computation)
+        let canonical = impl_method_family_canonical(env, final_scope,
+            impl_method_resolved_schema(env, final_scope, ty, node, depth + 1)?, depth + 1)?
         let schema = impl_method_family_canonical(env, scope,
             impl_computation_restore(canonical, length(scope.types), computation.layouts), depth + 1)?
         let origins = computation.origins

@@ -1613,6 +1613,10 @@ and result bounds without inventing a concrete layout. Dyn eligibility and
 universally distinct runtime method signatures remain required; unresolved
 associated results do not prove overload separation. See the
 [whole-word family example](examples/data_packs/family_words.loom).
+Uniform compile-time helpers can also assemble unknown-width words with checked
+local type values, as in `(Ts..., Suffix)`, without observing a concrete layout.
+The [computed layout example](examples/data_packs/whole_layouts.loom) exercises
+local aliases, empty words, shared values and suspension through native code.
 Whole-word-dependent layout inspection remains open.
 Whole-word family equality through implementation signatures is also still limited;
 this data-header check does not supply an opaque type equality in its place.

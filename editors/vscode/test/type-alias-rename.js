@@ -22,12 +22,17 @@ fn identity_type[T]() type {
 
 concept Pass {
     type Out
+    type Composed
 }
 
 impl[Ts...] Pass for (Ts...) {
     type Out = dyn Family[Item[U] = (comptime {
         let Whole = Self
         identity_type[Whole]()
+    }, U)]
+    type Composed = dyn Family[Item[U] = (comptime {
+        let Suffix = List[U]
+        identity_type[(Ts..., Suffix)]()
     }, U)]
 }
 
@@ -54,6 +59,7 @@ fn main() {
     const document = TextDocument.create(uri, 'loom', version, source);
     for (const [fragment, declaration, count, conflict] of [
       ['Whole]()', 'Whole = Self', 2, 'identity_type'],
+      ['Suffix)]', 'Suffix = List[U]', 2, 'identity_type'],
       ['Chosen {', 'Chosen = Box', 3, 'made'],
       ['Chosen = Bool', 'Chosen = Bool', 2, 'flag'],
     ]) {

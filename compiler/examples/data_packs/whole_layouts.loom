@@ -49,6 +49,30 @@ record MappedWholePrefix {
     values (List[Int], Bool)
 }
 
+concept LocalWordRelay {
+    type Value
+    fn relay_local(self Self, value Self.Value) Self.Value
+}
+
+impl[Ts...] LocalWordRelay for (Ts...) {
+    type Value = dyn WordFactory[Item[U] = comptime {
+            let Suffix = List[U]
+            word_item_type[(Ts..., Suffix)]()
+        }]
+    fn relay_local(self Self, value dyn WordFactory[Item[V] = (Ts..., List[V])])
+    dyn WordFactory[Item[W] = (Ts..., List[W])] {
+        discard self
+        value
+    }
+}
+
+impl[Ts...] WordFactory for Packet[Text, Ts...] {
+    type Item[U] = (Ts..., List[U])
+    fn append[U](self Self, value U) Self.Item[U] {
+        (self.values..., [value])
+    }
+}
+
 impl WordFactory for MappedWholePrefix {
     type Item[U] = (((List[Int], Bool), List[Int]), ((List[Int], Bool), Bool), U)
     fn append[U](self Self, value U) Self.Item[U] {
@@ -57,6 +81,13 @@ impl WordFactory for MappedWholePrefix {
 }
 
 async fn exercise_whole_layouts() {
+    let local_shared = [3]
+    let local = (local_shared, true).relay_local(packet(local_shared, false))
+    let local_resumed = echo(local).await
+    let local_values = local_resumed.append("local")
+    local_values.0[0] = 17
+    assert local_shared[0] == 17 && !local_values.1 && local_values.2[0] == "local"
+    assert length(packet().values.relay_local(packet()).append(7).0) == 1
     let empty = packet()
     let first WholePrefix[()...] = WholePrefix {
         values = empty.values
