@@ -287,6 +287,50 @@ test fn definition_reuse_survives_reordering_moves_and_unrelated_additions() {
     }
 }
 
+test fn private_name_changes_stay_in_their_package_but_reach_public_consumers() {
+    let local = """
+        import provider.answer
+        fn prepared() Int {
+            1
+        }
+        pub fn observed() Int
+        ensures result == 7
+        {
+            answer()
+        }
+        """
+    let remote = """
+        fn prepared() Int {
+            7
+        }
+        pub fn answer() Int {
+            prepared()
+        }
+        """
+    let files = source_files(local)
+    push(files, source_file("provider", remote, false))
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    set(files, 0, source_file("app", std.text.replace(local, "1", "2"), false))
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), cache) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert definitions_reused(cache) == 3
+    // Changing the actual private provider must still revoke its public caller
+    // and the consumer's now-false contract after another snapshot round trip.
+    set(files, 1, source_file("provider", std.text.replace(remote, "7", "8"), false))
+    assert match check_project_cached(fixture_project(files), false,
+        build_inputs(no_input_reader), restored_definition_cache(cache)) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+}
+
 test fn newly_added_overloads_invalidate_existing_caller_proofs() {
     let cache = definition_cache()
     let source = """
