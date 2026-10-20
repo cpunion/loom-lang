@@ -15,6 +15,32 @@ fn path(path: &Path) -> &str {
 }
 
 #[test]
+fn llvm_pass_timings_are_opt_in_and_leave_artifact_bytes_unchanged() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/scalar");
+    let directory = tempfile::tempdir().unwrap();
+    let plain = common::executable(directory.path(), "plain");
+    let timed = common::executable(directory.path(), "timed");
+    let report = "Pass execution timing report";
+    for (artifact, enabled) in [(&plain, false), (&timed, true)] {
+        let mut command = common::command(&["build", path(&fixture), "--output", path(artifact)]);
+        command.env("LOOM_OPT_LEVEL", "2");
+        if enabled {
+            command.env("LOOM_NATIVE_PASS_TIMINGS", "1");
+        } else {
+            command.env_remove("LOOM_NATIVE_PASS_TIMINGS");
+        }
+        let output = command.output().unwrap();
+        success(&output);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).contains(report),
+            enabled
+        );
+        success(&Command::new(artifact).output().unwrap());
+    }
+    assert_eq!(fs::read(plain).unwrap(), fs::read(timed).unwrap());
+}
+
+#[test]
 fn native_cli_closure_and_source_library() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/scalar");
     let directory = tempfile::tempdir().unwrap();

@@ -13,7 +13,16 @@ use loom_native::native_tool::{
 };
 
 fn main() -> ExitCode {
-    match execute() {
+    let result = execute();
+    if std::env::var_os("LOOM_NATIVE_PASS_TIMINGS").is_some() {
+        // SAFETY: execute has dropped all LLVM objects. This process performs
+        // no more LLVM work; shutdown flushes its accumulated pass timers.
+        #[allow(unsafe_code)]
+        unsafe {
+            inkwell::support::shutdown_llvm();
+        }
+    }
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("loom-native: {error}");

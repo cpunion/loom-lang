@@ -95,15 +95,18 @@ fn configure_codegen() {
     CONFIGURE.call_once(|| {
         // Bound candidate pressure analysis in large blocks. LLVM 22's default
         // of 256 regresses self-build latency; 32 retains scheduling dependencies.
-        let arguments = [c"loom-native".as_ptr(), c"--misched-limit=32".as_ptr()];
+        let mut arguments = vec![c"loom-native".as_ptr(), c"--misched-limit=32".as_ptr()];
+        if std::env::var_os("LOOM_NATIVE_PASS_TIMINGS").is_some() {
+            arguments.push(c"--time-passes".as_ptr());
+        }
         // SAFETY: fixed NUL-terminated literals live for the process; argv has
-        // exactly two entries and lives through this synchronous call. Once
+        // exactly the supplied entries and lives through this synchronous call. Once
         // configures LLVM before any caller enters native emission. Inkwell
         // exposes this binding but has no safe wrapper for the process options.
         #[allow(unsafe_code)]
         unsafe {
             inkwell::llvm_sys::support::LLVMParseCommandLineOptions(
-                2,
+                arguments.len() as i32,
                 arguments.as_ptr(),
                 c"".as_ptr(),
             );
