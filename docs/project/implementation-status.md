@@ -208,9 +208,13 @@ this is structural equality, not arbitrary extensional equality or layout
 evaluation over unknown words. Successful source analysis retains checked
 declaration references where a symbolic header has no singular runtime type.
 Uniform compile-time components reuse ordinary type evaluation inside these
-schemas, including nested family results and selected element maps that retain
-their source word. Unknown layout reads, unresolved type decisions and erased
-map origins remain unproved; no representative word or opaque answer is used.
+schemas, including nested family results and selected element maps. Word maps
+retain their width origin independently of their element result, including
+constant maps and associated-type erasure. Independent origins are not equated;
+zipped expansions need proved equal widths. Extent queries exclude nested whole
+words, and output bounds grant no constraints to erased inputs. Unknown layout
+reads and unresolved type decisions remain unproved; no representative word or
+opaque answer is used.
 Pack-bearing preconditions compose pure family helpers through the same universal
 proof. Tuple spreads work in contracts and refinement predicates; opaque helper
 arguments provide no storage or callback-behavior evidence.
@@ -225,7 +229,10 @@ Type/value/function parameters, structural type construction, associated
 projections, hygienic expression macros and explicit declaration generation use
 ordinary typing and visibility. Declaration generation is not an implicit
 fixed-point expansion. Reflection exposes filtered schemas, not extra access
-or conformance evidence. `std.meta.refinement_base` exposes a visible base's
+or conformance evidence. Direct `dyn` type values use ordinary dynamic-header
+checks and preserve local family binders rather than capturing same-named static
+values. They remain compile-time identities, not runtime conformance discovery.
+`std.meta.refinement_base` exposes a visible base's
 compile-time identity without waiving visibility or constrained construction.
 Type-producing helpers may retain an opaque local identity during generic
 checking and select guarded uses at specialization. Known symbolic structures

@@ -1,0 +1,18 @@
+test fn dynamic_type_value_queries_keep_concept_and_family_member_roles() {
+    let source = """
+        record Item {
+            value Int
+        }
+        concept Family {
+            type Item[T]
+        }
+        pub fn selected[Tag]() type {
+            dyn Family[Item[U] = (Tag, U)]
+        }
+        """
+    let bindings = query_bindings(input(source))
+    let capability = query_offset(source, "Family {\n")
+    only_definition(independent_found(bindings, source, "Family[Item[U]"), capability, capability + 6)
+    let member = query_offset(source, "Item[T]")
+    only_definition(independent_found(bindings, source, "Item[U] ="), member, member + 4)
+}

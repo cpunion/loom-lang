@@ -15,13 +15,29 @@ fn pack_forward_pack(caller Node, parameter Int) Int {
 }
 
 fn pack_forward_element(caller Node, schema Node) Int {
+    if schema.kind == NodeKind.Spread {
+        return pack_forward_free_element(caller, if length(schema.children) == 2 &&
+            child(schema, 1).value == "$word-origin" {
+                child(schema, 1)
+            } else {
+                child(schema, 0)
+            })
+    }
+    pack_forward_free_element(caller, schema)
+}
+
+fn pack_forward_free_element(caller Node, schema Node) Int {
+    if schema.kind == NodeKind.Spread {
+        // A nested whole word is one element, not this expansion's width.
+        return -1
+    }
     let parameter = pack_schema_parameter(schema)
     if parameter >= 0 {
         return pack_forward_pack(caller, parameter)
     }
     var index = 0
     while index < length(schema.children) {
-        let found = pack_forward_element(caller, child(schema, index))
+        let found = pack_forward_free_element(caller, child(schema, index))
         if found >= 0 {
             return found
         }

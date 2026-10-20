@@ -1,0 +1,124 @@
+fn dynamic_type_value_source() Text {
+    """
+        concept Family {
+            type Item[U]
+            fn append[U](self Self, value U) Self.Item[U]
+        }
+        impl Family for Bool {
+            type Item[U] = (Int, U)
+            fn append[U](self Bool, value U) (Int, U) {
+                discard self
+                (7, value)
+            }
+        }
+        fn selected[T]() type {
+            dyn Family[Item[U] = (T, U)]
+        }
+        fn main() {
+            let Chosen = comptime { selected[Int]() }
+            let value Chosen = true
+            assert value.append("type") == (7, "type")
+            assert comptime {
+                selected[Int]() == dyn Family[Item[V] = (Int, V)]
+            }
+        }
+        """
+}
+
+test fn dynamic_type_values_flow_through_pure_functions_without_runtime_discovery() {
+    discard accepted(dynamic_type_value_source())
+}
+
+test fn dynamic_type_values_keep_lexical_family_binders_despite_unknown_static_names() {
+    let source = """
+        concept Family {
+            type Item[U]
+        }
+        fn unused(comptime T type) type {
+            dyn Family[Item[T] = List[T]]
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "List[T]", "Missing[T]"))
+}
+
+test fn dynamic_type_values_capture_static_types_without_exposing_runtime_type_operations() {
+    discard accepted("""
+        concept Family {
+            type Item[U]
+        }
+        fn selected(comptime Payload type) type {
+            dyn Family[Item[U] = (Payload, U)]
+        }
+        fn main() {
+            assert comptime {
+                selected(Int) == dyn Family[Item[V] = (Int, V)]
+            }
+        }
+        """)
+    rejects("""
+        concept Marker {}
+        pub fn leak() type {
+            dyn Marker
+        }
+        fn main() {
+            discard leak()
+        }
+        """)
+    let program = accepted("""
+        concept Marker {
+            fn unused(self Self) Int
+        }
+        impl Marker for Bool {
+            fn unused(self Bool) Int {
+                discard self
+                718293
+            }
+        }
+        fn main() {
+            let Chosen = dyn Marker
+            let values List[Chosen] = []
+            discard values
+        }
+        """)
+    assert length(program.witnesses) == 0
+}
+
+test fn dynamic_type_values_reuse_binding_domain_and_object_safety_checks() {
+    let invalid = ["""
+            fn main() {
+                let Chosen = dyn Missing
+                discard Chosen
+            }
+            """, """
+            concept Item {
+                type Value
+            }
+            fn main() {
+                let Chosen = dyn Item
+                discard Chosen
+            }
+            """, """
+            concept Source {}
+            concept Family {
+                type Item[T Source] Source
+            }
+            fn main() {
+                let Chosen = dyn Family[Item[T] = Bool]
+                discard Chosen
+            }
+            """, """
+            concept Clone {
+                fn copy(self Self) Self
+            }
+            fn main() {
+                let Chosen = dyn Clone
+                discard Chosen
+            }
+            """]
+    var index = 0
+    while index < length(invalid) {
+        rejects(get(invalid, index))
+        index = index + 1
+    }
+}

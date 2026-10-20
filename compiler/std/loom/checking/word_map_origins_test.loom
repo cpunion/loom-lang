@@ -1,0 +1,97 @@
+fn word_map_origin_source() Text {
+    """
+        concept Family {
+            type Item[U]
+        }
+        fn erase_type[T]() type {
+            Int
+        }
+        concept Pass {
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        impl[Ts...] Pass for (Ts...) {
+            type Out = dyn Family[Item[U] = (comptime { erase_type[Ts]() }..., U)]
+            fn pass(self Self, value Self.Out) Self.Out {
+                discard self
+                value
+            }
+        }
+        """
+}
+
+test fn word_map_origins_preserve_constant_map_lengths_without_element_types() {
+    discard accepted(word_map_origin_source())
+    let zipped = concat("""
+            record Pair[As..., Bs...] {
+                first (As...)
+                second (Bs...)
+            }
+            """, std.text.replace(std.text.replace(word_map_origin_source(),
+                "impl[Ts...] Pass for (Ts...)", "impl[As..., Bs...] Pass for Pair[(As...)..., (Bs...)...]"),
+            "erase_type[Ts]()", "erase_type[(As, Bs)]()"))
+    assert match checked(source_files(zipped)) {
+        Result.Err(failed) => failed.diagnostic.message == "elementwise expansion needs proved equal source widths"
+        Result.Ok(_) => false
+    }
+}
+
+test fn word_map_origins_do_not_equate_independent_words_after_associated_erasure() {
+    let source = """
+        record Pair[As..., Bs...] {
+            first (As...)
+            second (Bs...)
+        }
+        concept Family {
+            type Item[U]
+        }
+        concept Pass {
+            type Ignore[T]
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        impl[As..., Bs...] Pass for Pair[(As...)..., (Bs...)...] {
+            type Ignore[T] = Int
+            type Out = dyn Family[Item[U] = (Self.Ignore[As]..., U)]
+            fn pass(self Self, value dyn Family[Item[V] = (Self.Ignore[Bs]..., V)])
+                dyn Family[Item[W] = (Self.Ignore[Bs]..., W)] {
+                discard self
+                value
+            }
+        }
+        """
+    rejects(source)
+    discard accepted(std.text.replace(source, "Self.Ignore[Bs]", "Self.Ignore[As]"))
+}
+
+test fn word_map_origins_prove_result_bounds_without_granting_bounds_to_inputs() {
+    let source = concat("""
+            concept Tagged {}
+            impl Tagged for Int {}
+            impl[Us... Tagged] Tagged for (Us...) {}
+            """, std.text.replace(word_map_origin_source(), "type Item[U]", "type Item[U Tagged] Tagged"))
+    discard accepted(source)
+    rejects(std.text.replace(source, "fn erase_type[T]()", "fn erase_type[T Tagged]()"))
+}
+
+test fn word_map_origins_keep_nested_whole_words_out_of_the_outer_extent() {
+    let caller = match std.loom.parser.parse("fn inspect[As..., Bs...]() {}") {
+        Result.Ok(tree) => child(tree, 0)
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let outer = impl_method_variable(caller, 0)
+    let inner = impl_method_variable(caller, 1)
+    let nested = pack_node(caller, NodeKind.TupleType, "tuple",
+        source_nodes(pack_node(caller, NodeKind.Spread, "", source_nodes(inner))))
+    let retained = pack_word_map(caller,
+        pack_node(caller, NodeKind.TupleType, "tuple", [nested, outer]), source_nodes(outer))
+    assert length(retained.children) == 1
+    assert pack_forward_element(caller, retained) == 0
+    let erased = pack_word_map(caller,
+        pack_node(caller, NodeKind.TupleType, "tuple", source_nodes(nested)), source_nodes(outer))
+    assert length(erased.children) == 2
+    assert pack_forward_element(caller, erased) == 0
+}

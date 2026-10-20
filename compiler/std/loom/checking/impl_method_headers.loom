@@ -301,6 +301,14 @@ fn impl_method_substitute(env Environment, scope ImplMethodScope, owner Int, sch
         }
         return Result.Ok(get(values, parameter))
     }
+    if schema.kind == NodeKind.Spread {
+        let origins = impl_method_word_origins(env, owner, child(schema, 0), frame, values)?
+        let body = impl_method_substitute(env, scope, owner, child(schema, 0), frame, values, depth + 1)?
+        if body.kind == NodeKind.Spread && body.value == "$computed-word" {
+            return Result.Ok(pack_word_map(schema, child(body, 0), child(body, 1).children))
+        }
+        return Result.Ok(pack_word_map(schema, body, origins))
+    }
     let children = new[Node]()
     var index = 0
     while index < length(schema.children) {

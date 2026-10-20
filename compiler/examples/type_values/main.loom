@@ -63,6 +63,7 @@ fn exercise() {
     refined_type_values()
     dependent_type_values()
     conditional_type_values()
+    dynamic_type_values()
     let Number = comptime {
         choose(true, Int, Float)
     }
