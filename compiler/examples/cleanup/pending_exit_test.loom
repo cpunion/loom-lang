@@ -209,11 +209,30 @@ async fn pending_awaited_exit(trace List[Int]) Result[Int, Text] {
     Result.Ok(pair.first.id)
 }
 
+async fn pending_awaited_loop(trace List[Int]) {
+    var round = 0
+    while round < 2 {
+        round = round + 1
+        scoped values = (acquire(1, trace), {
+                sleep_ms(0).await
+                if round == 1 {
+                    continue
+                }
+                break
+                acquire(2, trace)
+            })
+    }
+}
+
 test async fn pending_resource_exits_survive_suspension() {
     let trace List[Int] = []
     discard pending_awaited_exit(trace).await
     assert length(trace) == 4
     assert trace[0] == 10 && trace[1] == 8 && trace[2] == 1 && trace[3] == 9
+    let loops List[Int] = []
+    pending_awaited_loop(loops).await
+    assert length(loops) == 4
+    assert loops[0] == 10 && loops[1] == 1 && loops[2] == 10 && loops[3] == 1
 }
 
 fn pending_fault_return(trace List[Int]) Leaf {

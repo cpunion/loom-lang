@@ -140,6 +140,16 @@ test fn borrowing_resources_does_not_grant_task_creation_authority_to_cleanup_he
 test fn resource_borrows_cannot_consume_tasks_or_hide_the_callers_obligations() {
     let header = resource_task_scope_header()
     resource_reject_reason(concat(header, """
+        import std.result.Result
+        async fn early(log List[Int]) Result[Int, Text] {
+            scoped values = (job(log), {
+                return Result.Err("early")
+                0
+            })
+            Result.Ok(0)
+        }
+        """), "a task is still live at function exit; await or transfer it before returning")
+    resource_reject_reason(concat(header, """
         fn steal(value Job) Task[Int] {
             value.pending
         }
