@@ -926,6 +926,7 @@ fn main() {
     await require('./concept-rename').conceptRenameSmoke(executable, stdRoot);
     await require('./field-rename').fieldRenameSmoke(executable, stdRoot);
     await require('./binding-rename').bindingRenameSmoke(executable, stdRoot);
+    await require('./type-alias-rename').typeAliasRenameSmoke(executable, stdRoot);
     await require('./method-references').methodReferencesSmoke(executable, stdRoot);
     await require('./method-rename').methodRenameSmoke(executable, stdRoot);
     await require('./module-method-rename').moduleMethodRenameSmoke(executable, stdRoot);
