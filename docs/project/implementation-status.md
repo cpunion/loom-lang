@@ -207,6 +207,10 @@ reuse the ordinary hygienic application rule. Cyclic normalization rejects;
 this is structural equality, not arbitrary extensional equality or layout
 evaluation over unknown words. Successful source analysis retains checked
 declaration references where a symbolic header has no singular runtime type.
+Uniform compile-time components reuse ordinary type evaluation inside these
+schemas, including nested family results and selected element maps that retain
+their source word. Unknown layout reads, unresolved type decisions and erased
+map origins remain unproved; no representative word or opaque answer is used.
 Pack-bearing preconditions compose pure family helpers through the same universal
 proof. Tuple spreads work in contracts and refinement predicates; opaque helper
 arguments provide no storage or callback-behavior evidence.

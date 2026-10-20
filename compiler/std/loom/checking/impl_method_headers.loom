@@ -187,8 +187,24 @@ fn impl_method_type_schema(env Environment, scope ImplMethodScope, owner Int, no
         index = index + 1
     }
     if dependent {
+        let computing = family_computation(node)
+        let parameters = if computing {
+            std.list.clone(frame)
+        } else {
+            frame
+        }
+        let replacements = if computing {
+            std.list.clone(values)
+        } else {
+            values
+        }
+        let prepared = if computing {
+            impl_method_computed_parts(env, scope, owner, node, parameters, replacements, false, 0)?
+        } else {
+            node
+        }
         return impl_method_substitute(env, scope, owner,
-            type_pattern_schema(env, owner, node, false, 0, true, true, frame)?, frame, values, depth + 1)
+            type_pattern_schema(env, owner, prepared, false, 0, true, true, parameters)?, parameters, replacements, depth + 1)
     }
     let context = impl_method_source_context(env, scope, owner, node, frame, values)?
     let resolved = meta_type_node(context, node)?

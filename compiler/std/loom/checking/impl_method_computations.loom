@@ -1,0 +1,85 @@
+fn impl_method_computation_spreads(node Node, name Text) Bool {
+    if !mentions_pack(node, name) {
+        return false
+    }
+    if node.kind == NodeKind.Spread {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if impl_method_computation_spreads(child(node, index), name) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Evaluate only components whose free inputs have singular logical types.
+// A selected spread element is such a type; its containing word is not.
+// Nested family binders are normalized later under their own fresh frame.
+fn impl_method_computed_parts(env Environment, scope ImplMethodScope, owner Int, node Node,
+    frame List[Node], values List[Node], element Bool, depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, node, "implementation method computation must be finite"))
+    }
+    if node.kind == NodeKind.TypeParameters ||
+    (node.kind == NodeKind.AssociatedType && length(group(node, NodeKind.TypeParameters)) > 0) {
+        return Result.Ok(node)
+    }
+    if node.kind == NodeKind.Comptime {
+        var index = 0
+        while index < length(frame) {
+            let parameter = get(frame, index)
+            if mentions_pack(node, parameter.value) &&
+            (has_type_expansion(get(values, index)) || (parameter.kind == NodeKind.TypePack &&
+                    (!element || impl_method_computation_spreads(node, parameter.value)))) {
+                return Result.Err(failure(env, owner, node,
+                        "compile-time type computation needs a known word layout"))
+            }
+            index = index + 1
+        }
+        let context = impl_method_source_context(env, scope, owner, node, frame, values)?
+        let prior = length(env.types)
+        let resolved = computed_family_body(context, node)?
+        let ty = resolve_bound(env, owner, resolved, new[Int](), scope.evidence, 0)?
+        if !computed_family_closed(env, ty, prior, new[FamilyAliases](), -1, new[(Int, Int)](), 0) {
+            return Result.Err(failure(env, owner, node,
+                    "dynamic associated family needs a uniform symbolic type template"))
+        }
+        discard well_formed(env, owner, ty, scope.evidence, node, 0)?
+        let schema = impl_method_family_canonical(env, scope,
+            impl_method_resolved_schema(env, scope, ty, node, depth + 1)?, depth + 1)?
+        var word = false
+        index = 0
+        while index < length(frame) {
+            let parameter = get(frame, index)
+            if parameter.kind == NodeKind.TypePack && mentions_pack(node, parameter.value) {
+                let mapped = pack_schema_parameter(get(values, index))
+                if mapped < 0 || !mentions_pack(schema, impl_method_variable(node, mapped).value) {
+                    return Result.Err(failure(env, owner, node,
+                            "computed expansion must retain its source word"))
+                }
+                word = true
+            }
+            index = index + 1
+        }
+        let parameter = pack_node(node, if word {
+                NodeKind.TypePack
+            } else {
+                NodeKind.Name
+            },
+            concat("$component#", to_text(length(frame))), new[Node]())
+        push(frame, parameter)
+        push(values, schema)
+        return Result.Ok(pack_node(node, NodeKind.Type, parameter.value, new[Node]()))
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, impl_method_computed_parts(env, scope, owner, child(node, index), frame, values,
+                element || node.kind == NodeKind.Spread, depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}

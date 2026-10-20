@@ -1,0 +1,82 @@
+fn computed_word_family_source() Text {
+    """
+        concept Family {
+            type Item[U]
+        }
+        fn list_type[T]() type {
+            List[T]
+        }
+        concept Pass {
+            type Out
+            fn pass(self Self, value Self.Out) Self.Out
+        }
+        impl[Ts...] Pass for (Ts...) {
+            type Out = dyn Family[Item[U] = (Ts..., comptime { list_type[U]() })]
+            fn pass(self Self, value dyn Family[Item[V] = (Ts..., List[V])])
+                dyn Family[Item[W] = (Ts..., List[W])] {
+                discard self
+                value
+            }
+        }
+        """
+}
+
+test fn computed_word_families_normalize_scalar_computations_without_expanding_captures() {
+    discard accepted(computed_word_family_source())
+    rejects(std.text.replace(computed_word_family_source(), "list_type[U]()", "list_type[Int]()"))
+}
+
+test fn computed_word_families_preserve_element_maps_and_reject_erased_word_sources() {
+    let source = std.text.replace(std.text.replace(std.text.replace(computed_word_family_source(),
+                "(Ts..., comptime { list_type[U]() })", "(comptime { list_type[Ts]() }..., U)"),
+            "(Ts..., List[V])", "(List[Ts]..., V)"),
+        "(Ts..., List[W])", "(List[Ts]..., W)")
+    discard accepted(source)
+    rejects(std.text.replace(source, "List[T]", "Int"))
+    let erased = concat("""
+            record Pair[As..., Bs...] {
+                first (As...)
+                second (Bs...)
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(std.text.replace(source,
+                        "impl[Ts...] Pass for (Ts...)", "impl[As..., Bs...] Pass for Pair[(As...)..., (Bs...)...]"),
+                    "list_type[Ts]()", "list_type[As]()"),
+                "List[Ts]...", "comptime { list_type[Bs]() }..."), "List[T]", "Int"))
+    assert match checked(source_files(erased)) {
+        Result.Err(failed) => failed.diagnostic.message == "computed expansion must retain its source word"
+        Result.Ok(_) => false
+    }
+}
+
+test fn computed_word_families_reject_unknown_type_decisions_and_word_layouts() {
+    let source = computed_word_family_source()
+    rejects(std.text.replace(source, "list_type[U]()", "if U == Int { Bool } else { List[U] }"))
+    rejects(std.text.replace(source, "list_type[U]()", "(Ts..., U)"))
+    rejects(std.text.replace(source, "list_type[U]()", "Self"))
+}
+
+test fn computed_word_families_reuse_inherited_requirements_and_selected_branches() {
+    let source = concat("concept Source {}\n", std.text.replace(std.text.replace(computed_word_family_source(),
+                "type Item[U]", "type Item[U Source]"),
+            "fn list_type[T]()", "fn list_type[T Source]()"))
+    discard accepted(source)
+    discard accepted(std.text.replace(source, "comptime { list_type[U]() }",
+            "comptime if U implements Source { list_type[U]() } else { unavailable() }"))
+    rejects(std.text.replace(source, "type Item[U Source]", "type Item[U]"))
+}
+
+test fn computed_word_families_keep_composite_results_and_nested_binders() {
+    let source = concat("""
+            concept Holder {
+                type Value[T]
+            }
+            impl Holder for Bool {
+                type Value[T] = dyn Family[Item[X] = (T, X)]
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(computed_word_family_source(),
+                    "List[T]", "let Selected = Bool\n    Selected.Holder.Value[T]"),
+                "List[V]", "dyn Family[Item[X] = (V, X)]"),
+            "List[W]", "dyn Family[Item[X] = (W, X)]"))
+    discard accepted(source)
+    rejects(std.text.replace(source, "(V, X)", "(X, X)"))
+}
