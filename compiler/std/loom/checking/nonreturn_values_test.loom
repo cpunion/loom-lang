@@ -180,3 +180,56 @@ test fn outward_exits_stop_resource_operand_evaluation() {
         }
         """), "a resource must enter scoped before a method call")
 }
+
+test fn logical_operators_supply_their_operand_type_context() {
+    discard accepted("""
+        concept Default {
+            fn initial() Self
+        }
+        impl Default for Bool {
+            fn initial() Bool {
+                true
+            }
+        }
+        fn initial[T Default]() T {
+            Default.initial[T]()
+        }
+        fn and_exit() Int {
+            discard {
+                return 7
+            } && true
+            0
+        }
+        fn or_exit() Int {
+            discard {
+                return 8
+            } || false
+            0
+        }
+        fn main() {
+            assert initial() && initial()
+            assert initial() || false
+            assert and_exit() == 7 && or_exit() == 8
+            assert comptime {
+                and_exit() + or_exit()
+            } == 15
+        }
+        """)
+    rejects("""
+        fn main() {
+            discard 1 && true
+        }
+        """)
+    rejects("""
+        fn main() {
+            discard false || 1
+        }
+        """)
+    rejects("""
+        fn main() {
+            discard {
+                return
+            } && missing()
+        }
+        """)
+}

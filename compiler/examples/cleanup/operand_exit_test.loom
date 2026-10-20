@@ -73,21 +73,27 @@ async fn operand_ready(trace List[Int]) Int {
     7
 }
 
-async fn operand_condition_exit(trace List[Int], logical Bool) Int {
+async fn operand_condition_exit(trace List[Int], mode Int) Int {
     defer {
         push(trace, 9)
     }
     scoped held = acquire(1, trace)
     let task = operand_ready(trace)
-    if logical {
-        discard !{
+    if mode == 1 {
+        discard {
             return task.await
         } && (task.await == 7)
     } else {
-        while {
-            return task.await
-        } {
-            discard task.await
+        if mode == 2 {
+            discard {
+                return task.await
+            } || (task.await == 7)
+        } else {
+            while {
+                return task.await
+            } {
+                discard task.await
+            }
         }
     }
     0
@@ -99,9 +105,9 @@ test async fn resource_operand_exits_survive_suspension_without_creating_a_task(
     assert length(trace) == 4
     assert trace[0] == 10 && trace[1] == 8 && trace[2] == 1 && trace[3] == 9
     var round = 0
-    while round < 2 {
+    while round < 3 {
         let trace List[Int] = []
-        assert operand_condition_exit(trace, round == 1).await == 7
+        assert operand_condition_exit(trace, round).await == 7
         assert length(trace) == 4
         assert trace[0] == 10 && trace[1] == 8 && trace[2] == 1 && trace[3] == 9
         round = round + 1

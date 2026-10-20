@@ -17,11 +17,14 @@ import std.text.length
 fn first_dot(value Text) Int {
     var index = 0
     while index < length(value) {
-        if byte(value, index) == 46 { return index }
+        if byte(value, index) == 46 {
+            return index
+        }
         index = index + 1
     }
     length(value)
 }
+
 fn member(context Context, node Node, value Expr, field Text) Result[Expr, Failure] {
     projected_member(context, node, value, field, -1, -1, false)
 }
@@ -29,13 +32,23 @@ fn member(context Context, node Node, value Expr, field Text) Result[Expr, Failu
 fn projected_member(context Context, node Node, value Expr, field Text, expected Int,
     arity Int, binding Bool) Result[Expr, Failure] {
     let applied = binding && (node.kind == NodeKind.Apply || node.kind == NodeKind.Index)
-    let source = if applied { child(node, 0) } else { node }
+    let source = if applied {
+        child(node, 0)
+    } else {
+        node
+    }
     let original = get(context.env.types, value.ty)
-    let base = if original.kind == TypeKind.Refined { base_type(context.env, value.ty) } else { value.ty }
+    let base = if original.kind == TypeKind.Refined {
+        base_type(context.env, value.ty)
+    } else {
+        value.ty
+    }
     let base_kind = get(context.env.types, base).kind
     let ty = if original.kind == TypeKind.Refined && (base_kind == TypeKind.Record || base_kind == TypeKind.Tuple) {
         get(context.env.types, base)
-    } else { original }
+    } else {
+        original
+    }
     if ty.kind == TypeKind.Tuple {
         match std.int.parse(field) {
             Result.Ok(_) => {
@@ -45,20 +58,29 @@ fn projected_member(context Context, node Node, value Expr, field Text, expected
                     value
                 }
                 let selected = tuple_member(context, source, receiver, field)?
-                return if applied { index_read(context, node, selected, child(node, 1).children) } else { Result.Ok(selected) }
+                return if applied {
+                    index_read(context, node, selected, child(node, 1).children)
+                } else {
+                    Result.Ok(selected)
+                }
             }
-            Result.Err(_) => {}
+            Result.Err(_) => {
+            }
         }
     }
     if ty.kind != TypeKind.Record {
-        if binding { return bound_method_value(context, node, value, field, expected, arity) }
+        if binding {
+            return bound_method_value(context, node, value, field, expected, arity)
+        }
         return Result.Err(error(context, node, "field access requires a known record type"))
     }
     let declaration = symbol(context.env, ty.symbol)
     let here = symbol(context.env, context.signature.symbol)
     if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
-        if binding { return bound_method_value(context, node, value, field, expected, arity,
-            "cannot inspect a private type from another package") }
+        if binding {
+            return bound_method_value(context, node, value, field, expected, arity,
+                "cannot inspect a private type from another package")
+        }
         return Result.Err(error(context, node, "cannot inspect a private type from another package"))
     }
     var index = 0
@@ -67,39 +89,66 @@ fn projected_member(context Context, node Node, value Expr, field Text, expected
         if found.name == field {
             let receiver = if base != value.ty && ty.kind == TypeKind.Record {
                 expression(ExprKind.Coerce, base, source, "", -1, expressions(value), value.falls)
-            } else { value }
+            } else {
+                value
+            }
             let selected = expression(ExprKind.Field, found.ty, source, "", index, expressions(receiver), value.falls)
-            return if applied { index_read(context, node, selected, child(node, 1).children) } else { Result.Ok(selected) }
+            return if applied {
+                index_read(context, node, selected, child(node, 1).children)
+            } else {
+                Result.Ok(selected)
+            }
         }
         index = index + 1
     }
-    if binding { bound_method_value(context, node, value, field, expected, arity) }
-    else { Result.Err(error(context, node, "unknown record field")) }
+    if binding {
+        bound_method_value(context, node, value, field, expected, arity)
+    }
+    else {
+        Result.Err(error(context, node, "unknown record field"))
+    }
 }
+
 fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
     named_reference(context, node, expected, -1)
 }
 
 fn reference_type_arguments(node Node) List[Node] {
-    if node.kind == NodeKind.Apply || node.kind == NodeKind.Index { child(node, 1).children }
-    else { new[Node]() }
+    if node.kind == NodeKind.Apply || node.kind == NodeKind.Index {
+        child(node, 1).children
+    }
+    else {
+        new[Node]()
+    }
 }
 
 fn named_reference(context Context, operation Node, expected Int, arity Int) Result[Expr, Failure] {
     let applied = operation.kind == NodeKind.Apply || operation.kind == NodeKind.Index
-    let node = if applied { child(operation, 0) } else { operation }
+    let node = if applied {
+        child(operation, 0)
+    } else {
+        operation
+    }
     let end = first_dot(node.value)
     let first = slice(node.value, 0, end)
     let local = lookup(context, first)
     if local >= 0 && end < length(node.value) && meta_binding(context, first) >= 0 {
-        if meta_named(context, node) { return meta_literal(context, node, context_type(context, node)?) }
+        if meta_named(context, node) {
+            return meta_literal(context, node, context_type(context, node)?)
+        }
         return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected)
     }
     if local < 0 {
         let options = referenced_functions(context, node)?
-        if length(options) != 0 { return function_value(context, operation, options, reference_type_arguments(operation), expected, arity) }
-        if meta_named(context, node) { return meta_literal(context, node, context_type(context, node)?) }
-        if end < length(node.value) { return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected) }
+        if length(options) != 0 {
+            return function_value(context, operation, options, reference_type_arguments(operation), expected, arity)
+        }
+        if meta_named(context, node) {
+            return meta_literal(context, node, context_type(context, node)?)
+        }
+        if end < length(node.value) {
+            return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected)
+        }
         return Result.Err(error(context, node, "unknown local value"))
     }
     let binding = get(context.bindings, local)
@@ -112,7 +161,11 @@ fn named_reference(context Context, operation Node, expected Int, arity Int) Res
     if binding.constant < -1 && get(context.env.inputs, 0).declaration_queries {
         retain_type_alias_reference(context, node)
     }
-    var value = if binding.constant < -1 { expr(context, get(context.env.static_aliases, -2 - binding.constant).node, -1)? } else if binding.constant >= 0 { static_expression(context, node, binding.constant)? } else {
+    var value = if binding.constant < -1 {
+        expr(context, get(context.env.static_aliases, -2 - binding.constant).node, -1)?
+    } else if binding.constant >= 0 {
+        static_expression(context, node, binding.constant)?
+    } else {
         atom(ExprKind.Local, get(context.locals, binding.local).ty, node, binding.local)
     }
     var index = end
@@ -120,113 +173,190 @@ fn named_reference(context Context, operation Node, expected Int, arity Int) Res
         let rest = slice(node.value, index + 1, length(node.value))
         let end = first_dot(rest)
         let last = index + 1 + end == length(node.value)
-        value = projected_member(context, if last { operation } else { node }, value,
+        value = projected_member(context, if last {
+                operation
+            } else {
+                node
+            }, value,
             slice(rest, 0, end), expected, arity, last)?
         index = index + 1 + end
     }
-    if applied && end == length(node.value) { index_read(context, operation, value, child(operation, 1).children) }
-    else { Result.Ok(value) }
+    if applied && end == length(node.value) {
+        index_read(context, operation, value, child(operation, 1).children)
+    }
+    else {
+        Result.Ok(value)
+    }
 }
+
 fn enum_equality(context Context, ty Int) Bool {
     let value = get(context.env.types, ty)
-    if value.kind != TypeKind.Enum { return false }
+    if value.kind != TypeKind.Enum {
+        return false
+    }
     var index = 0
     while index < length(value.variants) {
-        if length(get(value.variants, index).fields) != 0 { return false }
+        if length(get(value.variants, index).fields) != 0 {
+            return false
+        }
         index = index + 1
     }
     true
 }
+
 fn expr(context Context, node Node, expected Int) Result[Expr, Failure] {
     expr_mode(context, node, expected, true)
 }
+
 fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let kind = node.kind
     if kind == NodeKind.Old {
         let value = old_observation(context, node)?
-        return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+        return if enforce {
+            typed(context, node, value, expected)
+        } else {
+            Result.Ok(value)
+        }
     }
     if kind == NodeKind.DynType || ((kind == NodeKind.Type || kind == NodeKind.Apply) && meta_named(context, node)) {
-        if unknown_static(context, node) { return deferred(context, node, meta_type(context.env)) }
+        if unknown_static(context, node) {
+            return deferred(context, node, meta_type(context.env))
+        }
         let value = meta_literal(context, node, context_type(context, node)?)?
-        return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+        return if enforce {
+            typed(context, node, value, expected)
+        } else {
+            Result.Ok(value)
+        }
     }
     if kind == NodeKind.MacroCall {
         let value = macro_call(context, node, expected)?
-        return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+        return if enforce {
+            typed(context, node, value, expected)
+        } else {
+            Result.Ok(value)
+        }
     }
     if kind == NodeKind.MacroInput {
         return Result.Err(error(context, node, "positional macro inputs are only valid in generated expressions"))
     }
     if kind == NodeKind.Function {
         let value = closure_literal(context, node)?
-        return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+        return if enforce {
+            typed(context, node, value, expected)
+        } else {
+            Result.Ok(value)
+        }
     }
     if kind == NodeKind.Await {
         let value = awaited(context, node, expected)?
-        return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+        return if enforce {
+            typed(context, node, value, expected)
+        } else {
+            Result.Ok(value)
+        }
     }
     if kind == NodeKind.Apply || kind == NodeKind.Index {
-        let value = if kind == NodeKind.Apply { application(context, node, expected)? } else {
+        let value = if kind == NodeKind.Apply {
+            application(context, node, expected)?
+        } else {
             indexed_value(context, node, expected)?
         }
-        return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+        return if enforce {
+            typed(context, node, value, expected)
+        } else {
+            Result.Ok(value)
+        }
     }
-    let value = if kind == NodeKind.Integer { atom(ExprKind.Integer, 1, node, -1) } else {
-    if kind == NodeKind.Float { atom(ExprKind.Float, 5, node, -1) } else {
-    if kind == NodeKind.Bool { atom(ExprKind.Bool, 2, node, -1) } else {
-    if kind == NodeKind.Text { atom(ExprKind.Text, 3, node, -1) } else {
-    if kind == NodeKind.Name { named(context, node, expected)? } else {
-    if kind == NodeKind.Invoke { call_value(context, node, expr(context, child(node, 0), -1)?, new[Node](), call_inputs(context, child(node, 1).children)?)? } else {
-    if kind == NodeKind.Call { call(context, node, expected)? } else {
-    if kind == NodeKind.MethodCall { method_call(context, node, child(node, 0), node.value,
-        child(node, 1).children, call_inputs(context, child(node, 2).children)?, -1, expected)? } else {
-    if kind == NodeKind.Construct { construct(context, node, expected)? } else {
-    if kind == NodeKind.Tuple { tuple_literal(context, node, expected)? } else {
-    if kind == NodeKind.List { list_literal(context, node, expected)? } else {
-    if kind == NodeKind.Select {
-        match static_alias_source(context, node) {
+    let value = match kind {
+        NodeKind.Integer => atom(ExprKind.Integer, 1, node, -1)
+        NodeKind.Float => atom(ExprKind.Float, 5, node, -1)
+        NodeKind.Bool => atom(ExprKind.Bool, 2, node, -1)
+        NodeKind.Text => atom(ExprKind.Text, 3, node, -1)
+        NodeKind.Name => named(context, node, expected)?
+        NodeKind.Invoke => call_value(context, node, expr(context, child(node, 0), -1)?, new[Node](),
+            call_inputs(context, child(node, 1).children)?)?
+        NodeKind.Call => call(context, node, expected)?
+        NodeKind.MethodCall => method_call(context, node, child(node, 0), node.value,
+            child(node, 1).children, call_inputs(context, child(node, 2).children)?, -1, expected)?
+        NodeKind.Construct => construct(context, node, expected)?
+        NodeKind.Tuple => tuple_literal(context, node, expected)?
+        NodeKind.List => list_literal(context, node, expected)?
+        NodeKind.Select => match static_alias_source(context, node) {
             Option.Some(source) => expr(context, source, -1)?
             Option.None => projected_member(context, node, expr(context, child(node, 0), -1)?, node.value,
                 expected, -1, true)?
         }
-    } else {
-    if kind == NodeKind.Unary {
-        let operand = expr(context, child(node, 0), -1)?
-        let ty = if node.value == "!" { 2 } else { if node.value == "-" && base_type(context.env, operand.ty) == 5 { 5 } else { 1 } }
-        let value = typed(context, node, operand, ty)?
-        expression(ExprKind.Unary, ty, node, node.value, -1, expressions(value), value.falls)
-    } else {
-    if kind == NodeKind.Binary {
-        var left = expr(context, child(node, 0), -1)?
-        if get(context.env.types, left.ty).kind == TypeKind.Refined { left = typed(context, node, left, base_type(context.env, left.ty))? }
-        let logical = node.value == "&&" || node.value == "||"
-        let equality = node.value == "==" || node.value == "!="
-        let bitwise = node.value == "&" || node.value == "|" || node.value == "^" || node.value == "<<" || node.value == ">>"
-        if equality && get(context.env.types, left.ty).kind == TypeKind.Tuple {
-            tuple_equality(context, node, left)?
-        } else {
-        let argument = if logical { 2 } else { if !bitwise && (equality || left.ty == 5) { left.ty } else { 1 } }
-        if left.ty != argument || (left.ty != 1 && left.ty != 2 && left.ty != 5 && !(equality && (left.ty == 3 || get(context.env.types, left.ty).kind == TypeKind.Meta || enum_equality(context, left.ty)))) {
-            return Result.Err(error(context, node, "invalid operator operand; generic operations need an explicit capability"))
+        NodeKind.Unary => {
+            let operand = expr(context, child(node, 0), -1)?
+            let ty = if node.value == "!" {
+                2
+            } else {
+                if node.value == "-" && base_type(context.env, operand.ty) == 5 {
+                    5
+                } else {
+                    1
+                }
+            }
+            let value = typed(context, node, operand, ty)?
+            expression(ExprKind.Unary, ty, node, node.value, -1, expressions(value), value.falls)
         }
-        let right = expr(context, child(node, 1), argument)?
-        let arithmetic = node.value == "+" || node.value == "-" || node.value == "*" || node.value == "/" || node.value == "%"
-        expression(ExprKind.Binary, if arithmetic || bitwise { argument } else { 2 }, node, node.value, -1, pair(left, right), left.falls && (logical || right.falls))
+        NodeKind.Binary => {
+            let logical = node.value == "&&" || node.value == "||"
+            var left = expr(context, child(node, 0), if logical {
+                    2
+                } else {
+                    -1
+                })?
+            if get(context.env.types, left.ty).kind == TypeKind.Refined {
+                left = typed(context, node, left, base_type(context.env, left.ty))?
+            }
+            let equality = node.value == "==" || node.value == "!="
+            let bitwise = node.value == "&" || node.value == "|" || node.value == "^" || node.value == "<<" || node.value == ">>"
+            if equality && get(context.env.types, left.ty).kind == TypeKind.Tuple {
+                tuple_equality(context, node, left)?
+            } else {
+                let argument = if logical {
+                    2
+                } else {
+                    if !bitwise && (equality || left.ty == 5) {
+                        left.ty
+                    } else {
+                        1
+                    }
+                }
+                if left.ty != argument || (left.ty != 1 && left.ty != 2 && left.ty != 5 && !(equality && (left.ty == 3 || get(context.env.types, left.ty).kind == TypeKind.Meta || enum_equality(context, left.ty)))) {
+                    return Result.Err(error(context, node, "invalid operator operand; generic operations need an explicit capability"))
+                }
+                let right = expr(context, child(node, 1), argument)?
+                let arithmetic = node.value == "+" || node.value == "-" || node.value == "*" || node.value == "/" || node.value == "%"
+                expression(ExprKind.Binary, if arithmetic || bitwise {
+                        argument
+                    } else {
+                        2
+                    }, node, node.value, -1, pair(left, right), left.falls && (logical || right.falls))
+            }
         }
-    } else {
-    if kind == NodeKind.Block { block(context, node, expected, enforce)? } else {
-    if kind == NodeKind.If { conditional(context, node, expected, enforce)? } else {
-    if kind == NodeKind.Match { matched(context, node, expected, enforce)? } else {
-    if kind == NodeKind.Try { propagated(context, node, expected)? } else {
-    if kind == NodeKind.Comptime { compile_time(context, node, expected, enforce)? } else {
-    if kind == NodeKind.ComptimeMap {
-        let expanded = value_iteration(context, node)?
-        return expr_mode(context, expanded, expected, enforce)
-    } else {
-    if kind == NodeKind.PackError { return Result.Err(error(context, node, node.value)) } else {
-        return Result.Err(error(context, node, "unsupported expression in source checker"))
-    } } } } } } } } } } } } } } } } } } } } }
+        NodeKind.Block => block(context, node, expected, enforce)?
+        NodeKind.If => conditional(context, node, expected, enforce)?
+        NodeKind.Match => matched(context, node, expected, enforce)?
+        NodeKind.Try => propagated(context, node, expected)?
+        NodeKind.Comptime => compile_time(context, node, expected, enforce)?
+        NodeKind.ComptimeMap => {
+            let expanded = value_iteration(context, node)?
+            return expr_mode(context, expanded, expected, enforce)
+        }
+        NodeKind.PackError => {
+            return Result.Err(error(context, node, node.value))
+        }
+        _ => {
+            return Result.Err(error(context, node, "unsupported expression in source checker"))
+        }
+    }
     let checked = flow_list_update(context, node, value)
-    if enforce { typed(context, node, checked, expected) } else { Result.Ok(checked) }
+    if enforce {
+        typed(context, node, checked, expected)
+    } else {
+        Result.Ok(checked)
+    }
 }
