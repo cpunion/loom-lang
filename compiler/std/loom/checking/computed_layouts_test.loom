@@ -231,7 +231,7 @@ test fn computed_layouts_assemble_words_with_checked_local_type_values() {
     rejects(bounded)
     discard accepted(std.text.replace(bounded, "impl[Ts...] Pass", "impl[Ts... Tagged] Pass"))
     assert match reflected(std.text.replace(source, "\n    T\n",
-                "\n    if describe[T]().types[0].kind == Kind.Opaque { T } else { Bool }\n")) {
+            "\n    if describe[T]().types[0].kind == Kind.Opaque { T } else { Bool }\n")) {
         Result.Err(failed) => std.text.contains(failed.diagnostic.message, "uniform symbolic type template")
         Result.Ok(_) => false
     }
@@ -251,6 +251,19 @@ test fn computed_layouts_preserve_lexical_inputs_across_local_pure_functions() {
             "((Ts..., List[V]), V)", "(Ts..., List[V])"),
         "((Ts..., List[W]), W)", "(Ts..., List[W])")
     discard accepted(direct)
+    discard accepted(concat(direct, """
+        impl Family for Bool {
+            type Item[U] = (Int, List[U])
+        }
+        impl Family for Int {
+            type Item[U] = (Bool, List[U])
+        }
+        fn main() {
+            discard (7,).pass(true)
+            discard (false,).pass(1)
+            discard (8,).pass(true)
+        }
+        """))
     discard accepted(std.text.replace(direct, "type Item[U]", """
         type Item[U]
         fn echo[U](self Self, value Self.Item[U]) Self.Item[U]
@@ -269,7 +282,7 @@ test fn computed_layouts_preserve_lexical_inputs_across_local_pure_functions() {
     let named = concat("record Ts {}\n", source)
     discard accepted(named)
     assert match checked(source_files(std.text.replace(named,
-                    "identity_type[(Ts..., Captured)]()", "identity_type[Ts]()"))) {
+                "identity_type[(Ts..., Captured)]()", "identity_type[Ts]()"))) {
         Result.Err(failed) => std.text.contains(failed.diagnostic.message, "expand a type pack")
         Result.Ok(_) => false
     }

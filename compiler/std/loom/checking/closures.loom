@@ -310,6 +310,35 @@ fn schedule_closure(env Environment, plan Int) Int {
     target
 }
 
+// Family binders and local type aliases can change without changing the
+// enclosing generic arguments. A recipe may retain only identical captures.
+fn closure_aliases_match(context Context, saved ClosurePlan) Bool {
+    var index = 0
+    while index < length(saved.captures) {
+        let capture = get(saved.captures, index)
+        if capture.constant < -1 {
+            let found = lookup(context, capture.name)
+            if found < 0 {
+                return false
+            }
+            let binding = get(context.bindings, found)
+            if binding.constant != capture.constant {
+                if binding.constant >= -1 {
+                    return false
+                }
+                let prior = get(context.env.static_aliases, -2 - capture.constant)
+                let current = get(context.env.static_aliases, -2 - binding.constant)
+                if prior.ty != current.ty || prior.node.value == "$word-input" ||
+                !std.loom.ast.same(prior.node, current.node) {
+                    return false
+                }
+            }
+        }
+        index = index + 1
+    }
+    true
+}
+
 fn closure_literal(context Context, node Node) Result[Expr, Failure] {
     let owner = closure_symbol(context, node)
     let params = new[Int]()
@@ -343,7 +372,8 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
     while index < length(context.env.closures) {
         let saved = get(context.env.closures, index)
         if saved.checked && saved.type_computation == context.type_computation && saved.signature.symbol == owner &&
-        same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) {
+        same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) &&
+        closure_aliases_match(context, saved) {
             plan = index
         }
         index = index + 1
