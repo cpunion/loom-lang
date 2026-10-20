@@ -216,7 +216,10 @@ words, and output bounds grant no constraints to erased inputs. Complete tuple,
 function and nominal word-bearing types can pass through uniform compile-time
 helpers as single symbolic inputs, including constructors and nested family
 captures. Only capabilities proved for the complete input are available; its
-original schema is restored in the result. Local aliases use ordinary CTFE
+original schema is restored in the result. A computed element map may combine
+a whole captured word and a selected element; only free element references
+determine its width, even when the helper erases its input type. Local aliases
+use ordinary CTFE
 lookup, not global-name substitution. Reifying new word layouts after local
 bindings and arbitrary unknown-layout inspection remain unsupported. Unknown
 reflection and type decisions stay unproved; no representative width or opaque

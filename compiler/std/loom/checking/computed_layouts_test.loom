@@ -65,11 +65,46 @@ test fn computed_layouts_reuse_only_proved_whole_type_requirements() {
     rejects(source)
     discard accepted(std.text.replace(source, "impl[Ts...] Pass", "impl[Ts... Tagged] Pass"))
     let hidden = concat("""
+            concept Tagged {}
+            impl[Us... Tagged] Tagged for (Us...) {}
             record Bounded[T Tagged] {
                 value T
             }
-            """, std.text.replace(source, "identity_type[Self]()", "identity_type[Bounded[Self]]()"))
+            """, std.text.replace(std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                        "identity_type[Self]()", "identity_type[Bounded[(Ts...)]]()"),
+                    "\n    T\n", "\n    Int\n"),
+                "((Ts...), V)", "(Int, V)"), "((Ts...), W)", "(Int, W)"))
     rejects(hidden)
+}
+
+test fn computed_layouts_separate_whole_captures_from_selected_element_widths() {
+    let source = std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                "(comptime { identity_type[Self]() }, U)", "(comptime { identity_type[((Ts...), Ts)]() }..., U)"),
+            "((Ts...), V)", "(((Ts...), Ts)..., V)"),
+        "((Ts...), W)", "(((Ts...), Ts)..., W)")
+    discard accepted(source)
+    discard accepted(std.text.replace(source, "((Ts...), Ts)", "(Ts..., Ts)"))
+    let bounded = concat("""
+            concept Tagged {}
+            impl[Us... Tagged] Tagged for (Us...) {}
+            """, std.text.replace(std.text.replace(source, "fn identity_type[T]()", "fn identity_type[T Tagged]()"),
+            "impl[Ts...] Pass", "impl[Ts... Tagged] Pass"))
+    discard accepted(bounded)
+    let independent = concat("""
+            record Pair[As..., Bs...] {
+                first (As...)
+                second (Bs...)
+            }
+            """, std.text.replace(std.text.replace(source,
+                "impl[Ts...] Pass for (Ts...)", "impl[As..., Bs...] Pass for Pair[(As...)..., (Bs...)...]"),
+            "((Ts...), Ts)", "((As...), Bs)"))
+    discard accepted(independent)
+    let erased = std.text.replace(std.text.replace(std.text.replace(independent,
+                "\n    T\n", "\n    Int\n"),
+            "(((As...), Bs)..., V)", "(comptime { identity_type[Bs]() }..., V)"),
+        "(((As...), Bs)..., W)", "(comptime { identity_type[Bs]() }..., W)")
+    discard accepted(erased)
+    rejects(std.text.replace(erased, "identity_type[Bs]()", "identity_type[As]()"))
 }
 
 test fn computed_layouts_keep_independent_nominal_words_distinct() {

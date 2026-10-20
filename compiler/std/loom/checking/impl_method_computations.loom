@@ -31,7 +31,7 @@ fn impl_method_computed_parts(env Environment, scope ImplMethodScope, owner Int,
         let layouts = new[ImplComputationLayout]()
         let evidence = std.list.clone(scope.evidence)
         let prepared = impl_computation_layouts(env, scope, owner, node, frame, values,
-            layouts, evidence, 0)?
+            layouts, evidence, element, 0)?
         let types = std.list.clone(scope.types)
         var index = 0
         while index < length(layouts) {
@@ -67,19 +67,10 @@ fn impl_method_computed_parts(env Environment, scope ImplMethodScope, owner Int,
             impl_method_resolved_schema(env, computing, ty, node, depth + 1)?, depth + 1)?
         let schema = impl_method_family_canonical(env, scope,
             impl_computation_restore(canonical, length(scope.types), layouts), depth + 1)?
-        let origins = new[Node]()
-        index = 0
-        while index < length(frame) {
-            let parameter = get(frame, index)
-            if parameter.kind == NodeKind.TypePack && impl_computation_mentions(prepared, parameter.value) {
-                let mapped = pack_schema_parameter(get(values, index))
-                if mapped < 0 {
-                    return Result.Err(failure(env, owner, node,
-                            "computed expansion needs an established source word"))
-                }
-                pack_word_origin_add(origins, impl_method_variable(node, mapped))
-            }
-            index = index + 1
+        let origins = if element {
+            impl_method_word_origins(env, owner, node, frame, values)?
+        } else {
+            new[Node]()
         }
         let word = length(origins) > 0
         let parameter = pack_node(node, if word {

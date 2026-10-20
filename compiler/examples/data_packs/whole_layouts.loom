@@ -25,6 +25,32 @@ impl[Ts...] WordFactory for WholePrefix[Ts...] {
     }
 }
 
+concept MappedWholeRelay {
+    type Value
+    fn relay_each(self Self, value Self.Value) Self.Value
+}
+
+impl[Ts...] MappedWholeRelay for (Ts...) {
+    type Value = dyn WordFactory[Item[U] = (comptime {
+                word_item_type[((Ts...), Ts)]()
+            }..., U)]
+    fn relay_each(self Self, value Self.Value) Self.Value {
+        discard self
+        value
+    }
+}
+
+record MappedWholePrefix {
+    values (List[Int], Bool)
+}
+
+impl WordFactory for MappedWholePrefix {
+    type Item[U] = (((List[Int], Bool), List[Int]), ((List[Int], Bool), Bool), U)
+    fn append[U](self Self, value U) Self.Item[U] {
+        ((self.values, self.values.0), (self.values, self.values.1), value)
+    }
+}
+
 async fn exercise_whole_layouts() {
     let empty = packet()
     let first WholePrefix[()...] = WholePrefix {
@@ -41,4 +67,12 @@ async fn exercise_whole_layouts() {
     let values = resumed.append("whole")
     values.0.0[0] = 42
     assert values.0.1 && values.1 == "whole" && shared[0] == 42
+    let mapped dyn WordFactory[Item[U] = (((List[Int], Bool), List[Int]), ((List[Int], Bool), Bool), U)] = MappedWholePrefix {
+        values = (shared, true)
+    }
+    let selected_map = (shared, false).relay_each(mapped)
+    let pending = echo(selected_map).await
+    let items = pending.append("mapped")
+    items.0.1[0] = 91
+    assert items.0.0.0[0] == 91 && items.1.0.0[0] == 91 && items.1.1 && items.2 == "mapped"
 }
