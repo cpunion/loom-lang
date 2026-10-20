@@ -494,22 +494,20 @@ mod tests {
         lower(&context, &module, &target.machine).unwrap();
         module.verify().unwrap();
         let ir = module.print_to_string().to_string();
+        let writes = |body: &str, prefix: &str| {
+            body.lines()
+                .filter(|line| {
+                    line.trim_start().starts_with(prefix) && line.contains(", ptr %gc.address")
+                })
+                .count()
+        };
         let straight = ir.split("define void @straight").nth(1).unwrap();
         let straight = straight.split("define void @joined").next().unwrap();
-        assert_eq!(
-            straight.matches("store ptr %slot, ptr %gc.address").count(),
-            2
-        );
-        assert_eq!(
-            straight.matches("store ptr null, ptr %gc.address").count(),
-            1
-        );
+        assert_eq!(writes(straight, "store ptr %"), 2, "{straight}");
+        assert_eq!(writes(straight, "store ptr null"), 1);
         let joined = ir.split("define void @joined").nth(1).unwrap();
-        assert_eq!(
-            joined.matches("store ptr %slot, ptr %gc.address").count(),
-            3
-        );
-        assert_eq!(joined.matches("store ptr null, ptr %gc.address").count(), 1);
+        assert_eq!(writes(joined, "store ptr %"), 3);
+        assert_eq!(writes(joined, "store ptr null"), 1);
         assert_eq!(ir.matches("call void @allocate()").count(), 6);
         assert!(!ir.contains("call void @loom.gc."));
     }
