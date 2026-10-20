@@ -270,16 +270,6 @@ fn resource_borrowed(context Context, value Expr) Result[Bool, Failure] {
     Result.Ok(capability >= 0 && satisfies(context, value.ty, capability)?)
 }
 
-fn resource_receiver(context Context, node Node, value Expr) Result[Bool, Failure] {
-    if !must_scope(context, value.ty)? {
-        return Result.Ok(true)
-    }
-    if scoped_receiver_root(context, value) {
-        return Result.Ok(true)
-    }
-    Result.Err(error(context, node, "a resource must enter scoped before a method call"))
-}
-
 fn check_unreached(env Environment, roots List[Int]) Result[Bool, Failure] {
     if length(roots) == 0 {
         return Result.Ok(true)

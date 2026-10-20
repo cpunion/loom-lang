@@ -463,6 +463,8 @@ syntax. Finer cleanup/lifetime precision and generational/concurrent GC remain o
 returns, propagation, faults, suspension and cancellation.
 MustScope freshness/escape checks and typed cleanup protect nested and recursive
 resources, partial aggregate construction and unextracted Task results.
+Resource analysis follows normal completion: an outward exit during operand
+evaluation checks its executed prefix, but creates no value or later call.
 Compiler-generated pattern names forward fresh-resource obligations through
 decision-tree lowering, without permitting copies or delaying source adoption.
 Nested structural patterns transfer container obligations to every selected

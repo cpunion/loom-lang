@@ -242,6 +242,11 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Res
     while index < length(expr.children) {
         let child = get(expr.children, index)
         let value = resource_expression(flow, child, false)?
+        // An argument must finish before its value can be borrowed. An outward
+        // exit also prevents the remaining arguments and the call from running.
+        if !child.falls {
+            return Result.Ok(value)
+        }
         if value.protected {
             if get(flow.analysis.env.types, child.ty).kind == TypeKind.Task {
                 return Result.Err(resource_error(flow, child, "a Task borrowing a scoped resource must be awaited directly"))
@@ -365,6 +370,15 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         return Result.Ok(resource_value(false, false, -1))
     }
     if kind == ExprKind.Intrinsic && (expr.text == "list_new" || expr.text == "list_new_capacity") {
+        var index = 0
+        while index < length(expr.children) {
+            let child = get(expr.children, index)
+            discard resource_expression(flow, child, false)?
+            if !child.falls {
+                return Result.Ok(resource_value(false, false, -1))
+            }
+            index = index + 1
+        }
         return Result.Ok(resource_value(false, true, -1))
     }
     if kind == ExprKind.Intrinsic && expr.text == "list_push" && expr.index >= 0 {
@@ -409,7 +423,11 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         return Result.Ok(resource_value(false, true, -1))
     }
     if kind == ExprKind.Intrinsic && (expr.text == "list_len" || expr.text == "list_get") {
-        let value = resource_expression(flow, get(expr.children, 0), false)?
+        let input = get(expr.children, 0)
+        let value = resource_expression(flow, input, false)?
+        if !input.falls {
+            return Result.Ok(value)
+        }
         if length(expr.children) > 1 {
             discard resource_expression(flow, get(expr.children, 1), false)?
         }
@@ -497,6 +515,9 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         while index < length(expr.children) {
             let child = get(expr.children, index)
             let value = resource_expression(flow, child, false)?
+            if !child.falls {
+                return Result.Ok(value)
+            }
             if value.protected && get(flow.analysis.env.types, child.ty).kind == TypeKind.Task {
                 return Result.Err(resource_error(flow, child, "a Task borrowing a scoped resource must be awaited directly"))
             }
@@ -518,6 +539,9 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
             discard resource_expression(flow, operand, false)?
         } else {
             discard resource_expression(flow, get(expr.children, 0), false)?
+        }
+        if !get(expr.children, 0).falls {
+            return Result.Ok(resource_value(false, false, -1))
         }
         let yes = resource_branch(flow)
         let first = resource_expression(yes, get(expr.children, 1), automatic)?
@@ -541,7 +565,11 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         return resource_match(flow, expr, automatic)
     }
     if kind == ExprKind.While {
-        discard resource_expression(flow, get(expr.children, 0), false)?
+        let condition = get(expr.children, 0)
+        discard resource_expression(flow, condition, false)?
+        if !condition.falls {
+            return Result.Ok(resource_value(false, false, -1))
+        }
         let body = resource_branch(flow)
         discard resource_expression(body, get(expr.children, 1), false)?
         resource_join(flow, body)
@@ -551,7 +579,11 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         if length(expr.children) == 0 {
             return Result.Ok(resource_value(false, true, -1))
         }
-        let value = resource_expression(flow, get(expr.children, 0), false)?
+        let input = get(expr.children, 0)
+        let value = resource_expression(flow, input, false)?
+        if !input.falls {
+            return Result.Ok(value)
+        }
         if value.protected && !resource_task_return(flow, value) {
             return Result.Err(resource_error(flow, expr, "a scoped value or borrowed receiver cannot escape through a return"))
         }
@@ -616,10 +648,14 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     var index = 0
     while index < length(expr.children) {
         let child = get(expr.children, index)
-        let value = if kind == ExprKind.Record {
-            resource_expression(flow, get(child.children, 0), false)?
+        let input = if kind == ExprKind.Record {
+            get(child.children, 0)
         } else {
-            resource_expression(flow, child, false)?
+            child
+        }
+        let value = resource_expression(flow, input, false)?
+        if !input.falls {
+            return Result.Ok(resource_value(false, false, -1))
         }
         if value.protected {
             protected = true
@@ -652,6 +688,9 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
 fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
     let input = get(expr.children, 0)
     let value = resource_expression(flow, input, false)?
+    if !input.falls {
+        return Result.Ok(value)
+    }
     let resource = flow_resource(flow, input.ty)?
     if !value.protected && resource && !value.fresh {
         return Result.Err(resource_error(flow, input, "resource matching requires a fresh result, not a scoped or copied value"))
@@ -702,7 +741,11 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
         var output = resource_value(false, true, -1)
         field = 0
         while field < length(arm.body) {
-            output = resource_expression(branch, get(arm.body, field), automatic)?
+            let child = get(arm.body, field)
+            output = resource_expression(branch, child, automatic)?
+            if !child.falls {
+                break
+            }
             field = field + 1
         }
         // A returned pending owner does not account for any sibling payload.
