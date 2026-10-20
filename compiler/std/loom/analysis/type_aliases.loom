@@ -1,0 +1,65 @@
+// A checked erased Let is only a candidate. Resolve it through the cached
+// source check before a concrete constructor can report its underlying record
+// as the definition of a lexical alias. Never publish a binding from spelling.
+fn erased_binding_span(value Expr, span Span) Bool {
+    if value.kind == ExprKind.Block && value.ty == 0 && length(value.children) == 0 && same_span(value.span, span) {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if erased_binding_span(get(value.children, index), span) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var part = 0
+        while part < length(arm.body) {
+            if erased_binding_span(get(arm.body, part), span) {
+                return true
+            }
+            part = part + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn erased_type_binding(source Node, body Expr, name Text) Bool {
+    if source.kind == NodeKind.Let && source.value == name && erased_binding_span(body, source.span) {
+        return true
+    }
+    var index = 0
+    while index < length(source.children) {
+        if erased_type_binding(get(source.children, index), body, name) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn erased_type_binding_at(analysis AnalysisState, file Int, offset Int, tokens List[Token]) Bool {
+    let token = match token_at(tokens, offset) {
+        Option.Some(found) => found
+        Option.None => {
+            return false
+        }
+    }
+    if token.kind != Kind.Name {
+        return false
+    }
+    var index = 0
+    while index < length(analysis.program.functions) {
+        let function = get(analysis.program.functions, index)
+        let declaration = get(analysis.bindings.symbols, function.symbol)
+        if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) &&
+        erased_type_binding(declaration.node, function.body, token.value) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}

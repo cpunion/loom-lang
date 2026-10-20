@@ -1,0 +1,101 @@
+fn type_alias_header_source() Text {
+    """
+        concept Family {
+            type Item[U]
+        }
+        fn identity_type[T]() type {
+            T
+        }
+        concept Pass {
+            type Out
+        }
+        impl[Ts...] Pass for (Ts...) {
+            type Out = dyn Family[Item[U] = (comptime {
+                        let Whole = Self
+                        identity_type[Whole]()
+                    }, U)]
+        }
+        fn broken() Int {
+            false
+        }
+        """
+}
+
+test fn checked_type_aliases_retain_header_navigation_without_a_runtime_local() {
+    let source = type_alias_header_source()
+    let bindings = query_bindings(input(source))
+    let declared = query_offset(source, "Whole =")
+    let use = independent_found(bindings, source, "Whole]()")
+    only_definition(use, declared, declared + 5)
+    only_type(use, "type")
+    only_definition(independent_found(bindings, source, "Whole ="), declared, declared + 5)
+}
+
+test fn checked_type_aliases_preserve_lexical_shadowing_and_erased_uses() {
+    let source = """
+        record Box {
+            value Int
+        }
+        concept Family {
+            type Item[U]
+        }
+        fn main() {
+            let Chosen = Box
+            let made = Chosen { value = 7 }
+            let Interface = dyn Family[Item[U] = Chosen]
+            let Inner = Int
+            {
+                let Inner = Bool
+                let check Inner = true
+                discard check
+            }
+            let value Inner = 7
+            discard value
+            discard made
+            let number = comptime {
+                let Direct = Int
+                discard Direct
+                7
+            }
+            discard number
+        }
+        """
+    let analysis = accepted(input(source))
+    let functions = length(analysis.program.functions)
+    let types = length(analysis.program.types)
+    let symbols = length(analysis.bindings.symbols)
+    let chosen = query_offset(source, "Chosen =")
+    only_definition(inspection(analysis, source, "Chosen {"), chosen, chosen + 6)
+    only_definition(inspection(analysis, source, "Chosen]"), chosen, chosen + 6)
+    let inner = query_offset(source, "Inner = Bool")
+    only_definition(inspection(analysis, source, "Inner = Bool"), inner, inner + 5)
+    only_definition(inspection(analysis, source, "Inner = true"), inner, inner + 5)
+    let outer = query_offset(source, "Inner = Int")
+    only_definition(inspection(analysis, source, "Inner = 7"), outer, outer + 5)
+    let direct = query_offset(source, "Direct =")
+    only_definition(inspection(analysis, source, "Direct\n"), direct, direct + 6)
+    assert length(analysis.program.functions) == functions && length(analysis.program.types) == types &&
+    length(analysis.bindings.symbols) == symbols
+    assert match get(analysis.independent_queries, 0) {
+        Option.Some(saved) => !saved.header && saved.scope.span.start == query_offset(source, "fn main()") &&
+        length(saved.view.parameter_headers) > 0
+        Option.None => false
+    }
+}
+
+test fn checked_type_aliases_do_not_publish_failed_or_unselected_bindings() {
+    let failed = std.text.replace(type_alias_header_source(), "identity_type[Whole]()", "missing[Whole]()")
+    let bindings = query_bindings(input(failed))
+    assert match inspect_independent(bindings, 0, query_offset(failed, "Whole =")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    let unselected = std.text.replace(type_alias_header_source(),
+        "let Whole = Self\n                identity_type[Whole]()",
+        "comptime if true { Int } else {\nlet Whole = Self\nidentity_type[Whole]()\n}")
+    assert unselected != type_alias_header_source()
+    assert match inspect_independent(query_bindings(input(unselected)), 0, query_offset(unselected, "Whole]()")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}

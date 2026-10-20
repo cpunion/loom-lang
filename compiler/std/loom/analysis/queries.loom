@@ -894,6 +894,9 @@ fn checked_inspection(analysis AnalysisState, file Int, offset Int, tokens List[
         // header has no singular type. Never substitute a runtime instance.
         return inspect_declaration_at(analysis, view, file, offset, tokens)
     }
+    if erased_type_binding_at(analysis, file, offset, tokens) {
+        return independent_inspection(analysis, file, offset, tokens)
+    }
     match inspect_view(view, file, offset, tokens) {
         Option.Some(found) => Option.Some(found)
         Option.None => {
@@ -976,7 +979,9 @@ fn inspect_view(analysis CheckedQuery, file Int, offset Int, tokens List[Token])
         let header = get(analysis.parameter_headers, index)
         let owner = get(analysis.bindings.symbols, header.symbol)
         if owner.file == file && same_span(header.node.span, target.node.span) && target.segment == 0 {
-            add_type(report, if header.parameter.kind == NodeKind.TypePack {
+            add_type(report, if header.parameter.kind == NodeKind.Let {
+                    "type"
+                } else if header.parameter.kind == NodeKind.TypePack {
                     concat(header.parameter.value, "...")
                 } else {
                     header.parameter.value

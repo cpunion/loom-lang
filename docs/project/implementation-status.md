@@ -100,6 +100,10 @@ validating the selected template, CTFE and witness dependency closure.
 Uninstantiated generic/comptime bodies retain checked local types and source
 bindings with lexical type labels, without inventing runtime instances.
 Nested closures retain their parameters, captures and enclosing type labels too.
+Checked local type aliases retain their declarations across CTFE erasure,
+constructor uses, nested family captures and lexical shadowing. Navigation uses
+query-only binding evidence, not a guessed underlying nominal declaration;
+failed and unselected computations publish no partial alias bindings.
 Dependent type values, pack-dependent layouts and broader body recovery remain limited.
 Recovered queries provide neither build success nor proof evidence.
 Member completion inside `comptime` execution blocks uses staged prefix checking

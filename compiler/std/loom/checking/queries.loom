@@ -28,7 +28,8 @@ pub record TypeHeader {
     ty Int
 }
 
-// A checked lexical binding, not a singular type or an expanded pack layout.
+// A checked lexical type binding (parameter or alias), not a singular type or
+// an expanded pack layout.
 pub record ParameterHeader {
     symbol Int
     node Node
@@ -88,7 +89,7 @@ pub fn check_query(source std.loom.binding.Program, inputs BuildInputs) Result[C
             functions = program.functions
             headers = new[SignatureHeader]()
             type_headers = new[TypeHeader]()
-            parameter_headers = new[ParameterHeader]()
+            parameter_headers = type_alias_headers(env, new[ParameterHeader]())
             declarations = get(env.inputs, 0).declaration_references
             stages = get(env.inputs, 0).staged_queries
         })
@@ -285,7 +286,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
             functions = functions
             headers = headers
             type_headers = type_headers
-            parameter_headers = parameter_headers
+            parameter_headers = type_alias_headers(env, parameter_headers)
             declarations = get(env.inputs, 0).declaration_references
             stages = get(env.inputs, 0).staged_queries
         })
