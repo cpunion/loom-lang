@@ -42,6 +42,67 @@ test fn task_consumption_agrees_across_branches_and_loop_iterations() {
     rejects("async fn item() Bool { true }\nasync fn main() { let task = item()\ndiscard true && task.await }")
 }
 
+test fn exiting_conditions_do_not_create_task_continuations() {
+    discard accepted("""
+        async fn item() Int {
+            7
+        }
+        async fn loop_exit() Int {
+            let task = item()
+            while {
+                return task.await
+            } {
+                discard task.await
+            }
+            0
+        }
+        async fn logical_exit() Int {
+            let task = item()
+            discard !{
+                return task.await
+            } && (task.await == 7)
+            0
+        }
+        async fn main() {
+            assert loop_exit().await == 7 && logical_exit().await == 7
+        }
+        """)
+    task_rejected("""
+        async fn item() Bool {
+            true
+        }
+        async fn main() {
+            let task = item()
+            while {
+                discard task.await
+                true
+            } {
+            }
+        }
+        """, "loop conditions must preserve existing task consumption state")
+    task_rejected("""
+        async fn item() Bool {
+            true
+        }
+        async fn main() {
+            let task = item()
+            discard true && task.await
+        }
+        """, "a short-circuit operand cannot conditionally consume a live task")
+    rejects("""
+        async fn item() Int {
+            7
+        }
+        async fn main() {
+            let task = item()
+            while {
+                return
+            } {
+            }
+        }
+        """)
+}
+
 test fn tasks_cannot_be_lost_duplicated_or_escaped() {
     rejects("async fn item() Int { 1 }\nasync fn unused() { let task = item() }")
     rejects("async fn item() Int { 1 }\nasync fn main() { discard item() }")
@@ -90,10 +151,14 @@ test fn async_contracts_keep_mandatory_logical_result_proofs() {
 fn task_rejected(text Text, message Text) {
     match checked(source_files(text)) {
         Result.Err(failed) => {
-            if failed.diagnostic.message != message { discard write_error(failed.diagnostic.message) }
+            if failed.diagnostic.message != message {
+                discard write_error(failed.diagnostic.message)
+            }
             assert failed.diagnostic.message == message
         }
-        Result.Ok(_) => { assert false }
+        Result.Ok(_) => {
+            assert false
+        }
     }
 }
 
