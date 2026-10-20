@@ -246,6 +246,15 @@ test fn computed_layouts_preserve_lexical_inputs_across_local_pure_functions() {
         assemble()
         """)
     discard accepted(source)
+    let direct = std.text.replace(std.text.replace(std.text.replace(std.text.replace(source,
+                    "(comptime {", "comptime {"), "}, U)]", "}]"),
+            "((Ts..., List[V]), V)", "(Ts..., List[V])"),
+        "((Ts..., List[W]), W)", "(Ts..., List[W])")
+    discard accepted(direct)
+    discard accepted(std.text.replace(direct, "type Item[U]", """
+        type Item[U]
+        fn echo[U](self Self, value Self.Item[U]) Self.Item[U]
+        """))
     let nested = std.text.replace(source, "let Captured = Suffix\n    identity_type[(Ts..., Captured)]()", """
         let Captured = Suffix
         let inner = fn() type {
