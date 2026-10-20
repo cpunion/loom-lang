@@ -37,7 +37,13 @@ concept MappedWholeRelay {
 
 impl[Ts...] MappedWholeRelay for (Ts...) {
     type Value = dyn WordFactory[Item[U] = (comptime {
-                word_item_type[((Ts...), Ts)]()
+                let Gate = Bool
+                comptime if Gate == Bool {
+                    let Suffix = Ts
+                    word_item_type[((Ts...), Suffix)]()
+                } else {
+                    Missing
+                }
             }..., U)]
     fn relay_each(self Self, value Self.Value) Self.Value {
         discard self

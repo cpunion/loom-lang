@@ -270,6 +270,23 @@ test fn computed_layouts_keep_selected_widths_through_local_type_values() {
         "((As..., List[W], Bs...), W)", "((As..., List[Bs])..., W)")
     discard accepted(source)
     rejects(std.text.replace(source, "(As..., List[Bs])...", "(Bs..., List[As])..."))
+    let guarded = std.text.replace(source, "let Suffix = List[Bs]\nidentity_type[(As..., Suffix)]()", """
+        let Gate = Bool
+        comptime if Gate == Bool {
+            let Suffix = List[Bs]
+            identity_type[(As..., Suffix)]()
+        } else {
+            Missing
+        }
+        """)
+    assert guarded != source
+    discard accepted(guarded)
+    let erased = std.text.replace(std.text.replace(std.text.replace(guarded,
+                "\n    T\n", "\n    Int\n"),
+            "identity_type[(As..., Suffix)]()", "identity_type[Suffix]()"),
+        "(As..., List[Bs])...", "comptime { identity_type[Bs]() }...")
+    discard accepted(erased)
+    rejects(std.text.replace(erased, "identity_type[Bs]()", "identity_type[As]()"))
 }
 
 test fn computed_layouts_resolve_only_the_selected_static_branch() {

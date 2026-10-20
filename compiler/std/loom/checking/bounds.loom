@@ -49,7 +49,7 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
 }
 
 fn context_type(context Context, node Node) Result[Int, Failure] {
-    if context.type_computation >= 0 && has_type_expansion(node) {
+    if context.type_computation >= 0 {
         match impl_computation_type(context, node)? {
             Option.Some(ty) => {
                 return Result.Ok(ty)

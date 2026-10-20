@@ -1,20 +1,3 @@
-fn impl_method_computation_spreads(node Node, name Text) Bool {
-    if !mentions_pack(node, name) {
-        return false
-    }
-    if node.kind == NodeKind.Spread {
-        return true
-    }
-    var index = 0
-    while index < length(node.children) {
-        if impl_method_computation_spreads(child(node, index), name) {
-            return true
-        }
-        index = index + 1
-    }
-    false
-}
-
 fn impl_method_computation_context(env Environment, scope ImplMethodScope, owner Int, node Node,
     frame List[Node], values List[Node], element Bool, computation ImplComputation) Result[Context, Failure] {
     var words = false
@@ -22,8 +5,7 @@ fn impl_method_computation_context(env Environment, scope ImplMethodScope, owner
     while index < length(frame) {
         let parameter = get(frame, index)
         if impl_computation_mentions(node, parameter.value) &&
-        (has_type_expansion(get(values, index)) || (parameter.kind == NodeKind.TypePack &&
-                (!element || impl_method_computation_spreads(node, parameter.value)))) {
+        (has_type_expansion(get(values, index)) || parameter.kind == NodeKind.TypePack) {
             words = true
         }
         index = index + 1

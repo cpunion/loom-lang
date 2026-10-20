@@ -30,19 +30,32 @@ fn impl_computation_scope(scope ImplMethodScope, computation ImplComputation) Im
 // Only the original checked binding can supply a word. Local/family binders
 // mask it; staging and branches remain the ordinary evaluator's responsibility.
 fn impl_computation_source(context Context, source Node, input ImplTypeComputation,
-    names List[Text], spread Bool, changed List[Bool]) Node {
+    names List[Text], spread Bool, changed List[Bool]) Result[Node, Failure] {
     if source.kind == NodeKind.Comptime || source.kind == NodeKind.Function || source.kind == NodeKind.TypeParameters {
-        return source
+        return Result.Ok(source)
     }
     var value = source.value
     var index = 0
-    while spread && index < length(input.frame) {
+    while index < length(input.frame) {
         let parameter = get(input.frame, index)
         let name = get(names, index)
         if parameter.kind == NodeKind.TypePack && name != "" && pack_root(source, name) &&
         get(input.bindings, index) >= 0 && lookup(context, name) == get(input.bindings, index) {
-            value = concat(concat("$layout-input#", to_text(index)), slice(value, length(name), length(value)))
-            set(changed, 0, true)
+            if spread {
+                value = concat(concat("$layout-input#", to_text(index)), slice(value, length(name), length(value)))
+                set(changed, 0, true)
+            } else if input.element {
+                let origins = impl_method_word_origins(context.env, context.signature.symbol, source,
+                    input.frame, input.values)?
+                var origin = 0
+                while origin < length(origins) {
+                    pack_word_origin_add(input.computation.origins, get(origins, origin))
+                    origin = origin + 1
+                }
+                if length(input.computation.origins) > 1 {
+                    return Result.Err(error(context, source, "elementwise expansion needs proved equal source widths"))
+                }
+            }
         }
         index = index + 1
     }
@@ -52,13 +65,13 @@ fn impl_computation_source(context Context, source Node, input ImplTypeComputati
     while index < length(source.children) {
         let member = child(source, index)
         push(children, impl_computation_source(context, member, input,
-                lexical_pack_names(source, index, visible, false), spread || source.kind == NodeKind.Spread, changed))
+                lexical_pack_names(source, index, visible, false), spread || source.kind == NodeKind.Spread, changed)?)
         if source.kind == NodeKind.Block {
             visible = lexical_pack_names(member, 0, visible, true)
         }
         index = index + 1
     }
-    pack_node(source, source.kind, value, children)
+    Result.Ok(pack_node(source, source.kind, value, children))
 }
 
 // A local type value already has checked identity. Restore its scoped schema,
@@ -99,6 +112,9 @@ fn impl_computation_identities(context Context, scope ImplMethodScope, source No
 
 fn impl_computation_type(context Context, source Node) Result[Option[Int], Failure] {
     let input = get(get(context.env.inputs, 0).type_computations, context.type_computation)
+    if !input.element && !has_type_expansion(source) {
+        return Result.Ok(Option.None)
+    }
     let names = new[Text]()
     let frame = new[Node]()
     var index = 0
@@ -109,7 +125,7 @@ fn impl_computation_type(context Context, source Node) Result[Option[Int], Failu
         index = index + 1
     }
     let changed = [false]
-    let prepared = impl_computation_source(context, source, input, names, false, changed)
+    let prepared = impl_computation_source(context, source, input, names, false, changed)?
     if !get(changed, 0) {
         return Result.Ok(Option.None)
     }
