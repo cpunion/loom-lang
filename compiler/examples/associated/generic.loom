@@ -8,7 +8,8 @@ record FamilyBox[X] {
     value X
 }
 
-impl Family for Bool {}
+impl Family for Bool {
+}
 
 impl[X] Family for FamilyBox[X] {
     type Item[T] = comptime {
