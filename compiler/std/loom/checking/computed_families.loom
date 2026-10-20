@@ -77,7 +77,7 @@ fn computed_family_selection(context Context, node Node) Result[(Context, Node),
 }
 
 fn computed_family_selection(context Context, node Node,
-    prepare Option[fn(Context, Node) Result[(Context, Node), Failure]]) Result[(Context, Node), Failure] {
+    prepare Option[fn(Context, Node) Result[GuardDecision, Failure]]) Result[(Context, Node), Failure] {
     var source = child(node, 0)
     var selected = context
     if source.kind == NodeKind.If {

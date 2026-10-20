@@ -18,7 +18,7 @@ fn guard_condition(context Context, node Node, condition Node, depth Int) Result
 // Prepare atomic inputs only when control reaches them. Symbolic type inputs
 // share the same short-circuit and branch rules as ordinary compile-time code.
 fn guard_condition(outer Context, node Node, source Node, depth Int,
-    prepare Option[fn(Context, Node) Result[(Context, Node), Failure]]) Result[GuardDecision, Failure] {
+    prepare Option[fn(Context, Node) Result[GuardDecision, Failure]]) Result[GuardDecision, Failure] {
     if depth >= 256 { return Result.Err(error(outer, source, "compile-time condition depth exhausted")) }
     if source.kind == NodeKind.Unary && source.value == "!" {
         return match guard_condition(outer, node, child(source, 0), depth + 1, prepare)? {
@@ -40,12 +40,14 @@ fn guard_condition(outer Context, node Node, source Node, depth Int,
             }
         }
     }
-    let input = match prepare {
-        Option.Some(transform) => transform(outer, source)?
-        Option.None => (outer, source)
+    match prepare {
+        Option.Some(resolve) => {
+            return resolve(outer, source)
+        }
+        Option.None => {}
     }
-    let context = input.0
-    let condition = input.1
+    let context = outer
+    let condition = source
     if condition.kind == NodeKind.Implements {
         if !type_operand(context, child(condition, 0)) {
             return Result.Err(error(context, condition, "implements requires an unshadowed type operand"))
