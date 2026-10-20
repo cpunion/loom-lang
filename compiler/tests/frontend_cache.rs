@@ -29,6 +29,18 @@ fn checked(output: &Output, hit: bool) {
     );
 }
 
+fn reused_bodies(trace: &str) -> usize {
+    trace
+        .lines()
+        .find_map(|line| line.strip_prefix("loom cache: definitions reused "))
+        .unwrap()
+        .split_once(", bodies reused ")
+        .unwrap()
+        .1
+        .parse()
+        .unwrap()
+}
+
 #[test]
 fn dynamic_family_snapshots_recheck_changed_bindings_and_keep_native_captures() {
     let directory = tempfile::tempdir().unwrap();
@@ -470,13 +482,7 @@ fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 8, "{trace}");
     checked(&cached("run", &package, &cache, &[]), true);
     // Replacing an entry guard with post-state length must not reuse its proof.
@@ -546,13 +552,7 @@ async fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 4, "{trace}");
     let executable = common::executable(directory.path(), "cached-closures");
     checked(
@@ -604,13 +604,7 @@ test fn excluded() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 2, "{trace}");
     // Fresh abstract checks may intern additional unused types; compare native
     // behavior, not private type-table numbering.
@@ -678,13 +672,7 @@ async fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 5, "{trace}");
     let executed = common::command(&["run"])
         .arg(&package)
@@ -826,13 +814,7 @@ async fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies >= 4, "{trace}");
     let executed = common::command(&["run"])
         .arg(&package)
@@ -1319,13 +1301,7 @@ fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    let bodies: usize = trace
-        .split(", bodies reused ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let bodies = reused_bodies(&trace);
     assert!(bodies > 0, "{trace}");
     let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
     success(&fresh);
