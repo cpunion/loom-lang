@@ -200,13 +200,13 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
             span = field.span
             children = new[Node]()
         }
-        let value = if kind == ExprKind.Record {
+        var value = if kind == ExprKind.Record {
             get(field.children, 0)
         } else {
             field
         }
         if active && pending_resource_exit(value, 0, false) {
-            return Result.Err(error(context, source, "a resource field cannot precede return, ? or loop exit during aggregate construction"))
+            value = pending_resource_exits(context, value, cleanups, 0)?
         }
         if no_suspend_pending && pending_resource_exit(value, 0, true) {
             return Result.Err(error(context, source, "a NoSuspend operand is still pending; finish its operation before awaiting"))

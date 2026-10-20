@@ -84,12 +84,17 @@ fn main() {
     assert value.callback() == 7 && value.tag == 2 && value.selected == 3
 }
 """))
-    resource_reject_reason(concat(resource_header(), """
+    resource_accept(concat(resource_header(), """
 import std.result.Result
 
 record Wrapped {
     inner Handle
     tag Int
+}
+
+impl Dispose for Wrapped {
+    fn dispose(self Wrapped) {
+    }
 }
 
 fn attempt() Result[Int, Text] {
@@ -102,5 +107,5 @@ fn wrap(log List[Int]) Result[Wrapped, Text] {
         tag = attempt()?
     })
 }
-"""), "a resource field cannot precede return, ? or loop exit during aggregate construction")
+"""))
 }

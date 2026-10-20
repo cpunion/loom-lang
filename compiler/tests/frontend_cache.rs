@@ -628,6 +628,8 @@ fn scoped_body_reuse_retains_list_cleanup_fault_draining_and_hidden_dispose_edge
 import std.resource.Dispose
 import std.resource.MustScope
 import std.list.push
+import std.list.length
+import std.result.Result
 import std.task.outcome
 import std.task.Outcome
 import std.time.sleep_ms
@@ -648,6 +650,18 @@ impl Dispose for Guard {
 fn acquire(id Int, trace List[Int]) Guard {
     Guard { id = id, trace = trace }
 }
+fn pending(trace List[Int], fail Bool) Result[Int, Text] {
+    defer {
+        push(trace, 8)
+    }
+    scoped values = [acquire(1, trace), {
+        if fail {
+            return Result.Err("early")
+        }
+        acquire(3, trace)
+    }]
+    Result.Ok(0)
+}
 async fn worker(trace List[Int]) {
     defer {
         push(trace, 9)
@@ -656,6 +670,9 @@ async fn worker(trace List[Int]) {
     sleep_ms(1).await
 }
 async fn main() {
+    let early List[Int] = []
+    discard pending(early, true)
+    assert length(early) == 2 && early[0] == 1 && early[1] == 8
     let trace List[Int] = []
     match outcome(worker(trace)).await {
         Outcome.Faulted(_) => {}
