@@ -222,9 +222,10 @@ or replayed from cached bodies. Ordinary function queries check their call closu
 generic/static owners retain the application-instance check. Each package must account for its own references;
 an unvisited compile-time branch still refuses rename. Ordinary compilation does
 not collect this evidence.
-Type aliases, unobserved type
-applications and generated or unaligned annotations without complete checked
-binding evidence refuse type edits. The server
+Checked local type aliases support lexical rename, including erased constructors
+and CTFE header bindings, with checked use coverage and an in-memory recheck.
+Unobserved type applications and generated or unaligned annotations without
+complete checked binding evidence refuse type edits. The server
 returns a workspace edit for the
 client to apply; it never writes source files directly.
 

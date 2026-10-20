@@ -264,12 +264,62 @@ fn editor_pattern_local(node Node, tokens List[Token], target Span) Bool {
     false
 }
 
+// Source syntax supplies a lexical candidate, never authority to rename it.
+// In particular this also finds type aliases in CTFE declaration headers,
+// which have no runtime function/local slot.
+fn editor_alias_scope(node Node, tokens List[Token], target Span) Option[Span] {
+    if target.start < node.span.start || target.end > node.span.end || has(node, NodeKind.ExpansionId) {
+        return Option.None
+    }
+    var index = 0
+    while index < length(node.children) {
+        let member = get(node.children, index)
+        if node.kind == NodeKind.Block && member.kind == NodeKind.Let &&
+        target.start >= member.span.start && target.end <= member.span.end {
+            match editor_name(tokens, member) {
+                Option.Some(name) => {
+                    if editor_same_span(name, target) {
+                        return Option.Some(node.span)
+                    }
+                }
+                Option.None => {
+                }
+            }
+        }
+        match editor_alias_scope(member, tokens, target) {
+            Option.Some(scope) => {
+                return Option.Some(scope)
+            }
+            Option.None => {
+            }
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
 fn editor_local_scope(analysis EditorAnalysis, target Location) Option[Span] {
     let source = get(editor_data(analysis).bindings.files, target.file)
     let tokens = match lex(source.text) {
         Result.Ok(value) => value,
         Result.Err(_) => {
             return Option.None
+        }
+    }
+    match editor_alias_scope(source.tree, tokens, target.span) {
+        Option.Some(scope) => {
+            match inspect_at(analysis.snapshot, target.file, target.span.start) {
+                Option.Some(found) => {
+                    if length(found.types) == 1 && get(found.types, 0) == "type" &&
+                    length(found.definitions) == 1 && editor_same_location(get(found.definitions, 0), target) {
+                        return Option.Some(scope)
+                    }
+                }
+                Option.None => {
+                }
+            }
+        }
+        Option.None => {
         }
     }
     var index = 0

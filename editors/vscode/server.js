@@ -194,6 +194,10 @@ async function semanticQuery(params, token, kind) {
       if (kind === 'rename') throw new ResponseError(LSPErrorCodes.RequestFailed, report.error);
       return kind === 'autoImport' ? [] : null;
     }
+    if (kind === 'rename' && !Array.isArray(report.changes) && report.diagnostics?.length) {
+      throw new ResponseError(LSPErrorCodes.RequestFailed,
+        `Rename requires a checked package: ${report.diagnostics[0].message}`);
+    }
     if (kind === 'autoImport') {
       const candidate = report.autoImport;
       if (!candidate) value = [];

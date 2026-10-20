@@ -103,7 +103,10 @@ Nested closures retain their parameters, captures and enclosing type labels too.
 Checked local type aliases retain their declarations across CTFE erasure,
 constructor uses, nested family captures and lexical shadowing. Navigation uses
 query-only binding evidence, not a guessed underlying nominal declaration;
-failed and unselected computations publish no partial alias bindings.
+failed and unselected computations publish no partial alias bindings. Checked
+local aliases also support lexical rename, including CTFE headers, with complete
+use coverage and an in-memory package recheck. Package errors refuse rename with
+the actual diagnostic rather than a protocol-version error.
 Dependent type values, pack-dependent layouts and broader body recovery remain limited.
 Recovered queries provide neither build success nor proof evidence.
 Member completion inside `comptime` execution blocks uses staged prefix checking
