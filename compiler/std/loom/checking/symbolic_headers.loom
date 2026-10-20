@@ -1,0 +1,53 @@
+// A source header can have a checked word schema without one runtime type.
+// Reuse implementation normalization and its inherited domains, never choose
+// representative pack widths just to supply an editor query.
+fn query_symbolic_implementation_header(env Environment, owner Int,
+    parameters List[ParameterHeader]) Result[Bool, Failure] {
+    let implementation = implementation_owner(env, owner)
+    let header = get(env.implementations, implementation)
+    let scope = impl_method_scope(env, implementation, owner, header.capability)?
+    discard impl_method_well_formed(env, scope, owner, scope.target)?
+    let node = symbol(env, owner).node
+    var part = 0
+    while part < 3 {
+        data_header_parameters(owner, child(node, part), type_parameters(env, owner), parameters)
+        part = part + 1
+    }
+    Result.Ok(true)
+}
+
+fn query_symbolic_associated_header(env Environment, owner Int,
+    parameters List[ParameterHeader]) Result[Bool, Failure] {
+    let item = symbol(env, owner)
+    if item.owner < 0 || symbol(env, item.owner).node.kind != NodeKind.Impl {
+        return Result.Ok(false)
+    }
+    let implementation = implementation_owner(env, item.owner)
+    let declaration = associated_declaration(env, owner)
+    let scope = impl_method_scope(env, implementation, owner, declaration)?
+    let frame = impl_method_frame(env, item.owner, owner, true)
+    let values = source_nodes(scope.target)
+    var index = 1
+    while index < length(frame) {
+        push(values, impl_method_variable(item.node, index))
+        index = index + 1
+    }
+    let part = type_part(item.node)
+    if part >= 0 {
+        let schema = impl_method_type_schema(env, scope, owner, child(item.node, part), frame, values, 0)?
+        discard impl_method_well_formed(env, scope, owner, schema)?
+        let bounds = member_bounds(env, declaration)
+        index = 0
+        while index < length(bounds) {
+            if !pack_layout_admitted(impl_method_context(env, scope, owner), scope.caller, schema,
+                get(bounds, index), new[PackLayoutRequirement](), ints(512), 0,
+                Option.Some(scope.assumptions))? {
+                return Result.Err(failure(env, owner, item.node,
+                        "associated header needs its declared result requirements"))
+            }
+            index = index + 1
+        }
+    }
+    data_header_parameters(owner, item.node, type_parameters(env, owner), parameters)
+    Result.Ok(true)
+}
