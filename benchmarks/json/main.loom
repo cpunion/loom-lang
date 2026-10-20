@@ -11,7 +11,7 @@ import std.list.new
 import std.list.push
 import std.list.get
 import std.list.length
-import std.time.monotonic_ns
+import std.time.clock.monotonic_ns
 import std.int.to_text
 import std.io.write_text
 import std.text.concat

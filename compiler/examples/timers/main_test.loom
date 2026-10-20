@@ -1,4 +1,4 @@
-import std.time.monotonic_ns
+import std.time.clock.monotonic_ns
 import std.time.sleep_until_ns
 import std.time.sleep_ns
 

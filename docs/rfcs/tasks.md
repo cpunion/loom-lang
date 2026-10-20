@@ -171,7 +171,7 @@ this is cooperative execution, not parallel threads. Child faults propagate at
 await, and parent failure cancels and drains queued or suspended descendants.
 The [source example](../../compiler/examples/tasks) illustrates the available surface.
 
-`std.time.monotonic_ns` reads a clock with an unspecified process-local origin,
+`std.time.clock.monotonic_ns` reads a clock with an unspecified process-local origin,
 not calendar time. `sleep_ns` and `sleep_ms` measure from the start of their task
 body; `sleep_until_ns` uses an absolute deadline on that same clock. Arguments
 and deadlines are evaluated once, not again on resume. Timer notifications now

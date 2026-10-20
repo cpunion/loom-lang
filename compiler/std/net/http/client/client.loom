@@ -40,7 +40,7 @@ import std.list.push
 import std.task.Outcome
 import std.task.cancel
 import std.task.deadline.at
-import std.time.monotonic_ns
+import std.time.clock.monotonic_ns
 
 pub enum TransportError {
     Tcp(TcpError)

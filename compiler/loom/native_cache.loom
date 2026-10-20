@@ -23,7 +23,7 @@ import std.process.Output
 import std.process.ExitStatus
 import std.io.write_error
 import std.text.split
-import std.time.monotonic_ns
+import std.time.clock.monotonic_ns
 
 record CachedObject {
     bytes Bytes

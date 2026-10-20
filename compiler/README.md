@@ -4646,7 +4646,7 @@ fault propagates at await, and parent failure cancels and drains queued or
 suspended descendants.
 
 The [timer package](examples/timers) uses `std.time.sleep_ns`, `sleep_ms` and
-`sleep_until_ns`; `std.time.monotonic_ns` supplies their process-local clock.
+`sleep_until_ns`; `std.time.clock.monotonic_ns` supplies their process-local clock.
 Relative sleeps begin when their task body runs, not when the call queues them.
 Use `sleep_until_ns(monotonic_ns() + duration)` to choose a deadline at the call
 site. Arguments and deadlines are evaluated once. The clock is not calendar time;

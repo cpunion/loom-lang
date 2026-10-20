@@ -1,0 +1,5 @@
+test fn readings_are_nonnegative_and_monotonic() {
+    let first = monotonic_ns()
+    let second = monotonic_ns()
+    assert first >= 0 && second >= first
+}
