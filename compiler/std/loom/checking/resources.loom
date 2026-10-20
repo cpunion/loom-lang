@@ -204,7 +204,7 @@ fn resource_values_required(env Environment, owner Int, requirements List[Requir
 }
 
 fn resource_binding(context Context, node Node, value Expr) Result[Bool, Failure] {
-    if must_scope(context, value.ty)? {
+    if value.falls && must_scope(context, value.ty)? {
         return Result.Err(error(context, node, "MustScope values require scoped, not an ordinary binding or discard"))
     }
     Result.Ok(true)

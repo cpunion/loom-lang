@@ -302,6 +302,17 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool, awaited Bool) Res
 }
 
 fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
+    let value = resource_evaluation(flow, expr, automatic)?
+    // Check every operation first. An outward exit has no resulting owner to
+    // borrow or adopt; its result-freshness obligation is vacuously satisfied.
+    Result.Ok(if expr.falls {
+            value
+        } else {
+            resource_value(false, true, -1)
+        })
+}
+
+fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
     let kind = expr.kind
     let current = get(flow.analysis.functions, flow.function)
     // Compiler-only guard flags cannot fault or invoke source code.
@@ -426,6 +437,9 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     }
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         let value = resource_expression(flow, get(expr.children, 0), false)?
+        if !get(expr.children, 0).falls {
+            return Result.Ok(resource_value(false, false, -1))
+        }
         let local = get(current.locals, expr.index)
         if value.protected && get(flow.analysis.env.types, local.ty).kind == TypeKind.Task {
             return Result.Err(resource_error(flow, expr, "a Task borrowing a scoped resource must be awaited directly"))
@@ -555,7 +569,11 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         var value = resource_value(false, true, -1)
         var index = 0
         while index < length(expr.children) {
-            value = resource_expression(flow, get(expr.children, index), automatic)?
+            let child = get(expr.children, index)
+            value = resource_expression(flow, child, automatic)?
+            if !child.falls {
+                return Result.Ok(value)
+            }
             index = index + 1
         }
         return Result.Ok(value)

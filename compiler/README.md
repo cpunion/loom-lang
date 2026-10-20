@@ -1777,9 +1777,12 @@ and `map` reserve their known output lengths.
 negative count faults at the precondition. Callbacks may have effects and
 elements retain sharing. The scalar count and unpublished output also support
 shared workers; this does not promise an atomic snapshot of callback inputs.
-An element block currently needs a value-producing path: an unconditional
-`[{ return }]` is rejected even with a List type context. General typing of
-non-returning expressions remains incomplete, as it is for tuples and bindings.
+An operand that exits instead of producing a value uses its expected type.
+For example, `let values List[Int] = [{ return }]` needs no unreachable tail
+value; the same rule applies to annotated bindings, tuple elements and record
+fields. A normally completing no-result expression still cannot initialize a
+value. Without an expected type or an earlier List element, there is no element
+type to infer from an unconditional exit.
 
 List and Bytes support `values[index]` and `values[index] = replacement`:
 
@@ -4344,6 +4347,9 @@ evaluates its initializer once and registers the statically selected
 no value. The binding cannot be reassigned, copied, discarded, returned, or
 manually disposed; checked receiver methods may still mutate ordinary shared
 data. Implementing Dispose alone does not change ordinary unscoped sharing.
+An initializer that exits without producing a value creates no binding or
+cleanup registration, even with a resource type annotation. Operations and
+cleanup before that exit remain checked.
 
 ```loom
 import std.resource.Dispose
