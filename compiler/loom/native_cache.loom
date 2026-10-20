@@ -23,6 +23,7 @@ import std.process.Output
 import std.process.ExitStatus
 import std.io.write_error
 import std.text.split
+import std.time.monotonic_ns
 
 record CachedObject {
     bytes Bytes
@@ -68,16 +69,34 @@ fn cache_hex(value Text) Bool {
     true
 }
 
-fn cache_trace(message Text) {
-    let enabled = match std.env.get("LOOM_NATIVE_TIMINGS") {
+fn cache_trace_enabled() Bool {
+    match std.env.get("LOOM_NATIVE_TIMINGS") {
         Result.Ok(value) => match value {
             Option.Some(_) => true,
             Option.None => false
         }
         Result.Err(_) => false
     }
-    if enabled {
+}
+
+fn cache_trace(message Text) {
+    if cache_trace_enabled() {
         discard write_error(concat("loom cache: ", concat(message, "\n")))
+    }
+}
+
+fn cache_timer() Int {
+    if cache_trace_enabled() {
+        monotonic_ns()
+    } else {
+        -1
+    }
+}
+
+fn cache_elapsed(phase Text, started Int) {
+    if started >= 0 {
+        let elapsed = monotonic_ns() - started
+        cache_trace(concat("timing ", concat(phase, concat(" ns ", to_text(elapsed)))))
     }
 }
 

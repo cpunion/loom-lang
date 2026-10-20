@@ -407,6 +407,12 @@ LOOM_NATIVE_TIMINGS=1 target/loom check compiler/loom --frontend-cache target/fr
 target/loom build compiler/examples/data --frontend-cache target/frontend-cache --object-cache target/native-cache
 ```
 
+`LOOM_NATIVE_TIMINGS` also reports cache identity, key, lookup, definition
+load/check-and-snapshot, preparation and publication times in nanoseconds.
+These CLI-only intervals are disabled by default and exclude initial project
+loading; they are diagnostics, not proof or runtime application metadata.
+The compiler benchmark retains them as `cache*Ms` sample and median fields.
+
 Every invocation reloads and parses the selected package closure and validates
 its manifests, imports and locked dependency snapshots. A key covers the invoked
 compiler executable's actual bytes, source paths/contents/membership, module

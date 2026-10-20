@@ -186,6 +186,8 @@ function measure(mode, packagePath, cache = null, expectedCache = null, executab
         result.stderr.includes("loom-native phase: codegen"))) throw new Error("cache hit unexpectedly decoded or generated native code");
   }
   const reuse = result.stderr.match(/^loom cache: definitions reused (\d+), bodies reused (\d+)$/m);
+  const cachePhases = Object.fromEntries([...result.stderr.matchAll(/^loom cache: timing (.+) ns (\d+)$/gm)]
+    .map(([, name, ns]) => [`cache${name.split(/\W+/).map(word => word[0].toUpperCase() + word.slice(1)).join("")}Ms`, Number(ns) / 1e6]));
   if (nativeMode && (!Number.isFinite(phases.link) || ((compareFrontend || expectedCache !== "hit") &&
       (!Number.isFinite(phases.decode) || !Number.isFinite(phases.codegen))))) {
     throw new Error("missing native phase timings; rebuild loom-native and ensure the package has tests");
@@ -194,6 +196,7 @@ function measure(mode, packagePath, cache = null, expectedCache = null, executab
     wallMs, peakRssBytes: Number(rss[1]), userCpuMs: Number(cpu[2]) * 1000, systemCpuMs: Number(cpu[3]) * 1000,
     ...(nativeMode ? { decodeMs: phases.decode ?? 0, codegenMs: phases.codegen ?? 0, linkMs: phases.link } : {}),
     ...(reuse ? { definitionsReused: Number(reuse[1]), bodiesReused: Number(reuse[2]) } : {}),
+    ...cachePhases,
   };
 }
 

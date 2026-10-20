@@ -58,6 +58,24 @@ fn dynamic_family_snapshots_recheck_changed_bindings_and_keep_native_captures() 
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
+    for phase in [
+        "compiler identity",
+        "closure key",
+        "frontend lookup",
+        "definition load",
+        "definition check/snapshot",
+        "definition prepare",
+        "definition publish",
+        "frontend publish",
+    ] {
+        let prefix = format!("loom cache: timing {phase} ns ");
+        assert!(
+            trace.lines().any(|line| line
+                .strip_prefix(&prefix)
+                .is_some_and(|value| value.parse::<u64>().is_ok())),
+            "{trace}"
+        );
+    }
     assert!(
         trace.contains("bodies reused ") && !trace.contains("bodies reused 0"),
         "{trace}"
@@ -66,6 +84,15 @@ fn dynamic_family_snapshots_recheck_changed_bindings_and_keep_native_captures() 
     // not a semantic requirement. Both artifacts must preserve native behavior.
     checked(&cached("run", &package, &cache, &[]), true);
     success(&common::loom(&["run", package.to_str().unwrap()]));
+    let quiet = common::command(&["check"])
+        .arg(&package)
+        .arg("--frontend-cache")
+        .arg(&cache)
+        .env_remove("LOOM_NATIVE_TIMINGS")
+        .output()
+        .unwrap();
+    success(&quiet);
+    assert!(!String::from_utf8_lossy(&quiet.stderr).contains("loom cache: timing "));
 
     let invalid = source.replace(
         "Item[Renamed] = List[Renamed]",

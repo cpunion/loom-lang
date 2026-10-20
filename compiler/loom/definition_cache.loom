@@ -55,16 +55,23 @@ fn prepare_incremental(options Options, project Project, inputs BuildInputs, ide
     let key = definition_key(options, project, identity)
     let prefix = concat("loom-definition-cache 2\n", concat(key, "\n"))
     let path = join_path(root, concat(key, ".ldef"))
+    let loading = cache_timer()
     let cache = definition_load(path, prefix, project, inputs)
+    cache_elapsed("definition load", loading)
+    let checking = cache_timer()
     let checked = match check_project_snapshot(project, options.command == "test", inputs, cache) {
         Result.Ok(value) => value
         Result.Err(failed) => {
             return Result.Err(diagnostic(project.files, failed))
         }
     }
+    cache_elapsed("definition check/snapshot", checking)
     cache_trace(concat("definitions reused ", concat(to_text(definitions_reused(cache)),
                 concat(", bodies reused ", to_text(bodies_reused(cache))))))
+    let preparing = cache_timer()
     let prepared = prepare_checked(options, project, inputs, checked.checked.program, checked.checked.bindings)
+    cache_elapsed("definition prepare", preparing)
+    let publishing = cache_timer()
     match checked.snapshot {
         Option.Some(snapshot) => {
             frontend_publish(root, path, prefix, Prepared {
@@ -80,5 +87,6 @@ fn prepare_incremental(options Options, project Project, inputs BuildInputs, ide
             cache_trace("definition snapshot unavailable")
         }
     }
+    cache_elapsed("definition publish", publishing)
     Result.Ok(prepared)
 }
