@@ -104,6 +104,9 @@ fn named_reference(context Context, operation Node, expected Int, arity Int) Res
     }
     let binding = get(context.bindings, local)
     if context.type_computation >= 0 && binding.constant < -1 {
+        if get(context.env.static_aliases, -2 - binding.constant).node.value == "$word-input" {
+            return Result.Err(error(context, node, "expand a type pack with ...; it is not one type"))
+        }
         discard impl_computation_reference(context, node)?
     }
     if binding.constant < -1 && get(context.env.inputs, 0).declaration_queries {

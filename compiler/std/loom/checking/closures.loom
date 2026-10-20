@@ -43,6 +43,8 @@ record Lexical {
 }
 
 record ClosurePlan {
+    // Checker-only lexical scope, rebuilt with the plan, never body-cache IR.
+    type_computation Int
     signature Signature
     arguments List[Int]
     constants List[StaticValue]
@@ -119,7 +121,8 @@ fn closure_symbol(context Context, node Node) Int {
         let item = symbol(context.env, index)
         if item.owner == context.signature.symbol && item.node.kind == NodeKind.Function && item.node.value == "" &&
         item.node.span.start == node.span.start && item.node.span.end == node.span.end &&
-        closure_expansion(item.node) == closure_expansion(node) {
+        // Pack expansion can rewrite the same source span into distinct bodies.
+        std.loom.ast.same(item.node, node) {
             return index
         }
         index = index + 1
@@ -308,6 +311,35 @@ fn schedule_closure(env Environment, plan Int) Int {
     target
 }
 
+// Family binders and local type aliases can change without changing the
+// enclosing generic arguments. A recipe may retain only identical captures.
+fn closure_aliases_match(context Context, saved ClosurePlan) Bool {
+    var index = 0
+    while index < length(saved.captures) {
+        let capture = get(saved.captures, index)
+        if capture.constant < -1 {
+            let found = lookup(context, capture.name)
+            if found < 0 {
+                return false
+            }
+            let binding = get(context.bindings, found)
+            if binding.constant != capture.constant {
+                if binding.constant >= -1 {
+                    return false
+                }
+                let prior = get(context.env.static_aliases, -2 - capture.constant)
+                let current = get(context.env.static_aliases, -2 - binding.constant)
+                if prior.ty != current.ty || prior.node.value == "$word-input" ||
+                !std.loom.ast.same(prior.node, current.node) {
+                    return false
+                }
+            }
+        }
+        index = index + 1
+    }
+    true
+}
+
 fn closure_literal(context Context, node Node) Result[Expr, Failure] {
     let owner = closure_symbol(context, node)
     let params = new[Int]()
@@ -340,7 +372,9 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
     index = 0
     while index < length(context.env.closures) {
         let saved = get(context.env.closures, index)
-        if saved.checked && saved.signature.symbol == owner && same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) {
+        if saved.checked && saved.type_computation == context.type_computation && saved.signature.symbol == owner &&
+        same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) &&
+        closure_aliases_match(context, saved) {
             plan = index
         }
         index = index + 1
@@ -356,6 +390,7 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
                 sequence = SequencePolicy.Checked
             })
         push(context.env.closures, ClosurePlan {
+                type_computation = context.type_computation
                 signature = signature
                 arguments = context.arguments
                 constants = context.constants
@@ -373,12 +408,8 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
     }
     let completed = get(context.env.closures, plan)
     std.list.set(context.env.closures, plan, ClosurePlan {
-            signature = completed.signature
-            arguments = completed.arguments
-            constants = completed.constants
-            captures = completed.captures
-            environment = completed.environment
             checked = true
+            ..completed
         })
     let saved = get(context.env.closures, plan)
     let fields = new[Expr]()
@@ -436,7 +467,7 @@ fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Resul
     push(scopes, scope)
     var context = Context {
         lexical = scopes
-        type_computation = -1
+        type_computation = saved.type_computation
         env = env
         signature = saved.signature
         arguments = saved.arguments

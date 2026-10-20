@@ -1616,7 +1616,8 @@ associated results do not prove overload separation. See the
 Uniform compile-time helpers can also assemble unknown-width words with checked
 local type values, as in `(Ts..., Suffix)`, without observing a concrete layout.
 The [computed layout example](examples/data_packs/whole_layouts.loom) exercises
-local aliases, empty words, shared values and suspension through native code.
+local aliases, captured inputs in local pure functions, empty words, shared values
+and suspension through native code.
 Whole-word-dependent layout inspection remains open.
 Whole-word family equality through implementation signatures is also still limited;
 this data-header check does not supply an opaque type equality in its place.
