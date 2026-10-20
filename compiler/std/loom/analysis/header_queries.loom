@@ -161,25 +161,49 @@ fn header_shadowed(analysis CheckedQuery, owner Int, spelling Text) Bool {
     false
 }
 
+fn inspect_header_type_parameter(analysis CheckedQuery, report Inspection, owner Int, spelling Text, ty Int) {
+    let shape = get(analysis.types, ty)
+    if shape.kind != TypeKind.Parameter {
+        return
+    }
+    let parameters = header_parameters(analysis, owner)
+    if shape.symbol >= 0 && shape.symbol < length(parameters) {
+        let parameter = get(parameters, shape.symbol)
+        if parameter.value == spelling && parameter.value != "Self" {
+            add_type(report, header_type_name(analysis, owner, ty))
+            declaration(analysis, report, get(analysis.bindings.symbols, owner).file, parameter)
+        }
+    }
+}
+
 fn inspect_header_type(analysis CheckedQuery, report Inspection, target Query,
     owner Int, node Node, ty Int, depth Int) {
     if depth >= 64 || !inside(node.span, target.token.span.start) || ty < 0 || ty >= length(analysis.types) {
         return
     }
     let shape = get(analysis.types, ty)
+    if node.kind == NodeKind.Type && shape.kind == TypeKind.Associated {
+        // A projection's checked arguments include its receiver; source type
+        // arguments do not. Keep both the lexical receiver and member inputs.
+        if same_span(node.span, target.node.span) && target.segment == 0 {
+            inspect_header_type_parameter(analysis, report, owner, header_root(node.value), get(shape.arguments, 0))
+        }
+        if length(node.children) + 1 == length(shape.arguments) {
+            var index = 0
+            while index < length(node.children) {
+                inspect_header_type(analysis, report, target, owner, get(node.children, index),
+                    get(shape.arguments, index + 1), depth + 1)
+                index = index + 1
+            }
+        }
+        return
+    }
     if node.kind == NodeKind.Type && same_span(node.span, target.node.span) && target.segment + 1 == target.segments {
         if header_shadowed(analysis, owner, node.value) {
             // Only an actual abstract parameter may acquire this lexical
             // definition. A specialized nominal type is not source evidence.
-            if shape.kind == TypeKind.Parameter && node.value == target.token.value {
-                let parameters = header_parameters(analysis, owner)
-                if shape.symbol >= 0 && shape.symbol < length(parameters) {
-                    let parameter = get(parameters, shape.symbol)
-                    if parameter.value == node.value && parameter.value != "Self" {
-                        add_type(report, header_type_name(analysis, owner, ty))
-                        declaration(analysis, report, get(analysis.bindings.symbols, owner).file, parameter)
-                    }
-                }
+            if node.value == target.token.value {
+                inspect_header_type_parameter(analysis, report, owner, node.value, ty)
             }
             return
         }

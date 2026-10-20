@@ -88,6 +88,7 @@ Query-only declaration headers support ordinary/generic and impl
 signatures despite body errors, including original static parameter slots.
 Function/data headers retain their declared parameters rather than caller
 specializations, including compound fields, variant payloads and return types.
+Associated projections retain navigation for both their receiver and type arguments.
 Variadic record/enum headers retain checked fixed type fragments and lexical
 parameter bindings, including packs displayed as `Ts...`, without inventing
 expansion widths. Pack-dependent compound layouts still supply no type evidence.
