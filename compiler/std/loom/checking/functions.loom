@@ -817,6 +817,7 @@ fn function_scope(env Environment, declared Signature, arguments List[Int], cons
     let item = symbol(env, current.symbol)
     var context = Context {
         lexical = new_lexical()
+        type_computation = -1
         env = env
         signature = current
         arguments = arguments

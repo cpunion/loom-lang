@@ -103,6 +103,9 @@ fn named_reference(context Context, operation Node, expected Int, arity Int) Res
         return Result.Err(error(context, node, "unknown local value"))
     }
     let binding = get(context.bindings, local)
+    if context.type_computation >= 0 && binding.constant < -1 {
+        discard impl_computation_reference(context, node)?
+    }
     if binding.constant < -1 && get(context.env.inputs, 0).declaration_queries {
         retain_type_alias_reference(context, node)
     }

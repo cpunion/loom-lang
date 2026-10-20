@@ -436,6 +436,7 @@ fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Resul
     push(scopes, scope)
     var context = Context {
         lexical = scopes
+        type_computation = -1
         env = env
         signature = saved.signature
         arguments = saved.arguments

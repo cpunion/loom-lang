@@ -49,6 +49,15 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
 }
 
 fn context_type(context Context, node Node) Result[Int, Failure] {
+    if context.type_computation >= 0 {
+        match impl_computation_type(context, node)? {
+            Option.Some(ty) => {
+                return Result.Ok(ty)
+            }
+            Option.None => {
+            }
+        }
+    }
     let resolved = meta_type_node(context, node)?
     let ty = resolve_bound(context.env, context.signature.symbol, resolved, context.arguments, context.signature.requirements, 0)?
     discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?

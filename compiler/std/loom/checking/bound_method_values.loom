@@ -169,6 +169,7 @@ fn bound_method_closure(context Context, node Node, receiver Expr, member Text,
     // This binding exists only while checking the ordinary closure recipe.
     let isolated = Context {
         lexical = new_lexical()
+        type_computation = -1
         env = context.env
         signature = context.signature
         arguments = context.arguments

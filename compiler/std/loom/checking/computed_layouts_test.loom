@@ -195,6 +195,116 @@ test fn computed_layouts_compose_after_local_bindings_without_rebinding_them() {
     }
 }
 
+fn computed_local_word_source() Text {
+    std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                "identity_type[Self]()", "let Suffix = List[U]\nidentity_type[(Ts..., Suffix)]()"),
+            "((Ts...), V)", "((Ts..., List[V]), V)"),
+        "((Ts...), W)", "((Ts..., List[W]), W)")
+}
+
+test fn computed_layouts_assemble_words_with_checked_local_type_values() {
+    let source = computed_local_word_source()
+    discard accepted(source)
+    rejects(std.text.replace(source, "let Suffix = List[U]", "let Suffix = Bool"))
+    rejects(std.text.replace(source, "identity_type[(Ts..., Suffix)]()", "identity_type[Ts]()"))
+    rejects(std.text.replace(source, "let Suffix =", "let Ts = Bool\nlet Suffix ="))
+    let callable = std.text.replace(std.text.replace(std.text.replace(source,
+                "identity_type[(Ts..., Suffix)]()", "identity_type[fn(Ts..., Suffix) U]()"),
+            "((Ts..., List[V]), V)", "(fn(Ts..., List[V]) V, V)"),
+        "((Ts..., List[W]), W)", "(fn(Ts..., List[W]) W, W)")
+    discard accepted(callable)
+    let nominal = concat("""
+            record Batch[As...] {
+                values (As...)
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(source,
+                    "identity_type[(Ts..., Suffix)]()", "identity_type[Batch[Ts..., Suffix]]()"),
+                "((Ts..., List[V]), V)", "(Batch[Ts..., List[V]], V)"),
+            "((Ts..., List[W]), W)", "(Batch[Ts..., List[W]], W)"))
+    discard accepted(nominal)
+    rejects(std.text.replace(source, "\n    T\n", "\n    if T == Int { Bool } else { T }\n"))
+    let bounded = concat("""
+            concept Tagged {}
+            impl[Us... Tagged] Tagged for (Us...) {}
+            impl[V] Tagged for List[V] {}
+            """, std.text.replace(source, "fn identity_type[T]()", "fn identity_type[T Tagged]()"))
+    rejects(bounded)
+    discard accepted(std.text.replace(bounded, "impl[Ts...] Pass", "impl[Ts... Tagged] Pass"))
+    assert match reflected(std.text.replace(source, "\n    T\n",
+                "\n    if describe[T]().types[0].kind == Kind.Opaque { T } else { Bool }\n")) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "uniform symbolic type template")
+        Result.Ok(_) => false
+    }
+}
+
+fn computed_independent_local_source() Text {
+    concat("""
+            record Pair[As..., Bs...] {
+                first (As...)
+                second (Bs...)
+            }
+            """, std.text.replace(std.text.replace(std.text.replace(std.text.replace(computed_local_word_source(),
+                        "impl[Ts...] Pass for (Ts...)", "impl[As..., Bs...] Pass for Pair[(As...)..., (Bs...)...]"),
+                    "(Ts..., Suffix)", "(As..., Suffix, Bs...)"),
+                "(Ts..., List[V])", "(As..., List[V], Bs...)"),
+            "(Ts..., List[W])", "(As..., List[W], Bs...)"))
+}
+
+test fn computed_layouts_assemble_independent_words_and_nested_local_families() {
+    let independent = computed_independent_local_source()
+    discard accepted(independent)
+    rejects(std.text.replace(independent, "(As..., Suffix, Bs...)", "(Bs..., Suffix, As...)"))
+    let nested = std.text.replace(std.text.replace(std.text.replace(computed_local_word_source(),
+                "let Suffix = List[U]", "let Suffix = dyn Family[Item[Ts] = (U, Ts)]"),
+            "List[V]", "dyn Family[Item[X] = (V, X)]"),
+        "List[W]", "dyn Family[Item[X] = (W, X)]")
+    discard accepted(nested)
+}
+
+test fn computed_layouts_keep_selected_widths_through_local_type_values() {
+    let source = std.text.replace(std.text.replace(std.text.replace(std.text.replace(
+                    std.text.replace(computed_independent_local_source(), "}, U)]", "}..., U)]"),
+                    "let Suffix = List[U]", "let Suffix = List[Bs]"),
+                "(As..., Suffix, Bs...)", "(As..., Suffix)"),
+            "((As..., List[V], Bs...), V)", "((As..., List[Bs])..., V)"),
+        "((As..., List[W], Bs...), W)", "((As..., List[Bs])..., W)")
+    discard accepted(source)
+    rejects(std.text.replace(source, "(As..., List[Bs])...", "(Bs..., List[As])..."))
+    let guarded = std.text.replace(source, "let Suffix = List[Bs]\nidentity_type[(As..., Suffix)]()", """
+        let Gate = Bool
+        comptime if Gate == Bool {
+            let Suffix = List[Bs]
+            identity_type[(As..., Suffix)]()
+        } else {
+            Missing
+        }
+        """)
+    assert guarded != source
+    discard accepted(guarded)
+    discard accepted(std.text.replace(guarded, "List[Bs]", "Bs"))
+    let captured = std.text.replace(std.text.replace(std.text.replace(computed_layout_source(),
+                "(comptime { identity_type[Self]() }, U)", """
+                (comptime {
+                    let Gate = Bool
+                    comptime if Gate == Bool {
+                        let Suffix = Ts
+                        identity_type[((Ts...), Suffix)]()
+                    } else {
+                        Missing
+                    }
+                }..., U)
+                """),
+            "((Ts...), V)", "(((Ts...), Ts)..., V)"),
+        "((Ts...), W)", "(((Ts...), Ts)..., W)")
+    discard accepted(captured)
+    let erased = std.text.replace(std.text.replace(std.text.replace(guarded,
+                "\n    T\n", "\n    Int\n"),
+            "identity_type[(As..., Suffix)]()", "identity_type[Suffix]()"),
+        "(As..., List[Bs])...", "comptime { identity_type[Bs]() }...")
+    discard accepted(erased)
+    rejects(std.text.replace(erased, "identity_type[Bs]()", "identity_type[As]()"))
+}
+
 test fn computed_layouts_resolve_only_the_selected_static_branch() {
     let source = std.text.replace(computed_layout_source(), "comptime { identity_type[Self]() }",
         "comptime if true { identity_type[Self]() } else { Missing[(Ts...)] }")

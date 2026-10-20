@@ -43,6 +43,7 @@ fn predicate_context(env Environment, ty Int, locals List[Local], self_local Int
         })
     Result.Ok(Context {
             lexical = new_lexical()
+            type_computation = -1
             env = env
             signature = Signature {
                 symbol = owner
