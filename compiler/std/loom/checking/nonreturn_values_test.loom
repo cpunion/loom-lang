@@ -39,6 +39,32 @@ test fn outward_exits_use_the_expected_value_type() {
             } == 16
         }
         """)
+    resource_accept(concat(resource_header(), """
+        fn plain_exit() Int {
+            let absent Handle = {
+                return 7
+            }
+            0
+        }
+        fn scoped_exit() Int {
+            scoped absent Handle = {
+                return 8
+            }
+            0
+        }
+        fn main() {
+            assert plain_exit() == 7 && scoped_exit() == 8
+        }
+        """))
+    resource_reject_reason(concat(resource_header(), """
+        fn main() {
+            scoped held = make([0])
+            scoped absent Handle = {
+                held.dispose()
+                return
+            }
+        }
+        """), "a scoped value is disposed automatically; manual Dispose calls are forbidden")
     rejects("""
         fn empty() {}
         fn main() {

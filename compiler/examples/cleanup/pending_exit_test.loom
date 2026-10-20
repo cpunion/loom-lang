@@ -123,6 +123,24 @@ fn pending_list_return(trace List[Int]) Result[List[Leaf], Text] {
             }])
 }
 
+fn pending_uninitialized_binding(trace List[Int], lexical Bool) Int {
+    defer {
+        push(trace, 9)
+    }
+    if lexical {
+        scoped absent Leaf = {
+            scoped live = acquire(1, trace)
+            return 7
+        }
+    } else {
+        let absent Leaf = {
+            scoped live = acquire(2, trace)
+            return 8
+        }
+    }
+    0
+}
+
 fn exercise_pending_exits() Bool {
     let failed List[Int] = []
     discard pending_result(failed, true)
@@ -174,6 +192,14 @@ fn exercise_pending_exits() Bool {
         }
     }
     assert length(list) == 2 && list[0] == 10 && list[1] == 1
+    let scoped_absent List[Int] = []
+    assert pending_uninitialized_binding(scoped_absent, true) == 7
+    assert length(scoped_absent) == 3
+    assert scoped_absent[0] == 10 && scoped_absent[1] == 1 && scoped_absent[2] == 9
+    let plain_absent List[Int] = []
+    assert pending_uninitialized_binding(plain_absent, false) == 8
+    assert length(plain_absent) == 3
+    assert plain_absent[0] == 20 && plain_absent[1] == 2 && plain_absent[2] == 9
     true
 }
 

@@ -4347,6 +4347,9 @@ evaluates its initializer once and registers the statically selected
 no value. The binding cannot be reassigned, copied, discarded, returned, or
 manually disposed; checked receiver methods may still mutate ordinary shared
 data. Implementing Dispose alone does not change ordinary unscoped sharing.
+An initializer that exits without producing a value creates no binding or
+cleanup registration, even with a resource type annotation. Operations and
+cleanup before that exit remain checked.
 
 ```loom
 import std.resource.Dispose

@@ -437,6 +437,9 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     }
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         let value = resource_expression(flow, get(expr.children, 0), false)?
+        if !get(expr.children, 0).falls {
+            return Result.Ok(resource_value(false, false, -1))
+        }
         let local = get(current.locals, expr.index)
         if value.protected && get(flow.analysis.env.types, local.ty).kind == TypeKind.Task {
             return Result.Err(resource_error(flow, expr, "a Task borrowing a scoped resource must be awaited directly"))
@@ -566,7 +569,11 @@ fn resource_evaluation(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         var value = resource_value(false, true, -1)
         var index = 0
         while index < length(expr.children) {
-            value = resource_expression(flow, get(expr.children, index), automatic)?
+            let child = get(expr.children, index)
+            value = resource_expression(flow, child, automatic)?
+            if !child.falls {
+                return Result.Ok(value)
+            }
             index = index + 1
         }
         return Result.Ok(value)
