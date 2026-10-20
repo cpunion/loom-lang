@@ -35,6 +35,25 @@ fn family_header_context(env Environment, owner Int, arguments List[Int], eviden
     Result.Ok(context)
 }
 
+// Defaults and implementation bindings must establish one symbolic result for
+// every admitted input. An opaque result from an undecided computation is not
+// evidence for a public associated-type promise.
+fn associated_binding_type(env Environment, owner Int, node Node, arguments List[Int], depth Int) Result[Int, Failure] {
+    if !family_computation(node) {
+        return resolve(env, owner, node, arguments, depth)
+    }
+    let prior = length(env.types)
+    let evidence = requirements(env, owner, arguments)?
+    let context = staging(family_header_context(env, owner, arguments, evidence)?, node)?
+    let body = computed_family_body(context, node)?
+    let ty = resolve_bound(context.env, owner, body, arguments, evidence, depth)?
+    if !computed_family_closed(env, ty, prior, new[FamilyAliases](), -1, new[(Int, Int)](), 0) {
+        return Result.Err(failure(env, owner, node,
+                "associated type binding needs a uniform symbolic type template"))
+    }
+    Result.Ok(ty)
+}
+
 // A symbolic computation must return a closed structural template, not a
 // fresh opaque answer to an unresolved type decision. Scope-keyed traversal
 // retains nested binders and legitimate captures without concrete sampling.

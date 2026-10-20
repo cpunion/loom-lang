@@ -167,6 +167,9 @@ Eligible body snapshots rekey closed templates, nested captures and symbolic
 projections without exporting their local evidence. Pure computed family bodies
 can normalize closed structural results in signatures and local annotations,
 including known function callbacks, lexical captures and selected branches.
+Ordinary associated bindings and defaults also normalize pure computed bodies,
+retaining inherited domains, outer captures and effective Self bindings. Their
+result bounds are checked on symbolic inputs even when no call uses the binding.
 Unknown binder-dependent choices still reject without concrete sampling.
 Header helpers are resolved by dependency, with cycles reported explicitly.
 See [concepts](../../compiler/README.md#concepts).

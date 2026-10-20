@@ -7,11 +7,23 @@ record FamilyBox[X] {
 }
 
 impl Family for Bool {
-    type Item[T] = List[T]
+    type Item[T] = comptime {
+        family_list_type[T]()
+    }
 }
 
 impl[X] Family for FamilyBox[X] {
-    type Item[T] = (X, T)
+    type Item[T] = comptime {
+        family_identity_type[(X, T)]()
+    }
+}
+
+fn family_list_type[T]() type {
+    List[T]
+}
+
+fn family_identity_type[T]() type {
+    T
 }
 
 fn family_echo[S Family, T](source S, value S.Item[T]) S.Family.Item[T] {

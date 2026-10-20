@@ -171,7 +171,7 @@ fn query_declaration_type_header(env Environment, declarations Int, file Int, of
             let part = type_part(item.node)
             if part >= 0 {
                 let target = child(item.node, part)
-                let ty = resolve_bound(env, index, target, arguments, obligations, 0)?
+                let ty = associated_binding_type(env, index, target, arguments, 0)?
                 discard well_formed(env, index, ty, obligations, target, 0)?
                 push(headers, TypeHeader {
                         symbol = index
