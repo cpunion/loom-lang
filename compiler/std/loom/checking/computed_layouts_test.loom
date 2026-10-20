@@ -380,6 +380,23 @@ test fn computed_layouts_keep_selected_widths_through_local_type_values() {
             "((Ts...), V)", "(((Ts...), Ts)..., V)"),
         "((Ts...), W)", "(((Ts...), Ts)..., W)")
     discard accepted(captured)
+    let closure = std.text.replace(captured,
+        "let Suffix = Ts\n        identity_type[((Ts...), Suffix)]()", """
+        let map = fn() type {
+            let Suffix = Ts
+            identity_type[((Ts...), Suffix)]()
+        }
+        map()
+        """)
+    assert closure != captured
+    discard accepted(concat(closure, """
+        impl Family for Int {
+            type Item[U] = (((Int, Bool), Int), ((Int, Bool), Bool), U)
+        }
+        fn main() {
+            discard (7, true).pass(1)
+        }
+        """))
     let erased = std.text.replace(std.text.replace(std.text.replace(guarded,
                 "\n    T\n", "\n    Int\n"),
             "identity_type[(As..., Suffix)]()", "identity_type[Suffix]()"),

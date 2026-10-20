@@ -121,7 +121,8 @@ fn closure_symbol(context Context, node Node) Int {
         let item = symbol(context.env, index)
         if item.owner == context.signature.symbol && item.node.kind == NodeKind.Function && item.node.value == "" &&
         item.node.span.start == node.span.start && item.node.span.end == node.span.end &&
-        closure_expansion(item.node) == closure_expansion(node) {
+        // Pack expansion can rewrite the same source span into distinct bodies.
+        std.loom.ast.same(item.node, node) {
             return index
         }
         index = index + 1
