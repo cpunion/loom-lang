@@ -89,7 +89,7 @@ fn data_pack_header_type(env Environment, owner Int, node Node, packs List[Text]
     Result.Ok(true)
 }
 
-fn data_pack_header(env Environment, owner Int, headers Option[List[TypeHeader]]) Result[Bool, Failure] {
+fn pack_type_header(env Environment, owner Int, headers Option[List[TypeHeader]]) Result[Bool, Failure] {
     let node = symbol(env, owner).node
     let parameters = new[Node]()
     let declared = group(node, NodeKind.TypeParameters)
@@ -106,11 +106,19 @@ fn data_pack_header(env Environment, owner Int, headers Option[List[TypeHeader]]
     index = 0
     while index < length(node.children) {
         let member = child(node, index)
-        if member.kind == NodeKind.Field || member.kind == NodeKind.Variant {
+        if member.kind == NodeKind.Field || member.kind == NodeKind.Variant || member.kind == NodeKind.ReturnType {
             var field = 0
             while field < length(member.children) {
                 discard data_pack_header_type(env, owner, child(member, field), packs, parameters, arguments, obligations, headers)?
                 field = field + 1
+            }
+        }
+        if member.kind == NodeKind.Parameters {
+            var parameter = 0
+            while parameter < length(member.children) {
+                discard data_pack_header_type(env, owner, child(child(member, parameter), 0),
+                    packs, parameters, arguments, obligations, headers)?
+                parameter = parameter + 1
             }
         }
         index = index + 1
@@ -123,7 +131,7 @@ fn data_pack_headers(env Environment) Result[Bool, Failure] {
     var owner = 0
     while owner < declarations {
         if data_pack(symbol(env, owner).node) {
-            discard data_pack_header(env, owner, Option.None)?
+            discard pack_type_header(env, owner, Option.None)?
         }
         owner = owner + 1
     }

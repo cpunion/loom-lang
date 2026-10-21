@@ -25,12 +25,38 @@ record GenericBox[Element] {
     value Element
 }
 
+record PackBox[Elements...] {
+    values (Elements...)
+}
+
+enum PackChoice[Cases..., Last] {
+    Some((Cases...), Last)
+    Empty
+}
+
 concept Family {
     type Item[U]
 }
 
+impl[Parts...] Family for PackBox[Parts...] {
+    type Item[U] = (Parts..., U)
+}
+
+record PackRows[Rows...] {
+    sources (Rows...)
+    value dyn Family[Item[Rows] = (Rows, Bool)]
+}
+
 fn family_forward[S Family, Item](value S.Item[Item]) S.Family.Item[Item] {
     value
+}
+
+fn pack_values[Values...](values Values...) (Values...) {
+    values
+}
+
+fn pack_forward[Forwarded...](values Forwarded...) (Forwarded...) {
+    pack_values[Forwarded...](values...)
 }
 
 record Guard {
@@ -184,6 +210,8 @@ fn main() {
     assert runtime_selected(true, 1) == 2
     assert runtime_selected(false, 1) == 3
     assert runtime_partial(true, 1) == 1
+    discard pack_forward()
+    assert pack_forward(7, true).0 == 7
 }
 `;
   let version = 1;
@@ -218,6 +246,12 @@ fn main() {
       ['Element] {', 'Element', 2],
       ['S.Family.Item[Item]', 'S', 3],
       ['Item](value S.Item', 'Item', 3],
+      ['Elements...]', 'Elements', 2],
+      ['Cases...), Last', 'Cases', 2],
+      ['Parts...] Family', 'Parts', 3],
+      ['Rows...)', 'Rows', 2],
+      ['Rows, Bool', 'Rows', 2],
+      ['Values...](values', 'Values', 3],
     ]) {
       const document = TextDocument.create(uri, 'loom', version, source);
       const start = source.indexOf(fragment) + (fragment.startsWith('-') ? 1 : 0);
@@ -265,6 +299,12 @@ fn main() {
       textDocument: { uri }, position: document.positionAt(source.indexOf('S.Family.Item[Item]')), newName: 'Item',
     }), /conflict/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('Cases..., Last')), newName: 'Last',
+    }), /conflict/);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('Forwarded...](values Forwarded')), newName: 'renamed',
+    }), /every occurrence/);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('missing Int')), newName: 'renamed',
     }), /every occurrence of this compile-time parameter/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
@@ -286,7 +326,7 @@ fn main() {
     assert.deepEqual((await client.wait(file, version)).diagnostics, []);
     await client.change(file, source, ++version);
     await assert.rejects(fs.readFile(file), { code: 'ENOENT' });
-    console.log('Binding rename smoke passed: runtime/static/type parameters, projection arguments, specialization coverage, contracts, patterns and method locals.');
+    console.log('Binding rename smoke passed: runtime/static/type/pack parameters, lexical shadowing, projection arguments, coverage, contracts, patterns and method locals.');
   } finally {
     await client.close();
     await fs.rm(temporary, { recursive: true, force: true });

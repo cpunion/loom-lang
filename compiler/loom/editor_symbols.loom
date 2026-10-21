@@ -97,7 +97,7 @@ fn editor_declaration_node(node Node, tokens List[Token], target Span, parent No
     kind == NodeKind.Refined || kind == NodeKind.Concept || kind == NodeKind.Let ||
     kind == NodeKind.Var || kind == NodeKind.Parameter || (kind == NodeKind.Field && parent == NodeKind.Record) ||
     kind == NodeKind.Variant || kind == NodeKind.AssociatedType ||
-    (kind == NodeKind.Name && parent == NodeKind.TypeParameters) {
+    ((kind == NodeKind.Name || kind == NodeKind.TypePack) && parent == NodeKind.TypeParameters) {
         match editor_name(tokens, node) {
             Option.Some(span) => {
                 if editor_same_span(span, target) {
@@ -310,7 +310,7 @@ fn editor_type_parameter_scope(node Node, tokens List[Token], target Span) Optio
             var parameter = 0
             while parameter < length(child.children) {
                 let declared = get(child.children, parameter)
-                if declared.kind == NodeKind.Name {
+                if declared.kind == NodeKind.Name || declared.kind == NodeKind.TypePack {
                     match editor_name(tokens, declared) {
                         Option.Some(span) => {
                             if editor_same_span(span, target) {
