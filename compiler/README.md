@@ -3575,6 +3575,10 @@ Direct source-call results can reuse their checked normal-return guarantees at a
 constrained constructor. A private proof queue uses typed invocation snapshots
 and closed immutable literals; argument effects still execute once in the
 original call. Unsupported or unknown proofs retain checked `Result` construction.
+Representational borrows of constrained List/Bytes arguments retain their declared
+entry predicates in this proof. Existing write/continuation rules still govern
+later observations, and fresh unpublished output remains a separate requirement;
+returning a borrowed input cannot establish it. No input effects are replayed.
 List isolation is a separate requirement, not inferred from ordering alone.
 The [construction example](examples/smt_contracts/constructions.loom) converts a
 proved sorted copy directly, retains checks for unknown input ordering, and runs

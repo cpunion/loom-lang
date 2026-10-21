@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Preserve declared List/Bytes input predicates across representational borrows
+  in constructor proofs, composing checked call contracts without inventing
+  output freshness or replaying argument effects.
+
 - Add source `std.list.view.map`, `filter` and `fold` over fixed element
   identities. Map/filter length guarantees compose through calls and refined
   output construction, including workers, without freezing shared elements.

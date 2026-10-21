@@ -155,15 +155,17 @@ fn construction_body_proof(stage Context, node Node, body Expr, params List[Int]
     Result.Ok(proves_with_input_invariants(stage, program, proof, true, unrestricted_sequence(stage.env, target)))
 }
 
-// An immutable outer value can keep its nominal input facts while exposing its
-// base representation. Controlled mutable sequence headers use their own rules.
+// Representational weakening retains the input's nominal entry facts. Mutable
+// sequences still require the separately checked continuing-predicate/write
+// policy; this supplies neither freshness nor alias isolation.
 fn construction_view(env Environment, value Expr) Bool {
     if value.kind != ExprKind.Coerce || length(value.children) != 1 {
         return false
     }
     let input = get(value.children, 0)
     let kind = get(env.types, value.ty).kind
-    (kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum) &&
+    (kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum ||
+        kind == TypeKind.List || kind == TypeKind.Bytes) &&
     get(env.types, input.ty).kind == TypeKind.Refined && base_type(env, input.ty) == value.ty
 }
 

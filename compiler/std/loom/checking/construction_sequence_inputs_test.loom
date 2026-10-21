@@ -1,0 +1,72 @@
+fn sequence_construction_header() Text {
+    """
+    import std.list.length
+    import std.list.push
+
+    type Pair[T] = List[T] where length(self) == 2
+
+    fn copied[T](values List[T]) List[T]
+    ensures length(result) == old(length(values))
+    {
+        let output List[T] = []
+        var index = 0
+        while index < length(values) {
+            push(output, values[index])
+            index = index + 1
+        }
+        output
+    }
+    """
+}
+
+test fn construction_sequence_inputs_retain_nominal_facts_across_base_borrows() {
+    list_constraint_accept(concat(sequence_construction_header(), """
+        pub fn pair[T](values Pair[T]) Pair[T] {
+            Pair(copied(values))
+        }
+
+        record Wrapped[T] {
+            values Pair[T]
+        }
+
+        pub fn projected[T](input Wrapped[T]) Pair[T] {
+            Pair(copied(input.values))
+        }
+
+        pub fn selected(values Pair[Int]) Pair[Int] {
+            pair(values)
+        }
+        """))
+}
+
+test fn construction_sequence_inputs_do_not_supply_unknown_shapes_or_freshness() {
+    list_constraint_reject(concat(sequence_construction_header(), """
+        pub fn unknown(values List[Int]) Pair[Int] {
+            Pair(copied(values))
+        }
+        """))
+    list_constraint_reject(concat(sequence_construction_header(), """
+        fn borrowed(values List[Int]) List[Int]
+        ensures length(result) == old(length(values))
+        {
+            values
+        }
+
+        pub fn aliased(values Pair[Int]) Pair[Int] {
+            Pair(borrowed(values))
+        }
+        """))
+    list_constraint_reject(concat(sequence_construction_header(), """
+        fn grown(values List[Int]) List[Int]
+        ensures length(result) == old(length(values)) + 1
+        {
+            let output = copied(values)
+            push(output, 9)
+            output
+        }
+
+        pub fn changed(values Pair[Int]) Pair[Int] {
+            Pair(grown(values))
+        }
+        """))
+}
