@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Stream HTTP responses through the ordinary source codec with bounded chunks,
+  backpressure and single-use preflight. Bodyless responses do not pull producers;
+  the TCP example echoes a scoped request body without whole-body buffering.
+
 - Keep fixed compile-time parameter navigation and checked rename through
   variadic specialization, using source bindings rather than expanded indices.
   Unobserved branches still refuse incomplete edits.

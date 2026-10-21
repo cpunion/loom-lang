@@ -6,6 +6,13 @@ pub record RequestMetadata {
     trailers List[Header]
 }
 
+pub record ResponseMetadata {
+    status Int
+    reason Bytes
+    headers List[Header]
+    trailers List[Header]
+}
+
 pub enum WriteError[E, F] {
     Input(E)
     Sink(F)
@@ -19,9 +26,14 @@ record Outgoing {
     shape Framing
     budget List[Int]
     limits Limits
+    empty Bool
 }
 
 pub record RequestWriter {
+    state WriterState
+}
+
+pub record ResponseWriter {
     state WriterState
 }
 
@@ -45,9 +57,33 @@ requires valid_limits(maximum)
 
 fn outgoing(value RequestMetadata, maximum Limits) Result[Outgoing, ProtocolError] {
     let start, headers = request_fields(value.method, value.target, value.headers, maximum)?
-    let shape = framing(headers, maximum.body_bytes)?
+    outgoing(start, headers, value.trailers, maximum, false)
+}
+
+pub fn response_writer(value ResponseMetadata, method Text, maximum Limits) Result[ResponseWriter, ProtocolError]
+requires valid_limits(maximum)
+{
+    let start, headers = response_fields(value.status, value.reason, value.headers, method, maximum)?
+    Result.Ok(ResponseWriter {
+            state = WriterState {
+                output = outgoing(start, headers, value.trailers, maximum, no_body(method, value.status))?
+                started = [false]
+            }
+        })
+}
+
+fn outgoing(start Bytes, headers List[Header], trailers List[Header], maximum Limits,
+    empty Bool) Result[Outgoing, ProtocolError] {
+    let shape = if empty {
+        Framing {
+            size = 0
+            chunked = false
+        }
+    } else {
+        framing(headers, maximum.body_bytes)?
+    }
     let chunked = shape.chunked || shape.size < 0
-    let suffix = snapshot(value.trailers, maximum)?
+    let suffix = snapshot(trailers, maximum)?
     var index = 0
     while index < std.list.length(suffix) {
         if !chunked || !trailer(suffix[index]) {
@@ -79,6 +115,7 @@ fn outgoing(value RequestMetadata, maximum Limits) Result[Outgoing, ProtocolErro
             }
             budget = budget
             limits = maximum
+            empty = empty
         })
 }
 
@@ -128,18 +165,47 @@ requires valid_limits(maximum)
             return Result.Err(WriteError.Protocol(error))
         }
     }
-    write_request(writer, source, bytes, sink).await
+    write_message(writer.state, source, bytes, sink).await
 }
 
 pub async fn write_request[S Stream, E, F](writer RequestWriter, source S,
     bytes fn(S.Item) Result[Bytes, E], sink fn(Bytes) Task[Result[Int, F]]) Result[Int, WriteError[E, F]] {
-    if writer.state.started[0] {
+    write_message(writer.state, source, bytes, sink).await
+}
+
+pub async fn write_response[S Stream, E, F](value ResponseMetadata, method Text, source S,
+    bytes fn(S.Item) Result[Bytes, E], sink fn(Bytes) Task[Result[Int, F]],
+    maximum Limits) Result[Int, WriteError[E, F]]
+requires valid_limits(maximum)
+{
+    let writer = match response_writer(value, method, maximum) {
+        Result.Ok(value) => value
+        Result.Err(error) => {
+            return Result.Err(WriteError.Protocol(error))
+        }
+    }
+    write_message(writer.state, source, bytes, sink).await
+}
+
+pub async fn write_response[S Stream, E, F](writer ResponseWriter, source S,
+    bytes fn(S.Item) Result[Bytes, E], sink fn(Bytes) Task[Result[Int, F]]) Result[Int, WriteError[E, F]] {
+    write_message(writer.state, source, bytes, sink).await
+}
+
+async fn write_message[S Stream, E, F](state WriterState, source S,
+    bytes fn(S.Item) Result[Bytes, E], sink fn(Bytes) Task[Result[Int, F]]) Result[Int, WriteError[E, F]] {
+    if state.started[0] {
         return Result.Err(WriteError.Protocol(ProtocolError.Closed))
     }
-    writer.state.started[0] = true
-    let output = writer.state.output
+    state.started[0] = true
+    let output = state.output
     let maximum = output.limits
     var count = output_chunk[E, F](output.head, 0, sink).await?
+    // HEAD, bodyless statuses and successful CONNECT stop at the headers.
+    // They neither pull the caller-owned producer nor send a chunk terminator.
+    if output.empty {
+        return Result.Ok(count)
+    }
     var total = 0
     while true {
         let payload = match source.next().await {

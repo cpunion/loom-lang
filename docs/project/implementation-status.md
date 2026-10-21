@@ -437,6 +437,10 @@ ordinary/scoped producers, snapshots each chunk, and awaits sink backpressure
 without collecting the body. Fixed/chunked lengths, trailers and aggregate
 quotas share the codec's framing rules; partial failures are not retried.
 An independent Rust peer checks real streamed file uploads at O0/O2 with GC stress.
+Responses reuse the same source sender, with synchronous preflight and
+method/status-aware body suppression. A real TCP echo borrows its scoped incoming
+body into an outgoing response without collecting either body; HEAD and bodyless
+responses never pull the producer or emit a chunk terminator.
 It is not a complete HTTP
 client/server: routing, authority validation and connection policy remain library work.
 The separate pure HTTP(S) URL parser splits connection host/port, Host authority,

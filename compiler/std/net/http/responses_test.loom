@@ -1,0 +1,180 @@
+fn response_metadata(fields List[Header], suffix List[Header]) ResponseMetadata {
+    ResponseMetadata {
+        status = 200
+        reason = to_bytes("OK")
+        headers = fields
+        trailers = suffix
+    }
+}
+
+test async fn streamed_responses_snapshot_metadata_and_chunks_and_share_one_cursor() {
+    let reason = to_bytes("OK")
+    let ending = to_bytes("done")
+    let metadata = ResponseMetadata {
+        reason = reason
+        ..response_metadata([], [Header {
+                    name = "X-End"
+                    value = ending
+                }])
+    }
+    let writer = match response_writer(metadata, "GET", limits()) {
+        Result.Ok(value) => value
+        _ => {
+            assert false
+            return
+        }
+    }
+    set(reason, 0, 88)
+    set(ending, 0, 88)
+    let payload = to_bytes("ab")
+    let source = observed([payload, std.bytes.new(), to_bytes("cd")])
+    let wire = std.bytes.new()
+    let calls = [0]
+    let sink = async fn(chunk Bytes) Result[Int, Text] {
+        if calls[0] == 0 {
+            assert source.position[0] == 0
+        } else if calls[0] == 1 {
+            assert source.position[0] == 1
+            sleep_ms(0).await
+            set(payload, 0, 88)
+        }
+        calls[0] = calls[0] + 1
+        append(wire, chunk)
+        Result.Ok(length(chunk))
+    }
+    assert match write_response(writer, source, raw, sink).await {
+        Result.Ok(count) => count == length(wire)
+        _ => false
+    }
+    assert calls[0] == 4 && to_text(payload) == "Xb"
+    assert to_text(wire) == to_text(message("""
+        HTTP/1.1 200 OK
+        Transfer-Encoding: chunked
+
+        2
+        ab
+        2
+        cd
+        0
+        X-End: done
+
+
+        """))
+    let input = reader(from_iter(from_list(fragments(wire, 1))), raw, limits())
+    assert match read_response(input, "GET").await {
+        Result.Ok(Option.Some(value)) => value.status == 200 && to_text(value.reason) == "OK" &&
+        to_text(value.body) == "abcd" && std.list.length(value.trailers) == 1 &&
+        to_text(value.trailers[0].value) == "done"
+        _ => false
+    }
+    let unused = observed([to_bytes("unused")])
+    let size = length(wire)
+    assert match write_response(writer, unused, raw, sink).await {
+        Result.Err(WriteError.Protocol(ProtocolError.Closed)) => true
+        _ => false
+    }
+    assert unused.position[0] == 0 && length(wire) == size
+}
+
+test async fn bodyless_responses_never_pull_or_emit_a_terminator() {
+    let cases = [
+        ("HEAD", 200, [checked_header("Content-Length", "12345")]),
+        ("GET", 304, [checked_header("Transfer-Encoding", "chunked")]),
+        ("GET", 103, std.list.new[Header]()),
+        ("GET", 204, std.list.new[Header]()),
+        ("CONNECT", 200, std.list.new[Header]())
+    ]
+    var index = 0
+    while index < std.list.length(cases) {
+        let method, status, fields = cases[index]
+        let value = ResponseMetadata {
+            status = status
+            ..response_metadata(fields, [])
+        }
+        let wire = std.bytes.new()
+        let source = observed([to_bytes("must not be pulled")])
+        let sink = async fn(chunk Bytes) Result[Int, Text] {
+            append(wire, chunk)
+            Result.Ok(length(chunk))
+        }
+        let maximum = Limits {
+            body_bytes = 0
+            ..limits()
+        }
+        assert match write_response(value, method, source, raw, sink, maximum).await {
+            Result.Ok(count) => count == length(wire)
+            _ => false
+        }
+        let expected = match encode_response(Response {
+                status = status
+                reason = value.reason
+                headers = fields
+                body = std.bytes.new()
+                trailers = []
+            }, method, maximum) {
+            Result.Ok(value) => value
+            _ => {
+                assert false
+                return
+            }
+        }
+        assert source.position[0] == 0 && to_text(wire) == to_text(expected)
+        index = index + 1
+    }
+}
+
+test async fn invalid_response_framing_rejects_before_io() {
+    let cases = [
+        ("GET", 204, [checked_header("Content-Length", "0")], std.list.new[Header]()),
+        ("CONNECT", 200, [checked_header("Transfer-Encoding", "chunked")], std.list.new[Header]()),
+        ("HEAD", 200, std.list.new[Header](), [checked_header("X-End", "forbidden")]),
+        ("GET", 200, [checked_header("Content-Length", "1"), checked_header("Transfer-Encoding", "chunked")], std.list.new[Header]())
+    ]
+    var index = 0
+    while index < std.list.length(cases) {
+        let method, status, fields, suffix = cases[index]
+        let source = observed([to_bytes("unused")])
+        let sink = async fn(chunk Bytes) Result[Int, Text] {
+            assert false
+            Result.Ok(length(chunk))
+        }
+        let value = ResponseMetadata {
+            status = status
+            ..response_metadata(fields, suffix)
+        }
+        assert match write_response(value, method, source, raw, sink, limits()).await {
+            Result.Err(WriteError.Protocol(ProtocolError.Framing)) => true
+            _ => false
+        }
+        assert source.position[0] == 0
+        index = index + 1
+    }
+}
+
+test async fn fixed_response_lengths_preserve_streaming_failures() {
+    let metadata = response_metadata([checked_header("Content-Length", "2")], [])
+    var mode = 0
+    while mode < 3 {
+        let source = observed([to_bytes(if mode == 0 {
+                        "ab"
+                    } else if mode == 1 {
+                        "a"
+                    } else {
+                        "abc"
+                    })])
+        let wire = std.bytes.new()
+        let sink = async fn(chunk Bytes) Result[Int, Text] {
+            append(wire, chunk)
+            Result.Ok(length(chunk))
+        }
+        assert match write_response(metadata, "GET", source, raw, sink, limits()).await {
+            Result.Ok(count) => mode == 0 && count == length(wire) &&
+            std.text.ends_with(to_text(wire), "\r\n\r\nab")
+            Result.Err(WriteError.Protocol(ProtocolError.Truncated)) => mode == 1
+            Result.Err(WriteError.Protocol(ProtocolError.Framing)) => mode == 2 &&
+            std.text.ends_with(to_text(wire), "\r\n\r\n")
+            _ => false
+        }
+        mode = mode + 1
+    }
+}

@@ -72,6 +72,29 @@ reports Closed before any source/sink work, even if the first fails or is
 cancelled. This is not cross-worker
 synchronization or an automatic replay facility.
 
+## Streaming responses
+
+`write_response(metadata, method, source, bytes, sink, limits).await` uses the
+same bounded sender as requests. `ResponseMetadata` holds `status`, `reason`,
+`headers` and `trailers`; `method` is the corresponding request method.
+Ordinary responses use an explicit Content-Length or chunked framing when no
+length is supplied. Chunk snapshots, serial backpressure, quotas and typed
+`WriteError` failures follow the request writer's rules.
+
+HEAD, informational, 204, 304 and successful CONNECT responses stop after their
+headers without pulling the producer or emitting a chunk terminator. Trailers
+reject for these responses. HEAD/304 may retain representation length/coding
+metadata; informational/204/successful CONNECT responses forbid those fields.
+The caller still owns the unconsumed producer and the transport. Protocol
+handoff and response ordering remain caller policy.
+
+`response_writer(metadata, method, limits)` synchronously snapshots and validates
+a `ResponseWriter`, including reason bytes. Its copies share one use, just like
+`RequestWriter`; call `write_response(writer, source, bytes, sink).await`.
+The [TCP example](../../../examples/http_loopback/main.loom) borrows a scoped
+incoming request body directly into a streamed response without collecting
+either body or assembling a complete encoded response.
+
 ## Reading
 
 `reader(source, bytes, limits)` takes a `Stream` and a converter
