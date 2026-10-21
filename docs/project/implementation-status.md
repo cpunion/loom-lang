@@ -382,6 +382,9 @@ Fixed-view `map`/`filter` contracts compose their immutable range with fresh
 output lengths, including refined output construction, CTFE and shared workers.
 Elements remain shared; ordinary List entry-length snapshots do not acquire an
 interference-safe guarantee.
+Source Text length, concatenation and slice contracts retain exact content
+relations alongside byte lengths. They compose in workers and CTFE without
+replacing ordinary bounds/UTF-8 guards or admitting undefined hypothetical calls.
 
 Representative native trials include
 [constrained shared views](../../compiler/examples/shared_views),

@@ -42,10 +42,24 @@ fn text_contracts_prove_without_runtime_postcondition_helpers() {
 }
 
 #[test]
-fn text_slice_contracts_reject_false_lengths_and_undefined_utf8_ranges() {
+fn text_contracts_reject_false_lengths_and_undefined_operations() {
     let temporary = tempfile::tempdir().unwrap();
     let source = temporary.path().join("main.loom");
     for body in [
+        r#"
+fn wrong_concat(first Text, second Text) Text
+ensures std.text.length(result) == std.text.length(first) + std.text.length(second) + 1
+{
+    std.text.concat(first, second)
+}
+"#,
+        r#"
+fn undefined_concat(value Text) Bool
+ensures std.text.length(std.text.concat(value, "!")) > 0
+{
+    true
+}
+"#,
         r#"
 fn wrong(value Text, start Int, end Int) Text
 ensures std.text.length(result) == end - start + 1
@@ -88,7 +102,7 @@ ensures result == std.text.byte(value, start + index) + 1
     ] {
         fs::write(
             &source,
-            format!("import std.text.slice\nimport std.text.length\nimport std.text.byte\nimport std.text.is_boundary\n{body}"),
+            format!("import std.text.concat\nimport std.text.slice\nimport std.text.length\nimport std.text.byte\nimport std.text.is_boundary\n{body}"),
         )
         .unwrap();
         let output = common::command(&["check"])
