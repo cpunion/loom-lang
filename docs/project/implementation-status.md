@@ -454,7 +454,9 @@ used by awaited scoped consumers. Early consumer return closes without draining
 the unread suffix; timeout/cancellation drains callback children before cleanup.
 Streaming uploads create ordinary/scoped producers inside their child Task,
 retaining synchronous metadata snapshots, backpressure, typed source errors and
-the same response/deadline path. Source failure revokes pending transport I/O;
+the same response/deadline path. Factories can acquire asynchronously under that
+deadline; cancellation and early responses drain acquisition resources too.
+Source failure revokes pending transport I/O;
 early final responses drain unfinished producers. It does not add automatic
 retries, redirects or pooling; broader application networking remains open.
 

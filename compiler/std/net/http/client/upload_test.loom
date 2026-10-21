@@ -94,6 +94,16 @@ fn scoped_upload(state UploadProbeState) Result[ScopedUpload, Int] {
         })
 }
 
+async fn async_plain_upload(state UploadProbeState) Result[PlainUpload, Int] {
+    sleep_ms(0).await
+    plain_upload(state)
+}
+
+async fn async_scoped_upload(state UploadProbeState) Result[ScopedUpload, Int] {
+    sleep_ms(0).await
+    scoped_upload(state)
+}
+
 fn upload_packet(value Result[Bytes, Int]) Result[Bytes, Int] {
     value
 }
@@ -185,7 +195,7 @@ async fn upload_count(response Incoming) Result[Int, Error] {
     Result.Ok(count)
 }
 
-async fn upload_roundtrip(mode Int, owned Bool) Result[Bool, TcpError] {
+async fn upload_roundtrip(mode Int, owned Bool, asynchronous Bool) Result[Bool, TcpError] {
     scoped owner = listen("127.0.0.1:0").await?
     let listener = std.net.tcp.detach(owner)?
     defer {
@@ -212,12 +222,21 @@ async fn upload_roundtrip(mode Int, owned Bool) Result[Bool, TcpError] {
         ..options()
     }
     let accepted = if !owned {
-        match consume_upload(value, configuration, plain_upload, state, upload_packet, upload_count).await {
+        let pending = if asynchronous {
+            consume_upload(value, configuration, async_plain_upload, state, upload_packet, upload_count)
+        } else {
+            consume_upload(value, configuration, plain_upload, state, upload_packet, upload_count)
+        }
+        match pending.await {
             Result.Ok(count) => count == 8
             _ => false
         }
     } else {
-        let pending = upload(value, configuration, scoped_upload, state, upload_packet)
+        let pending = if asynchronous {
+            upload(value, configuration, async_scoped_upload, state, upload_packet)
+        } else {
+            upload(value, configuration, scoped_upload, state, upload_packet)
+        }
         if mode == 3 {
             while !state.entered[0] || !state.ready[0] {
                 sleep_ms(0).await
@@ -254,19 +273,19 @@ async fn upload_roundtrip(mode Int, owned Bool) Result[Bool, TcpError] {
 }
 
 test async fn streaming_uploads_accept_plain_and_owned_sources_and_stop_on_input_errors() {
-    assert match upload_roundtrip(0, false).await {
+    assert match upload_roundtrip(0, false, false).await {
         Result.Ok(value) => value
         _ => false
     }
-    assert match upload_roundtrip(0, true).await {
+    assert match upload_roundtrip(0, true, false).await {
         Result.Ok(value) => value
         _ => false
     }
-    assert match upload_roundtrip(1, true).await {
+    assert match upload_roundtrip(1, true, false).await {
         Result.Ok(value) => value
         _ => false
     }
-    assert match upload_roundtrip(6, true).await {
+    assert match upload_roundtrip(6, true, false).await {
         Result.Ok(value) => value
         _ => false
     }
@@ -275,7 +294,7 @@ test async fn streaming_uploads_accept_plain_and_owned_sources_and_stop_on_input
 test async fn streaming_upload_early_responses_and_cancellation_drain_owned_producers() {
     var mode = 2
     while mode <= 5 {
-        assert match upload_roundtrip(mode, true).await {
+        assert match upload_roundtrip(mode, true, false).await {
             Result.Ok(value) => value
             _ => false
         }
@@ -296,5 +315,35 @@ test async fn upload_preflight_errors_never_construct_a_producer() {
         Result.Err(UploadError.Client(Error.Timeout)) => true
         _ => false
     }
+    assert match upload(upload_request("POST", "http://127.0.0.1:0/"), async_scoped_upload, state, upload_packet).await {
+        Result.Err(UploadError.Client(Error.Insecure)) => true
+        _ => false
+    }
+    assert match consume_upload(upload_request("POST", "https://localhost/"), Options {
+            timeout_ns = 0
+            ..options()
+        }, async_scoped_upload, state, upload_packet, upload_count).await {
+        Result.Err(UploadError.Client(Error.Timeout)) => true
+        _ => false
+    }
+    assert match consume_upload(upload_request("POST", "http://127.0.0.1:0/"), async_plain_upload, state, upload_packet, upload_count).await {
+        Result.Err(UploadError.Client(Error.Insecure)) => true
+        _ => false
+    }
     assert state.created[0] == 0 && state.closed[0] == 0
+}
+
+test async fn streaming_uploads_await_plain_and_owned_factories() {
+    assert match upload_roundtrip(0, false, true).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match upload_roundtrip(0, true, true).await {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match upload_roundtrip(6, true, true).await {
+        Result.Ok(value) => value
+        _ => false
+    }
 }

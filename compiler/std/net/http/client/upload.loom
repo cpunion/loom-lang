@@ -70,8 +70,8 @@ async fn write_source[S Stream, E](transport Transport, writer RequestWriter,
     }
 }
 
-async fn write_upload[A, S Stream, E](transport Transport, writer RequestWriter,
-    create fn(A) Result[S, E], input A, bytes fn(S.Item) Result[Bytes, E]) Result[Int, UploadError[E]] {
+async fn write_upload[A, S Stream, E, R](transport Transport, writer RequestWriter,
+    create fn(A) R, input A, bytes fn(S.Item) Result[Bytes, E]) Result[Int, UploadError[E]] {
     var success = false
     defer {
         if !success {
@@ -79,7 +79,11 @@ async fn write_upload[A, S Stream, E](transport Transport, writer RequestWriter,
         }
     }
     scoped produced = UploadSource[S, E] {
-        value = create(input)
+        value = comptime if R == Result[S, E] {
+            create(input)
+        } else {
+            create(input).await
+        }
     }
     let outcome = match produced.value {
         Result.Ok(source) => write_source(transport, writer, source, bytes).await
@@ -96,14 +100,14 @@ async fn upload_failed[T, E](error UploadError[E]) Result[T, UploadError[E]] {
     Result.Err(error)
 }
 
-async fn upload_bounded[T, A, S Stream, E](prepared Prepared[RequestWriter], deadline Int,
-    create fn(A) Result[S, E], input A, bytes fn(S.Item) Result[Bytes, E],
+async fn upload_bounded[T, A, S Stream, E, R](prepared Prepared[RequestWriter], deadline Int,
+    create fn(A) R, input A, bytes fn(S.Item) Result[Bytes, E],
     handler fn(Incoming) Task[Result[T, Error]]) Result[T, UploadError[E]] {
     if monotonic_ns() >= deadline {
         return Result.Err(UploadError.Client(Error.Timeout))
     }
     let writer = fn(transport Transport) Task[Result[Int, UploadError[E]]] {
-        write_upload(transport, prepared.payload, create, input, bytes)
+        write_upload[A, S, E, R](transport, prepared.payload, create, input, bytes)
     }
     match at(exchange[T, UploadError[E], RequestWriter](prepared, writer, handler, upload_error[E]), deadline).await {
         Outcome.Completed(value) => value
@@ -134,6 +138,33 @@ pub fn consume_upload[T, A, S Stream, E](value UploadRequest, create fn(A) Resul
 pub fn consume_upload[T, A, S Stream, E](value UploadRequest, configuration Options,
     create fn(A) Result[S, E], input A, bytes fn(S.Item) Result[Bytes, E],
     handler fn(Incoming) Task[Result[T, Error]]) Task[Result[T, UploadError[E]]] {
+    start_upload[T, A, S, E, Result[S, E]](value, configuration, create, input, bytes, handler)
+}
+
+pub fn upload[A, S Stream, E](value UploadRequest, create fn(A) Task[Result[S, E]], input A,
+    bytes fn(S.Item) Result[Bytes, E]) Task[Result[Response, UploadError[E]]] {
+    upload(value, options(), create, input, bytes)
+}
+
+pub fn upload[A, S Stream, E](value UploadRequest, configuration Options,
+    create fn(A) Task[Result[S, E]], input A, bytes fn(S.Item) Result[Bytes, E]) Task[Result[Response, UploadError[E]]] {
+    consume_upload(value, configuration, create, input, bytes, collect_response)
+}
+
+pub fn consume_upload[T, A, S Stream, E](value UploadRequest, create fn(A) Task[Result[S, E]], input A,
+    bytes fn(S.Item) Result[Bytes, E], handler fn(Incoming) Task[Result[T, Error]]) Task[Result[T, UploadError[E]]] {
+    consume_upload(value, options(), create, input, bytes, handler)
+}
+
+pub fn consume_upload[T, A, S Stream, E](value UploadRequest, configuration Options,
+    create fn(A) Task[Result[S, E]], input A, bytes fn(S.Item) Result[Bytes, E],
+    handler fn(Incoming) Task[Result[T, Error]]) Task[Result[T, UploadError[E]]] {
+    start_upload[T, A, S, E, Task[Result[S, E]]](value, configuration, create, input, bytes, handler)
+}
+
+fn start_upload[T, A, S Stream, E, R](value UploadRequest, configuration Options,
+    create fn(A) R, input A, bytes fn(S.Item) Result[Bytes, E],
+    handler fn(Incoming) Task[Result[T, Error]]) Task[Result[T, UploadError[E]]] {
     let prepared = match prepare_upload(value, configuration) {
         Result.Ok(value) => value
         Result.Err(error) => {
@@ -143,5 +174,5 @@ pub fn consume_upload[T, A, S Stream, E](value UploadRequest, configuration Opti
     if configuration.timeout_ns == 0 {
         return upload_failed[T, E](UploadError.Client(Error.Timeout))
     }
-    upload_bounded(prepared, timeout_deadline(configuration.timeout_ns), create, input, bytes, handler)
+    upload_bounded[T, A, S, E, R](prepared, timeout_deadline(configuration.timeout_ns), create, input, bytes, handler)
 }

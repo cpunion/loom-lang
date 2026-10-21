@@ -77,13 +77,34 @@ Omit `options` for defaults. `consume_upload` adds the same awaited `Incoming`
 handler as `consume`, returning ordinary `T` instead of collecting the response.
 See the [HTTPS file upload](../../../../examples/http_upload_client/README.md).
 
-`create` is `fn(A) Result[S, E]`, with `S Stream`; `input` is ordinary capturable
-factory data, and `bytes` is `fn(S.Item) Result[Bytes, E]`. The factory runs inside
+`create` is `fn(A) Result[S, E]` or `fn(A) Task[Result[S, E]]`, with `S Stream`;
+`input` is ordinary capturable factory data, and `bytes` is
+`fn(S.Item) Result[Bytes, E]`. The factory runs inside
 the upload child after acquisition. Its result enters a fresh lexical owner:
 MustScope payloads are disposed, ordinary data keeps its sharing semantics.
 An already scoped source cannot be captured or copied into that factory.
-The factory is synchronous; async file/network work belongs in the producer's
-pulls. A constructor failure is an ordinary Input error, not a Task fault.
+Async acquisition is awaited inside that same upload child before writing any
+request bytes; synchronous factories do not gain another Task. For example, a
+producer can acquire a separate TCP connection without buffering its contents:
+
+```loom
+import std.net.tcp.chunks.OwnedChunks
+import std.net.tcp.chunks.open
+import std.net.tcp.TcpError
+import std.result.Result
+
+async fn source(address Text) Result[std.net.tcp.chunks.OwnedChunks, TcpError] {
+    std.net.tcp.chunks.open(address, 8192).await
+}
+
+// packet preserves Result[Bytes, TcpError]; configuration remains explicit.
+let response = upload(value, configuration, source, source_address, packet).await
+```
+
+A constructor failure is an ordinary Input error, not a Task fault. The original
+deadline covers acquisition too. Cancellation, faults, timeout and early final
+responses drain an unfinished factory and its scoped resources before returning.
+The caller cannot pass an already running acquisition Task as a factory.
 
 The client validates request metadata and snapshots metadata/TLS buffers
 synchronously before queuing network work. It does not pre-read the producer: each chunk is privately

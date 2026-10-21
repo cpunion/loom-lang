@@ -1,0 +1,157 @@
+import std.net.tcp.chunks.OwnedChunks
+import std.net.tcp.chunks.open
+import std.net.tcp.shutdown_write
+
+// Acquisition owns a temporary resource before suspending. No producer or
+// request bytes may escape if that child is interrupted.
+async fn pending_upload_source(state UploadProbeState) Result[ScopedUpload, Int] {
+    scoped temporary = scoped_upload(state)
+    state.entered[0] = true
+    defer {
+        state.drained[0] = state.drained[0] + 1
+    }
+    while !state.ready[0] {
+        sleep_ms(0).await
+    }
+    if state.mode == 1 {
+        fault_text("upload acquisition fault")
+    }
+    sleep_ms(60000).await
+    Result.Err(73)
+}
+
+async fn acquisition_peer(listener ListenerHandle, state UploadProbeState) Result[Bool, TcpError] {
+    scoped connection = std.net.tcp.accept_owned(listener).await?
+    while !state.entered[0] {
+        sleep_ms(0).await
+    }
+    state.ready[0] = true
+    if state.mode == 3 {
+        discard std.net.tcp.write_bytes(connection, to_bytes("HTTP/1.1 413 Rejected\r\nContent-Length: 0\r\n\r\n")).await?
+    }
+    Result.Ok(match std.net.tcp.read(connection, std.bytes.new(), 1).await {
+            Result.Ok(count) => count == 0
+            Result.Err(_) => true
+        })
+}
+
+async fn interrupted_acquisition(mode Int) Result[Bool, TcpError] {
+    scoped owner = listen("127.0.0.1:0").await?
+    let listener = std.net.tcp.detach(owner)?
+    defer {
+        discard close_listener(listener)
+    }
+    let address = std.net.tcp.local_address(listener)?
+    let state = upload_probe(mode)
+    let serving = acquisition_peer(listener, state)
+    let pending = upload(upload_request("POST", concat("http://", concat(address, "/upload"))), Options {
+            allow_http = true
+            timeout_ns = if mode == 2 {
+                3000000000
+            } else {
+                10000000000
+            }
+            ..options()
+        }, pending_upload_source, state, upload_packet)
+    let accepted = if mode == 0 {
+        while !state.entered[0] || !state.ready[0] {
+            sleep_ms(0).await
+        }
+        match cancel(pending) {
+            Outcome.Cancelled => true
+            _ => false
+        }
+    } else if mode == 1 {
+        match outcome(pending).await {
+            Outcome.Faulted(error) => contains(error.message, "upload acquisition fault")
+            _ => false
+        }
+    } else {
+        match pending.await {
+            Result.Ok(response) => mode == 3 && response.status == 413
+            Result.Err(UploadError.Client(Error.Timeout)) => mode == 2
+            _ => false
+        }
+    }
+    // Check before awaiting the peer: public completion must already have
+    // drained acquisition and disposed its resource, not merely requested it.
+    let cleaned = state.created[0] == 1 && state.closed[0] == 1 &&
+    state.drained[0] == 1 && state.pulls[0] == 0
+    let served = serving.await
+    Result.Ok(accepted && cleaned && match served {
+            Result.Ok(value) => value
+            _ => false
+        })
+}
+
+test async fn upload_acquisition_drains_on_cancel_fault_timeout_and_early_response() {
+    var mode = 0
+    while mode < 4 {
+        assert match interrupted_acquisition(mode).await {
+            Result.Ok(value) => value
+            _ => false
+        }
+        mode = mode + 1
+    }
+}
+
+async fn socket_upload_source(address Text) Result[std.net.tcp.chunks.OwnedChunks, TcpError] {
+    std.net.tcp.chunks.open(address, 1).await
+}
+
+async fn source_peer(listener ListenerHandle) Result[Bool, TcpError] {
+    scoped connection = std.net.tcp.accept_owned(listener).await?
+    discard std.net.tcp.write_bytes(connection, to_bytes("ab")).await?
+    discard std.net.tcp.shutdown_write(connection)?
+    Result.Ok(match std.net.tcp.read(connection, std.bytes.new(), 1).await {
+            Result.Ok(count) => count == 0
+            Result.Err(_) => true
+        })
+}
+
+async fn socket_upload_roundtrip() Result[Bool, TcpError] {
+    scoped source_owner = listen("127.0.0.1:0").await?
+    scoped target_owner = listen("127.0.0.1:0").await?
+    let source_listener = std.net.tcp.detach(source_owner)?
+    defer {
+        discard close_listener(source_listener)
+    }
+    let target_listener = std.net.tcp.detach(target_owner)?
+    defer {
+        discard close_listener(target_listener)
+    }
+    let source_address = std.net.tcp.local_address(source_listener)?
+    let target_address = std.net.tcp.local_address(target_listener)?
+    let value = UploadRequest {
+        trailers = [Header {
+                name = "X-End"
+                value = to_bytes("complete")
+            }]
+        ..upload_request("POST", concat("http://", concat(target_address, "/upload")))
+    }
+    let source = source_peer(source_listener)
+    let target = upload_peer(target_listener, upload_probe(0), [false])
+    let response = upload(value, Options {
+            allow_http = true
+            ..options()
+        }, socket_upload_source, source_address, tcp_packet).await
+    let sent = source.await
+    let served = target.await
+    Result.Ok(match response {
+            Result.Ok(value) => value.status == 200 && to_text(value.body) == "accepted"
+            _ => false
+        } && match sent {
+            Result.Ok(value) => value
+            _ => false
+        } && match served {
+            Result.Ok(value) => value
+            _ => false
+        })
+}
+
+test async fn upload_factory_can_acquire_and_stream_a_scoped_tcp_source() {
+    assert match socket_upload_roundtrip().await {
+        Result.Ok(value) => value
+        _ => false
+    }
+}
