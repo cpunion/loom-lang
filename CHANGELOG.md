@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Accept asynchronous HTTP upload factories through the existing scoped sender,
+  sharing preflight and deadlines without adding Tasks to synchronous factories.
+  Interrupted acquisition drains its resources before the client returns.
+
 - Stream HTTP responses through the ordinary source codec with bounded chunks,
   backpressure and single-use preflight. Bodyless responses do not pull producers;
   the TCP example echoes a scoped request body without whole-body buffering.
