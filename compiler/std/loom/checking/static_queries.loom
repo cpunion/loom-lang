@@ -2,6 +2,7 @@ import std.loom.source.Span
 
 record CheckInputs {
     build BuildInputs
+    type_index TypeIndex
     signature_ids List[Int]
     static_queries List[StaticReferenceQuery]
     declaration_queries Bool

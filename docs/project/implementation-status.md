@@ -532,6 +532,8 @@ Trusted-local snapshots are not portable proof artifacts.
 Native object reuse is whole-closure and always relinks.
 
 Compiler latency/memory remain delivery goals, not completed optimizations.
+Each checking type table indexes immutable identities while retaining full
+collision checks; CTFE and closure appends enter the same ordered index.
 Task reachability uses a per-traversal sparse bitmap over stored type edges;
 it does not retain negative results across changes to a mutable type graph.
 The edited-source harness uses fresh processes, a reachable contracted-helper
