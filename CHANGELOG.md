@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Index checker-owned type identities by symbol, arguments and pack groups,
+  retaining exact collision checks and source-order IDs across staged builders.
+
 - Track Task type reachability with a per-traversal sparse bitmap, avoiding
   quadratic visited-list scans while preserving recursive storage and query
   isolation across mutable type builders.

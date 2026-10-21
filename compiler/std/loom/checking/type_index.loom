@@ -1,0 +1,65 @@
+import std.map.Map
+import std.map.new
+import std.map.get
+import std.map.insert
+import std.loom.typed.append_structural_type
+
+// One private index per checking type table. Staging shares both; a fresh
+// environment starts over. Layout expansion changes fields, never these keys.
+record TypeIndex {
+    buckets Map[Int, List[Int]]
+    indexed List[Int]
+}
+
+fn type_index() TypeIndex {
+    TypeIndex {
+        buckets = std.map.new[Int, List[Int]]()
+        indexed = [0]
+    }
+}
+
+fn type_key_word(hash Int, value Int) Int {
+    ((hash ^ (value & 4294967295)) * 16777619) & 4294967295
+}
+
+fn type_key(symbol Int, arguments List[Int], widths List[Int]) Int {
+    var hash = type_key_word(2166136261, symbol)
+    hash = type_key_word(hash, length(arguments))
+    var index = 0
+    while index < length(arguments) {
+        hash = type_key_word(hash, get(arguments, index))
+        index = index + 1
+    }
+    hash = type_key_word(hash, length(widths))
+    index = 0
+    while index < length(widths) {
+        hash = type_key_word(hash, get(widths, index))
+        index = index + 1
+    }
+    hash
+}
+
+fn type_bucket(index TypeIndex, key Int) List[Int] {
+    match std.map.get(index.buckets, key) {
+        Option.Some(values) => values
+        Option.None => {
+            let values = new[Int]()
+            discard std.map.insert(index.buckets, key, values)
+            values
+        }
+    }
+}
+
+fn type_candidates(env Environment, symbol Int, arguments List[Int], widths List[Int]) List[Int] {
+    let table = get(env.inputs, 0).type_index
+    var index = get(table.indexed, 0)
+    // CTFE and closure builders can append types between ordinary resolutions.
+    // Index their new entries too, preserving the earliest matching identity.
+    while index < length(env.types) {
+        let shape = get(env.types, index)
+        push(type_bucket(table, type_key(shape.symbol, shape.arguments, shape.pack_widths)), index)
+        index = index + 1
+    }
+    set(table.indexed, 0, index)
+    type_bucket(table, type_key(symbol, arguments, widths))
+}

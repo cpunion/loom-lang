@@ -88,7 +88,17 @@ fn initialize_types(env Environment) {
 }
 
 fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
-    let ty = std.loom.typed.structural_type(env.types, kind, symbol, arguments)
+    let candidates = type_candidates(env, symbol, arguments, new[Int]())
+    var index = 0
+    while index < length(candidates) {
+        let ty = get(candidates, index)
+        let shape = get(env.types, ty)
+        if shape.kind == kind && shape.symbol == symbol && length(shape.pack_widths) == 0 && same(shape.arguments, arguments) {
+            return ty
+        }
+        index = index + 1
+    }
+    let ty = std.loom.typed.append_structural_type(env.types, kind, symbol, arguments)
     if length(env.type_states) < length(env.types) {
         push(env.type_states, TypeState {
                 phase = 2
@@ -334,8 +344,10 @@ fn data_type_grouped(env Environment, declaration Int, arguments List[Int], widt
         }
         index = index + 1
     }
-    index = 0
-    while index < length(env.types) {
+    let candidates = type_candidates(env, declaration, arguments, widths)
+    var candidate = 0
+    while candidate < length(candidates) {
+        index = get(candidates, candidate)
         let existing = get(env.types, index)
         if existing.symbol == declaration && (existing.kind == TypeKind.Record || existing.kind == TypeKind.Enum || existing.kind == TypeKind.Refined) && same(existing.arguments, arguments) && same(existing.pack_widths, widths) {
             if env.expand_data && get(env.type_states, index).phase == 0 {
@@ -343,7 +355,7 @@ fn data_type_grouped(env Environment, declaration Int, arguments List[Int], widt
             }
             return Result.Ok(index)
         }
-        index = index + 1
+        candidate = candidate + 1
     }
     // Bound an expanding type chain, not unrelated types in the same build.
     if depth > 64 {

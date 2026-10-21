@@ -29,9 +29,16 @@ pub fn structural_type(types List[Type], kind TypeKind, symbol Int, arguments Li
         }
         index = index + 1
     }
+    append_structural_type(types, kind, symbol, arguments)
+}
+
+// Append a structural layout after the caller has resolved its identity.
+// The ordinary builder above searches; compiler-owned indices can reuse this
+// same layout construction after ruling out prior entries themselves.
+pub fn append_structural_type(types List[Type], kind TypeKind, symbol Int, arguments List[Int]) Int {
     let fields = new[Field]()
     if kind == TypeKind.Tuple {
-        index = 0
+        var index = 0
         while index < length(arguments) {
             push(fields, Field {
                     name = to_text(index),

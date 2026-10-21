@@ -1,0 +1,73 @@
+fn identity_environment(source Text) Result[Environment, Failure] {
+    prepare(bind(fixture_project(source_files(source)), false)?)
+}
+
+fn indexed_structural_identities() Result[Bool, Failure] {
+    let env = identity_environment("")?
+    // The bucket hash intentionally omits kind and keeps low symbol words.
+    // Full identity still distinguishes colliding keys and argument order.
+    let list = intern(env, TypeKind.List, -1, ints(1))
+    let task = intern(env, TypeKind.Task, -1, ints(1))
+    assert list != task
+    assert intern(env, TypeKind.List, -1, ints(1)) == list
+    let first = intern(env, TypeKind.Parameter, 7, new[Int]())
+    let second = intern(env, TypeKind.Parameter, 4294967303, new[Int]())
+    assert first != second
+    assert intern(env, TypeKind.Parameter, 7, new[Int]()) == first
+    assert intern(env, TypeKind.Parameter, 4294967303, new[Int]()) == second
+    let pair = intern(env, TypeKind.Tuple, -1, two_types(1, 2))
+    assert pair != intern(env, TypeKind.Tuple, -1, two_types(2, 1))
+    assert get(get(env.types, pair).fields, 0).ty == 1
+    assert get(get(env.types, pair).fields, 1).ty == 2
+    // CTFE builders append to this table without calling the checker interner.
+    let callback = std.loom.typed.structural_type(env.types, TypeKind.Function, -1, two_types(3, 1))
+    complete_structural_types(env)
+    assert intern(env, TypeKind.Function, -1, two_types(3, 1)) == callback
+    let staged = Environment {
+        stage_depth = 1
+        ..env
+    }
+    assert intern(staged, TypeKind.Tuple, -1, two_types(1, 2)) == pair
+    Result.Ok(true)
+}
+
+test fn type_index_preserves_colliding_structures_and_late_builder_entries() {
+    assert match indexed_structural_identities() {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
+
+fn indexed_nominal_identities() Result[Bool, Failure] {
+    let env = identity_environment("""
+        record Split[Ts..., Us...] {
+            left (Ts...)
+            right (Us...)
+        }
+        """)?
+    var owner = -1
+    var index = 0
+    while index < length(env.source.symbols) {
+        if symbol(env, index).name == "Split" {
+            owner = index
+        }
+        index = index + 1
+    }
+    assert owner >= 0
+    let first = data_type_grouped(env, owner, two_types(1, 2), two_types(1, 1), 0)?
+    let second = data_type_grouped(env, owner, two_types(1, 2), two_types(0, 2), 0)?
+    let third = data_type_grouped(env, owner, two_types(1, 2), two_types(2, 0), 0)?
+    assert first != second && second != third && first != third
+    assert data_type_grouped(env, owner, two_types(1, 2), two_types(1, 1), 0)? == first
+    assert length(get(env.types, get(get(env.types, first).fields, 0).ty).arguments) == 1
+    assert length(get(env.types, get(get(env.types, second).fields, 0).ty).arguments) == 0
+    assert length(get(env.types, get(get(env.types, third).fields, 0).ty).arguments) == 2
+    Result.Ok(true)
+}
+
+test fn type_index_preserves_independent_nominal_pack_groups() {
+    assert match indexed_nominal_identities() {
+        Result.Ok(value) => value
+        Result.Err(_) => false
+    }
+}
