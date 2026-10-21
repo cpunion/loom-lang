@@ -1,0 +1,90 @@
+import std.list.transfer.take_last
+
+fn mapped_shape[T, U](view View[T], transform fn(T) U) List[U]
+ensures std.list.length(result) == length(view)
+{
+    map(view, transform)
+}
+
+fn filtered_shape[T](view View[T], predicate fn(T) Bool) List[T]
+ensures std.list.length(result) <= length(view)
+{
+    filter(view, predicate)
+}
+
+test fn transforms_keep_the_fixed_range_through_source_edits() {
+    let source = [1, 2, 3]
+    let view = capture(source)
+    let output = mapped_shape(view, fn(value Int) Int {
+            discard take_last(source)
+            std.list.push(source, 100)
+            if value == 1 {
+                set(view, 1, 7)
+            }
+            value * 2
+        })
+    assert std.list.length(output) == 3
+    assert output[0] == 2 && output[1] == 14 && output[2] == 6
+    let filtered = filtered_shape(view, fn(value Int) Bool {
+            std.list.push(source, value)
+            value > 1
+        })
+    assert std.list.length(filtered) == 2 && filtered[0] == 7 && filtered[1] == 3
+    assert fold(view, 0, fn(total Int, value Int) Int {
+            total + value
+        }) == 11
+    assert std.list.length(source) == 6 && length(view) == 3
+}
+
+test fn transforms_keep_shared_elements_and_empty_ranges() {
+    let cell = [1]
+    let view = capture([cell])
+    let mapped = map(view, fn(value List[Int]) List[Int] {
+            value
+        })
+    let filtered = filter(view, fn(value List[Int]) Bool {
+            value[0] > 0
+        })
+    mapped[0][0] = 7
+    assert filtered[0][0] == 7 && cell[0] == 7
+    std.list.push(mapped, [9])
+    assert length(view) == 1 && std.list.length(filtered) == 1
+    let empty = capture([1], 0, 0)
+    assert std.list.length(map(empty, fn(value Int) Text {
+                "unused"
+            })) == 0
+    assert std.list.length(filter(empty, fn(value Int) Bool {
+                true
+            })) == 0
+    assert fold(empty, 42, fn(total Int, value Int) Int {
+            total + value
+        }) == 42
+}
+
+type PairView = View[Int] where length(self) == 2
+
+type Pair = List[Int] where std.list.length(self) == 2
+
+type AtMostPair = List[Int] where std.list.length(self) <= 2
+
+fn mapped_pair(view PairView) Pair {
+    Pair(map(view, fn(value Int) Int {
+                value * 2
+            }))
+}
+
+fn filtered_pair(view PairView) AtMostPair {
+    AtMostPair(filter(view, fn(value Int) Bool {
+                value > 1
+            }))
+}
+
+test fn stable_view_shapes_construct_refined_outputs_without_checked_results() {
+    let source = [1, 2]
+    let view = PairView(capture(source, 0, 2))
+    std.list.push(source, 3)
+    let output = mapped_pair(view)
+    assert output[0] == 2 && output[1] == 4 && std.list.length(output) == 2
+    let filtered = filtered_pair(view)
+    assert filtered[0] == 2 && std.list.length(filtered) == 1
+}

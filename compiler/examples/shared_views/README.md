@@ -10,6 +10,16 @@ target/loom run compiler/examples/shared_views
 fixed, half-open range. Omitting the bounds captures the whole current List.
 `length`, `get` and `set` operate on the view. Copies share those identities.
 
+`map`, `filter` and `fold` visit the captured identities in order, even when a
+callback removes source elements or appends replacements. Reads observe earlier
+edits, not a snapshot. Map/filter return fresh outer Lists with normally shared
+elements. Their required contracts prove equal/bounded lengths relative to the
+view's immutable range, including worker builds. [Transforms](transforms.loom)
+uses those guarantees to construct a constrained List without a checked `Result`,
+at runtime and compile time. Ordinary List transforms retain their existing
+initial-index-range semantics; they do not promise an interference-safe entry
+length snapshot.
+
 [Unrestricted predicates](unrestricted.loom) demonstrate a different boundary:
 when a predicate survives every legal base write, strengthening a List or Bytes
 keeps existing aliases and ordinary borrows, including worker writes and

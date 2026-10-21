@@ -1,0 +1,64 @@
+import std.list.view.map
+import std.list.view.filter
+import std.list.view.fold
+import std.text.concat
+import std.int.to_text
+
+type IntPair = List[Int] where std.list.length(self) == 2
+
+fn doubled_pair(view Pair[Int]) IntPair {
+    IntPair(map(view, fn(value Int) Int {
+                value * 2
+            }))
+}
+
+fn kept_length[T](view View[T], predicate fn(T) Bool) Int
+ensures result <= length(view)
+{
+    std.list.length(filter(view, predicate))
+}
+
+fn fixed_transforms() Bool {
+    let source = [1, 2]
+    let view = exact_pair(source)
+    let output = doubled_pair(view)
+    assert output[0] == 2 && output[1] == 4
+    let seen = map(view, fn(value Int) Int {
+            if value == 1 {
+                discard pop(source)
+                push(source, 99)
+                set(view, 1, 7)
+            }
+            value
+        })
+    assert seen[0] == 1 && seen[1] == 7 && source[1] == 99
+    assert kept_length(view, fn(value Int) Bool {
+            value > 1
+        }) == 1
+    assert fold(view, "", fn(text Text, value Int) Text {
+            std.text.concat(text, std.int.to_text(value))
+        }) == "17"
+    true
+}
+
+async fn worker_transforms() {
+    let source = [3, 4]
+    let view = exact_pair(source)
+    // Only this worker touches the source/view until completion. Fixed range
+    // metadata does not require an entry snapshot of mutable List length.
+    let output = run(fn() IntPair {
+            push(source, 9)
+            assert kept_length(view, fn(value Int) Bool {
+                    value > 3
+                }) == 1
+            doubled_pair(view)
+        }).await
+    assert output[0] == 6 && output[1] == 8 && std.list.length(output) == 2
+    assert std.list.length(source) == 3 && length(view) == 2
+}
+
+test fn fixed_transforms_work_at_compile_time() {
+    assert comptime {
+        fixed_transforms()
+    }
+}
