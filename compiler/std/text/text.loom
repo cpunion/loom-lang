@@ -12,7 +12,10 @@ intrinsic fn text_concat(a Text, b Text) Text
 intrinsic fn text_slice(value Text, start Int, end Int) Text
 
 // Text is immutable UTF-8. Length and indexing count bytes.
-pub fn length(value Text) Int {
+pub fn length(value Text) Int
+ensures result == text_len(value)
+ensures result >= 0
+{
     text_len(value)
 }
 
@@ -32,12 +35,19 @@ ensures std.bytes.length(result) == length(value) {
     output
 }
 
-pub fn concat(a Text, b Text) Text {
+pub fn concat(a Text, b Text) Text
+ensures result == text_concat(a, b)
+ensures length(result) == length(a) + length(b)
+{
     text_concat(a, b)
 }
 
 // Bounds are byte offsets and must both be UTF-8 scalar boundaries.
-pub fn slice(value Text, start Int, end Int) Text {
+pub fn slice(value Text, start Int, end Int) Text
+ensures result == text_slice(value, start, end)
+ensures length(result) == end - start
+ensures start >= 0 && end >= start && end <= length(value)
+{
     text_slice(value, start, end)
 }
 

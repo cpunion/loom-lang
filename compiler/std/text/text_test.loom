@@ -55,6 +55,33 @@ test async fn immutable_text_encoding_contracts_hold_in_shared_worker_builds() {
     assert std.bytes.length(bytes) == 6
 }
 
+type SixBytes = Text where length(self) == 6
+
+fn six_byte_join(first Text, second Text) SixBytes
+requires length(first) == 2 && length(second) == 4
+{
+    SixBytes(concat(first, second))
+}
+
+fn six_byte_slice(value Text, start Int, end Int) SixBytes
+requires end - start == 6
+{
+    SixBytes(slice(value, start, end))
+}
+
+test async fn library_text_contracts_construct_refinements_in_ctfe_and_workers() {
+    assert six_byte_join("é", "😀") == "é😀"
+    assert six_byte_slice("Aé😀Z", 1, 7) == "é😀"
+    let constant = comptime {
+        six_byte_slice(six_byte_join("é", "😀"), 0, 6)
+    }
+    assert constant == "é😀"
+    let shared = run(fn() SixBytes {
+            six_byte_join("é", "😀")
+        }).await
+    assert shared == "é😀"
+}
+
 test fn scalar_boundaries_include_endpoints_and_reject_continuation_bytes() {
     let text = "Aé中😀"
     let boundaries = [true, true, false, true, false, false, true, false, false, false, true]

@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Declare checked source Text length, concatenation and slice contracts,
+  retaining exact content algebra as well as byte counts. Compose them through
+  refined construction, CTFE and workers without changing native guards.
+
 - Preserve declared List/Bytes input predicates across representational borrows
   in constructor proofs, composing checked call contracts without inventing
   output freshness or replaying argument effects.

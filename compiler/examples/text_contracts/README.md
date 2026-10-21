@@ -29,6 +29,10 @@ not two characters), preserved entry lengths and equal-value lengths. Checked
 1–8-byte names widen to a 1–16-byte type without a second check, while unknown
 construction still returns a checked Result. Length constraints remain valid
 across GC and suspension. Equal lengths do not imply equal contents.
+The source `std.text.length`, `concat` and `slice` APIs declare required
+normal-return contracts for byte counts and exact contents. Library callers
+reuse those guarantees, including direct refined construction, CTFE and workers;
+ordinary slice bounds/UTF-8 faults and hypothetical-call safety are unchanged.
 
 The [concatenation example](concatenation.loom) proves additive byte lengths,
 empty identity, reassociation, substitution of equal inputs and entry contents.
