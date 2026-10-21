@@ -108,8 +108,11 @@ failed and unselected computations publish no partial alias bindings. Checked
 local aliases also support lexical rename, including CTFE headers, with complete
 use coverage and an in-memory package recheck. Package errors refuse rename with
 the actual diagnostic rather than a protocol-version error.
-Ordinary generic type parameters share checked scoped rename, including associated
-projection receivers and arguments; type-pack parameter rename remains unsupported.
+Ordinary and pack generic type parameters share checked scoped rename, including
+associated projection receivers, arguments and nested family shadowing. Top-level
+variadic function headers retain checked lexical words and fixed types without
+choosing expansion widths, including unused functions and invalid bodies.
+Unaccounted pack references in bodies still refuse rename.
 Dependent type values, pack-dependent layouts and broader body recovery remain limited.
 Recovered queries provide neither build success nor proof evidence.
 Member completion inside `comptime` execution blocks uses staged prefix checking

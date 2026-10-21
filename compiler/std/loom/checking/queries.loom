@@ -144,10 +144,27 @@ fn query_declaration_type_header(env Environment, declarations Int, file Int, of
     var index = 0
     while index < declarations {
         let item = symbol(env, index)
+        if item.file == file && item.owner < 0 && item.node.kind == NodeKind.Function &&
+        pack_parameter(item.node) >= 0 && !has(item.node, NodeKind.ExpansionId) && query_signature_header(item.node, offset) {
+            // Validate the complete symbolic signature before retaining any
+            // fragments, including types that the data-header walk cannot resolve.
+            let arguments = abstract_arguments(env, function_parameter_count(env, index))
+            discard method_pack_header(env, index, arguments, requirements(env, index, arguments)?, true)?
+            discard pack_type_header(env, index, Option.Some(headers))?
+            var part = 0
+            while part < length(item.node.children) {
+                let member = child(item.node, part)
+                if member.kind == NodeKind.TypeParameters || member.kind == NodeKind.Parameters || member.kind == NodeKind.ReturnType {
+                    data_header_parameters(index, member, type_parameters(env, index), parameters)
+                }
+                part = part + 1
+            }
+            return Result.Ok(true)
+        }
         if item.file == file && nominal_data(item.node.kind) && !has(item.node, NodeKind.ExpansionId) &&
         offset >= item.node.span.start && offset < item.node.span.end {
             if pack_parameter(item.node) >= 0 {
-                discard data_pack_header(env, index, Option.Some(headers))?
+                discard pack_type_header(env, index, Option.Some(headers))?
                 data_header_parameters(index, item.node, type_parameters(env, index), parameters)
                 return Result.Ok(true)
             }

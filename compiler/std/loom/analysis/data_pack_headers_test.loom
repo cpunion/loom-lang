@@ -140,3 +140,59 @@ test fn whole_word_family_headers_keep_checked_labels_and_local_binders() {
     only_definition(cached_inspection(analysis, text, "U)]"), local, local + 1)
     only_type(cached_inspection(analysis, text, "U)]"), "U")
 }
+
+test fn function_pack_headers_keep_lexical_words_without_an_instance_or_valid_body() {
+    let text = """
+        record Tag {}
+        record Box[T] {
+            value T
+        }
+        fn combine[Tag, Items..., Tail](tag Tag, values Items..., callback fn(Items...) Box[Tail]) (Tag, Items..., Tail) {
+            missing
+        }
+        """
+    let bindings = query_bindings(input(text))
+    let fragments = ["Tag, values", "Items..., callback", "Items...) Box", "Tail])", "Items..., Tail)"]
+    let declarations = ["Tag, Items...", "Items..., Tail]", "Items..., Tail]", "Tail](tag", "Items..., Tail]"]
+    let labels = ["Tag", "Items...", "Items...", "Tail", "Items..."]
+    let widths = [3, 5, 5, 4, 5]
+    var index = 0
+    while index < length(fragments) {
+        let found = independent_found(bindings, text, get(fragments, index))
+        let declared = query_offset(text, get(declarations, index))
+        only_type(found, get(labels, index))
+        only_definition(found, declared, declared + get(widths, index))
+        index = index + 1
+    }
+    let box = query_offset(text, "Box[T]")
+    only_definition(independent_found(bindings, text, "Box[Tail]"), box, box + 3)
+}
+
+test fn function_pack_header_queries_require_symbolic_domains_before_publishing_bindings() {
+    let text = """
+        concept Tagged {}
+        record Box[T Tagged] {
+            value T
+        }
+        fn unwrap[Items... Tagged](values Box[Items]...) (Items...) {
+            missing
+        }
+        """
+    let found = independent_found(query_bindings(input(text)), text, "Items]...")
+    let declared = query_offset(text, "Items... Tagged")
+    only_type(found, "Items...")
+    only_definition(found, declared, declared + 5)
+    let invalid = [
+        std.text.replace(text, "Items... Tagged", "Items..."),
+        std.text.replace(text, "values Box[Items]...", "values Box[Items]..., extra comptime { Missing }")
+    ]
+    var index = 0
+    while index < length(invalid) {
+        let source = get(invalid, index)
+        assert match inspect_independent(query_bindings(input(source)), 0, query_offset(source, "Items]...")) {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        index = index + 1
+    }
+}
