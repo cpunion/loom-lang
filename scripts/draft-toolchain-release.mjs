@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const repository = "cpunion/loom-lang";
+const repository = "loomlang-org/loom-lang";
 const hosts = [
   ["macOS", "darwin", "macOS native compiler (LLVM 22)"],
   ["Linux", "linux", "Linux native compiler (LLVM 22)"],

@@ -1,6 +1,7 @@
 # Governance
 
-Loom is currently maintained by the repository owner, [Li Jie](https://github.com/cpunion).
+Loom is maintained by [Li Jie](https://github.com/cpunion) in the
+[loomlang-org](https://github.com/loomlang-org) organization.
 This document records the authority model as it exists today; it does not invent
 a committee or voting process.
 
