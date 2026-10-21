@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { releasePlan, checkArchiveInfo, checkUnusedTag } from "./draft-toolchain-release.mjs";
 
-const repository = { full_name: "cpunion/loom-lang" };
+const repository = { full_name: "loomlang-org/loom-lang" };
 const run = {
   repository, head_repository: repository, path: ".github/workflows/ci.yml",
   head_branch: "main", event: "push", status: "completed", conclusion: "success",
-  head_sha: "a".repeat(40), html_url: "https://github.com/cpunion/loom-lang/actions/runs/123",
+  head_sha: "a".repeat(40), html_url: "https://github.com/loomlang-org/loom-lang/actions/runs/123",
 };
 const jobs = ["macOS", "Linux", "Windows"].map(host => ({
   name: `${host} native compiler (LLVM 22)`, status: "completed", conclusion: "success",
@@ -17,6 +17,7 @@ const artifacts = ["macOS-ARM64", "Linux-X64", "Windows-X64"].map(host => ({
 
 test("release planning pins successful main evidence and all three host archives", () => {
   const plan = releasePlan(run, jobs, artifacts, "v0.1.0-dev.1");
+  assert.equal(plan.repository, repository.full_name);
   assert.equal(plan.commit, run.head_sha);
   assert.deepEqual(plan.artifacts.map(item => [item.platform, item.architecture]),
     [["darwin", "arm64"], ["linux", "x64"], ["win32", "x64"]]);
@@ -31,6 +32,7 @@ test("failed, fork, PR, wrong workflow, missing and expired evidence cannot rele
   for (const changed of [
     { conclusion: "failure" }, { status: "in_progress" }, { head_branch: "feature" },
     { event: "pull_request" }, { path: ".github/workflows/other.yml" },
+    { repository: { full_name: "another/fork" } },
     { head_repository: { full_name: "another/fork" } },
   ]) {
     assert.throws(() => releasePlan({ ...run, ...changed }, jobs, artifacts, "v0.1.0-dev.1"));

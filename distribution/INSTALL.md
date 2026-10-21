@@ -31,7 +31,7 @@ On macOS, `brew install llvm@22` and set
 `llvm-22-dev`, `clang-22`, and `libpolly-22-dev` from the LLVM 22 apt repository;
 set `LOOM_CC=/usr/bin/clang-22`. On Windows x64, use a Visual Studio developer
 shell with an LLVM 22 development package and `clang-cl.exe` on `PATH`; set
-`LOOM_CC` to its absolute path. The [CI setup](https://github.com/cpunion/loom-lang/blob/main/.github/workflows/ci.yml)
+`LOOM_CC` to its absolute path. The [CI setup](https://github.com/loomlang-org/loom-lang/blob/main/.github/workflows/ci.yml)
 shows the tested host configuration. `LLVM_SYS_221_PREFIX` and Rust are needed
 to build the bridge from source, but are not needed by the archive.
 
