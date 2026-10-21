@@ -113,7 +113,7 @@ fn declaration_types(env Environment) Result[Bool, Failure] {
         if item.node.kind == NodeKind.AssociatedType && prototype(env, owner) && type_part(item.node) >= 0 {
             let arguments = abstract_arguments(env, 1 + length(member_parameters(env, owner)))
             let obligations = requirements(env, owner, arguments)?
-            let ty = resolve(env, owner, child(item.node, type_part(item.node)), arguments, 0)?
+            let ty = associated_binding_type(env, owner, child(item.node, type_part(item.node)), arguments, 0)?
             discard well_formed(env, owner, ty, obligations, item.node, 0)?
             discard member_requirements(env, owner, ty, member_bounds(env, owner), obligations, item.node)?
         }

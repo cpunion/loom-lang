@@ -1,0 +1,117 @@
+fn computed_associated_source() Text {
+    """
+        concept Value {}
+        impl Value for Int {}
+        fn identity_type[T]() type {
+            T
+        }
+        concept Family {
+            type Fixed Value = comptime { Int }
+            type Item[T Value] Value = comptime { identity_type[T]() }
+        }
+        impl Family for Bool {}
+        impl Family for Int {
+            type Fixed = comptime { Int }
+            type Item[U] = comptime if U implements Value {
+                identity_type[U]()
+            } else {
+                unavailable()
+            }
+        }
+        fn forward[S Family, T Value](source S, value S.Item[T]) S.Item[T] {
+            discard source
+            value
+        }
+        fn main() {
+            assert forward[Bool, Int](false, 7) == 7
+            assert forward[Int, Int](0, 9) == 9
+        }
+        """
+}
+
+test fn computed_associated_bindings_and_defaults_inherit_public_domains() {
+    discard accepted(computed_associated_source())
+    assert match query_named(source_files(computed_associated_source()), "Fixed") {
+        Result.Ok(query) => length(query.type_headers) == 1 && get(query.type_headers, 0).ty == 1
+        Result.Err(_) => false
+    }
+    rejects(std.text.replace(computed_associated_source(), "type Item[T Value]", "type Item[T]"))
+    rejects(std.text.replace(computed_associated_source(), "comptime { Int }", "comptime { Bool }"))
+    rejects(std.text.replace(computed_associated_source(), "identity_type[U]()", "Bool"))
+}
+
+test fn computed_associated_bindings_keep_outer_captures_and_effective_self_maps() {
+    let source = """
+        fn identity_type[T]() type {
+            T
+        }
+        concept Family {
+            type Item[T] = comptime { Self.Other[T] }
+            type Other[T]
+        }
+        record Box[X] {
+            value X
+        }
+        impl[X] Family for Box[X] {
+            type Other[U] = comptime { identity_type[(X, U)]() }
+        }
+        fn forward[S Family, T](source S, value S.Item[T]) S.Item[T] {
+            discard source
+            value
+        }
+        fn main() {
+            let pair = forward[Box[Text], Int](Box { value = "source" }, ("kept", 7))
+            assert pair.0 == "kept" && pair.1 == 7
+        }
+        """
+    discard accepted(source)
+    rejects(std.text.replace(source, "identity_type[(X, U)]()", "Self.Item[U]"))
+}
+
+test fn computed_associated_bindings_reject_unknown_choices_without_sampling_inputs() {
+    let source = """
+        concept Value {}
+        impl Value for Int {}
+        fn selected_type[T]() type {
+            comptime if T implements Value {
+                T
+            } else {
+                Int
+            }
+        }
+        concept Family {
+            type Item[T] Value
+        }
+        impl Family for Bool {
+            type Item[T] = comptime { selected_type[T]() }
+        }
+        """
+    assert match checked(source_files(source)) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "uniform symbolic type template")
+        Result.Ok(_) => false
+    }
+    rejects(std.text.replace(source, "comptime { selected_type[T]() }",
+            "comptime { if T implements Value { Bool } else { Int } }"))
+    rejects(std.text.replace(source, "comptime { selected_type[T]() }",
+            "comptime { if T == Int { Int } else { Bool } }"))
+}
+
+test fn computed_associated_bindings_recheck_helpers_after_cache_restore() {
+    let source = computed_associated_source()
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    let changed = std.text.replace(source, "    T\n}", "    Bool\n}")
+    assert changed != source
+    assert match cached_source(restored, changed) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match cached_source(restored, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
