@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   draft:
-    if: github.repository == 'cpunion/loom-lang' && github.ref == 'refs/heads/main'
+    if: github.repository == 'loomlang-org/loom-lang' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

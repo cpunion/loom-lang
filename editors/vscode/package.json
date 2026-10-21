@@ -5,7 +5,7 @@
   "version": "0.0.1",
   "publisher": "cpunion",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/cpunion/loom-lang", "directory": "editors/vscode" },
+  "repository": { "type": "git", "url": "https://github.com/loomlang-org/loom-lang", "directory": "editors/vscode" },
   "engines": { "vscode": "^1.91.0" },
   "categories": ["Programming Languages", "Formatters"],
   "extensionKind": ["workspace"],

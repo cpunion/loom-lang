@@ -170,6 +170,25 @@ fn static_partial(comptime chosen Bool, comptime missing Int) Int {
     }
 }
 
+fn static_pack_fixed[Ts...](comptime prefix Int, comptime values Ts..., comptime suffix Int) Int {
+    discard values
+    let answer = prefix + suffix
+    {
+        let suffix = 3
+        discard suffix
+    }
+    answer
+}
+
+fn static_pack_partial[Ts...](comptime selected Bool, values Ts..., comptime hidden Int) Int {
+    discard values
+    comptime if selected {
+        hidden
+    } else {
+        hidden + 2
+    }
+}
+
 fn runtime_selected(comptime chosen Bool, input Int) Int {
     comptime if chosen {
         let computed = input + 1
@@ -207,6 +226,9 @@ fn main() {
     assert static_selected(true, 5) == 5
     assert static_selected(false, 5) == 6
     assert static_partial(true, 1) == 1
+    assert static_pack_fixed(1, 2) == 3
+    assert static_pack_fixed(3, true, "value", 4) == 7
+    assert static_pack_partial(true, 4, false, 7) == 7
     assert runtime_selected(true, 1) == 2
     assert runtime_selected(false, 1) == 3
     assert runtime_partial(true, 1) == 1
@@ -241,6 +263,8 @@ fn main() {
       ['input Int', 'input', 3],
       ['computed = input', 'computed', 2],
       ['sample T', 'sample', 2],
+      ['prefix + suffix', 'prefix', 2],
+      ['suffix Int', 'suffix', 2],
       ['selected == Int', 'selected', 3],
       ['T](comptime sample', 'T', 3],
       ['Element] {', 'Element', 2],
@@ -283,6 +307,8 @@ fn main() {
       ['sample\n', 'sample T', ['Int', 'Bool']],
       ['unused_static Int', 'unused_static Int', ['Int']],
       ['selected == Int', 'selected type', ['type']],
+      ['prefix + suffix', 'prefix Int', ['Int']],
+      ['suffix\n', 'suffix Int', ['Int']],
     ]) {
       const params = { textDocument: { uri }, position: document.positionAt(source.indexOf(fragment)) };
       const definitions = await client.rpc.sendRequest('textDocument/definition', params);
@@ -306,6 +332,9 @@ fn main() {
     }), /every occurrence/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('missing Int')), newName: 'renamed',
+    }), /every occurrence of this compile-time parameter/);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('hidden Int')), newName: 'renamed',
     }), /every occurrence of this compile-time parameter/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('pending Int')), newName: 'renamed',

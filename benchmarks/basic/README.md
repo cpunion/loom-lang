@@ -228,7 +228,7 @@ the same 145 source files: median CPU is 340/340 ms, wall 351.682/356.978 ms,
 and peak RSS 219.61/229.37 MiB. These are fresh source checks with warm OS caches,
 not LLVM builds or incremental reuse. No frontend-memory improvement is claimed.
 
-The separate [local-root experiment](https://github.com/cpunion/loom-lang/pull/240)
+The separate [local-root experiment](https://github.com/loomlang-org/loom-lang/pull/240)
 was not integrated: it demonstrably reclaims dead graphs, but its initial RSS
 measurements did not improve and its final fixed-LCIR codegen cost remained
 +4.63%. Its code, test evidence and measurements remain on the experiment branch;
