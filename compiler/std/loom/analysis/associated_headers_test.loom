@@ -1,0 +1,68 @@
+fn associated_header_source() Text {
+    """
+        record S {}
+        record T {}
+        concept Family {
+            type Item[U]
+        }
+        impl Family for Bool {
+            type Item[U] = List[U]
+        }
+        fn forward[S Family, T](source S, value S.Item[T]) S.Family.Item[T] {
+            discard source
+            value
+        }
+        fn main() {
+            discard forward[Bool, Int](false, [7])
+        }
+        """
+}
+
+test fn associated_headers_retain_lexical_receiver_and_argument_navigation() {
+    let source = associated_header_source()
+    let analysis = accepted(input(source))
+    let receiver = query_offset(source, "S Family")
+    let parameter = query_offset(source, "T](source")
+    let sites = ["S.Item[T]", "S.Family.Item[T]", "T]) S.Family", "T] {\n    discard"]
+    var index = 0
+    while index < length(sites) {
+        let fragment = get(sites, index)
+        let first = index < 2
+        let declared = if first {
+            receiver
+        } else {
+            parameter
+        }
+        let label = if first {
+            "S"
+        } else {
+            "T"
+        }
+        let found = inspection(analysis, source, fragment)
+        only_type(found, label)
+        only_definition(found, declared, declared + 1)
+        let cached = cached_inspection(analysis, source, fragment)
+        only_type(cached, label)
+        only_definition(cached, declared, declared + 1)
+        let independent = independent_found(analysis.bindings, source, fragment)
+        only_type(independent, label)
+        only_definition(independent, declared, declared + 1)
+        index = index + 1
+    }
+}
+
+test fn associated_headers_keep_nested_types_and_reject_unchecked_projections() {
+    let source = std.text.replace(associated_header_source(), "Item[T]", "Item[List[T]]")
+    let generic = std.text.replace(source, "fn main()", "fn unused()")
+    let without_call = std.text.replace(generic, "discard forward[Bool, Int](false, [7])", "")
+    let bindings = query_bindings(input(without_call))
+    let parameter = query_offset(without_call, "T](source")
+    let found = independent_found(bindings, without_call, "T]]) S.Family")
+    only_type(found, "T")
+    only_definition(found, parameter, parameter + 1)
+    let broken = std.text.replace(without_call, "S Family", "S")
+    assert match inspect_independent(query_bindings(input(broken)), 0, query_offset(broken, "S.Item[List[T]]")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
