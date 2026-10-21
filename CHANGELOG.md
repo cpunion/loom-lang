@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Refresh the single portable bootstrap seed to the current checked compiler,
+  including indexed type identities and sparse Task reachability. Keep the
+  existing bootstrap generations and source-reproduction checks.
+
 - Index checker-owned type identities by symbol, arguments and pack groups,
   retaining exact collision checks and source-order IDs across staged builders.
 
