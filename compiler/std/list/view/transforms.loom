@@ -1,0 +1,44 @@
+import std.list.new
+import std.list.push
+
+// Visit fixed element identities in order. Callbacks observe preceding edits,
+// including retained elements after source removal, not an element snapshot.
+pub fn map[T, U](view View[T], transform fn(T) U) List[U]
+ensures std.list.length(result) == length(view)
+{
+    let count = length(view)
+    let output = new[U](count)
+    var index = 0
+    while index < count {
+        push(output, transform(get(view, index)))
+        index = index + 1
+    }
+    output
+}
+
+pub fn filter[T](view View[T], predicate fn(T) Bool) List[T]
+ensures std.list.length(result) <= length(view)
+{
+    let count = length(view)
+    let output = new[T]()
+    var index = 0
+    while index < count {
+        let value = get(view, index)
+        if predicate(value) {
+            push(output, value)
+        }
+        index = index + 1
+    }
+    output
+}
+
+pub fn fold[T, A](view View[T], initial A, combine fn(A, T) A) A {
+    let count = length(view)
+    var accumulator = initial
+    var index = 0
+    while index < count {
+        accumulator = combine(accumulator, get(view, index))
+        index = index + 1
+    }
+    accumulator
+}

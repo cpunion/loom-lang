@@ -119,6 +119,7 @@ fn source_std_under_forced_collection() {
         "int",
         "text",
         "list",
+        "list/view",
         "option",
         "result",
         "unicode",

@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add source `std.list.view.map`, `filter` and `fold` over fixed element
+  identities. Map/filter length guarantees compose through calls and refined
+  output construction, including workers, without freezing shared elements.
+
 - Refresh the single portable bootstrap seed to the current checked compiler,
   including indexed type identities and sparse Task reachability. Keep the
   existing bootstrap generations and source-reproduction checks.

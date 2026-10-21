@@ -114,6 +114,20 @@ ensures result == std.list.length(source)
     length(capture(source, start, end))
 }
 "#,
+        r#"
+import std.list.view.View
+import std.list.view.map
+import std.list.view.length
+import std.list.length
+
+pub fn wrong(view View[Int]) Int
+ensures result == std.list.view.length(view) + 1
+{
+    std.list.length(map(view, fn(value Int) Int {
+            value
+        }))
+}
+"#,
     ]
     .into_iter()
     .enumerate()
@@ -121,7 +135,7 @@ ensures result == std.list.length(source)
         fs::write(&source, text).unwrap();
         let output = loom(&["check", temporary.path().to_str().unwrap()]);
         assert!(!output.status.success());
-        if index == 1 {
+        if index >= 1 {
             assert!(
                 String::from_utf8_lossy(&output.stderr)
                     .contains("required postcondition is not proved")

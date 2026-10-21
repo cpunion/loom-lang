@@ -652,6 +652,12 @@ the budget on future LLVM upgrades; these tuning options are not a stable API.
   not visited, while changes to unread elements are observed. Map/filter return
   a new outer List and retain element sharing. Fold accepts a distinct accumulator
   type and returns its initial value for an empty List.
+- Source `std.list.view.map`, `filter` and `fold` instead visit captured element
+  identities, including elements removed from the source. Map/filter prove equal/
+  bounded lengths against the view's immutable range, also in worker builds.
+  These contracts compose into constrained output construction without freezing
+  elements or giving compound source/view operations implicit synchronization.
+  See [shared views](examples/shared_views/README.md).
 - Source `std.list.sorted(values, less)` uses stable merge sort over an initial
   snapshot, returning a fresh outer List with shared elements. It uses O(n log n)
   comparisons and O(n) scratch storage. The comparator must remain a consistent
