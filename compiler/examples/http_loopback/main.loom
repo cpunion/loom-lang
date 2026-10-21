@@ -1,16 +1,18 @@
 import std.net.http.Header
 import std.net.http.Request
 import std.net.http.RequestMetadata
-import std.net.http.Response
+import std.net.http.ResponseMetadata
+import std.net.http.ReadError
 import std.net.http.reader
 import std.net.http.limits
 import std.net.http.read_request
+import std.net.http.open_request
 import std.net.http.read_response
 import std.net.http.open_response
 import std.net.http.trailers
 import std.net.http.encode_request
 import std.net.http.write_request
-import std.net.http.encode_response
+import std.net.http.write_response
 import std.net.http.url.parse
 import std.net.tcp.Stream
 import std.net.tcp.TcpError
@@ -44,6 +46,10 @@ fn outgoing_packet(value Bytes) Result[Bytes, TcpError] {
     Result.Ok(value)
 }
 
+fn incoming_packet(value Result[Bytes, ReadError[TcpError]]) Result[Bytes, ReadError[TcpError]] {
+    value
+}
+
 fn field(name Text, value Text) Header {
     Header {
         name = name
@@ -57,45 +63,39 @@ async fn serve(connection std.net.tcp.Stream) Bool {
         Result.Ok(Option.Some(value)) => value.method == "HEAD" && value.target == "/metadata"
         _ => false
     }
-    let metadata = Response {
+    let metadata = ResponseMetadata {
         status = 200
         reason = to_bytes("OK")
         headers = [field("Content-Length", "12345")]
-        body = std.bytes.new()
         trailers = std.list.new[Header]()
     }
-    let first = match encode_response(metadata, "HEAD", limits()) {
-        Result.Ok(value) => value
-        _ => {
-            return false
-        }
+    let sink = async fn(chunk Bytes) Result[Int, TcpError] {
+        write_bytes(connection, chunk).await
     }
-    assert match write_bytes(connection, first).await {
+    let empty = from_iter(from_list(std.list.new[Bytes]()))
+    assert match write_response(metadata, "HEAD", empty, outgoing_packet, sink, limits()).await {
         Result.Ok(_) => true
         _ => false
     }
-    let request = match read_request(input).await {
-        Result.Ok(Option.Some(value)) => value
-        _ => {
-            return false
-        }
-    }
-    assert request.method == "POST" && request.target == "/echo"
-    assert std.list.length(request.trailers) == 1
-    let reply = Response {
-        headers = [field("Transfer-Encoding", "chunked")]
-        body = request.body
+    let reply = ResponseMetadata {
+        headers = []
         trailers = [field("X-Result", "complete")]
         ..metadata
     }
-    let second = match encode_response(reply, "POST", limits()) {
-        Result.Ok(value) => value
-        _ => {
-            return false
+    scoped request = open_request(input, 2).await
+    match request {
+        Result.Ok(Option.Some(value)) => {
+            assert value.method == "POST" && value.target == "/echo"
+            let written = write_response(reply, "POST", value.body, incoming_packet, sink, limits()).await
+            assert match trailers(value.body) {
+                Result.Ok(fields) => std.list.length(fields) == 1
+                _ => false
+            }
+            match written {
+                Result.Ok(_) => true
+                _ => false
+            }
         }
-    }
-    match write_bytes(connection, second).await {
-        Result.Ok(_) => true
         _ => false
     }
 }

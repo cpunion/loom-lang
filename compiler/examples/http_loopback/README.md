@@ -13,6 +13,9 @@ HEAD metadata without a body, and echoes the POST's binary payload and trailers.
 Small input chunks split protocol lines and payloads across socket reads.
 The POST uses the streaming request writer: two binary chunks and a separate
 trailer section are sent without assembling a complete encoded request.
+The server borrows the scoped incoming POST body into the streaming response
+writer. Both directions stay incremental, and neither the request body nor the
+encoded response is collected. HEAD uses the same sender without pulling a body.
 The client obtains its host, port, Host field and first request target from the
 pure [HTTP(S) URL parser](../../std/net/http/url/README.md); the local fragment
 does not enter the request.

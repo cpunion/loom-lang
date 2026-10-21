@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Stream HTTP responses through the ordinary source codec with bounded chunks,
+  backpressure and single-use preflight. Bodyless responses do not pull producers;
+  the TCP example echoes a scoped request body without whole-body buffering.
+
 - Reuse one checked signature view across a function's generic parameters,
   parameter annotations and return annotation, while keeping body queries separate.
 

@@ -180,18 +180,24 @@ requires valid_limits(maximum)
     encode_message(start, headers, value.body, value.trailers, maximum, false)
 }
 
+fn response_fields(status Int, reason Bytes, fields List[Header], method Text,
+    maximum Limits) Result[(Bytes, List[Header]), ProtocolError] {
+    if status < 100 || status > 999 {
+        return Result.Err(ProtocolError.Syntax)
+    }
+    let start = to_bytes(concat(concat("HTTP/1.1 ", to_text(status)), " "))
+    append(start, reason)
+    discard status_line(start)?
+    let headers = snapshot(fields, maximum)?
+    if no_body(method, status) {
+        discard empty_framing(headers, status < 200 || status == 204 || tunnel(method, status))?
+    }
+    Result.Ok((start, headers))
+}
+
 pub fn encode_response(value Response, method Text, maximum Limits) Result[Bytes, ProtocolError]
 requires valid_limits(maximum)
 {
-    if value.status < 100 || value.status > 999 {
-        return Result.Err(ProtocolError.Syntax)
-    }
-    let start = to_bytes(concat(concat("HTTP/1.1 ", to_text(value.status)), " "))
-    append(start, value.reason)
-    discard status_line(start)?
-    let headers = snapshot(value.headers, maximum)?
-    if no_body(method, value.status) {
-        discard empty_framing(headers, value.status < 200 || value.status == 204 || tunnel(method, value.status))?
-    }
+    let start, headers = response_fields(value.status, value.reason, value.headers, method, maximum)?
     encode_message(start, headers, value.body, value.trailers, maximum, no_body(method, value.status))
 }
