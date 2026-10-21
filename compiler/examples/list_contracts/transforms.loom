@@ -13,12 +13,30 @@ ensures length(result) <= old(length(values))
     filter(values, predicate)
 }
 
+type InputPair = List[Int] where length(self) == 2
+
+fn doubled_input(values List[Int]) List[Int]
+ensures length(result) == old(length(values))
+{
+    mapped_snapshot(values, fn(value Int) Int {
+            value * 2
+        })
+}
+
+fn constrained_doubled(values InputPair) InputPair {
+    InputPair(doubled_input(values))
+}
+
 record TransformEntry {
     label Text
     notes List[Int]
 }
 
 async fn exercise_transforms() {
+    let pair = InputPair([3, 4])
+    let doubled = constrained_doubled(pair)
+    pair[0] = 9
+    assert doubled[0] == 6 && doubled[1] == 8 && length(doubled) == 2
     let notes = [0]
     let values = [TransformEntry {
             label = "first"

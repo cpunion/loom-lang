@@ -51,6 +51,20 @@ ensures length(result) == old(length(value)) && length(value) == old(length(valu
     output
 }
 
+type BytePair = Bytes where length(self) == 2
+
+fn copy_pair(value BytePair) BytePair {
+    BytePair(copy(value))
+}
+
+fn exercise_pair() Bool {
+    let input = BytePair(encoded("AB"))
+    let output = copy_pair(input)
+    write(input, 0, 67)
+    assert read(output, 0) == 65 && length(output) == 2
+    read(input, 0) == 67
+}
+
 fn literal() Int
 ensures result == 255
 {
@@ -64,6 +78,10 @@ ensures result == 255
 }
 
 fn exercise() {
+    assert exercise_pair()
+    assert comptime {
+        exercise_pair()
+    }
     let value = new()
     let alias = value
     append(alias, 7)

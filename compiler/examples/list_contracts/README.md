@@ -39,6 +39,10 @@ are passed to a callback. Published graphs lose this frame. Shared notes remain
 shared across suspension; no input snapshot or runtime copy is introduced.
 These wrapper contracts inspect the source bodies; they are not new public
 `std.list.map/filter` guarantees or a promise of worker-safe input lengths.
+`constrained_doubled` retains the input's declared length when borrowing its base
+representation, then combines the call contract with fresh-output provenance to
+return a constrained pair directly. Unknown shapes still need a checked `Result`;
+input aliases cannot acquire a fresh-output promise.
 
 `refinements.loom` uses `Nonempty[T]` with shared nested Lists. Its predicate
 observes only the outer length, so inner mutations do not invalidate it. Outer

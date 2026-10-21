@@ -288,6 +288,8 @@ supported theories and boundaries. The central rules are:
   Independent typed snapshots also propagate declared field/payload invariants
   through existing records, tuples, enums and projections. They provide no
   stale mutable observations, freshness or new alias guarantees.
+  Construction probes retain declared List/Bytes predicates across base borrows,
+  while continuing write policies and unpublished-output checks remain separate.
 - Every declared `ensures` needs a static proof. Cheap local rules run first;
   unresolved supported obligations use compile-time SMT. Unknown, exhausted or
   failed reasoning never supplies evidence or becomes a runtime postcondition.
