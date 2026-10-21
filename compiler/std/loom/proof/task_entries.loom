@@ -9,7 +9,7 @@ fn task_storage_leaves(proof Verification, ty Int, value Value, identities List[
     }
     let shape = get(proof.program.types, ty)
     if shape.kind == TypeKind.List {
-        if contains_tasks(proof.program.types, ty, new[Int]()) {
+        if contains_tasks(proof.program.types, ty) {
             match value {
                 Value.List(identity) => {
                     if !storage_identity_member(identities, identity) {

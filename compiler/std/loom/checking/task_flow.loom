@@ -500,7 +500,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool, borrowing Bool) Resu
 
 // One seen set covers the whole body, including otherwise empty generic
 // aggregates. Ordinary calls do not repeatedly traverse the same type graph.
-fn task_nodes(value Expr, env Environment, seen List[Int]) Bool {
+fn task_nodes(value Expr, env Environment, seen Map[Int, Int]) Bool {
     if value.kind == ExprKind.TaskCall || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend || contains_task(env, value.ty, seen) {
         return true
     }
@@ -533,7 +533,7 @@ fn task_flow(context Context, function Function) Result[Bool, Failure] {
         parameters = parameters || task_value(context.env, get(function.params, index))
         index = index + 1
     }
-    if !parameters && !task_value(context.env, function.result) && !task_nodes(function.body, context.env, new[Int]()) {
+    if !parameters && !task_value(context.env, function.result) && !task_nodes(function.body, context.env, std.map.new[Int, Int]()) {
         return Result.Ok(true)
     }
     let locals = new[Int]()

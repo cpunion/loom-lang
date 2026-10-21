@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Track Task type reachability with a per-traversal sparse bitmap, avoiding
+  quadratic visited-list scans while preserving recursive storage and query
+  isolation across mutable type builders.
+
 - Accept asynchronous HTTP upload factories through the existing scoped sender,
   sharing preflight and deadlines without adding Tasks to synchronous factories.
   Interrupted acquisition drains its resources before the client returns.

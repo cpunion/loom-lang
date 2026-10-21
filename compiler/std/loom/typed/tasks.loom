@@ -1,27 +1,44 @@
 import std.list.get
-import std.list.push
 import std.list.length
+import std.map.Map
+import std.map.new
+import std.map.get
+import std.map.insert
+import std.option.Option
 
-// Follow stored values, not nominal parameters or callback/dyn signatures.
-// The caller owns a fresh scratch set for each independent reachability query.
-pub fn contains_tasks(types List[Type], ty Int, seen List[Int]) Bool {
+pub fn contains_tasks(types List[Type], ty Int) Bool {
     if ty <= 5 {
         return false
     }
-    var index = 0
-    while index < length(seen) {
-        if get(seen, index) == ty {
-            return false
-        }
-        index = index + 1
+    contains_tasks(types, ty, std.map.new[Int, Int]())
+}
+
+// Follow stored values, not nominal parameters or callback/dyn signatures.
+// A sparse bitmap visits each stored type once without initializing unrelated
+// type IDs. The caller starts fresh for each independent reachability query.
+pub fn contains_tasks(types List[Type], ty Int, seen Map[Int, Int]) Bool {
+    if ty <= 5 {
+        return false
     }
-    push(seen, ty)
     let shape = get(types, ty)
     if shape.kind == TypeKind.Task {
         return true
     }
+    if shape.kind != TypeKind.List && length(shape.fields) == 0 && length(shape.variants) == 0 {
+        return false
+    }
+    let word = ty / 64
+    let bit = 1 << (ty % 64)
+    let flags = match std.map.get(seen, word) {
+        Option.Some(value) => value
+        Option.None => 0
+    }
+    if (flags & bit) != 0 {
+        return false
+    }
+    discard std.map.insert(seen, word, flags | bit)
     if shape.kind == TypeKind.List {
-        index = 0
+        var index = 0
         while index < length(shape.arguments) {
             if contains_tasks(types, get(shape.arguments, index), seen) {
                 return true
@@ -30,7 +47,7 @@ pub fn contains_tasks(types List[Type], ty Int, seen List[Int]) Bool {
         }
         return false
     }
-    index = 0
+    var index = 0
     while index < length(shape.fields) {
         if contains_tasks(types, get(shape.fields, index).ty, seen) {
             return true

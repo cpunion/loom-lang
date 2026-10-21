@@ -1,0 +1,104 @@
+import std.list.set
+
+fn task_shapes() List[Type] {
+    let types = new[Type]()
+    let primitives = [TypeKind.Unit, TypeKind.Int, TypeKind.Bool, TypeKind.Text, TypeKind.Bytes, TypeKind.Float]
+    var index = 0
+    while index < length(primitives) {
+        push(types, relation_shape(get(primitives, index), -1))
+        index = index + 1
+    }
+    types
+}
+
+test fn task_reachability_follows_storage_and_checks_each_graph_independently() {
+    let types = task_shapes()
+    let task = structural_type(types, TypeKind.Task, -1, [1])
+    let callback = structural_type(types, TypeKind.Function, -1, [task, task])
+    let phantom = structural_type(types, TypeKind.Record, 17, [task])
+    assert !contains_tasks(types, callback) && !contains_tasks(types, phantom)
+    let fields = [Field {
+            name = "value"
+            ty = 1
+        }]
+    let aggregate = length(types)
+    push(types, Type {
+            fields = fields
+            ..relation_shape(TypeKind.Record, 18)
+        })
+    let list = structural_type(types, TypeKind.List, -1, [aggregate])
+    assert !contains_tasks(types, list)
+    // Public type builders and declaration expansion may change stored edges.
+    // A later query cannot inherit the earlier negative result.
+    set(fields, 0, Field {
+            name = "value"
+            ty = task
+        })
+    assert contains_tasks(types, list)
+    set(fields, 0, Field {
+            name = "value"
+            ty = callback
+        })
+    assert !contains_tasks(types, list)
+    let folded = comptime {
+        let graph = task_shapes()
+        let pending = structural_type(graph, TypeKind.Task, -1, [1])
+        let stored = structural_type(graph, TypeKind.List, -1, [pending])
+        contains_tasks(graph, stored)
+    }
+    assert folded
+}
+
+test fn task_reachability_keeps_recursive_siblings_and_variant_payloads() {
+    let types = task_shapes()
+    let root = length(types)
+    push(types, relation_shape(TypeKind.Enum, 20))
+    let link = structural_type(types, TypeKind.List, -1, [root])
+    set(types, root, Type {
+            variants = [Variant {
+                    name = "Branch"
+                    fields = [link]
+                }]
+            ..get(types, root)
+        })
+    assert !contains_tasks(types, root) && !contains_tasks(types, link)
+    let task = structural_type(types, TypeKind.Task, -1, [1])
+    push(get(types, root).variants, Variant {
+            name = "Pending"
+            fields = [task]
+        })
+    assert contains_tasks(types, root) && contains_tasks(types, link)
+    let pair = structural_type(types, TypeKind.Tuple, -1, [link, root])
+    assert contains_tasks(types, pair)
+}
+
+test fn task_reachability_handles_wide_shared_graphs() {
+    let types = task_shapes()
+    let shared = structural_type(types, TypeKind.List, -1, [1])
+    let fields = new[Field]()
+    var index = 0
+    while index < 512 {
+        let branch = length(types)
+        push(types, Type {
+                fields = [Field {
+                        name = "shared"
+                        ty = shared
+                    }]
+                ..relation_shape(TypeKind.Record, index)
+            })
+        push(fields, Field {
+                name = "branch"
+                ty = branch
+            })
+        index = index + 1
+    }
+    let root = length(types)
+    push(types, Type {
+            fields = fields
+            ..relation_shape(TypeKind.Record, 1000)
+        })
+    assert !contains_tasks(types, root)
+    let task = structural_type(types, TypeKind.Task, -1, [1])
+    set(get(types, shared).arguments, 0, task)
+    assert contains_tasks(types, root)
+}
