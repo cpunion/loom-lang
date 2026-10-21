@@ -96,7 +96,8 @@ fn editor_declaration_node(node Node, tokens List[Token], target Span, parent No
     if kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum ||
     kind == NodeKind.Refined || kind == NodeKind.Concept || kind == NodeKind.Let ||
     kind == NodeKind.Var || kind == NodeKind.Parameter || (kind == NodeKind.Field && parent == NodeKind.Record) ||
-    kind == NodeKind.Variant || kind == NodeKind.AssociatedType {
+    kind == NodeKind.Variant || kind == NodeKind.AssociatedType ||
+    (kind == NodeKind.Name && parent == NodeKind.TypeParameters) {
         match editor_name(tokens, node) {
             Option.Some(span) => {
                 if editor_same_span(span, target) {
@@ -298,6 +299,43 @@ fn editor_alias_scope(node Node, tokens List[Token], target Span) Option[Span] {
     Option.None
 }
 
+fn editor_type_parameter_scope(node Node, tokens List[Token], target Span) Option[Span] {
+    if target.start < node.span.start || target.end > node.span.end || has(node, NodeKind.ExpansionId) {
+        return Option.None
+    }
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.TypeParameters {
+            var parameter = 0
+            while parameter < length(child.children) {
+                let declared = get(child.children, parameter)
+                if declared.kind == NodeKind.Name {
+                    match editor_name(tokens, declared) {
+                        Option.Some(span) => {
+                            if editor_same_span(span, target) {
+                                return Option.Some(node.span)
+                            }
+                        }
+                        Option.None => {
+                        }
+                    }
+                }
+                parameter = parameter + 1
+            }
+        }
+        match editor_type_parameter_scope(child, tokens, target) {
+            Option.Some(scope) => {
+                return Option.Some(scope)
+            }
+            Option.None => {
+            }
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
 fn editor_local_scope(analysis EditorAnalysis, target Location) Option[Span] {
     let source = get(editor_data(analysis).bindings.files, target.file)
     let tokens = match lex(source.text) {
@@ -312,6 +350,21 @@ fn editor_local_scope(analysis EditorAnalysis, target Location) Option[Span] {
                 Option.Some(found) => {
                     if length(found.types) == 1 && get(found.types, 0) == "type" &&
                     length(found.definitions) == 1 && editor_same_location(get(found.definitions, 0), target) {
+                        return Option.Some(scope)
+                    }
+                }
+                Option.None => {
+                }
+            }
+        }
+        Option.None => {
+        }
+    }
+    match editor_type_parameter_scope(source.tree, tokens, target.span) {
+        Option.Some(scope) => {
+            match inspect_at(analysis.snapshot, target.file, target.span.start) {
+                Option.Some(found) => {
+                    if length(found.definitions) == 1 && editor_same_location(get(found.definitions, 0), target) {
                         return Option.Some(scope)
                     }
                 }
