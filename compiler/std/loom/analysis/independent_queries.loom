@@ -66,10 +66,12 @@ fn independent_scope(analysis AnalysisState, file Int, offset Int) Option[Indepe
         let group = get(owner.children, index)
         if (group.kind == NodeKind.TypeParameters || group.kind == NodeKind.Parameters ||
             group.kind == NodeKind.ReturnType) && inside(group.span, offset) {
+            // One signature check covers all header groups. The header flag
+            // still separates this view from a query of the function body.
             return Option.Some(IndependentScope {
                     location = Location {
                         file = file
-                        span = group.span
+                        span = owner.span
                     }
                     header = true
                 })

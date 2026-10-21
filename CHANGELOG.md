@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Reuse one checked signature view across a function's generic parameters,
+  parameter annotations and return annotation, while keeping body queries separate.
+
 - Navigate and rename checked type-pack parameters in data declarations, impls
   and top-level function headers, retaining nested family shadowing and conflict
   checks. Header queries validate symbolic domains without choosing pack widths;
