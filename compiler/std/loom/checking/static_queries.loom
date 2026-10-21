@@ -26,7 +26,7 @@ record CheckInputs {
 
 record StaticReferenceQuery {
     owner Int
-    constant Int
+    parameter Span
     name Text
     references List[Span]
     types List[Text]
@@ -59,9 +59,31 @@ fn static_query_type(env Environment, types List[Text], ty Int) {
 fn static_reference(context Context, node Node, constant Int) {
     let queries = get(context.env.inputs, 0).static_queries
     let query = get(queries, 0)
-    if context.signature.symbol != query.owner || constant != query.constant ||
+    if constant >= length(context.signature.compile_time) ||
     (node.kind != NodeKind.Name && node.kind != NodeKind.Call && node.kind != NodeKind.Type) ||
     slice(node.value, 0, first_dot(node.value)) != query.name {
+        return
+    }
+    if context.signature.symbol != query.owner {
+        let signature = source_signature_id(context.env, context.signature.symbol)
+        if signature < 0 {
+            return
+        }
+        let instance = pack_instance(context.env, signature)
+        if instance < 0 {
+            return
+        }
+        let pack = get(context.env.packs, instance)
+        if pack.source != query.owner || length(pack.widths) == 0 {
+            return
+        }
+    }
+    // Width expansion shifts constant indices, but keeps each fixed source
+    // parameter's span. Use that checked origin, not one observed pack width.
+    let parameters = group(symbol(context.env, context.signature.symbol).node, NodeKind.Parameters)
+    let parameter = get(parameters, get(context.signature.compile_time, constant))
+    if parameter.value != query.name || parameter.span.start != query.parameter.start ||
+    parameter.span.end != query.parameter.end {
         return
     }
     static_query_type(context.env, query.types, static_type(context, constant))
@@ -100,20 +122,13 @@ pub fn static_parameter_info(source std.loom.binding.Program, owner Int, paramet
     let item = symbol(env, owner)
     let parameters = group(item.node, NodeKind.Parameters)
     if item.node.kind != NodeKind.Function || item.node.value == "" || parameter < 0 ||
-    parameter >= length(parameters) || !has(get(parameters, parameter), NodeKind.Comptime) || pack_parameter(item.node) >= 0 {
-        return Result.Err(failure(env, owner, item.node, "query requires an ordinary compile-time parameter"))
-    }
-    var constant = 0
-    var index = 0
-    while index < parameter {
-        if has(get(parameters, index), NodeKind.Comptime) {
-            constant = constant + 1
-        }
-        index = index + 1
+    parameter >= length(parameters) || !has(get(parameters, parameter), NodeKind.Comptime) ||
+    child(get(parameters, parameter), 0).kind == NodeKind.Spread {
+        return Result.Err(failure(env, owner, item.node, "query requires a fixed compile-time parameter"))
     }
     let references = new[Span]()
     let types = new[Text]()
-    index = 0
+    var index = 0
     while index < length(env.signatures) {
         let signature = get(env.signatures, index)
         if signature.symbol == owner {
@@ -123,7 +138,7 @@ pub fn static_parameter_info(source std.loom.binding.Program, owner Int, paramet
     }
     push(get(env.inputs, 0).static_queries, StaticReferenceQuery {
             owner = owner
-            constant = constant
+            parameter = get(parameters, parameter).span
             name = get(parameters, parameter).value
             references = references
             types = types

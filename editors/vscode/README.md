@@ -202,8 +202,11 @@ branches when checked instances account for every occurrence. Unobserved uses,
 nested closures and compile-time iteration still refuse the edit.
 Compile-time parameter hover, navigation, references and rename use an on-demand fresh check that
 records actual parameter bindings before constant/function specialization erases
-them. Scalar values, callbacks and covered compile-time blocks/branches work;
-unobserved branches, pack parameters or captures without complete binding evidence
+them. Scalar values, callbacks and covered compile-time blocks/branches work.
+Fixed compile-time parameters in variadic functions retain their checked source
+identity across empty and nonempty packs, even when earlier static packs shift
+their constant positions.
+Unobserved branches, pack parameters or captures without complete binding evidence
 refuse the edit. This does not add metadata to executable IR or bypass the final
 virtual-package check. Navigation points to the parameter, not its specialized
 callback target; hover reports concrete checked parameter types across observed

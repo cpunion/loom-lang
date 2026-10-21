@@ -67,6 +67,29 @@ test fn static_queries_observe_real_bindings_before_erasure() {
     assert length(static_uses(text, "selected", 1)) == 2
 }
 
+test fn static_queries_follow_fixed_parameters_across_pack_widths() {
+    let text = """
+        fn selected[Ts...](comptime prefix Int, comptime values Ts..., comptime suffix Int) Int {
+            discard values
+            let answer = prefix + suffix
+            {
+                let suffix = 3
+                discard suffix
+            }
+            answer
+        }
+        fn main() {
+            assert selected(1, 2) == 3
+            assert selected(3, true, "value", 4) == 7
+        }
+        """
+    let prefix = static_uses(text, "selected", 0)
+    let suffix = static_uses(text, "selected", 2)
+    assert length(prefix) == 1 && length(suffix) == 1
+    assert slice(text, get(prefix, 0).start, get(prefix, 0).end) == "prefix"
+    assert slice(text, get(suffix, 0).start, get(suffix, 0).end) == "suffix"
+}
+
 test fn semantic_queries_require_expanded_declaration_stages() {
     let source = match bind(fixture_project(source_files("""
         comptime {}
@@ -88,7 +111,9 @@ test fn semantic_queries_require_expanded_declaration_stages() {
         let item = get(source.symbols, owner)
         if item.name == "selected" {
             match static_parameter_info(source, owner, 0, build_inputs(no_input_reader)) {
-                Result.Ok(_) => { assert false }
+                Result.Ok(_) => {
+                    assert false
+                }
                 Result.Err(failed) => {
                     assert failed.diagnostic.message == "expand_project must run before binding declaration stages"
                 }
@@ -96,7 +121,9 @@ test fn semantic_queries_require_expanded_declaration_stages() {
         }
         if item.name == "main" {
             match check_query(source, 0, item.node.span.start) {
-                Result.Ok(_) => { assert false }
+                Result.Ok(_) => {
+                    assert false
+                }
                 Result.Err(failed) => {
                     assert failed.diagnostic.message == "expand_project must run before binding declaration stages"
                 }

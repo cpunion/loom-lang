@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Keep fixed compile-time parameter navigation and checked rename through
+  variadic specialization, using source bindings rather than expanded indices.
+  Unobserved branches still refuse incomplete edits.
+
 - Reuse one checked signature view across a function's generic parameters,
   parameter annotations and return annotation, while keeping body queries separate.
 
