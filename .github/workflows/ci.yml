@@ -43,7 +43,7 @@ jobs:
       - name: Install the compile-time proof solver
         run: node .github/scripts/setup-z3.mjs
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
@@ -100,7 +100,7 @@ jobs:
       - name: Package and verify extracted toolchain
         run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: loom-toolchain-${{ runner.os }}-${{ runner.arch }}
           path: ${{ runner.temp }}/loom-toolchain-*.tar.gz*
@@ -137,7 +137,7 @@ jobs:
       - name: Install the compile-time proof solver
         run: node .github/scripts/setup-z3.mjs
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
@@ -162,7 +162,7 @@ jobs:
       - name: Package and verify extracted toolchain
         run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: loom-toolchain-${{ runner.os }}-${{ runner.arch }}
           path: ${{ runner.temp }}/loom-toolchain-*.tar.gz*
@@ -233,7 +233,7 @@ jobs:
           & "$env:LLVM_PATH/bin/llvm-config.exe" --version --link-static --system-libs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
@@ -258,7 +258,7 @@ jobs:
       - name: Package and verify extracted toolchain
         run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: loom-toolchain-${{ runner.os }}-${{ runner.arch }}
           path: ${{ runner.temp }}/loom-toolchain-*.tar.gz*
