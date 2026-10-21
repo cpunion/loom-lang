@@ -532,6 +532,8 @@ Trusted-local snapshots are not portable proof artifacts.
 Native object reuse is whole-closure and always relinks.
 
 Compiler latency/memory remain delivery goals, not completed optimizations.
+Task reachability uses a per-traversal sparse bitmap over stored type edges;
+it does not retain negative results across changes to a mutable type graph.
 The edited-source harness uses fresh processes, a reachable contracted-helper
 edit, a rejected false-contract canary and verified definition/body reuse.
 Unchanged cache hits are not edit benchmarks; restoration/writeback can outweigh

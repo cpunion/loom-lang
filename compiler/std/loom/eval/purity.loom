@@ -92,7 +92,7 @@ fn task_type(state State, ty Int) Bool {
     if ty <= 5 { return false }
     while length(state.task_types) <= ty { push(state.task_types, -1) }
     if get(state.task_types, ty) >= 0 { return get(state.task_types, ty) == 1 }
-    let found = std.loom.typed.contains_tasks(state.program.types, ty, std.list.new[Int]())
+    let found = std.loom.typed.contains_tasks(state.program.types, ty)
     set(state.task_types, ty, if found { 1 } else { 0 })
     found
 }

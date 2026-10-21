@@ -17,7 +17,7 @@ fn task_present(types List[Type], cache List[Int], ty Int) Bool {
     if ty <= 5 { return false }
     while length(cache) <= ty { push(cache, -1) }
     if get(cache, ty) >= 0 { return get(cache, ty) == 1 }
-    let found = std.loom.typed.contains_tasks(types, ty, new[Int]())
+    let found = std.loom.typed.contains_tasks(types, ty)
     set(cache, ty, if found { 1 } else { 0 })
     found
 }

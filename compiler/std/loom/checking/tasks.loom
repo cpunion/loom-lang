@@ -12,6 +12,7 @@ import std.list.new
 import std.list.push
 import std.list.length
 import std.result.Result
+import std.map.Map
 
 fn async_signature(env Environment, signature Signature) Bool {
     has(symbol(env, signature.symbol).node, NodeKind.Async)
@@ -180,7 +181,7 @@ fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
     Result.Ok(expression(ExprKind.Await, get(task_shape.arguments, 0), node, "", -1, expressions(task), task.falls))
 }
 
-fn contains_task(env Environment, ty Int, seen List[Int]) Bool {
+fn contains_task(env Environment, ty Int, seen Map[Int, Int]) Bool {
     if ty <= 5 {
         return false
     }
@@ -207,7 +208,7 @@ fn task_transfer_visit(env Environment, signature Signature, ty Int, node Node, 
     while direct_task(env, payload) {
         payload = get(get(env.types, payload).arguments, 0)
     }
-    let nested = contains_task(env, payload, new[Int]())
+    let nested = contains_task(env, payload, std.map.new[Int, Int]())
     if nested {
         let shape = get(env.types, payload)
         if shape.kind == TypeKind.List {
