@@ -94,3 +94,84 @@ test fn copied_outer_header_keeps_shared_elements() {
         }
     }
 }
+
+test fn map_preserves_nonemptiness_and_visits_the_initial_range_in_order() {
+    let values = new(1)
+    push(values, 2)
+    var calls = 0
+    let mapped = map(values, fn(value Int) Int {
+            calls = calls + 1
+            if calls == 1 {
+                set_first(values, 9)
+                push(values, 3)
+            }
+            value * 10
+        })
+    let count = PositiveLength(length(mapped))
+    assert count == 2 && calls == 2 && first(mapped) == 10
+    let copied = to_list(mapped)
+    assert copied[1] == 20 && length(values) == 3 && first(values) == 9
+    let later = [2]
+    let shared = new([1])
+    push(shared, later)
+    let seen = map(shared, fn(value List[Int]) Int {
+            if value[0] == 1 {
+                later[0] = 7
+            }
+            value[0]
+        })
+    assert to_list(seen)[1] == 7
+    assert comptime {
+        first(map(new(4), fn(value Int) Int {
+                    value + 1
+                }))
+    } == 5
+}
+
+test fn explicit_copies_isolate_headers_without_copying_recursive_children() {
+    let graph = std.list.new[Node]()
+    std.list.push(graph, Node {
+            children = graph
+        })
+    let values = new(Node {
+            children = graph
+        })
+    let copied = clone(values)
+    push(copied, Node {
+            children = []
+        })
+    let ordinary = to_list(values)
+    discard take_last(ordinary)
+    assert length(values) == 1 && length(copied) == 2 && std.list.length(ordinary) == 0
+    std.list.push(first(copied).children, Node {
+            children = []
+        })
+    assert std.list.length(first(values).children) == 2
+    let children = map(values, fn(value Node) List[Node] {
+            value.children
+        })
+    assert std.list.length(first(children)) == 2
+}
+
+test fn map_and_clone_keep_refined_results_and_shared_function_captures() {
+    let refined = map(new(false), fn(value Bool) PositiveLength {
+            if value {
+                PositiveLength(2)
+            } else {
+                PositiveLength(1)
+            }
+        })
+    let positive = PositiveLength(first(refined))
+    assert positive == 1
+    var calls = 0
+    let callbacks = map(new(2), fn(step Int) fn() Int {
+            fn() Int {
+                calls = calls + step
+                calls
+            }
+        })
+    let copied = clone(callbacks)
+    let callback = first(copied)
+    assert callback() == 2 && first(callbacks)() == 4
+    assert length(copied) == 1 && length(callbacks) == 1
+}

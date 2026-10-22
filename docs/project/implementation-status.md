@@ -338,7 +338,12 @@ supported theories and boundaries. The central rules are:
   separately from predicate truth and header freshness. Element reads do not
   need a recursive-type whitelist, while direct raw-header exports still reject.
   `std.list.nonempty` now stores its nonempty constraint in source and exports
-  a proved positive `length`, including for recursive and callable elements. The
+  a proved positive `length`, including for recursive and callable elements.
+  Its source `map` retains the nonempty result type through generic callbacks;
+  `clone` and `to_list` copy only the outer header, keeping elements shared.
+  The [nonempty pipeline](../../compiler/examples/nonempty_pipeline) exercises
+  a checked input boundary, refined count construction, CTFE and shared workers
+  without claiming an unchanged mutable length. The
   [recursive data example](../../compiler/examples/recursive_constraints) combines
   shared child Lists, a proved recursive fold and real suspension.
   Dependent store arguments preserve checked block/match bindings and the

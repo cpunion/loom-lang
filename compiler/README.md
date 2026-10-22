@@ -652,6 +652,12 @@ the budget on future LLVM upgrades; these tuning options are not a stable API.
   not visited, while changes to unread elements are observed. Map/filter return
   a new outer List and retain element sharing. Fold accepts a distinct accumulator
   type and returns its initial value for an empty List.
+- Source `std.list.nonempty` checks an external List once with `copy_from`, or
+  constructs directly with `new(first)`. Its `map` returns `NonEmpty[U]` and
+  `length` proves a positive result, including in shared-worker builds. Assignment
+  shares the protected header; `clone` and `to_list` explicitly copy it while
+  keeping elements shared. Traversal visits the initial index range, not later
+  appends. See the [nonempty pipeline](examples/nonempty_pipeline/README.md).
 - Source `std.list.view.map`, `filter` and `fold` instead visit captured element
   identities, including elements removed from the source. Map/filter prove equal/
   bounded lengths against the view's immutable range, also in worker builds.
