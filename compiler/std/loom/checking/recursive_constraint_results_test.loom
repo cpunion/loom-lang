@@ -35,8 +35,8 @@ test fn recursive_element_results_retain_their_nominal_sequence_guarantees() {
         """)
 }
 
-test fn differently_constrained_recursive_backrefs_do_not_preserve_the_input_guarantee() {
-    list_constraint_reject("""
+test fn sealed_elements_need_not_repeat_the_outer_nominal_guarantee() {
+    list_constraint_accept("""
         import std.list.length
         type Nonempty = List[Node] where length(self) > 0
         type Fixed = List[Node] where length(self) == 1
@@ -48,7 +48,7 @@ test fn differently_constrained_recursive_backrefs_do_not_preserve_the_input_gua
             values[0]
         }
         """)
-    list_constraint_reject("""
+    list_constraint_accept("""
         import std.list.length
         type Nonempty = List[Node] where length(self) > 0
         record Node {

@@ -2715,8 +2715,14 @@ List with the same stored type as the outer header. Resize-protected child
 extents use the header-only rule above, not permission to read their contents.
 Unless the predicate is proved to survive arbitrary legal base-alias writes,
 construction must use a fresh List literal, a factory proved to return a
-fresh unpublished outer header, or a proved unpublished local draft. Elements may retain their specified sharing;
-the existing header cannot be returned through a nested input either.
+fresh unpublished outer header, or a proved unpublished local draft. The boundary
+also excludes raw backreferences from elements or captures to that outer header.
+Factory returns reuse the draft publication analysis; freshness alone is not a
+sealing proof. Element reads may consequently return recursive or callable values
+without restricting generic element types. Shared children and unrelated cycles
+remain shared, including after an explicit shallow clone. References carrying
+the same nominal constraint keep their independently checked operations; a raw
+outer header still cannot escape directly or through a mixed return path.
 Effects on unrelated inputs and unknown callbacks are permitted only when the
 checked body proves that they cannot publish the new header. The bounded
 provenance projection ignores unverified postconditions and exports no hidden
@@ -2827,13 +2833,11 @@ writable aliases or unsafe later raw uses. No automatic copy, ownership syntax o
 runtime monitor is installed. Copies of a constrained value keep sharing its storage.
 
 Indexing, ordinary non-escaping read helpers and explicit copies are allowed.
-Shared element results may escape when their stored type graph proves they cannot
-expose the protected outer header without its same nominal guarantee. This covers
-nested Lists and supported record/tuple/enum fields without freezing their
-contents, including recursive paths through that constrained type. Raw or
-differently constrained backreferences, opaque captures/dyn data and unresolved
-types remain conservative; non-escaping helpers can still return independent
-scalar observations. The [recursive data example](examples/recursive_constraints)
+Shared element results, including recursive data and functions, may escape:
+construction already excluded raw outer-header backreferences. This does not
+freeze child contents or infer equality between separate reads. Helpers that
+can return the raw outer header still reject, even if another branch returns
+only an element. The [recursive data example](examples/recursive_constraints)
 combines nonempty child Lists, shared mutation, a proved recursive fold and a real
 wait. A permitted typed cycle does not imply termination or acyclicity.
 Extent-only predicates never grant an unrestricted outer alias.

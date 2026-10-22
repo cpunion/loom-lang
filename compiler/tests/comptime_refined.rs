@@ -108,6 +108,25 @@ fn refined_computations_keep_admission_aliases_and_cache_validation() {
     for rejected in [
         r#"
 import std.list.length
+import std.list.push
+import std.list.new
+record Node {
+    children List[Node]
+}
+type Nonempty = List[Node] where length(self) > 0
+fn cycle() List[Node]
+ensures length(result) == 1
+{
+    let raw = new[Node]()
+    push(raw, Node { children = raw })
+    raw
+}
+pub fn exposed_cycle() Nonempty {
+    comptime { Nonempty(cycle()) }
+}
+"#,
+        r#"
+import std.list.length
 import std.list.set
 fn positive(values List[Int]) Bool {
     var index = 0

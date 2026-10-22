@@ -166,6 +166,7 @@ fn invariant_header_call(reads InvariantReads, value Expr, inputs List[InputOrig
             writes = 0
             root_list = -1
             header_reads = true
+            sealed_elements = false
             stable_sequences = Option.None
             element_reads = invariant_flag(false)
             calls = new[InvariantCall]()
@@ -182,6 +183,7 @@ fn invariant_header_call(reads InvariantReads, value Expr, inputs List[InputOrig
         writes = 0
         root_list = -1
         header_reads = true
+        sealed_elements = false
         stable_sequences = Option.None
         element_reads = invariant_flag(false)
         calls = new[InvariantCall]()

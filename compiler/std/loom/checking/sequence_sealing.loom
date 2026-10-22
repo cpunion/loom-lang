@@ -1,0 +1,115 @@
+import std.list.transfer.take_last
+
+fn sequence_allocation(name Text) Bool {
+    let operation = std.loom.proof.sequence_operation(name)
+    operation == "list_new" || operation == "list_new_capacity"
+}
+
+// These markers exist only in a query's copied body. They neither assert an
+// invariant nor enter executable IR, persisted definitions or proof facts.
+fn sealed_sequence_result(value Expr) Bool {
+    value.kind == ExprKind.Coerce && value.text == "sealed sequence result" && length(value.children) == 1
+}
+
+fn seal_sequence_result(value Expr, locals List[Local], candidates List[Expr]) Expr {
+    if value.kind == ExprKind.Block && length(value.children) != 0 {
+        let children = std.list.clone(value.children)
+        let last = length(children) - 1
+        set(children, last, seal_sequence_result(get(children, last), locals, candidates))
+        return Expr {
+            children = children,
+            ..value
+        }
+    }
+    let local = length(locals)
+    push(locals, Local {
+            name = "sealed result"
+            ty = value.ty
+            mutable = false
+            is_scoped = false
+        })
+    let saved = draft_node(value, ExprKind.Local, value.ty, "", local, new[Expr](), new[Arm](), true)
+    let candidate = draft_node(value, ExprKind.Coerce, value.ty, "sealed sequence result", -1, [saved], new[Arm](), true)
+    push(candidates, candidate)
+    draft_node(value, ExprKind.Block, value.ty, "", -1,
+        [draft_node(value, ExprKind.Let, 0, "", local, [value], new[Arm](), value.falls), candidate], new[Arm](), value.falls)
+}
+
+fn seal_sequence_returns(value Expr, locals List[Local], candidates List[Expr], valid List[Bool], depth Int) Expr {
+    if depth >= 256 {
+        set(valid, 0, false)
+        return value
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        let child = seal_sequence_returns(get(value.children, index), locals, candidates, valid, depth + 1)
+        push(children, if value.kind == ExprKind.Return && child.falls {
+                seal_sequence_result(child, locals, candidates)
+            } else {
+                child
+            })
+        index = index + 1
+    }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let body = new[Expr]()
+        var item = 0
+        while item < length(arm.body) {
+            push(body, seal_sequence_returns(get(arm.body, item), locals, candidates, valid, depth + 1))
+            item = item + 1
+        }
+        push(arms, Arm {
+                body = body,
+                ..arm
+            })
+        index = index + 1
+    }
+    Expr {
+        children = children,
+        arms = arms,
+        ..value
+    }
+}
+
+// Header freshness alone allows a private raw self-cycle. Reuse the existing
+// versioned draft/publication analysis at every normal return to exclude it.
+// No callee postcondition is evidence of this storage property.
+fn sealed_sequence_factory(env Environment, functions List[Function], target Int) Bool {
+    let active = get(env.inputs, 0).sealing_factories
+    if length(active) >= 64 || resource_seen(active, target) {
+        return false
+    }
+    let current = get(functions, target)
+    if current.runtime_name != "" {
+        return sequence_allocation(current.runtime_name)
+    }
+    push(active, target)
+    let locals = std.list.clone(current.locals)
+    let candidates = new[Expr]()
+    let valid = invariant_flag(true)
+    let rewritten = seal_sequence_returns(current.body, locals, candidates, valid, 0)
+    let body = if rewritten.falls {
+        seal_sequence_result(rewritten, locals, candidates)
+    } else {
+        rewritten
+    }
+    let accepted = if get(valid, 0) && length(candidates) != 0 {
+        unpublished_drafts(env, functions, Function {
+                locals = locals,
+                body = body,
+                ..current
+            })
+    } else {
+        new[Expr]()
+    }
+    var index = 0
+    while get(valid, 0) && index < length(candidates) {
+        set(valid, 0, established_draft(get(candidates, index), accepted))
+        index = index + 1
+    }
+    discard take_last(active)
+    get(valid, 0) && length(candidates) != 0
+}

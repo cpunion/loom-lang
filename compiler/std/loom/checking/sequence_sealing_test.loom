@@ -1,0 +1,188 @@
+fn sealed_node_source() Text {
+    """
+    import std.list.length
+    import std.list.push
+    import std.list.clone
+    import std.result.Result
+    import std.result.ConstraintError
+    record Node {
+        children List[Node]
+    }
+    type Nonempty = List[Node] where length(self) > 0
+
+    """
+}
+
+fn reject_unsealed_sequence(source Text) {
+    assert match list_constraint_checked(source) {
+        Result.Err(failed) => {
+            let rejected = std.text.contains(failed.diagnostic.message, "requires fresh unpublished storage")
+            if !rejected {
+                discard write_error(failed.diagnostic.message)
+            }
+            rejected
+        }
+        Result.Ok(_) => false
+    }
+}
+
+test fn raw_cycles_are_ordinary_data_but_not_constrained_factory_results() {
+    let source = concat(sealed_node_source(), """
+        fn cycle() List[Node] {
+            let raw List[Node] = []
+            push(raw, Node { children = raw })
+            raw
+        }
+
+        """)
+    list_constraint_accept(concat(source, """
+        fn main() {
+            assert length(cycle()) == 1
+        }
+        """))
+    reject_unsealed_sequence(concat(source, """
+        pub fn construct() Result[Nonempty, ConstraintError] {
+            Nonempty(cycle())
+        }
+        """))
+    reject_unsealed_sequence(concat(sealed_node_source(), """
+        fn cycle() List[Node]
+        ensures length(result) == 1
+        {
+            let raw List[Node] = []
+            push(raw, Node { children = raw })
+            raw
+        }
+        pub fn construct() Nonempty {
+            Nonempty(cycle())
+        }
+        """))
+    reject_unsealed_sequence(concat(source, """
+        pub fn construct() Result[Nonempty, ConstraintError] {
+            let raw = cycle()
+            Nonempty(raw)
+        }
+        """))
+}
+
+test fn sealing_checks_stored_helper_results_and_captures() {
+    reject_unsealed_sequence(concat(sealed_node_source(), """
+        fn node(raw List[Node]) Node {
+            Node { children = raw }
+        }
+        fn cycle(flag Bool) List[Node] {
+            let raw List[Node] = []
+            if flag {
+                push(raw, node(raw))
+            }
+            raw
+        }
+        pub fn construct(flag Bool) Result[Nonempty, ConstraintError] {
+            Nonempty(cycle(flag))
+        }
+        """))
+    reject_unsealed_sequence("""
+        import std.list.length
+        import std.list.push
+        import std.result.Result
+        import std.result.ConstraintError
+        type Nonempty = List[fn() Int] where length(self) > 0
+        fn cycle(flag Bool) List[fn() Int] {
+            let raw List[fn() Int] = []
+            if flag {
+                push(raw, fn() Int { length(raw) })
+            }
+            raw
+        }
+        pub fn construct(flag Bool) Result[Nonempty, ConstraintError] {
+            Nonempty(cycle(flag))
+        }
+        """)
+}
+
+test fn async_completion_and_cleanup_do_not_bypass_sealing() {
+    reject_unsealed_sequence(concat(sealed_node_source(), """
+        async fn cycle() List[Node] {
+            let raw List[Node] = []
+            push(raw, Node { children = raw })
+            raw
+        }
+        pub async fn construct() Result[Nonempty, ConstraintError] {
+            let pending = cycle()
+            let raw = pending.await
+            Nonempty(raw)
+        }
+        """))
+    reject_unsealed_sequence(concat(sealed_node_source(), """
+        fn publish(output List[List[Node]]) List[Node] {
+            let raw List[Node] = []
+            push(raw, Node { children = [] })
+            defer {
+                push(output, raw)
+            }
+            raw
+        }
+        pub fn construct(output List[List[Node]]) Nonempty {
+            Nonempty(publish(output))
+        }
+        """))
+}
+
+test fn fresh_outer_headers_allow_shared_children_and_unrelated_cycles() {
+    list_constraint_accept(concat(sealed_node_source(), """
+        fn factory(child Node, early Bool) List[Node] {
+            let raw = [child]
+            if early {
+                return raw
+            }
+            raw
+        }
+        fn first(values List[Node]) Node {
+            values[0]
+        }
+        pub fn copied(raw List[Node]) Result[Nonempty, ConstraintError] {
+            Nonempty(clone(raw))
+        }
+        pub fn construct(child Node, early Bool) Result[Nonempty, ConstraintError] {
+            Nonempty(factory(child, early))
+        }
+        pub fn read(values Nonempty) Node {
+            first(values)
+        }
+        fn main() {
+            let graph List[Node] = []
+            push(graph, Node { children = graph })
+            let values = Nonempty([graph[0]])
+            push(read(values).children, Node { children = graph })
+            assert length(values) == 1
+            discard copied(graph)
+            discard construct(graph[0], true)
+        }
+        """))
+    list_constraint_accept(concat(sealed_node_source(), """
+        async fn factory(child Node) List[Node] {
+            let raw = [child]
+            raw
+        }
+        pub async fn construct(child Node) Result[Nonempty, ConstraintError] {
+            let pending = factory(child)
+            let raw = pending.await
+            Nonempty(raw)
+        }
+        """))
+}
+
+test fn element_reads_never_hide_direct_raw_header_exports() {
+    list_constraint_reject(concat(sealed_node_source(), """
+        fn choose(values List[Node], element Bool) List[Node] {
+            if element {
+                values[0].children
+            } else {
+                values
+            }
+        }
+        pub fn expose(values Nonempty, element Bool) List[Node] {
+            choose(values, element)
+        }
+        """))
+}

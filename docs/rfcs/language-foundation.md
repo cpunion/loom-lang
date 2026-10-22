@@ -147,6 +147,14 @@ preserve nonemptiness without preserving length. Content constraints, such as
 positivity or sortedness, still require protection against other aliases.
 A read-only handle alone provides no such protection.
 
+Controlled sequence construction must exclude raw backreferences from elements
+to the new outer header, including captures that would bypass its constraint.
+Header freshness alone is insufficient. Ordinary recursive data, shared children
+and cycles unrelated to that header remain valid; an explicit shallow copy gives
+an independent outer header without copying its elements. References carrying
+the same nominal constraint retain their checked operations. This adds no
+ownership syntax, implicit copying or runtime monitor.
+
 Fixed List views capture element identities: overlapping views share updates
 even after those elements are removed from the source. Appending after removal
 creates new identities; it does not overwrite the removed elements in old views.
