@@ -332,8 +332,13 @@ supported theories and boundaries. The central rules are:
   every actual store, not merely at normal return. Both sequence types support
   fresh constrained construction and checked representation borrows; byte-range
   faults precede stores, and opaque content predicates grant no unproved writes.
-  Recursive element results may retain the same nominal sequence guarantee;
-  raw or differently constrained backreferences do not inherit it. The
+  Construction rejects raw outer-header backreferences, including factory
+  results and captures; ordinary cycles and shared recursive/callable elements
+  remain valid. Factory sealing reuses versioned draft publication analysis,
+  separately from predicate truth and header freshness. Element reads do not
+  need a recursive-type whitelist, while direct raw-header exports still reject.
+  `std.list.nonempty` now stores its nonempty constraint in source and exports
+  a proved positive `length`, including for recursive and callable elements. The
   [recursive data example](../../compiler/examples/recursive_constraints) combines
   shared child Lists, a proved recursive fold and real suspension.
   Dependent store arguments preserve checked block/match bindings and the

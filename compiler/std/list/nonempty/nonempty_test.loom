@@ -1,4 +1,52 @@
 import std.list.transfer.take_last
+import std.list.new
+
+type PositiveLength = Int where self > 0
+
+test fn nonemptiness_is_a_source_level_guarantee() {
+    let count = PositiveLength(length(new(1)))
+    assert count == 1
+}
+
+record Node {
+    children List[Node]
+}
+
+test fn recursive_elements_and_old_cycles_keep_their_sharing() {
+    let graph = std.list.new[Node]()
+    std.list.push(graph, Node {
+            children = graph
+        })
+    match copy_from(graph) {
+        Result.Ok(values) => {
+            let alias = values
+            std.list.push(first(alias).children, Node {
+                    children = []
+                })
+            assert std.list.length(graph) == 2 && length(values) == 1
+            push(values, Node {
+                    children = graph
+                })
+            assert length(alias) == 2
+            let count = PositiveLength(length(alias))
+            assert count == 2
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
+test fn callable_elements_can_share_unrelated_mutable_captures() {
+    var count = 0
+    let values = new(fn() Int {
+            count = count + 1
+            count
+        })
+    let callback = first(values)
+    assert callback() == 1 && first(values)() == 2
+    assert length(values) == 1 && count == 2
+}
 
 test fn wrapper_copies_share_permitted_edits() {
     let values = new(1)

@@ -773,8 +773,8 @@ test fn constrained_reads_return_elements_that_cannot_contain_the_outer_header()
         """)
 }
 
-test fn constrained_element_results_do_not_expose_recursive_or_opaque_backrefs() {
-    list_constraint_reject("""
+test fn sealed_constrained_elements_allow_recursive_and_callable_results() {
+    list_constraint_accept("""
         import std.list.length
         record Node {
             children List[Node]
@@ -784,7 +784,7 @@ test fn constrained_element_results_do_not_expose_recursive_or_opaque_backrefs()
             values[0]
         }
         """)
-    list_constraint_reject("""
+    list_constraint_accept("""
         import std.list.length
         type Nonempty = List[fn() Int] where length(self) > 0
         pub fn expose(values Nonempty) fn() Int {

@@ -315,7 +315,11 @@ fn unpublished_draft(env Environment, functions List[Function], current Function
     if length(bodies) > 1 && !draft_epoch_allocations(body, root) {
         return false
     }
-    let reads = invariant_reads(env, functions, current.body, true, 2, -1)
+    let sealing = sealed_sequence_result(candidate)
+    let reads = InvariantReads {
+        sealed_elements = true
+        ..invariant_reads(env, functions, current.body, true, 2, -1)
+    }
     let updates = DraftUpdates {
         env = env
         functions = functions
@@ -324,12 +328,15 @@ fn unpublished_draft(env Environment, functions List[Function], current Function
         ty = draft_type(candidate)
         operations = [new[Expr]()]
     }
-    let permissions = [InvariantPermission {
-            allow = fn(value Expr, inputs List[InputOrigin]) Bool {
-                draft_update(updates, value, inputs)
-            }
-            effects = reads
-        }]
+    let permissions = new[InvariantPermission]()
+    if !sealing {
+        push(permissions, InvariantPermission {
+                allow = fn(value Expr, inputs List[InputOrigin]) Bool {
+                    draft_update(updates, value, inputs)
+                }
+                effects = reads
+            })
+    }
     let scope = DraftPublication {
         reads = reads
         observations = InvariantReads {
@@ -337,9 +344,14 @@ fn unpublished_draft(env Environment, functions List[Function], current Function
             functions = functions
             references = reads.references
             contents = true
-            writes = 0
+            writes = if sealing {
+                2
+            } else {
+                0
+            }
             root_list = -1
             header_reads = false
+            sealed_elements = true
             stable_sequences = Option.None
             element_reads = reads.element_reads
             calls = new[InvariantCall]()

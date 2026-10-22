@@ -23,6 +23,8 @@ record CheckInputs {
     // Check-only scalar call identities. Negative references never become
     // executable targets or add roots to the runtime reachability queue.
     fact_calls List[Instance]
+    // Visiting factory queries cannot certify their own recursive result.
+    sealing_factories List[Int]
 }
 
 record StaticReferenceQuery {

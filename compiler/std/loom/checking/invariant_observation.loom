@@ -14,6 +14,9 @@ record InvariantReads {
     writes Int
     root_list Int
     header_reads Bool
+    // A fresh builder or checked boundary excludes raw outer-header backrefs.
+    // Predicate observations never assume this property of arbitrary inputs.
+    sealed_elements Bool
     stable_sequences Option[List[Int]]
     element_reads List[Bool]
     calls List[InvariantCall]
@@ -191,9 +194,9 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     }
     if kind == ExprKind.Call && origin_shared(borrowed) {
         let header = if permitted < 0 && match reads.stable_sequences {
-                Option.Some(_) => true
-                Option.None => false
-            } {
+            Option.Some(_) => true
+            Option.None => false
+        } {
             invariant_header_call(reads, value, inputs, depth + 1)
         } else {
             Option.None
@@ -239,6 +242,12 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
         if shared && (operation == "list_get" || operation == "list_retain_range") {
             borrowed = origin_indirect(borrowed)
         }
+    }
+    // Forget only element-derived origins, never a union that merely may pass
+    // through an element. A direct raw-header alternative must still escape.
+    if reads.sealed_elements && ((kind == ExprKind.Intrinsic &&
+            std.loom.proof.sequence_operation(value.text) == "list_get") || sealed_sequence_result(value)) {
+        borrowed = origin_empty()
     }
     if ((kind == ExprKind.Intrinsic && permitted < 0 && !stable_intrinsic && !invariant_intrinsic_allowed(reads, value.text, inputs)) || kind == ExprKind.DynCall ||
         kind == ExprKind.FrameStore) && origin_shared(borrowed) {
@@ -331,6 +340,7 @@ fn invariant_reads(env Environment, functions List[Function], value Expr, conten
         writes = writes
         root_list = root_list
         header_reads = false
+        sealed_elements = false
         stable_sequences = Option.None
         element_reads = invariant_flag(false)
         calls = new[InvariantCall]()

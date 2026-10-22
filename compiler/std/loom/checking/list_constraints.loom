@@ -89,7 +89,8 @@ fn constraint_restored(env Environment, value Expr) Bool {
 }
 
 fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool {
-    if value.kind == ExprKind.List {
+    if value.kind == ExprKind.List || value.kind == ExprKind.Bytes ||
+    (value.kind == ExprKind.Intrinsic && sequence_allocation(value.text)) {
         return true
     }
     let completion = value.kind == ExprKind.Await && length(value.children) == 1
@@ -107,6 +108,9 @@ fn constraint_factory_fresh(env Environment, functions List[Function], factory E
     get(functions, factory.index).is_async != completion {
         return false
     }
+    if sequence_allocation(get(functions, factory.index).runtime_name) {
+        return true
+    }
     // Prove an unpublished outer header, not global purity. Effects on an
     // unrelated input do not publish the factory's later private allocation.
     let program = std.loom.typed.Program {
@@ -119,7 +123,19 @@ fn constraint_factory_fresh(env Environment, functions List[Function], factory E
         interfaces = env.interfaces
         witnesses = env.witnesses
     }
-    std.loom.proof.fresh_list_factory(program, factory.index)
+    std.loom.proof.fresh_list_factory(program, factory.index) &&
+    (constraint_closed_elements(env, factory.ty, completion) || sealed_sequence_factory(env, functions, factory.index))
+}
+
+fn constraint_closed_elements(env Environment, ty Int, completion Bool) Bool {
+    let sequence = if completion {
+        get(get(env.types, ty).arguments, 0)
+    } else {
+        ty
+    }
+    let shape = get(env.types, sequence)
+    shape.kind == TypeKind.Bytes || (shape.kind == TypeKind.List &&
+        !constraint_storage_reachable(env, sequence, -1, get(shape.arguments, 0)))
 }
 
 fn constraint_operation(env Environment, functions List[Function], locals List[Local], value Expr) Bool {
@@ -202,12 +218,16 @@ fn constraint_operation(env Environment, functions List[Function], locals List[L
     }
     if value.kind == ExprKind.Intrinsic {
         return Result.Ok(invariant_intrinsic_allowed(true, writes, value.text, inputs) &&
-            (value.ty == 0 || inline_constraint_base(env, value.ty, 0) || constraint_output_independent(env, value)))
+            (value.ty == 0 || std.loom.proof.sequence_operation(value.text) == "list_get" ||
+                inline_constraint_base(env, value.ty, 0) || constraint_output_independent(env, value)))
     }
     if value.kind != ExprKind.Call {
         return Result.Ok(false)
     }
-    let reads = invariant_reads(env, functions, value, true, writes, -1)
+    let reads = InvariantReads {
+        sealed_elements = true
+        ..invariant_reads(env, functions, value, true, writes, -1)
+    }
     let output = invariant_call(reads, value.index, inputs, 0)
     if get(reads.valid, 0) && (!origin_shared(output) || constraint_output_independent(env, value)) {
         return Result.Ok(true)
@@ -217,7 +237,10 @@ fn constraint_operation(env Environment, functions List[Function], locals List[L
     }
     // First prove that the helper cannot publish the protected header. Then
     // discharge the complete invariant at every store, never only at return.
-    let mutable = invariant_reads(env, functions, value, true, 2, -1)
+    let mutable = InvariantReads {
+        sealed_elements = true
+        ..invariant_reads(env, functions, value, true, 2, -1)
+    }
     let returned = invariant_call(mutable, value.index, inputs, 0)
     if !get(mutable.valid, 0) || (origin_shared(returned) && !constraint_output_independent(env, value)) {
         return Result.Ok(false)
