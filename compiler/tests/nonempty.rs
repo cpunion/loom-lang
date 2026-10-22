@@ -1,7 +1,27 @@
 use std::fs;
 
 mod common;
-use common::loom;
+use common::{loom, success};
+
+#[test]
+fn nonempty_transformations_compose_in_real_programs_and_workers() {
+    let package = "compiler/examples/nonempty_pipeline";
+    success(&loom(&["check", package]));
+    success(&loom(&["run", package]));
+    let temporary = tempfile::tempdir().unwrap();
+    let artifact = common::executable(temporary.path(), "nonempty");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["test", package])
+                .args(["--no-run", "--output"])
+                .arg(&artifact)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(&common::run_tasks(&artifact));
+    }
+}
 
 #[test]
 fn nonempty_hides_its_shared_list_from_other_packages() {

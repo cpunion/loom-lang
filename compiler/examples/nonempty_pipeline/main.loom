@@ -1,0 +1,52 @@
+import std.list.nonempty.NonEmpty
+import std.list.nonempty.copy_from
+import std.list.nonempty.map
+import std.list.nonempty.length
+import std.list.nonempty.to_list
+import std.result.Result
+import std.result.ConstraintError
+import std.text.concat
+import std.text.join
+import std.int.to_text
+import std.io.write_text
+
+type Positive = Int where self > 0
+
+record Item {
+    name Text
+    quantity Positive
+}
+
+// Validate an external List once; every later stage keeps the nonempty type.
+fn labels(input List[Item]) Result[NonEmpty[Text], ConstraintError] {
+    let items = copy_from(input)?
+    Result.Ok(map(items, fn(item Item) Text {
+                concat(item.name, concat(" x", to_text(item.quantity)))
+            }))
+}
+
+fn item_count[T](items NonEmpty[T]) Positive {
+    Positive(length(items))
+}
+
+fn sample() Text {
+    let source = [Item {
+            name = "apples"
+            quantity = Positive(2)
+        }, Item {
+            name = "pears"
+            quantity = Positive(3)
+        }]
+    match labels(source) {
+        Result.Ok(items) => concat(to_text(item_count(items)),
+            concat(" items: ", join(to_list(items), ", ")))
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+fn main() {
+    discard write_text(concat(sample(), "\n"))
+}

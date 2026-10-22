@@ -1,0 +1,37 @@
+import std.list.nonempty.new
+import std.list.nonempty.push
+import std.list.nonempty.first
+import std.task.worker.run
+
+test fn pipeline_keeps_guarantees_at_runtime_and_compile_time() {
+    assert sample() == "2 items: apples x2, pears x3"
+    assert comptime {
+        sample()
+    } == "2 items: apples x2, pears x3"
+    let empty List[Item] = []
+    assert match labels(empty) {
+        Result.Err(ConstraintError.Rejected) => true
+        Result.Ok(_) => false
+    }
+}
+
+fn grow_and_map(values NonEmpty[Int]) Positive {
+    let mapped = map(values, fn(value Int) Int {
+            push(values, 9)
+            value
+        })
+    assert first(mapped) == 1
+    item_count(mapped)
+}
+
+test async fn workers_keep_nonemptiness_without_promising_an_unchanged_length() {
+    let values = new(1)
+    let first = run(fn() Positive {
+            grow_and_map(values)
+        })
+    let second = run(fn() Positive {
+            grow_and_map(values)
+        })
+    let a, b = (first, second).await
+    assert a > 0 && b > 0 && length(values) >= 3
+}
