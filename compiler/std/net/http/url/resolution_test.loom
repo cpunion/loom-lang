@@ -1,0 +1,63 @@
+test fn references_resolve_paths_queries_and_fragments_independently() {
+    let inputs = ["g", "./g", "g/", "/g", "//other.test/g", "?y", "g?y", "#s", "g#s", "", ".", "..", "../g", "../../g", "../../../g", "g/./h", "g/../h", "g?y/../x", "g#s/../x"]
+    let targets = ["/b/c/g", "/b/c/g", "/b/c/g/", "/g", "/g", "/b/c/d;p?y", "/b/c/g?y", "/b/c/d;p?q", "/b/c/g", "/b/c/d;p?q", "/b/c/", "/b/", "/b/g", "/g", "/g", "/b/c/g/h", "/b/c/h", "/b/c/g?y/../x", "/b/c/g"]
+    var index = 0
+    while index < std.list.length(inputs) {
+        let value = match resolve("https://example.test/b/c/d;p?q#old", inputs[index]) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                assert false
+                return
+            }
+        }
+        assert value.secure && value.target == targets[index]
+        assert value.host == if index == 4 {
+            "other.test"
+        } else {
+            "example.test"
+        }
+        assert value.fragment == if index == 7 || index == 8 {
+            "s"
+        } else if index == 18 {
+            "s/../x"
+        } else {
+            ""
+        }
+        index = index + 1
+    }
+}
+
+test fn resolution_preserves_empty_segments_escapes_and_explicit_empty_queries() {
+    let inputs = ["/a//b/../c/.", "/a//../b", "/../a/../../b", "/%2e/%2E%2e/g", "?", "#", "./g:h", "HTTP://EXAMPLE.test:80/a/../b?x#y"]
+    let targets = ["/a//c/", "/a/b", "/b", "/%2e/%2E%2e/g", "/a/b?", "/a/b?q", "/a/g:h", "/b?x"]
+    var index = 0
+    while index < std.list.length(inputs) {
+        assert match resolve("https://example.test/a/b?q#old", inputs[index]) {
+            Result.Ok(value) => value.target == targets[index]
+            Result.Err(_) => false
+        }
+        index = index + 1
+    }
+    assert match comptime {
+        resolve("https://example.test/a/b", "../c?x#y")
+    } {
+        Result.Ok(value) => value.target == "/c?x" && value.fragment == "y"
+        Result.Err(_) => false
+    }
+}
+
+test fn resolution_rejects_invalid_references_without_repairing_or_echoing_them() {
+    let inputs = ["http:g", "ftp://example.test/", "//user:secret@example.test/", "//", "//[:::1]/", "a b", "../%xx", "\\other.test/", "a\r\nX:bad", "a#b#c", "https://例子.test/", "g:h", "bad%/../ok", "a b/../ok", "例子/../ok", "a\\b/../ok"]
+    var index = 0
+    while index < std.list.length(inputs) {
+        assert match resolve("https://example.test/a/b", inputs[index]) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+    assert match resolve("/relative", "https://example.test/") {
+        Result.Err(ParseError.Scheme) => true
+        _ => false
+    }
+}

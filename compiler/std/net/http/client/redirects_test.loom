@@ -1,0 +1,124 @@
+test fn redirect_location_policy_is_explicit_and_same_origin() {
+    let base = match parse("https://example.test/a/b?q") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let accepted = ["../c?x#local", "//EXAMPLE.test:443/c", "https://example.test/c", "/with,comma"]
+    var index = 0
+    while index < length(accepted) {
+        assert match next_location(base, [Header {
+                    name = "lOcAtIoN"
+                    value = to_bytes(concat(" \t", concat(accepted[index], "\t ")))
+                }], 1) {
+            Result.Ok(Option.Some(value)) => same_origin(base, value)
+            _ => false
+        }
+        index = index + 1
+    }
+    let origins = ["http://example.test/c", "https://other.test/c", "https://example.test:444/c"]
+    index = 0
+    while index < length(origins) {
+        assert match next_location(base, [Header {
+                    name = "Location",
+                    value = to_bytes(origins[index])
+                }], 1) {
+            Result.Err(RedirectError.Origin) => true
+            _ => false
+        }
+        index = index + 1
+    }
+    assert match next_location(base, [], 0) {
+        Result.Ok(Option.None) => true
+        _ => false
+    }
+    assert match next_location(base, [Header {
+                name = "Location",
+                value = to_bytes("")
+            }], 0) {
+        Result.Err(RedirectError.Limit) => true
+        _ => false
+    }
+}
+
+test fn malformed_and_ambiguous_locations_return_data_errors_not_faults() {
+    let invalid = [to_bytes("bad%"), to_bytes("http:g"), to_bytes("//user:secret@example.test/"), to_bytes("a b")]
+    let base = match parse("https://example.test/") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    var index = 0
+    while index < length(invalid) {
+        assert match next_location(base, [Header {
+                    name = "Location",
+                    value = invalid[index]
+                }], 1) {
+            Result.Err(RedirectError.Location(_)) => true
+            _ => false
+        }
+        index = index + 1
+    }
+    let binary = std.bytes.new()
+    std.bytes.push(binary, 255)
+    assert match location([Header {
+                name = "Location",
+                value = binary
+            }]) {
+        Result.Err(RedirectError.Location(ParseError.Target)) => true
+        _ => false
+    }
+    assert match location([Header {
+                name = "Location",
+                value = to_bytes("/a")
+            }, Header {
+                name = "LOCATION",
+                value = to_bytes("/b")
+            }]) {
+        Result.Err(RedirectError.MultipleLocations) => true
+        _ => false
+    }
+    assert !redirects(300) && !redirects(304) && !redirects(305) && !redirects(306)
+}
+
+test async fn unsupported_redirect_requests_fail_before_network_work() {
+    assert match get_following("https://example.test/", -1).await {
+        Result.Err(RedirectError.Options) => true
+        _ => false
+    }
+    assert match follow(request("POST", "https://example.test/"), 1).await {
+        Result.Err(RedirectError.Unsupported) => true
+        _ => false
+    }
+    assert match follow(std.net.http.client.Request {
+            body = to_bytes("not replayed")
+            ..request("GET", "https://example.test/")
+        }, 1).await {
+        Result.Err(RedirectError.Unsupported) => true
+        _ => false
+    }
+    assert match get_following("https://example.test/", Options {
+            timeout_ns = 0,
+            ..options()
+        }, 1).await {
+        Result.Err(RedirectError.Client(Error.Timeout)) => true
+        _ => false
+    }
+    assert match follow(std.net.http.client.Request {
+            headers = [Header {
+                    name = "Authorization",
+                    value = to_bytes("private")
+                }]
+            ..request("GET", "http://127.0.0.1:0/")
+        }, Options {
+            allow_http = true,
+            ..options()
+        }, 1).await {
+        Result.Err(RedirectError.Client(Error.Insecure)) => true
+        _ => false
+    }
+}

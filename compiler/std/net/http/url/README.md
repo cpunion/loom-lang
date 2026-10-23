@@ -23,13 +23,21 @@ numeric ports are 0–65535, empty ports use the scheme default, leading port ze
 disappear and default ports are omitted from the returned authority.
 IPv6 spelling is otherwise retained, not canonicalized into a unique address.
 Empty paths become `/`; a query without a path becomes `/?...`.
-Path/query/fragment escapes are validated but never decoded, dot segments are
-not rewritten, and no fragment enters `target`.
+Path/query/fragment escapes are validated but never decoded. `parse` does not
+rewrite dot segments, and no fragment enters `target`.
+
+`resolve(base, reference)` returns the same `Result[Url, ParseError]` for absolute,
+network-path, root/path-relative, query-only, fragment-only and empty references.
+The base must be a valid absolute HTTP(S) URL. Resolution removes literal `.` and
+`..` path segments while retaining empty segments, encoded dots and independent
+queries/fragments. Invalid segments reject before removal. An explicit empty
+query replaces the base query; an absent one inherits it only for an empty path.
+The base fragment is not inherited. These pure rules also work in CTFE.
 
 Userinfo, malformed percent escapes, whitespace, control/non-ASCII bytes and
 backslashes reject rather than receiving browser-style repairs. Encoded/Unicode
-hosts, IDNA, scoped IPv6 zones, IPvFuture, relative references and redirect
-resolution are not implemented. Errors contain only an enum, never the URL.
+hosts, IDNA, scoped IPv6 zones and IPvFuture are not implemented. Errors contain
+only an enum, never the URL.
 These are a bounded subset of [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986.html)
 and the [HTTP(S) schemes](https://www.rfc-editor.org/rfc/rfc9110.html#section-4.2),
 not a general URL standard implementation.

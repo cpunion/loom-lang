@@ -1,11 +1,12 @@
-# One-request HTTP/1.1 client
+# HTTP/1.1 client
 
-`std.net.http.client` performs one bounded HTTP(S) exchange using the
+`std.net.http.client` performs bounded HTTP(S) exchanges using the
 source URL/message libraries and scoped TCP/TLS acquisition. There is no HTTP
 runtime or new dependency.
 The [interoperability fixture](../../../../examples/http_client/README.md) uses
 a real independent TLS peer; the native gate also runs the source package tests.
-`get`/`send` collect a response; `consume` streams it through an awaited callback.
+`get`/`send` collect one response; `consume` streams it through an awaited callback.
+Following redirects is a separate explicit operation.
 
 ```loom
 let response = std.net.http.client.get("https://example.com/data").await?
@@ -31,8 +32,9 @@ Uploads and response reads overlap. A complete early final response can stop the
 remaining upload; it does not wait for a rejecting peer to consume the body.
 Informational responses share the configured count budget; the final response
 retains separate trailers. Connections close after completion, failure or
-cancellation; no idle connection is pooled. HTTP error statuses and redirects
-are ordinary responses, not transport errors. Protocol switches and CONNECT
+cancellation; no idle connection is pooled. For these one-exchange operations,
+HTTP error statuses and redirects are ordinary responses, not transport errors.
+Protocol switches and CONNECT
 are unsupported.
 
 The timeout starts after snapshot preparation and includes queuing, acquisition
@@ -40,9 +42,42 @@ and exchange, including the awaited consumer. It requests cancellation and drain
 children; it is not a hard return deadline for blocking OS lookups.
 Completed outcomes/cleanup faults retain
 the Task deadline rules. TCP's own dial defaults still apply. Timeout or transport
-failure does not prove that a server performed no action. The client never
-retries, follows redirects, reads proxy environment configuration or forwards
+failure does not prove that a server performed no action. Default operations do
+not retry, follow redirects, read proxy environment configuration or discover
 credentials automatically.
+
+## Explicit redirects
+
+```loom
+let response = std.net.http.client.get_following("https://example.com/latest", 5).await?
+```
+
+`get_following(url, maximum)` and `follow(request, maximum)` use default options;
+their three-argument forms place `Options` before `maximum`. They return
+`Result[Response, RedirectError]`. Only GET/HEAD with an empty request body are
+accepted; methods are preserved for 301/302/303/307/308. There is no POST rewrite,
+upload replay, callback replay, retry, or redirect support for streaming consumers.
+
+Each Location resolves against the current URL using the source
+[reference resolver](../url/README.md). Only the same scheme, normalized host
+spelling and effective port are admitted. Other origins and HTTPS downgrades
+reject before the next connection, even with `allow_http`. DNS aliases and
+equivalent IPv6 spellings are not equated; this is not an SSRF filter.
+Caller headers, including explicit credentials, stay within that origin. Plain
+HTTP still rejects Authorization/Cookie. Request headers and TLS configuration
+are snapshotted before the hot Task is created, as for `send`.
+
+`maximum` counts followed hops; zero permits an ordinary final response but
+reports Limit for a redirect with Location. Missing Location and other status
+codes return an ordinary collected response. Duplicate, non-ASCII or malformed
+Locations reject without URI repair; commas remain URI data, not separators.
+Errors carry typed causes only, never URLs, headers or response bodies.
+
+One timeout covers the complete chain; message/informational limits apply per
+hop. A followed or rejected redirect closes immediately after its headers,
+without waiting for or validating its unused body/trailers. The final response
+is fully collected and checked. Timeout, faults and cancellation drain pending
+children before transport cleanup. No connection is pooled between hops.
 
 ## Streaming responses
 

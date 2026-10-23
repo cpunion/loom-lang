@@ -465,9 +465,11 @@ It is not a complete HTTP
 client/server: routing, authority validation and connection policy remain library work.
 The separate pure HTTP(S) URL parser splits connection host/port, Host authority,
 origin-form target and local fragment without decoding path escapes. It rejects
-userinfo and malformed/unsupported forms; DNS/TLS and destination policies remain
-explicit. The real TCP example uses its result, not a new runtime boundary.
-The separate source HTTP client performs one exchange with verified TLS,
+userinfo and malformed/unsupported forms. Its pure reference resolver handles
+relative paths, queries and fragments without decoding escapes or repairing
+invalid segments. DNS/TLS and destination policies remain explicit.
+The real TCP example uses its result, not a new runtime boundary.
+The separate source HTTP client performs one exchange by default with verified TLS,
 explicit plaintext policy, input snapshots, concurrent upload/response reads and
 draining deadlines. Buffered reads collect the same bounded-chunk response path
 used by awaited scoped consumers. Early consumer return closes without draining
@@ -477,8 +479,12 @@ retaining synchronous metadata snapshots, backpressure, typed source errors and
 the same response/deadline path. Factories can acquire asynchronously under that
 deadline; cancellation and early responses drain acquisition resources too.
 Source failure revokes pending transport I/O;
-early final responses drain unfinished producers. It does not add automatic
-retries, redirects or pooling; broader application networking remains open.
+early final responses drain unfinished producers. Explicit bounded GET/HEAD
+redirects retain detached headers/TLS configuration, enforce the same origin and
+share one deadline across hops. Unused redirect bodies are closed, not drained;
+final responses retain full checking. Default requests and uploads do not
+follow redirects. Retries and pooling are not implemented; broader application
+networking remains open.
 
 Stop-the-world copying GC preserves precise roots, sharing and cycles.
 Nonallocating functions stay root-free; liveness retires dead locals at checked

@@ -129,8 +129,39 @@ fn serve(stream: impl Read + Write, mode: &str, payload: &[u8], location: &str) 
     assert!(!matches!(stream.read(&mut byte), Ok(1)));
 }
 
+fn serve_redirect(mut stream: impl Read + Write, mode: &str, port: u16, hop: usize) {
+    let mut metadata = String::new();
+    loop {
+        let field = line(&mut stream);
+        if field == "\r\n" {
+            break;
+        }
+        metadata.push_str(&field);
+    }
+    assert!(metadata.starts_with(if hop == 0 {
+        "GET /echo?x=1 HTTP/1.1\r\n"
+    } else {
+        "GET /follow HTTP/1.1\r\n"
+    }));
+    assert!(metadata.contains("\r\nAuthorization: private-before\r\n"));
+    assert!(metadata.contains("\r\nX-Snapshot: before\r\n"));
+    let response = if mode == "follow-origin" {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1:{port}/private\r\nContent-Length: 1000\r\n\r\n"
+        )
+    } else if hop == 0 || mode == "follow-limit" {
+        "HTTP/1.1 302 Found\r\nLocation: ../follow\r\nContent-Length: 1000\r\n\r\n".to_owned()
+    } else {
+        "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\naccepted".to_owned()
+    };
+    stream.write_all(response.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    let mut byte = [0];
+    assert!(!matches!(stream.read(&mut byte), Ok(1)));
+}
+
 #[test]
-fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
+fn source_https_client_verifies_names_limits_and_explicit_redirect_policy() {
     let directory = tempfile::tempdir().unwrap();
     let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
     ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -220,6 +251,9 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
             "limit",
             "interim-limit",
             "redirect",
+            "follow",
+            "follow-origin",
+            "follow-limit",
             "stream",
             "upload",
             "upload-error",
@@ -230,23 +264,34 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
             let config = config.clone();
             let payload = payload.clone();
             let peer = thread::spawn(move || {
-                let (socket, _) = cloned.accept().unwrap();
-                socket
-                    .set_read_timeout(Some(Duration::from_secs(10)))
-                    .unwrap();
-                socket
-                    .set_write_timeout(Some(Duration::from_secs(10)))
-                    .unwrap();
-                let stream = rustls::StreamOwned::new(
-                    rustls::ServerConnection::new(config).unwrap(),
-                    socket,
-                );
-                serve(
-                    stream,
-                    mode,
-                    &payload,
-                    &format!("https://localhost:{port}/follow"),
-                );
+                let hops = if mode == "follow" || mode == "follow-limit" {
+                    2
+                } else {
+                    1
+                };
+                for hop in 0..hops {
+                    let (socket, _) = cloned.accept().unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(10)))
+                        .unwrap();
+                    socket
+                        .set_write_timeout(Some(Duration::from_secs(10)))
+                        .unwrap();
+                    let stream = rustls::StreamOwned::new(
+                        rustls::ServerConnection::new(config.clone()).unwrap(),
+                        socket,
+                    );
+                    if mode.starts_with("follow") {
+                        serve_redirect(stream, mode, port, hop);
+                    } else {
+                        serve(
+                            stream,
+                            mode,
+                            &payload,
+                            &format!("https://localhost:{port}/follow"),
+                        );
+                    }
+                }
             });
             let host = if mode == "wrong-name" {
                 "127.0.0.1"
@@ -274,10 +319,10 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
                 command.arg(directory.path().join("payload")).arg(mode);
             }
             let output = common::run_task_command(&mut command);
-            peer.join().unwrap();
             if mode == "upload-error" {
                 assert!(!output.status.success());
                 assert_eq!(output.stderr, b"upload source failed\n");
+                peer.join().unwrap();
                 continue;
             }
             success(&output);
@@ -287,11 +332,15 @@ fn source_https_client_verifies_names_limits_and_never_follows_redirects() {
                     "ok" => b"HTTPS response\n".as_slice(),
                     "wrong-name" => b"peer rejected\n".as_slice(),
                     "redirect" => b"redirect returned\n".as_slice(),
+                    "follow" => b"HTTPS redirect followed\n".as_slice(),
+                    "follow-origin" => b"redirect origin rejected\n".as_slice(),
+                    "follow-limit" => b"redirect limit reached\n".as_slice(),
                     "stream" => b"200 131079\n".as_slice(),
                     "upload" => b"HTTPS upload accepted\n".as_slice(),
                     _ => b"bounded protocol rejection\n".as_slice(),
                 }
             );
+            peer.join().unwrap();
             listener.set_nonblocking(true).unwrap();
             assert_eq!(
                 listener.accept().unwrap_err().kind(),
