@@ -34,6 +34,18 @@ fn inspect_declaration_references(view CheckedQuery, report Inspection, target Q
         if reference.file == file && node.span.start == target.node.span.start && node.span.end >= target.node.span.end &&
         same_kind && reference.segment == target.segment {
             let owner = get(view.bindings.symbols, reference.symbol)
+            match reference.parameter {
+                Option.Some(parameter) => {
+                    if parameter.value == target.token.value {
+                        declaration(view, report, owner.file, parameter)
+                        add_type(report, reference.label)
+                    }
+                    index = index + 1
+                    continue
+                }
+                Option.None => {
+                }
+            }
             let member = if node.kind == NodeKind.Field {
                 NodeKind.Field
             } else {
@@ -166,6 +178,18 @@ fn inspect_declaration_at(analysis AnalysisState, view CheckedQuery, file Int, o
         possible = possible || ((symbol.node.kind == NodeKind.Function || symbol.node.kind == NodeKind.Concept || symbol.node.kind == NodeKind.AssociatedType ||
                 symbol.node.kind == NodeKind.Record || symbol.node.kind == NodeKind.Enum || symbol.node.kind == NodeKind.Refined) &&
             symbol.name == token.value)
+        if symbol.file == file && inside(symbol.node.span, offset) {
+            var group = 0
+            while group < length(symbol.node.children) {
+                let parameters = get(symbol.node.children, group)
+                var parameter = 0
+                while parameters.kind == NodeKind.TypeParameters && parameter < length(parameters.children) {
+                    possible = possible || get(parameters.children, parameter).value == token.value
+                    parameter = parameter + 1
+                }
+                group = group + 1
+            }
+        }
         index = index + 1
     }
     if !possible {

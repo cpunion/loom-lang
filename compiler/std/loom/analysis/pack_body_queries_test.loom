@@ -1,0 +1,117 @@
+test fn pack_body_queries_keep_checked_source_binders_across_selected_widths() {
+    let source = """
+        record Types {
+            value Int
+        }
+        fn pack[Items...](values Items...) (Items...) {
+            values
+        }
+        fn forward[Types...](values Types...) (Types...) {
+            pack[Types...](values...)
+        }
+        fn main() {
+            discard forward()
+            assert forward(7, true).0 == 7
+            assert forward("text").0 == "text"
+        }
+        """
+    let analysis = accepted(input(source))
+    let types = length(analysis.program.types)
+    let functions = length(analysis.program.functions)
+    let symbols = length(analysis.bindings.symbols)
+    let found = inspection(analysis, source, "Types...](values...)")
+    let declared = query_offset(source, "Types...](values Types")
+    only_type(found, "Types...")
+    only_definition(found, declared, declared + 5)
+    only_definition(inspection(analysis, source, "Types...](values...)"), declared, declared + 5)
+    assert length(analysis.program.types) == types && length(analysis.program.functions) == functions &&
+    length(analysis.bindings.symbols) == symbols
+}
+
+test fn pack_body_queries_keep_associated_receivers_and_fixed_type_arguments() {
+    let source = """
+        concept Source {
+            type Item
+        }
+        impl Source for Int {
+            type Item = Bool
+        }
+        fn pack[Items...](values Items...) (Items...) {
+            values
+        }
+        fn forward[T Source, Types...](first T.Item, values Types...) (T.Item, Types...) {
+            pack[T.Item, Types...](first, values...)
+        }
+        fn main() {
+            discard forward[Int, Bool, Text](true, false, "text")
+        }
+        """
+    let analysis = accepted(input(source))
+    let fixed = query_offset(source, "T Source")
+    let receiver = inspection(analysis, source, "T.Item, Types...](first")
+    only_type(receiver, "T")
+    only_definition(receiver, fixed, fixed + 1)
+    let pack = query_offset(source, "Types...](first T.Item")
+    only_type(inspection(analysis, source, "Types...](first, values...)"), "Types...")
+    only_definition(inspection(analysis, source, "Types...](first, values...)"), pack, pack + 5)
+}
+
+test fn pack_body_queries_do_not_invent_unselected_or_unused_references() {
+    let source = """
+        fn pack[Items...](values Items...) (Items...) {
+            values
+        }
+        fn forward[Types...](comptime selected Bool, values Types...) (Types...) {
+            comptime if selected {
+                pack[Types...](values...)
+            } else {
+                let copied = pack[Types...](values...)
+                copied
+            }
+        }
+        fn unused[Hidden...](values Hidden...) (Hidden...) {
+            pack[Hidden...](values...)
+        }
+        fn main() {
+            discard forward(true, 7, false)
+        }
+        """
+    let analysis = accepted(input(source))
+    only_type(inspection(analysis, source, "Types...](values...)"), "Types...")
+    let absent = [query_offset(source, "copied = pack[Types") + length("copied = pack["),
+        query_offset(source, "Hidden...](values...)")]
+    var index = 0
+    while index < length(absent) {
+        assert match inspect_at(analysis, 0, get(absent, index)) {
+            Option.None => true
+            Option.Some(found) => length(found.definitions) == 0
+        }
+        index = index + 1
+    }
+}
+
+test fn pack_body_queries_keep_method_binders_in_static_and_dynamic_instances() {
+    let source = """
+        fn pack[Items...](values Items...) (Items...) {
+            values
+        }
+        concept Forward {
+            fn forward[Types...](self Self, values Types...) (Types...)
+        }
+        impl Forward for Bool {
+            fn forward[Types...](self Bool, values Types...) (Types...) {
+                pack[Types...](values...)
+            }
+        }
+        fn main() {
+            discard true.forward(7, false)
+            let erased dyn Forward = true
+            discard erased.forward("text", 2)
+        }
+        """
+    let analysis = accepted(input(source))
+    let found = inspection(analysis, source, "Types...](values...)")
+    let declared = query_offset(source, "Types...](self Bool")
+    only_type(found, "Types...")
+    only_definition(found, declared, declared + 5)
+}
