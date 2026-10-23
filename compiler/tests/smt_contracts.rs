@@ -840,6 +840,78 @@ fn constrained(values List[Int]) Sorted {
 }
 
 #[test]
+fn affine_sequence_cuts_prove_symbolic_offsets_and_recheck_changed_backedges() {
+    let package = tempfile::tempdir().unwrap();
+    for (name, text) in [
+        (
+            "quantified.loom",
+            include_str!("../examples/smt_contracts/quantified.loom"),
+        ),
+        (
+            "copies.loom",
+            include_str!("../examples/smt_contracts/copies.loom"),
+        ),
+    ] {
+        fs::write(package.path().join(name), text).unwrap();
+    }
+    let source = package.path().join("affine.loom");
+    let program = include_str!("../examples/smt_contracts/affine_sequences.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace(
+            "translated(cursor, bias), 0",
+            "translated(cursor, bias), -1",
+        ),
+        program.replace("cursor = cursor + 1", "cursor = cursor + 2"),
+        program.replace("cursor > -bias", "cursor > 1 - bias"),
+        program.replace(
+            "push(output, get(values, cursor + bias))",
+            "push(output, 0)",
+        ),
+    ] {
+        assert_ne!(changed, program);
+        fs::write(&source, changed).unwrap();
+        let output = check();
+        assert!(
+            !output.status.success(),
+            "invalid affine content proof accepted"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("not proved"));
+    }
+    fs::write(&source, program).unwrap();
+    success(&check());
+    let artifact = common::executable(package.path(), "affine-sequences");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["test", package.path().to_str().unwrap()])
+                .args(["--no-run", "--output"])
+                .arg(&artifact)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(
+            &Command::new(&artifact)
+                .env("PATH", "")
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
+}
+
+#[test]
 fn quantified_contracts_reject_wrong_algorithms_and_unexecuted_safety_facts() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");

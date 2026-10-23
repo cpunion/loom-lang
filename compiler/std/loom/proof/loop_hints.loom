@@ -63,6 +63,10 @@ fn loop_affine_update(proof Verification, value Expr, symbols State, budget List
     if loop_call_free(value) || get(budget, 0) <= 0 {
         return direct
     }
+    pure(loop_affine_suggestion(proof, value, budget)?, symbols)
+}
+
+fn loop_affine_suggestion(proof Verification, value Expr, budget List[Int]) Result[Expr, Text] {
     let bindings = new[ExpansionBinding]()
     var index = 0
     while index < length(proof.function.locals) {
@@ -89,5 +93,5 @@ fn loop_affine_update(proof Verification, value Expr, symbols State, budget List
     if !bounded_contract(suggestion) {
         return Result.Err("affine suggestion expression budget exhausted")
     }
-    pure(suggestion, symbols)
+    Result.Ok(suggestion)
 }
