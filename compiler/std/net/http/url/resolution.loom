@@ -1,0 +1,119 @@
+import std.text.starts_with
+import std.text.split
+import std.text.join
+import std.list.new
+import std.list.length
+import std.list.push
+import std.list.transfer.take_last
+
+fn scheme(value Url) Text {
+    if value.secure {
+        "https://"
+    } else {
+        "http://"
+    }
+}
+
+// All HTTP paths here are rooted. Keep empty segments and encoded dots intact;
+// only whole literal dot segments participate in RFC 3986 path resolution.
+fn resolved_path(path Text) Text {
+    let segments = split(path, "/")
+    let output = std.list.new[Text]()
+    var index = 1
+    while index < std.list.length(segments) {
+        let segment = segments[index]
+        if segment == ".." {
+            discard take_last(output)
+        } else if segment != "." {
+            std.list.push(output, segment)
+        }
+        if (segment == "." || segment == "..") && index == std.list.length(segments) - 1 {
+            std.list.push(output, "")
+        }
+        index = index + 1
+    }
+    concat("/", join(output, "/"))
+}
+
+fn path_end(target Text) Int {
+    let query = find(target, "?")
+    if query < 0 {
+        std.text.length(target)
+    } else {
+        query
+    }
+}
+
+fn normalized(value Url) Url {
+    let end = path_end(value.target)
+    Url {
+        target = concat(resolved_path(slice(value.target, 0, end)),
+            slice(value.target, end, std.text.length(value.target)))
+        ..value
+    }
+}
+
+// Resolve HTTP(S) references without browser repairs or network access. The
+// ordinary parser validates the base and the complete resolved reference.
+pub fn resolve(base Text, reference Text) Result[Url, ParseError] {
+    let origin = parse(base)?
+    var end = 0
+    while end < std.text.length(reference) {
+        let current = byte(reference, end)
+        if current == 58 {
+            return Result.Ok(normalized(parse(reference)?))
+        }
+        if current == 47 || current == 63 || current == 35 {
+            break
+        }
+        end = end + 1
+    }
+    if starts_with(reference, "//") {
+        return Result.Ok(normalized(parse(concat(scheme(origin), slice(reference, 2, std.text.length(reference))))?))
+    }
+    let fragment = find(reference, "#")
+    let component_end = if fragment < 0 {
+        std.text.length(reference)
+    } else {
+        fragment
+    }
+    let query = find(slice(reference, 0, component_end), "?")
+    let reference_path_end = if query < 0 {
+        component_end
+    } else {
+        query
+    }
+    let path = slice(reference, 0, reference_path_end)
+    let target = if reference_path_end == 0 {
+        if query < 0 {
+            origin.target
+        } else {
+            concat(slice(origin.target, 0, path_end(origin.target)), slice(reference, 0, component_end))
+        }
+    } else {
+        let merged = if starts_with(path, "/") {
+            path
+        } else {
+            let base_path = slice(origin.target, 0, path_end(origin.target))
+            var parent = std.text.length(base_path)
+            while parent > 0 && byte(base_path, parent - 1) != 47 {
+                parent = parent - 1
+            }
+            concat(slice(base_path, 0, parent), path)
+        }
+        concat(merged, slice(reference, reference_path_end, component_end))
+    }
+    let suffix = if fragment < 0 {
+        ""
+    } else {
+        slice(reference, fragment, std.text.length(reference))
+    }
+    // Validate before removing segments, so an invalid segment cannot disappear
+    // behind a later "..". Empty references retain the base path and query.
+    let resolved = parse(concat(scheme(origin), concat(origin.authority, concat(target, suffix))))?
+    Result.Ok(if reference_path_end == 0 {
+            resolved
+        } else {
+            normalized(resolved)
+        })
+}

@@ -1,0 +1,207 @@
+import std.net.http.url.resolve
+import std.text.concat
+import std.bytes.to_text
+
+pub enum RedirectError {
+    Client(Error)
+    Options
+    Unsupported
+    Limit
+    Origin
+    Location(ParseError)
+    MultipleLocations
+}
+
+enum RedirectStep {
+    Done(Response)
+    Next(Url)
+    Failed(RedirectError)
+}
+
+fn redirects(code Int) Bool {
+    code == 301 || code == 302 || code == 303 || code == 307 || code == 308
+}
+
+fn same_origin(left Url, right Url) Bool {
+    left.secure == right.secure && left.host == right.host && left.port == right.port
+}
+
+fn endpoint_url(value Url) Text {
+    concat(if value.secure {
+            "https://"
+        } else {
+            "http://"
+        }, concat(value.authority, value.target))
+}
+
+// Location is one ASCII URI reference, not a comma-separated field. Validate
+// octets before Text construction; a peer cannot turn invalid UTF-8 into a fault.
+fn location(fields List[Header]) Result[Option[Text], RedirectError] {
+    var found Option[Text] = Option.None
+    var index = 0
+    while index < length(fields) {
+        let field = fields[index]
+        if header_named(field, "Location") {
+            if match found {
+                Option.Some(_) => true,
+                Option.None => false
+            } {
+                return Result.Err(RedirectError.MultipleLocations)
+            }
+            let bytes = field.value
+            var start = 0
+            var end = std.bytes.length(bytes)
+            while start < end && (std.bytes.get(bytes, start) == 32 || std.bytes.get(bytes, start) == 9) {
+                start = start + 1
+            }
+            while end > start && (std.bytes.get(bytes, end - 1) == 32 || std.bytes.get(bytes, end - 1) == 9) {
+                end = end - 1
+            }
+            let text = std.bytes.new()
+            while start < end {
+                let current = std.bytes.get(bytes, start)
+                if current <= 32 || current >= 127 {
+                    return Result.Err(RedirectError.Location(ParseError.Target))
+                }
+                std.bytes.push(text, current)
+                start = start + 1
+            }
+            found = Option.Some(std.bytes.to_text(text))
+        }
+        index = index + 1
+    }
+    Result.Ok(found)
+}
+
+fn next_location(base Url, fields List[Header], remaining Int) Result[Option[Url], RedirectError] {
+    let reference = match location(fields)? {
+        Option.None => {
+            return Result.Ok(Option.None)
+        }
+        Option.Some(value) => value
+    }
+    if remaining == 0 {
+        return Result.Err(RedirectError.Limit)
+    }
+    let endpoint = match resolve(endpoint_url(base), reference) {
+        Result.Ok(value) => value
+        Result.Err(error) => {
+            return Result.Err(RedirectError.Location(error))
+        }
+    }
+    if !same_origin(base, endpoint) {
+        return Result.Err(RedirectError.Origin)
+    }
+    Result.Ok(Option.Some(endpoint))
+}
+
+async fn redirect_step(response Incoming, base Url, remaining Int) Result[RedirectStep, Error] {
+    if redirects(status(response)) {
+        match next_location(base, headers(response), remaining) {
+            Result.Err(error) => {
+                return Result.Ok(RedirectStep.Failed(error))
+            }
+            Result.Ok(Option.Some(endpoint)) => {
+                // Returning closes this hop without waiting for an unused body.
+                return Result.Ok(RedirectStep.Next(endpoint))
+            }
+            Result.Ok(Option.None) => {
+            }
+        }
+    }
+    Result.Ok(RedirectStep.Done(collect_response(response).await?))
+}
+
+async fn redirect_failed(error RedirectError) Result[Response, RedirectError] {
+    Result.Err(error)
+}
+
+async fn follow_prepared(value std.net.http.client.Request, configuration Options,
+    initial Prepared[Bytes], maximum Int, deadline Int) Result[Response, RedirectError] {
+    var prepared = initial
+    var remaining = maximum
+    while true {
+        let base = prepared.endpoint
+        let budget = remaining
+        let handler = async fn(response Incoming) Result[RedirectStep, Error] {
+            redirect_step(response, base, budget).await
+        }
+        match bounded[RedirectStep](prepared, deadline, handler).await {
+            Result.Err(error) => {
+                return Result.Err(RedirectError.Client(error))
+            }
+            Result.Ok(RedirectStep.Failed(error)) => {
+                return Result.Err(error)
+            }
+            Result.Ok(RedirectStep.Done(response)) => {
+                return Result.Ok(response)
+            }
+            Result.Ok(RedirectStep.Next(endpoint)) => {
+                prepared = match prepare(std.net.http.client.Request {
+                        url = endpoint_url(endpoint)
+                        ..value
+                    }, configuration) {
+                    Result.Ok(value) => value
+                    Result.Err(error) => {
+                        return Result.Err(RedirectError.Client(error))
+                    }
+                }
+                remaining = remaining - 1
+            }
+        }
+    }
+    Result.Err(RedirectError.Limit)
+}
+
+pub fn get_following(url Text, maximum Int) Task[Result[Response, RedirectError]] {
+    follow(request("GET", url), options(), maximum)
+}
+
+pub fn get_following(url Text, configuration Options, maximum Int) Task[Result[Response, RedirectError]] {
+    follow(request("GET", url), configuration, maximum)
+}
+
+pub fn follow(value std.net.http.client.Request, maximum Int) Task[Result[Response, RedirectError]] {
+    follow(value, options(), maximum)
+}
+
+// Explicit, bounded, same-origin GET/HEAD redirects. All caller buffers are
+// detached synchronously; one deadline covers every hop and its cleanup.
+pub fn follow(value std.net.http.client.Request, configuration Options, maximum Int) Task[Result[Response, RedirectError]] {
+    if maximum < 0 {
+        return redirect_failed(RedirectError.Options)
+    }
+    if (value.method != "GET" && value.method != "HEAD") || std.bytes.length(value.body) != 0 {
+        return redirect_failed(RedirectError.Unsupported)
+    }
+    let fields = std.list.new[Header]()
+    var index = 0
+    while index < length(value.headers) {
+        let field = value.headers[index]
+        push(fields, Header {
+                name = field.name
+                value = clone(field.value)
+            })
+        index = index + 1
+    }
+    let snapshot = std.net.http.client.Request {
+        headers = fields
+        body = std.bytes.new()
+        ..value
+    }
+    let prepared = match prepare(snapshot, configuration) {
+        Result.Ok(value) => value
+        Result.Err(error) => {
+            return redirect_failed(RedirectError.Client(error))
+        }
+    }
+    if configuration.timeout_ns == 0 {
+        return redirect_failed(RedirectError.Client(Error.Timeout))
+    }
+    let detached = Options {
+        trust = prepared.tls.trust
+        identity = prepared.tls.identity
+        ..configuration
+    }
+    follow_prepared(snapshot, detached, prepared, maximum, timeout_deadline(configuration.timeout_ns))
+}

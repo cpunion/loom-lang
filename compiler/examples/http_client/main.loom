@@ -5,6 +5,8 @@ import std.net.http.client.TransportError
 import std.net.http.client.options
 import std.net.http.client.request
 import std.net.http.client.send
+import std.net.http.client.follow
+import std.net.http.client.RedirectError
 import std.net.http.Header
 import std.net.http.Limits
 import std.net.http.ProtocolError
@@ -20,6 +22,7 @@ import std.text.to_bytes
 import std.list.length
 import std.result.Result
 import std.io.write_text
+import std.bytes.to_text
 
 fn loaded(path Text) Bytes {
     match read_bytes(path) {
@@ -31,10 +34,61 @@ fn loaded(path Text) Bytes {
     }
 }
 
+async fn redirect_trial(url Text, ca Text, mode Text) {
+    let roots = loaded(ca)
+    let token = to_bytes("private-before")
+    let header = to_bytes("before")
+    let pending = follow(Request {
+            headers = [Header {
+                    name = "Authorization"
+                    value = token
+                }, Header {
+                    name = "X-Snapshot"
+                    value = header
+                }]
+            ..request("GET", url)
+        }, Options {
+            trust = Trust.Certificates(roots)
+            timeout_ns = 5000000000
+            ..options()
+        }, if mode == "follow-limit" {
+            1
+        } else {
+            5
+        })
+    set(roots, 0, 88)
+    set(token, 0, 88)
+    set(header, 0, 88)
+    let response = pending.await
+    if mode == "follow-origin" {
+        assert match response {
+            Result.Err(RedirectError.Origin) => true
+            _ => false
+        }
+        discard write_text("redirect origin rejected\n")
+    } else if mode == "follow-limit" {
+        assert match response {
+            Result.Err(RedirectError.Limit) => true
+            _ => false
+        }
+        discard write_text("redirect limit reached\n")
+    } else {
+        assert match response {
+            Result.Ok(value) => value.status == 200 && to_text(value.body) == "accepted"
+            _ => false
+        }
+        discard write_text("HTTPS redirect followed\n")
+    }
+}
+
 async fn main() {
     let args = arguments()
     assert std.list.length(args) == 5
     let mode = args[4]
+    if mode == "follow" || mode == "follow-origin" || mode == "follow-limit" {
+        redirect_trial(args[1], args[2], mode).await
+        return
+    }
     let payload = if mode == "ok" {
         loaded(args[3])
     } else {

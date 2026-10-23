@@ -1,0 +1,214 @@
+import std.list.set
+import std.int.to_text
+
+async fn redirect_peer(listener ListenerHandle, responses List[Text], targets List[Text], method Text, observed List[Int]) Result[Bool, TcpError] {
+    var index = 0
+    while index < length(responses) {
+        scoped acquired = std.net.tcp.accept_owned(listener).await?
+        let stream = std.net.tcp.detach(acquired)?
+        defer {
+            discard close_stream(stream)
+        }
+        let input = reader(std.net.tcp.chunks.read(stream, 16384), tcp_packet, std.net.http.limits())
+        let message = match read_request(input).await {
+            Result.Ok(Option.Some(value)) => value
+            _ => {
+                return Result.Ok(false)
+            }
+        }
+        if message.method != method || message.target != targets[index] || std.bytes.length(message.body) != 0 {
+            return Result.Ok(false)
+        }
+        var snapshot = false
+        var field = 0
+        while field < length(message.headers) {
+            let header = message.headers[field]
+            if header_named(header, "X-Snapshot") {
+                snapshot = to_text(header.value) == "before"
+            }
+            field = field + 1
+        }
+        if !snapshot {
+            return Result.Ok(false)
+        }
+        observed[0] = observed[0] + 1
+        if responses[index] != "" {
+            discard std.net.tcp.write_bytes(stream, to_bytes(replace(responses[index], "\n", "\r\n"))).await?
+        }
+        // Every hop must retire before the next one, even when the redirect's
+        // declared body was deliberately not sent or the final hop is cancelled.
+        if !match std.net.tcp.read(stream, std.bytes.new(), 1).await {
+            Result.Ok(count) => count == 0
+            Result.Err(_) => true
+        } {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn redirect_reply(code Int, target Text) Text {
+    concat("HTTP/1.1 ", concat(std.int.to_text(code), concat(" Redirect\nLocation: ", concat(target, "\nContent-Length: 1000\n\n"))))
+}
+
+async fn redirect_roundtrip(head Bool, maximum Int, cross_origin Bool) Result[Bool, TcpError] {
+    scoped owner = listen("127.0.0.1:0").await?
+    let listener = std.net.tcp.detach(owner)?
+    defer {
+        discard close_listener(listener)
+    }
+    let address = std.net.tcp.local_address(listener)?
+    let origin = concat("http://", address)
+    let responses = if cross_origin {
+        [redirect_reply(302, "http://elsewhere.test/private")]
+    } else if maximum == 0 {
+        ["HTTP/1.1 302 Found\nContent-Length: 8\n\naccepted"]
+    } else if maximum == 1 {
+        [redirect_reply(302, "../one"), redirect_reply(302, "../two")]
+    } else if head {
+        [redirect_reply(303, "../final"), "HTTP/1.1 200 OK\nContent-Length: 8\n\n"]
+    } else {
+        [redirect_reply(301, "../one"), redirect_reply(302, "?q=1"), redirect_reply(303, "/deep/./two"),
+            redirect_reply(307, concat("//", concat(address, "/../three"))), redirect_reply(308, "final?x#local"),
+            "HTTP/1.1 200 OK\nContent-Length: 8\n\naccepted"]
+    }
+    let targets = if cross_origin || maximum == 0 {
+        ["/base/start"]
+    } else if maximum == 1 {
+        ["/base/start", "/one"]
+    }
+    else if head {
+        ["/base/start", "/final"]
+    }
+    else {
+        ["/base/start", "/one", "/one?q=1", "/deep/two", "/three", "/final?x"]
+    }
+    let method = if head {
+        "HEAD"
+    } else {
+        "GET"
+    }
+    let observed = [0]
+    let serving = redirect_peer(listener, responses, targets, method, observed)
+    let header = to_bytes("before")
+    let fields = [Header {
+            name = "X-Snapshot",
+            value = header
+        }]
+    let pending = follow(std.net.http.client.Request {
+            headers = fields
+            ..request(method, concat(origin, "/base/start#local"))
+        }, Options {
+            allow_http = true,
+            timeout_ns = 10000000000,
+            ..options()
+        }, maximum)
+    std.bytes.set(header, 0, 88)
+    std.list.set(fields, 0, Header {
+            name = "X-Snapshot",
+            value = to_bytes("after")
+        })
+    let received = pending.await
+    let served = serving.await
+    Result.Ok(match served {
+            Result.Ok(value) => value,
+            _ => false
+        } && observed[0] == length(responses) &&
+        match received {
+            Result.Err(RedirectError.Origin) => cross_origin
+            Result.Err(RedirectError.Limit) => !cross_origin && maximum == 1
+            Result.Ok(value) => !cross_origin && maximum != 1 && value.status == if maximum == 0 {
+                302
+            } else {
+                200
+            } &&
+            to_text(value.body) == if head {
+                ""
+            } else {
+                "accepted"
+            }
+            _ => false
+        })
+}
+
+test async fn bounded_redirects_preserve_get_head_and_frozen_headers() {
+    assert match redirect_roundtrip(false, 0, false).await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+    assert match redirect_roundtrip(false, 5, false).await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+    assert match redirect_roundtrip(true, 2, false).await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+    assert match redirect_roundtrip(false, 1, false).await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+    assert match redirect_roundtrip(false, 5, true).await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+}
+
+async fn retire_redirect(timeout Bool) Result[Bool, TcpError] {
+    scoped owner = listen("127.0.0.1:0").await?
+    let listener = std.net.tcp.detach(owner)?
+    defer {
+        discard close_listener(listener)
+    }
+    let address = std.net.tcp.local_address(listener)?
+    let observed = [0]
+    let serving = redirect_peer(listener, [redirect_reply(302, "/later"), ""], ["/start", "/later"], "GET", observed)
+    let pending = follow(std.net.http.client.Request {
+            headers = [Header {
+                    name = "X-Snapshot",
+                    value = to_bytes("before")
+                }]
+            ..request("GET", concat("http://", concat(address, "/start")))
+        }, Options {
+            allow_http = true,
+            timeout_ns = if timeout {
+                2000000000
+            } else {
+                30000000000
+            }
+            ..options()
+        }, 1)
+    let limit = monotonic_ns() + 5000000000
+    while observed[0] < 2 && monotonic_ns() < limit {
+        sleep_ms(0).await
+    }
+    assert observed[0] == 2
+    let retired = if timeout {
+        match pending.await {
+            Result.Err(RedirectError.Client(Error.Timeout)) => true
+            _ => false
+        }
+    } else {
+        match cancel(pending) {
+            Outcome.Cancelled => true,
+            _ => false
+        }
+    }
+    let served = serving.await
+    Result.Ok(retired && match served {
+            Result.Ok(value) => value,
+            _ => false
+        })
+}
+
+test async fn cancelling_or_timing_out_a_later_hop_drains_and_closes_its_transport() {
+    assert match retire_redirect(false).await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+    assert match retire_redirect(true).await {
+        Result.Ok(value) => value,
+        _ => false
+    }
+}
