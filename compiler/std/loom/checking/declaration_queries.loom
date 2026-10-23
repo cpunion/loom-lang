@@ -96,7 +96,8 @@ fn record_type_parameter_reference(env Environment, owner Int, node Node, parame
         return
     }
     let source = impl_member_source(env, method_reference_source(env, owner))
-    if source < 0 || symbol(env, source).file != symbol(env, owner).file {
+    if source < 0 || source >= get(env.inputs, 0).source_symbols ||
+    symbol(env, source).file != symbol(env, owner).file {
         return
     }
     let parameters = type_parameters(env, source)
@@ -104,11 +105,6 @@ fn record_type_parameter_reference(env Environment, owner Int, node Node, parame
     while index < length(parameters) {
         let declared = get(parameters, index)
         if declared.span.start == parameter.span.start && declared.span.end == parameter.span.end {
-            // Signature construction can resolve an internal proof parameter
-            // before its erased-pack entry exists. It has no source spelling.
-            if std.text.starts_with(declared.value, "$") {
-                return
-            }
             record_declaration_reference(env, owner, node, source, 0,
                 if declared.kind == NodeKind.TypePack {
                     concat(declared.value, "...")

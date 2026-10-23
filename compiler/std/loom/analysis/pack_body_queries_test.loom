@@ -9,10 +9,16 @@ test fn pack_body_queries_keep_checked_source_binders_across_selected_widths() {
         fn forward[Types...](values Types...) (Types...) {
             pack[Types...](values...)
         }
+        fn count[Fixed, Rest...](first Fixed, values Rest...) Int
+        ensures result == 1
+        {
+            1
+        }
         fn main() {
             discard forward()
             assert forward(7, true).0 == 7
             assert forward("text").0 == "text"
+            assert count(true, 7, false) == 1
         }
         """
     let analysis = accepted(input(source))
@@ -26,6 +32,13 @@ test fn pack_body_queries_keep_checked_source_binders_across_selected_widths() {
     only_definition(inspection(analysis, source, "Types...](values...)"), declared, declared + 5)
     assert length(analysis.program.types) == types && length(analysis.program.functions) == functions &&
     length(analysis.bindings.symbols) == symbols
+    let original = length(query_bindings(input(source)).symbols)
+    let references = get(analysis.declarations, 0)
+    var index = 0
+    while index < length(references) {
+        assert get(references, index).symbol >= 0 && get(references, index).symbol < original
+        index = index + 1
+    }
 }
 
 test fn pack_body_queries_keep_associated_receivers_and_fixed_type_arguments() {

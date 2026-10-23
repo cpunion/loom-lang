@@ -6,6 +6,7 @@ record CheckInputs {
     signature_ids List[Int]
     static_queries List[StaticReferenceQuery]
     declaration_queries Bool
+    source_symbols Int
     declaration_references List[DeclarationReference]
     staged_queries List[StagedQuery]
     type_alias_queries List[List[ParameterHeader]]
