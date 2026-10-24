@@ -3568,6 +3568,9 @@ The [shifted traversal example](examples/smt_contracts/affine_sequences.loom)
 proves filling and copying with a symbolic offset, including descending traversal.
 Every candidate must hold initially
 and on every backedge, and survivors are rechecked after removal. The
+solver omits duplicate subrange premises when an earlier universal fact with
+the same binder/body covers them under proved integer bounds; distinct storage
+versions and IEEE predicates stay separate. The
 [ordinary sorting example](examples/smt_contracts/quantified.loom) proves both
 ordering and permutation without trusting the algorithm. Bound symbols remain
 scoped through nested scans, helper substitution, choices and `old` snapshots.
