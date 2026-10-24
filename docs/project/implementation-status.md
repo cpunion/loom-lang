@@ -101,6 +101,10 @@ validating the selected template, CTFE and witness dependency closure.
 Uninstantiated generic/comptime bodies retain checked local types and source
 bindings with lexical type labels, without inventing runtime instances.
 Nested closures retain their parameters, captures and enclosing type labels too.
+Nominal type references in function scopes survive static iteration, erased
+generic arguments and CTFE, retaining checked declarations and lexical labels.
+Data declarations continue to use their checked schema headers, not word-erased
+body instances.
 Checked local type aliases retain their declarations across CTFE erasure,
 constructor uses, nested family captures and lexical shadowing. Navigation uses
 query-only binding evidence, not a guessed underlying nominal declaration;

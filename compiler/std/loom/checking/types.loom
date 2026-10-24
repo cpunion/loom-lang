@@ -310,7 +310,25 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
         }
         return Result.Ok(intern(env, TypeKind.List, -1, args))
     }
-    data_type_grouped(env, declaration, args, selected.widths, depth + 1)
+    let ty = data_type_grouped(env, declaration, args, selected.widths, depth + 1)?
+    // Data declarations already retain their checked schema headers. In
+    // particular, a word-erased header's parameter IDs are not body instances.
+    if get(env.inputs, 0).declaration_queries && symbol(env, owner).node.kind == NodeKind.Function &&
+    type_reference_source(env, owner) >= 0 {
+        let labels = new[Text]()
+        if parameter_offset(env, owner) > 0 {
+            push(labels, "Self")
+        }
+        index = 0
+        while index < length(parameters) {
+            push(labels, get(parameters, index).value)
+            index = index + 1
+        }
+        record_declaration_reference(env, owner, node, declaration,
+            reference_path_segment(node.value),
+            type_name(env.source, env.types, env.interfaces, ty, labels))
+    }
+    Result.Ok(ty)
 }
 
 fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) Result[Int, Failure] {
