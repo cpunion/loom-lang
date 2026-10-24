@@ -18,6 +18,7 @@ fn translated(cursor Int, bias Int) Int {
 
 record ScanCursor {
     position Int
+    bias Int
 }
 
 fn clear_shifted(values List[Int], bias Int)
@@ -37,11 +38,13 @@ ensures zeroed(values)
 {
     var cursor = ScanCursor {
         position = length(values) - bias
+        bias = bias
     }
-    while cursor.position > -bias {
-        set(values, cursor.position + bias - 1, 0)
+    while cursor.position > -cursor.bias {
+        set(values, cursor.position + cursor.bias - 1, 0)
         cursor = ScanCursor {
             position = cursor.position - 1
+            bias = cursor.bias
         }
     }
 }

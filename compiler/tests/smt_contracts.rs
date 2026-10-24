@@ -856,6 +856,16 @@ fn affine_sequence_cuts_prove_symbolic_offsets_and_recheck_changed_backedges() {
     }
     let source = package.path().join("affine.loom");
     let program = include_str!("../examples/smt_contracts/affine_sequences.loom");
+    let helper = r#"fn tainted(values List[Int], cursor Int, bias Int) Int
+ensures result == cursor + bias
+{
+    let index = cursor + bias
+    if index > 0 {
+        set(values, 0, -1)
+    }
+    index
+}
+"#;
     let cache = package.path().join("cache");
     let check = || {
         common::loom(&[
@@ -868,30 +878,25 @@ fn affine_sequence_cuts_prove_symbolic_offsets_and_recheck_changed_backedges() {
     fs::write(&source, program).unwrap();
     success(&check());
     success(&check());
+    fs::write(&source, format!("{program}\n{helper}")).unwrap();
+    success(&check());
     for changed in [
         program.replace(
             "translated(cursor, bias), 0",
             "translated(cursor, bias), -1",
         ),
         program.replace("cursor = cursor + 1", "cursor = cursor + 2"),
-        program.replace("cursor.position > -bias", "cursor.position > 1 - bias"),
+        program.replace(
+            "cursor.position > -cursor.bias",
+            "cursor.position > 1 - cursor.bias",
+        ),
         program.replace(
             "push(output, get(values, cursor + bias))",
             "push(output, 0)",
         ),
         format!(
-            "{}\n{}",
+            "{}\n{helper}",
             program.replace("translated(cursor, bias)", "tainted(values, cursor, bias)"),
-            r#"fn tainted(values List[Int], cursor Int, bias Int) Int
-ensures result == cursor + bias
-{
-    let index = cursor + bias
-    if index > 0 {
-        set(values, 0, -1)
-    }
-    index
-}
-"#
         ),
     ] {
         assert_ne!(changed, program);
