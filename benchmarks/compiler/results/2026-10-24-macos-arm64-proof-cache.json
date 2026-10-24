@@ -1,0 +1,543 @@
+{
+  "schema": 1,
+  "revision": "5851c1af08b888a87799c34bc2ba86885af27c63",
+  "dirty": false,
+  "compiler": "/Users/lijie/source/cpunion/loom-lang/target/loom-proof-cache-o2",
+  "compilerVersion": "loom source compiler (development)",
+  "compilerSha256": "3919c1f3313e6e97de84af79bb37478bfacbcbbdb70c3eb06c27f2a6631e68c1",
+  "baselineCompiler": "/Users/lijie/source/cpunion/loom-lang/target/loom-affine-quantified-o2",
+  "baselineVersion": "loom source compiler (development)",
+  "baselineSha256": "544285edaf3f1a40a73c3db2abcaf1acb7cb8668a1b83b0c4dab48fda72b0d83",
+  "harnessSha256": "9e8a958d3e04a37fe5ad82348737b6ebf3384dbebd3a21b915cddf17b4a7168d",
+  "sourceSha256": "d95078434b9d460e6c7d08a9be4758a53e878b51eaeae8c5a07209a09bfb1d55",
+  "sourceFiles": 1443,
+  "extended": false,
+  "compareCache": false,
+  "compareFrontend": false,
+  "compareEdits": false,
+  "checkOnly": true,
+  "proofs": true,
+  "generatedSizes": [],
+  "host": {
+    "os": "darwin",
+    "release": "27.0.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "fresh processes; same source inputs; one warmup per compiler per case; paired samples alternate baseline/candidate order; sample indexes identify pairs; no incremental compiler cache",
+  "wall": "elapsed around /usr/bin/time launch, including process launch and output; startup runs --version without loading a package",
+  "rss": "maximum RSS reported by macOS time, not a sum of simultaneous process memory",
+  "cpu": "user and system CPU time reported by macOS time, converted from seconds to milliseconds; short runs are limited by time's reporting precision",
+  "cases": [
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 25.06075,
+        "peakRssBytes": 10420224,
+        "userCpuMs": 10,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 25.482125,
+          "peakRssBytes": 10436608,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 23.874334,
+          "peakRssBytes": 10420224,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 25.574375,
+          "peakRssBytes": 10420224,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 25.06075,
+          "peakRssBytes": 10403840,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 23.3535,
+          "peakRssBytes": 10403840,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 24.48575,
+        "peakRssBytes": 10420224,
+        "userCpuMs": 10,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 24.48575,
+          "peakRssBytes": 10420224,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 24.679625,
+          "peakRssBytes": 10403840,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 24.466667,
+          "peakRssBytes": 10436608,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 24.636292,
+          "peakRssBytes": 10420224,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 24.370375,
+          "peakRssBytes": 10436608,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 6.818125,
+        "peakRssBytes": 6258688,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 6.86775,
+          "peakRssBytes": 6258688,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.50125,
+          "peakRssBytes": 6258688,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.818125,
+          "peakRssBytes": 6258688,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.8405,
+          "peakRssBytes": 6258688,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.53225,
+          "peakRssBytes": 6258688,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 6.830958,
+        "peakRssBytes": 6258688,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 6.935459,
+          "peakRssBytes": 6258688,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.830958,
+          "peakRssBytes": 6258688,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.662541,
+          "peakRssBytes": 6275072,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.856458,
+          "peakRssBytes": 6258688,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.375458,
+          "peakRssBytes": 6275072,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 1449.795792,
+        "peakRssBytes": 503463936,
+        "userCpuMs": 1310,
+        "systemCpuMs": 130
+      },
+      "samples": [
+        {
+          "wallMs": 1692.681208,
+          "peakRssBytes": 505331712,
+          "userCpuMs": 1530,
+          "systemCpuMs": 150
+        },
+        {
+          "wallMs": 1407.702917,
+          "peakRssBytes": 502448128,
+          "userCpuMs": 1270,
+          "systemCpuMs": 120
+        },
+        {
+          "wallMs": 1409.149375,
+          "peakRssBytes": 501055488,
+          "userCpuMs": 1270,
+          "systemCpuMs": 120
+        },
+        {
+          "wallMs": 1565.661917,
+          "peakRssBytes": 504496128,
+          "userCpuMs": 1420,
+          "systemCpuMs": 130
+        },
+        {
+          "wallMs": 1449.795792,
+          "peakRssBytes": 503463936,
+          "userCpuMs": 1310,
+          "systemCpuMs": 130
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 1478.050042,
+        "peakRssBytes": 501792768,
+        "userCpuMs": 1330,
+        "systemCpuMs": 130
+      },
+      "samples": [
+        {
+          "wallMs": 1478.050042,
+          "peakRssBytes": 501350400,
+          "userCpuMs": 1330,
+          "systemCpuMs": 130
+        },
+        {
+          "wallMs": 1443.1975,
+          "peakRssBytes": 501792768,
+          "userCpuMs": 1300,
+          "systemCpuMs": 130
+        },
+        {
+          "wallMs": 1555.287333,
+          "peakRssBytes": 501383168,
+          "userCpuMs": 1410,
+          "systemCpuMs": 130
+        },
+        {
+          "wallMs": 1612.937708,
+          "peakRssBytes": 502054912,
+          "userCpuMs": 1450,
+          "systemCpuMs": 140
+        },
+        {
+          "wallMs": 1399.086458,
+          "peakRssBytes": 506396672,
+          "userCpuMs": 1260,
+          "systemCpuMs": 120
+        }
+      ]
+    },
+    {
+      "name": "contracts",
+      "command": "check",
+      "package": "compiler/examples/record_refinement",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 4749.520625,
+        "peakRssBytes": 37093376,
+        "userCpuMs": 3570,
+        "systemCpuMs": 1060
+      },
+      "samples": [
+        {
+          "wallMs": 5991.98225,
+          "peakRssBytes": 37142528,
+          "userCpuMs": 3930,
+          "systemCpuMs": 1240
+        },
+        {
+          "wallMs": 4946.132083,
+          "peakRssBytes": 37093376,
+          "userCpuMs": 3730,
+          "systemCpuMs": 1090
+        },
+        {
+          "wallMs": 4749.520625,
+          "peakRssBytes": 36978688,
+          "userCpuMs": 3570,
+          "systemCpuMs": 1060
+        },
+        {
+          "wallMs": 4523.635792,
+          "peakRssBytes": 37093376,
+          "userCpuMs": 3380,
+          "systemCpuMs": 1020
+        },
+        {
+          "wallMs": 4307.549084,
+          "peakRssBytes": 37060608,
+          "userCpuMs": 3260,
+          "systemCpuMs": 950
+        }
+      ]
+    },
+    {
+      "name": "contracts",
+      "command": "check",
+      "package": "compiler/examples/record_refinement",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 4592.23225,
+        "peakRssBytes": 37060608,
+        "userCpuMs": 3430,
+        "systemCpuMs": 1030
+      },
+      "samples": [
+        {
+          "wallMs": 6161.009583,
+          "peakRssBytes": 37109760,
+          "userCpuMs": 3860,
+          "systemCpuMs": 1180
+        },
+        {
+          "wallMs": 5432.794875,
+          "peakRssBytes": 37060608,
+          "userCpuMs": 3970,
+          "systemCpuMs": 1200
+        },
+        {
+          "wallMs": 4521.730084,
+          "peakRssBytes": 37306368,
+          "userCpuMs": 3400,
+          "systemCpuMs": 1010
+        },
+        {
+          "wallMs": 4592.23225,
+          "peakRssBytes": 37044224,
+          "userCpuMs": 3430,
+          "systemCpuMs": 1030
+        },
+        {
+          "wallMs": 4435.458375,
+          "peakRssBytes": 37044224,
+          "userCpuMs": 3330,
+          "systemCpuMs": 1000
+        }
+      ]
+    },
+    {
+      "name": "smt-contracts",
+      "command": "check",
+      "package": "compiler/examples/smt_contracts",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 16386.271583,
+        "peakRssBytes": 52248576,
+        "userCpuMs": 13550,
+        "systemCpuMs": 2480
+      },
+      "samples": [
+        {
+          "wallMs": 16386.271583,
+          "peakRssBytes": 52346880,
+          "userCpuMs": 13550,
+          "systemCpuMs": 2480
+        },
+        {
+          "wallMs": 16294.283375,
+          "peakRssBytes": 52445184,
+          "userCpuMs": 13520,
+          "systemCpuMs": 2440
+        },
+        {
+          "wallMs": 16248.237,
+          "peakRssBytes": 52166656,
+          "userCpuMs": 13480,
+          "systemCpuMs": 2410
+        },
+        {
+          "wallMs": 16493.150833,
+          "peakRssBytes": 52019200,
+          "userCpuMs": 13600,
+          "systemCpuMs": 2520
+        },
+        {
+          "wallMs": 16500.386,
+          "peakRssBytes": 52248576,
+          "userCpuMs": 13640,
+          "systemCpuMs": 2500
+        }
+      ]
+    },
+    {
+      "name": "smt-contracts",
+      "command": "check",
+      "package": "compiler/examples/smt_contracts",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 13464.710125,
+        "peakRssBytes": 52002816,
+        "userCpuMs": 11800,
+        "systemCpuMs": 1470
+      },
+      "samples": [
+        {
+          "wallMs": 13464.710125,
+          "peakRssBytes": 52412416,
+          "userCpuMs": 11790,
+          "systemCpuMs": 1470
+        },
+        {
+          "wallMs": 13457.04475,
+          "peakRssBytes": 51904512,
+          "userCpuMs": 11800,
+          "systemCpuMs": 1460
+        },
+        {
+          "wallMs": 13370.998041,
+          "peakRssBytes": 51855360,
+          "userCpuMs": 11750,
+          "systemCpuMs": 1430
+        },
+        {
+          "wallMs": 13601.714709,
+          "peakRssBytes": 53542912,
+          "userCpuMs": 11820,
+          "systemCpuMs": 1530
+        },
+        {
+          "wallMs": 13594.531917,
+          "peakRssBytes": 52002816,
+          "userCpuMs": 11850,
+          "systemCpuMs": 1520
+        }
+      ]
+    }
+  ]
+}

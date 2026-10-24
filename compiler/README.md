@@ -290,6 +290,14 @@ macOS peak RSS for scalar, data, and compiler packages, with raw samples in
 `target/performance/compiler.json`. `--compiler`, `--output`, and `--runs`
 select the binary, report, and sample count.
 
+`--proofs` adds refinement and quantified SMT workloads. The
+[M4 Max/Darwin 27.0.0 snapshot](../benchmarks/compiler/results/2026-10-24-macos-arm64-proof-cache.json)
+uses five alternating fresh-process pairs with Z3 5.3.1 and no frontend/object
+cache. Retaining complete queries within the existing byte budget reduced the
+SMT example's median check from 16.386 s to 13.465 s (17.8%); peak RSS was
+49.83/49.59 MiB. Compiler-package checks were 1.450/1.478 s, so this is a
+proof-heavy checking improvement, not a general or runtime speedup.
+
 `--check-only --baseline path/to/previous/loom` compares two frontend binaries
 against the same sources, alternating their order within each pair after one
 warmup each. It records both binary hashes and per-sample wall/CPU time and RSS,
@@ -3164,7 +3172,7 @@ Hypothetical operations never supply their own successful-check assumptions.
 The CLI reuses determinate answers only for identical complete queries in the
 same host proof context. Its in-memory table retains at most 1024 entries and
 4 MiB of query text, clearing on saturation. Errors and exhausted searches are
-not cached or retried; changed queries still require their own decisions.
+not cached; changed queries still require their own decisions.
 
 Non-affine integer `+`, `-` and `*` remain symbolic terms over the same logical
 values. The [polynomial example](examples/smt_contracts/polynomials.loom) proves
