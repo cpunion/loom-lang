@@ -31,7 +31,54 @@ fn inspection(analysis AnalysisState, text Text, fragment Text) Inspection {
 }
 
 fn only_type(found Inspection, expected Text) {
+    if length(found.types) != 1 || get(found.types, 0) != expected {
+        discard std.io.write_error(concat("expected ", concat(expected,
+                    concat("; found ", concat(std.text.join(found.types, ", "), "\n")))))
+    }
     assert length(found.types) == 1 && get(found.types, 0) == expected
+}
+
+test fn erased_nominal_type_uses_keep_checked_definitions_and_instantiated_labels() {
+    let text = """
+        record Pair[A, B] {
+            first A
+            second B
+        }
+        fn ignored[T]() {
+        }
+        fn echo[T](value T) T {
+            let callbacks = comptime map Field in app.Pair[T, Bool] {
+                fn(item Field) Field {
+                    item
+                }
+            }
+            callbacks.0(value)
+        }
+        fn main() {
+            ignored[Pair[Int, Bool]]()
+            let Selected = comptime { Pair[Text, Bool] }
+            let value Selected = Selected { first = "item", second = true }
+            assert echo(7) == 7 && value.second
+        }
+        """
+    let analysis = accepted(input(text))
+    let declaration = query_offset(text, "Pair[A, B]")
+    let static_source = inspection(analysis, text, "Pair[T, Bool]")
+    only_definition(static_source, declaration, declaration + 4)
+    // The template must not borrow its concrete call's type arguments.
+    var generic = false
+    var index = 0
+    while index < length(static_source.types) {
+        generic = generic || get(static_source.types, index) == "app.Pair[T, Bool]"
+        index = index + 1
+    }
+    assert generic
+    let argument = inspection(analysis, text, "Pair[Int, Bool]")
+    only_type(argument, "app.Pair[Int, Bool]")
+    only_definition(argument, declaration, declaration + 4)
+    let computed = inspection(analysis, text, "Pair[Text, Bool]")
+    only_type(computed, "app.Pair[Text, Bool]")
+    only_definition(computed, declaration, declaration + 4)
 }
 
 test fn bound_method_queries_show_fixed_types_and_real_method_definitions() {

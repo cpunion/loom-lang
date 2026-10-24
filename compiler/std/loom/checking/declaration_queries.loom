@@ -82,10 +82,9 @@ fn record_declaration_reference(env Environment, owner Int, node Node, selected 
         })
 }
 
-// Resolution selected this parameter, not a same-spelled nominal type. Pack
-// expansion preserves the original binder's span even when it renames slots.
-// Do not turn proof-erased headers into observed source body coverage.
-fn record_type_parameter_reference(env Environment, owner Int, node Node, parameter Node) {
+// A private proof/header recipe does not establish a source binding. Selected
+// source instances retain their original owner across pack/impl expansion.
+fn type_reference_source(env Environment, owner Int) Int {
     let signature = source_signature_id(env, owner)
     let instance = if signature >= 0 {
         pack_instance(env, signature)
@@ -93,11 +92,34 @@ fn record_type_parameter_reference(env Environment, owner Int, node Node, parame
         -1
     }
     if instance >= 0 && erased_pack(get(env.packs, instance)) {
-        return
+        return -1
     }
     let source = impl_member_source(env, method_reference_source(env, owner))
     if source < 0 || source >= get(env.inputs, 0).source_symbols ||
     symbol(env, source).file != symbol(env, owner).file {
+        return -1
+    }
+    source
+}
+
+fn type_body_reference(env Environment, owner Int, node Node) Bool {
+    let source = type_reference_source(env, owner)
+    if source < 0 {
+        return false
+    }
+    let declared = symbol(env, source).node
+    if declared.kind != NodeKind.Function || !has(declared, NodeKind.Block) {
+        return false
+    }
+    let body = child(declared, part(declared, NodeKind.Block)).span
+    node.span.start >= body.start && node.span.end <= body.end
+}
+
+// Resolution selected this parameter, not a same-spelled nominal type. Pack
+// expansion preserves the original binder's span even when it renames slots.
+fn record_type_parameter_reference(env Environment, owner Int, node Node, parameter Node) {
+    let source = type_reference_source(env, owner)
+    if source < 0 {
         return
     }
     let parameters = type_parameters(env, source)
