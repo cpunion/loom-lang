@@ -34,7 +34,7 @@ for (let index = 0; index < args.length; index += 1) {
   --compare-frontend Pair checks/builds with and without a warm frontend cache
   --compare-edits  Pair fresh checks after each source edit; requires --check-only
   --check-only     Only check packages; no native builds, tests, or startup timing
-  --proofs         Add the constrained shared-List proof workload
+  --proofs         Add refinement and quantified SMT proof workloads
   --sizes N,N,...  Generated helper counts, 1..512 (default: 10,50,200);
                    implies --extended, at most eight distinct sizes
 
@@ -380,7 +380,10 @@ try {
   const packages = [
     ["scalar", "compiler/examples/scalar"], ["data", "compiler/examples/data"], ["compiler", "compiler/loom"],
   ].map(([name, packagePath]) => ({ name, package: packagePath }));
-  if (proofs) packages.push({ name: "contracts", package: "compiler/examples/record_refinement" });
+  if (proofs) packages.push(
+    { name: "contracts", package: "compiler/examples/record_refinement" },
+    { name: "smt-contracts", package: "compiler/examples/smt_contracts" },
+  );
   if (extended) packages.push(...sizes.map(generated));
   for (const item of packages) {
     for (const mode of checkOnly ? ["check"] : extended ? ["check", "build", "test --no-run"] : ["check", "build"]) {

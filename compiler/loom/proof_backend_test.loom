@@ -46,12 +46,16 @@ test fn proof_decisions_are_bounded_and_do_not_cross_build_contexts() {
     assert proof_answer(second.solve("solver", "same"), true)
     assert get(calls, 0) == 2
     var index = 0
-    while index < 256 {
+    while index < 1024 {
         assert proof_answer(first.solve("solver", std.int.to_text(index)), true)
         index = index + 1
+        if index == 512 {
+            assert proof_answer(first.solve("solver", "same"), true)
+            assert get(calls, 0) == 514
+        }
     }
     assert proof_answer(first.solve("solver", "same"), true)
-    assert get(calls, 0) == 259
+    assert get(calls, 0) == 1027
     var payload = "x"
     while std.text.length(payload) < 2097152 {
         payload = std.text.concat(payload, payload)
@@ -61,9 +65,9 @@ test fn proof_decisions_are_bounded_and_do_not_cross_build_contexts() {
     assert proof_answer(first.solve("solver", large_a), true)
     assert proof_answer(first.solve("solver", large_b), true)
     assert proof_answer(first.solve("solver", large_a), true)
-    assert get(calls, 0) == 262
+    assert get(calls, 0) == 1030
     let oversized = std.text.concat(large_a, large_b)
     assert proof_answer(first.solve("solver", oversized), true)
     assert proof_answer(first.solve("solver", oversized), true)
-    assert get(calls, 0) == 264
+    assert get(calls, 0) == 1032
 }
