@@ -193,8 +193,13 @@ fn static_argument(context Context, node Node, checked Expr, expected Int, ident
     // A symbolic type identity is still an exact static operand. Passing it
     // does not make its shape concrete or grant capabilities to the callee.
     let type_identity = get(context.env.types, expected).kind == TypeKind.Meta && checked.kind == ExprKind.TypeValue
+    // A checked target with no runtime environment also has an exact identity.
+    // Its body may retain lexical type parameters; that does not make the
+    // target unknown or prove any decision made by calling it.
+    let function_identity = get(context.env.types, expected).kind == TypeKind.Function &&
+        checked.kind == ExprKind.FunctionRef && length(checked.children) == 0
     if contains_deferred(checked) || !concrete(context.env, expected) ||
-        (!type_identity && abstract_context(context) && depends_on_type(context, node)) {
+        (!type_identity && !function_identity && abstract_context(context) && depends_on_type(context, node)) {
         // Later runtime arguments may have appended block locals since the
         // overload probe. Check isolation against this fresh staging boundary.
         // Unlike overload probing, a selected static argument cannot use an

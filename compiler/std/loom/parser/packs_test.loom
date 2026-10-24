@@ -53,6 +53,24 @@ test fn structural_tuple_pack_and_static_map_keep_their_source_shape() {
     discard rejected("fn f[Ts...](values (Ts...)) { comptime map item in values item }")
 }
 
+test fn static_iteration_sources_reuse_type_syntax_without_erasing_value_names() {
+    let declaration = child(parsed("""
+        fn visit[T](values (T, Bool)) {
+            comptime for Field in example.Pair[T, Bool] {}
+            discard comptime map Field in (T, Bool) { Field }
+            comptime for Field in comptime { (T, Bool) } {}
+            comptime for field in values { discard field }
+        }
+        """), 0)
+    let statements = body(declaration)
+    let nominal = child(child(statements, 0), 0)
+    assert nominal.kind == NodeKind.Type && nominal.value == "example.Pair"
+    assert length(nominal.children) == 2
+    assert child(child(child(statements, 1), 0), 0).kind == NodeKind.TupleType
+    assert child(child(statements, 2), 0).kind == NodeKind.Comptime
+    assert child(child(statements, 3), 0).kind == NodeKind.Name
+}
+
 test fn static_iteration_retains_optional_key_and_rejects_duplicate_bindings() {
     let declaration = child(parsed("""
         fn visit[Ts...](values Ts...) {

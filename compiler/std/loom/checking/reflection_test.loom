@@ -28,6 +28,118 @@ fn reflected(text Text) Result[std.loom.typed.Program, Failure] {
     checked(files)
 }
 
+test fn type_expression_iteration_reuses_resolution_staging_and_declared_bounds() {
+    assert match reflected("""
+        record Pair[A, B] {
+            first A
+            second B
+        }
+        fn shape(comptime select fn() type) type {
+            select()
+        }
+        pub fn visit[T](value T) T {
+            let callbacks = comptime map Field in Pair[T, Bool] {
+                fn(item Field) Field {
+                    item
+                }
+            }
+            comptime for index, Field in (T, Bool) {
+                assert index >= 0 && index < 2
+                assert comptime { Field == T || Field == Bool }
+            }
+            let fields = comptime map Field in comptime {
+                shape(fn() type {
+                    Pair[Int, Bool]
+                })
+            } {
+                comptime if Field == Int {
+                    7
+                } else {
+                    true
+                }
+            }
+            let pair Pair[Int, Bool] = from_fields(fields)
+            assert pair.first == 7 && pair.second && callbacks.1(true)
+            let captured = comptime map Field in comptime {
+                shape(fn() type {
+                    Pair[T, Bool]
+                })
+            } {
+                fn(item Field) Field {
+                    item
+                }
+            }
+            assert captured.1(true)
+            captured.0(callbacks.0(value))
+        }
+        fn main() {
+            assert visit(42) == 42 && visit(true)
+        }
+        """
+    ) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    rejects("""
+        concept Display {
+            fn display(self Self) Text
+        }
+        impl Display for Int {
+            fn display(self Int) Text {
+                "integer"
+            }
+        }
+        pub fn hidden[T](value T) {
+            comptime for Field in (T,) {
+                let callback = fn(item Field) Text {
+                    item.display()
+                }
+                discard callback(value)
+            }
+        }
+        fn main() {
+            hidden(7)
+        }
+        """)
+    rejects("""
+        fn choose(flag Bool) {
+            comptime for Field in comptime {
+                if flag {
+                    (Int,)
+                } else {
+                    (Bool,)
+                }
+            } {
+                assert comptime { Field == Int || Field == Bool }
+            }
+        }
+        """)
+    rejects("""
+        fn shape(comptime select fn() type) type {
+            select()
+        }
+        fn unknown[T]() {
+            comptime for Field in comptime {
+                shape(fn() type {
+                    comptime if T == Int {
+                        (Int,)
+                    } else {
+                        Bool
+                    }
+                })
+            } {
+                discard 1
+            }
+        }
+        fn main() {
+            unknown[Int]()
+        }
+        """)
+}
+
 test fn generated_records_check_field_shape_and_never_bypass_constraints() {
     let prefix = """
         record Pair {
@@ -176,6 +288,12 @@ test fn generated_construction_and_type_iteration_respect_private_nominal_types(
         """)
     push(operations, """
         comptime for Field in T {
+            discard 1
+        }
+        value
+        """)
+    push(operations, """
+        comptime for Field in comptime { T } {
             discard 1
         }
         value

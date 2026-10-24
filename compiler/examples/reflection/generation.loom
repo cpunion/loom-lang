@@ -80,6 +80,58 @@ fn generation() {
         seed[Generated[Int, Bool]]()
     }
     assert constant.first == 42 && constant.second
+    assert direct_type_sources(42) == 42
+    assert direct_type_sources("generated") == "generated"
+    assert type_width() == 0 && type_width(1, true, "value") == 3
+    assert comptime {
+        type_width(1, true)
+    } == 2
+}
+
+fn direct_type_sources[T](value T) T {
+    let records = comptime map Field in reflection.Generated[T, Bool] {
+        fn(item Field) Field {
+            item
+        }
+    }
+    let tuples = comptime map Field in (T, Bool) {
+        fn(item Field) Field {
+            item
+        }
+    }
+    let computed = comptime map Field in comptime {
+        computed_shape(fn() type {
+                Generated[T, Bool]
+            })
+    } {
+        fn(item Field) Field {
+            item
+        }
+    }
+    let generated Generated[Int, Bool] = from_fields(comptime map Field in comptime {
+            Generated[Int, Bool]
+        } {
+            seed[Field]()
+        })
+    assert generated.first == 42 && generated.second
+    assert records.1(true) && tuples.1(true) && computed.1(true)
+    tuples.0(records.0(computed.0(value)))
+}
+
+fn computed_shape(comptime select fn() type) type {
+    select()
+}
+
+fn type_width[Ts...](values Ts...) Int {
+    discard values
+    var width = 0
+    comptime for Field in (Ts...) {
+        discard fn(item Field) Field {
+            item
+        }
+        width = width + 1
+    }
+    width
 }
 
 fn generated_inputs(events List[Int]) (Int, Bool) {
