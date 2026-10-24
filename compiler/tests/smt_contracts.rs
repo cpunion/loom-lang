@@ -874,10 +874,24 @@ fn affine_sequence_cuts_prove_symbolic_offsets_and_recheck_changed_backedges() {
             "translated(cursor, bias), -1",
         ),
         program.replace("cursor = cursor + 1", "cursor = cursor + 2"),
-        program.replace("cursor > -bias", "cursor > 1 - bias"),
+        program.replace("cursor.position > -bias", "cursor.position > 1 - bias"),
         program.replace(
             "push(output, get(values, cursor + bias))",
             "push(output, 0)",
+        ),
+        format!(
+            "{}\n{}",
+            program.replace("translated(cursor, bias)", "tainted(values, cursor, bias)"),
+            r#"fn tainted(values List[Int], cursor Int, bias Int) Int
+ensures result == cursor + bias
+{
+    let index = cursor + bias
+    if index > 0 {
+        set(values, 0, -1)
+    }
+    index
+}
+"#
         ),
     ] {
         assert_ne!(changed, program);

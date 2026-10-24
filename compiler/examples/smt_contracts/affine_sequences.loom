@@ -16,6 +16,10 @@ fn translated(cursor Int, bias Int) Int {
     cursor + bias
 }
 
+record ScanCursor {
+    position Int
+}
+
 fn clear_shifted(values List[Int], bias Int)
 requires bias >= 0
 ensures zeroed(values)
@@ -31,10 +35,14 @@ fn clear_descending(values List[Int], bias Int)
 requires bias >= 0
 ensures zeroed(values)
 {
-    var cursor = length(values) - bias
-    while cursor > -bias {
-        set(values, cursor + bias - 1, 0)
-        cursor = cursor - 1
+    var cursor = ScanCursor {
+        position = length(values) - bias
+    }
+    while cursor.position > -bias {
+        set(values, cursor.position + bias - 1, 0)
+        cursor = ScanCursor {
+            position = cursor.position - 1
+        }
     }
 }
 

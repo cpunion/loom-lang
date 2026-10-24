@@ -19,4 +19,12 @@ test fn quantified_loop_cuts_follow_actual_affine_expressions_without_sampling_o
     loop_boundaries(offset, [true, false, true], state, unrelated, 64)
     loop_boundaries(local(2), [true, false, true], state, unrelated, 64)
     assert length(unrelated) == 0
+    let field = expression(ExprKind.Field, 1, "position", 0, [local(0)])
+    let inline = State {
+        locals = [Value.Record([Value.Number(variable(22))])]
+        ..state
+    }
+    let projected = new[Expr]()
+    loop_boundaries(field, [true], inline, projected, 64)
+    assert exact_expression(get(projected, 0), field)
 }
