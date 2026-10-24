@@ -27,7 +27,7 @@ fn cached_proof_backend(tool Text, solve fn(Text, Text) Result[Bool, Text]) Proo
                 }
             }
             let answer = solve(context, query)?
-            if std.map.length(decisions) >= 256 || get(stored_bytes, 0) > 4194304 - size {
+            if std.map.length(decisions) >= 1024 || get(stored_bytes, 0) > 4194304 - size {
                 std.map.clear(decisions)
                 set(stored_bytes, 0, 0)
             }

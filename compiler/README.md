@@ -3162,7 +3162,7 @@ them under the actual evaluation guards as well as the final truth. For example,
 Hypothetical operations never supply their own successful-check assumptions.
 
 The CLI reuses determinate answers only for identical complete queries in the
-same host proof context. Its in-memory table retains at most 256 entries and
+same host proof context. Its in-memory table retains at most 1024 entries and
 4 MiB of query text, clearing on saturation. Errors and exhausted searches are
 not cached or retried; changed queries still require their own decisions.
 
