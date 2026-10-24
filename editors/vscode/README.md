@@ -172,8 +172,11 @@ and guarded arms use the same local identities as bodies; field labels and
 enum variants are not local bindings. Every local edit is checked again in an
 in-memory package before it is offered. It also renames
 ordinary and pack generic type parameters with complete checked lexical coverage,
-including unused data declarations and top-level function headers. Unaccounted
-body references still refuse the edit. It renames
+including unused data declarations, top-level function headers and type uses in
+selected variadic body instances. Expanded slots retain their source binder,
+including associated receivers and static/dynamic methods; no representative
+width is invented. Unselected, unused or erased-only body references still
+refuse the edit. It renames
 one production package-private top-level function, nominal type or concept across files in the selected package when
 every same-spelled token is an exact checked reference and the virtual edits pass
 a full in-memory package check with test files included. One public top-level

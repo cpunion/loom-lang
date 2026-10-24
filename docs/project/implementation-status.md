@@ -112,7 +112,11 @@ Ordinary and pack generic type parameters share checked scoped rename, including
 associated projection receivers, arguments and nested family shadowing. Top-level
 variadic function headers retain checked lexical words and fixed types without
 choosing expansion widths, including unused functions and invalid bodies.
-Unaccounted pack references in bodies still refuse rename.
+Selected variadic body instances also retain lexical type/pack bindings through
+ordinary type resolution, including associated receivers and static/dynamic
+methods. Different widths share the original binder, not a specialized nominal
+type or an internal proof parameter. Unselected, unused or erased-only body
+references still refuse rename rather than offering a partial edit.
 Dependent type values, pack-dependent layouts and broader body recovery remain limited.
 Recovered queries provide neither build success nor proof evidence.
 Member completion inside `comptime` execution blocks uses staged prefix checking

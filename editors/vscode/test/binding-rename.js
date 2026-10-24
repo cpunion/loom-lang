@@ -59,6 +59,15 @@ fn pack_forward[Forwarded...](values Forwarded...) (Forwarded...) {
     pack_values[Forwarded...](values...)
 }
 
+fn selected_pack[Entries...](comptime selected Bool, values Entries...) (Entries...) {
+    comptime if selected {
+        pack_values[Entries...](values...)
+    } else {
+        let copy = pack_values[Entries...](values...)
+        copy
+    }
+}
+
 record Guard {
     count Int
 }
@@ -234,6 +243,7 @@ fn main() {
     assert runtime_partial(true, 1) == 1
     discard pack_forward()
     assert pack_forward(7, true).0 == 7
+    assert selected_pack(true, 7, true).0 == 7
 }
 `;
   let version = 1;
@@ -276,6 +286,8 @@ fn main() {
       ['Rows...)', 'Rows', 2],
       ['Rows, Bool', 'Rows', 2],
       ['Values...](values', 'Values', 3],
+      ['Forwarded...](values Forwarded', 'Forwarded', 4],
+      ['Forwarded...](values...)', 'Forwarded', 4],
     ]) {
       const document = TextDocument.create(uri, 'loom', version, source);
       const start = source.indexOf(fragment) + (fragment.startsWith('-') ? 1 : 0);
@@ -328,7 +340,7 @@ fn main() {
       textDocument: { uri }, position: document.positionAt(source.indexOf('Cases..., Last')), newName: 'Last',
     }), /conflict/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
-      textDocument: { uri }, position: document.positionAt(source.indexOf('Forwarded...](values Forwarded')), newName: 'renamed',
+      textDocument: { uri }, position: document.positionAt(source.indexOf('Entries...](comptime')), newName: 'renamed',
     }), /every occurrence/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('missing Int')), newName: 'renamed',

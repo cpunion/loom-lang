@@ -497,6 +497,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, decl
             }
             static_queries = new[StaticReferenceQuery]()
             declaration_queries = declaration_queries
+            source_symbols = length(source.symbols)
             declaration_references = new[DeclarationReference]()
             staged_queries = new[StagedQuery]()
             type_alias_queries = new[List[ParameterHeader]]()

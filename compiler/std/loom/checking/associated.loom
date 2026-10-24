@@ -277,7 +277,12 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
     let parameters = expanded_parameters(env, owner, length(arguments))
     var index = 0
     while index < length(parameters) {
-        if get(parameters, index).value == first { receiver = get(arguments, index + parameter_offset(env, owner)) }
+        if get(parameters, index).value == first {
+            receiver = get(arguments, index + parameter_offset(env, owner))
+            if get(env.inputs, 0).declaration_queries {
+                record_type_parameter_reference(env, owner, node, get(parameters, index))
+            }
+        }
         index = index + 1
     }
     if receiver < 0 { return Result.Ok(-1) }

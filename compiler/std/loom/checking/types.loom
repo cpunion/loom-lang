@@ -266,6 +266,9 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
     while index < length(parameters) {
         if node.value == get(parameters, index).value {
             builtin = get(arguments, index + parameter_offset(env, owner))
+            if get(env.inputs, 0).declaration_queries {
+                record_type_parameter_reference(env, owner, node, get(parameters, index))
+            }
         }
         index = index + 1
     }
