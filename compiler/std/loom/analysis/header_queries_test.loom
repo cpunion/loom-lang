@@ -58,6 +58,40 @@ test fn specialized_header_parameters_do_not_guess_same_spelled_nominal_definiti
     }
 }
 
+test fn static_type_parameter_headers_do_not_inherit_nominal_probe_bindings() {
+    let text = """
+        record Token {
+            value Int
+        }
+        fn typed(comptime Token type, value Token) Token {
+            value
+        }
+        fn main() {
+            assert typed(Token, Token { value = 7 }).value == 7
+        }
+        """
+    let analysis = accepted(input(text))
+    let nominal = query_offset(text, "Token {\n")
+    let locations = ["Token) Token", "Token {\n    value\n}"]
+    var index = 0
+    while index < length(locations) {
+        match inspect_at(analysis, 0, query_offset(text, get(locations, index))) {
+            Option.Some(found) => {
+                var definition = 0
+                while definition < length(found.definitions) {
+                    assert get(found.definitions, definition).span.start != nominal
+                    definition = definition + 1
+                }
+            }
+            Option.None => {
+            }
+        }
+        index = index + 1
+    }
+    let argument = inspection(analysis, text, "Token, Token")
+    only_definition(argument, nominal, nominal + 5)
+}
+
 test fn source_generic_headers_do_not_mix_in_concrete_application_instances() {
     let source = """
         record Box[T] {

@@ -102,6 +102,19 @@ fn type_reference_source(env Environment, owner Int) Int {
     source
 }
 
+fn type_body_reference(env Environment, owner Int, node Node) Bool {
+    let source = type_reference_source(env, owner)
+    if source < 0 {
+        return false
+    }
+    let declared = symbol(env, source).node
+    if declared.kind != NodeKind.Function || !has(declared, NodeKind.Block) {
+        return false
+    }
+    let body = child(declared, part(declared, NodeKind.Block)).span
+    node.span.start >= body.start && node.span.end <= body.end
+}
+
 // Resolution selected this parameter, not a same-spelled nominal type. Pack
 // expansion preserves the original binder's span even when it renames slots.
 fn record_type_parameter_reference(env Environment, owner Int, node Node, parameter Node) {

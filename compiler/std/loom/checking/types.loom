@@ -311,10 +311,9 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
         return Result.Ok(intern(env, TypeKind.List, -1, args))
     }
     let ty = data_type_grouped(env, declaration, args, selected.widths, depth + 1)?
-    // Data declarations already retain their checked schema headers. In
-    // particular, a word-erased header's parameter IDs are not body instances.
-    if get(env.inputs, 0).declaration_queries && symbol(env, owner).node.kind == NodeKind.Function &&
-    type_reference_source(env, owner) >= 0 {
+    // Checked schema headers are separate from body evidence. Signature probes
+    // must not bind a same-spelled static parameter to a nominal declaration.
+    if get(env.inputs, 0).declaration_queries && type_body_reference(env, owner, node) {
         let labels = new[Text]()
         if parameter_offset(env, owner) > 0 {
             push(labels, "Self")
