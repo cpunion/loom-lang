@@ -12,6 +12,9 @@ fn tuple_iteration_members(arity Int) List[Text] {
 
 fn value_iteration(context Context, node Node) Result[Node, Failure] {
     let source = child(node, 0)
+    if source.kind != NodeKind.Name {
+        return shape_iteration(context, node, context_type(context, source)?)
+    }
     let label = if node.kind == NodeKind.ComptimeMap {
         "comptime map"
     } else {

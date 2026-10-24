@@ -266,9 +266,15 @@ Type/value/function parameters, structural type construction, associated
 projections, hygienic expression macros and explicit declaration generation use
 ordinary typing and visibility. Declaration generation is not an implicit
 fixed-point expansion. Reflection exposes filtered schemas, not extra access
-or conformance evidence. Direct `dyn` type values use ordinary dynamic-header
-checks and preserve local family binders rather than capturing same-named static
-values. They remain compile-time identities, not runtime conformance discovery.
+or conformance evidence. Static type iteration accepts ordinary type syntax,
+including generic instances, tuples and computed type identities, without an
+intermediate alias; unknown shapes still reject. Direct `dyn` type values use
+ordinary dynamic-header checks and preserve local family binders rather than
+capturing same-named static values. They remain compile-time identities, not
+runtime conformance discovery. Known callback targets without runtime captures
+can retain lexical generic types without becoming unknown static arguments.
+Calling them still checks purity, captures, explicit bounds and unresolved type
+decisions.
 `std.meta.refinement_base` exposes a visible base's
 compile-time identity without waiving visibility or constrained construction.
 Type-producing helpers may retain an opaque local identity during generic

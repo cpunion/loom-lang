@@ -275,9 +275,16 @@ fn static_iteration(start Cursor, cursor Cursor, kind NodeKind) Result[Step, Dia
     if !word(binding.rest, "in") {
         return Result.Err(error(binding.rest, "expected 'in' after the static iteration binding"))
     }
-    let values = name(next(binding.rest))?
+    let source = next(binding.rest)
+    let values = type_ref(source)?
     let body = block(values.rest)?
-    push(children, values.node)
+    // A bare name may denote a value pack or an aggregate binding. Richer
+    // sources use ordinary type syntax, including computed type identities.
+    push(children, if values.node.kind == NodeKind.Type && values.rest.index == source.index + 1 {
+            Node { kind = NodeKind.Name, ..values.node }
+        } else {
+            values.node
+        })
     push(children, body.node)
     if at(first.rest, Kind.Comma) {
         push(children, done(cursor, first.rest, NodeKind.IterationKey, first.node.value, new[Node]()).node)

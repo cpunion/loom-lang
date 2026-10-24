@@ -1217,12 +1217,17 @@ When the source name denotes a record or tuple **type**, `comptime for/map`
 instead binds each field's type; no sample value is needed. The optional key is
 still the record field name or tuple index. Value bindings take precedence over
 type names. An unknown generic shape must be selected with `comptime if` before
-iteration. The source is a single name, such as a generic `T`, a non-generic
-record name or an immutable compile-time-selected type binding; it is not an
-arbitrary type expression. Selected types use the same tuple/record shape and
-private-field checks as named types. An inner value binding with the same name
-retains ordinary value iteration. See the
+iteration. Sources use ordinary type syntax: generic instances such as
+`Pair[Int, Bool]`, tuples such as `(Int, Bool)`, qualified/associated types and
+`comptime { ... }` type computations need no intermediate alias. A bare name
+may instead denote a generic `T`, a non-generic record, an immutable selected
+type binding or an aggregate value. Selected types use the same tuple/record
+shape and private-field checks as named types. An inner value binding with the
+same name retains ordinary value iteration. Sources are not arbitrary runtime
+expressions: calls and runtime-sized values do not supply a static shape. See the
 [selected-field example](examples/type_values/selected_fields.loom).
+Computed sources may call known callbacks that retain lexical type parameters;
+their identity does not imply a known result or grant undeclared capabilities.
 
 For a visible enum type, the same iteration binds each variant's payload as a
 tuple type, with an optional Text variant-name key, in declaration order.

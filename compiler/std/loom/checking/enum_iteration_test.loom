@@ -6,9 +6,8 @@ test fn enum_type_iteration_uses_payload_tuples_and_normal_lexical_blocks() {
             Pair(Int, T)
         }
         fn exercise[T](value T) T {
-            let Shape = comptime { Event[T] }
             var count = 0
-            comptime for name, Payload in Shape {
+            comptime for name, Payload in Event[T] {
                 assert name == "Empty" || name == "Item" || name == "Pair"
                 count = count + 1
                 comptime for index, Field in Payload {
@@ -17,7 +16,7 @@ test fn enum_type_iteration_uses_payload_tuples_and_normal_lexical_blocks() {
                 }
             }
             assert count == 3
-            let callbacks = comptime map name, Payload in Shape {
+            let callbacks = comptime map name, Payload in comptime { Event[T] } {
                 fn(payload Payload) Payload {
                     payload
                 }

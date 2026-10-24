@@ -91,6 +91,9 @@ test fn source_trees_roundtrip_across_grammar_fragments() {
     roundtrip("-(1)", Fragment.Expression)
     roundtrip("if (Entry { value = true }) { 1 } else { 2 }", Fragment.Expression)
     roundtrip("match (Entry { value = 1 }) { _ => 2 }", Fragment.Expression)
+    roundtrip("comptime for key, Field in example.Pair[Int, Bool] { discard key }", Fragment.Statement)
+    roundtrip("comptime map Field in (Int, Bool) { Field }", Fragment.Expression)
+    roundtrip("comptime map Field in comptime { Shape[Int] } { Field }", Fragment.Expression)
 }
 
 test fn malformed_trees_cannot_smuggle_source_or_internal_markers() {

@@ -53,7 +53,9 @@ pub enum NodeKind {
 // one final Spread for '..base'. It supplies fields not explicitly initialized;
 // the base expression evaluates once, after the explicit field expressions.
 // ComptimeFor is a statement with the element binding in value and children
-// [source Name, Block, optional IterationKey(name)]. The optional key precedes
+// [source Name or type syntax, Block, optional IterationKey(name)]. A bare
+// source name may bind an aggregate value; other sources resolve as types.
+// The optional key precedes
 // the element in source: a record field name or a zero-based tuple/pack index.
 // Selected variadic packs elaborate before checking;
 // ordinary immutable tuple/record bindings elaborate during body checking.
