@@ -446,6 +446,38 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
     }
 }
 
+// A universal fact over a larger interval already supplies the same fact on a
+// contained interval. Keep the first established superset, not every inferred
+// loop cut. Only identical binders/bodies and proved integer bounds qualify;
+// storage versions, IEEE predicates and unrelated properties remain distinct.
+fn smt_redundant_fact(facts List[Predicate], index Int) Bool {
+    match get(facts, index) {
+        Predicate.Forall(identity, start, end, body) => {
+            var prior = 0
+            while prior < index {
+                match get(facts, prior) {
+                    Predicate.Forall(other, first, last, conditions) => {
+                        if identity == other && same_predicates(body, conditions) {
+                            let lower = Predicate.Compare("<=", add(first, scale(start, integer(-1))))
+                            let upper = Predicate.Compare("<=", add(end, scale(last, integer(-1))))
+                            if (holds(lower, facts) || difference_holds(lower, facts)) &&
+                            (holds(upper, facts) || difference_holds(upper, facts)) {
+                                return true
+                            }
+                        }
+                    }
+                    _ => {
+                    }
+                }
+                prior = prior + 1
+            }
+        }
+        _ => {
+        }
+    }
+    false
+}
+
 fn smt_query(obligations List[Obligation]) Result[Text, Text] {
     let budget = new[Int]()
     push(budget, 65536)
@@ -478,8 +510,10 @@ fn smt_query(obligations List[Obligation]) Result[Text, Text] {
         smt_append(body, " (=> (and true")
         var fact = 0
         while fact < length(obligation.facts) {
-            smt_append(body, " ")
-            smt_append(body, smt_predicate(writer, get(obligation.facts, fact), 0)?)
+            if !smt_redundant_fact(obligation.facts, fact) {
+                smt_append(body, " ")
+                smt_append(body, smt_predicate(writer, get(obligation.facts, fact), 0)?)
+            }
             fact = fact + 1
         }
         smt_append(body, ") ")
