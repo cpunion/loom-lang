@@ -538,7 +538,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     let observed = loop_query_views(proof, clauses, entry)
     let resized = loop_storage_targets(proof, expr, observed, writes, false)?
     var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, resized, observed)?
-    loop_quantified_candidates(proof, clauses, candidates, writes, guard, observed)
+    loop_quantified_candidates(proof, clauses, candidates, writes, expr, observed)
     var storage = forget_modified_extents(proof, observed, resized)
     if length(storage.extents) != 0 && !elements_preserving(proof.program, expr) {
         let modified = loop_storage_targets(proof, expr, observed, writes, true)?

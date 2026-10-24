@@ -3553,7 +3553,12 @@ The [typed domain example](examples/sequence_domains/README.md) proves scan
 contracts and preserving sorted endpoint writes without runtime rescanning.
 
 Loop inference proposes quantified prefix, suffix and comparison-boundary
-relations from the declared postconditions. Every candidate must hold initially
+relations from the declared postconditions. Cuts come from actual integer
+expressions in the loop and their one-past cell boundaries, not an offset
+catalogue. Finite pure helpers reuse the ordinary affine suggestion expansion.
+The [shifted traversal example](examples/smt_contracts/affine_sequences.loom)
+proves filling and copying with a symbolic offset, including descending traversal.
+Every candidate must hold initially
 and on every backedge, and survivors are rechecked after removal. The
 [ordinary sorting example](examples/smt_contracts/quantified.loom) proves both
 ordering and permutation without trusting the algorithm. Bound symbols remain

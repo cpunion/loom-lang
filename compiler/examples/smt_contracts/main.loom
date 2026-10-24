@@ -57,6 +57,7 @@ fn main() {
     snapshot_cases()
     quantified_cases()
     copy_cases()
+    affine_sequence_cases()
     construction_cases()
     float_solver_cases()
     float_remainder_cases()

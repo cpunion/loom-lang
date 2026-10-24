@@ -1,0 +1,30 @@
+test fn quantified_loop_cuts_follow_actual_affine_expressions_without_sampling_offsets() {
+    let cursor = local(0)
+    let offset = local(1)
+    let shifted = operation("+", cursor, offset)
+    let state = State {
+        locals = [Value.Number(scale(variable(22), integer(-1))), Value.Number(variable(22)), Value.Empty]
+        facts = []
+        extents = []
+        observations = []
+    }
+    let boundaries = new[Expr]()
+    loop_boundaries(shifted, [true, false, true], state, boundaries, 64)
+    assert exact_expression(get(boundaries, 0), shifted)
+    assert exact_expression(get(boundaries, 1), operation("+", shifted, literal("1")))
+    let before = length(boundaries)
+    loop_boundaries(shifted, [true, false, true], state, boundaries, 64)
+    assert length(boundaries) == before
+    let unrelated = new[Expr]()
+    loop_boundaries(offset, [true, false, true], state, unrelated, 64)
+    loop_boundaries(local(2), [true, false, true], state, unrelated, 64)
+    assert length(unrelated) == 0
+    let field = expression(ExprKind.Field, 1, "position", 0, [local(0)])
+    let inline = State {
+        locals = [Value.Record([Value.Number(variable(22))])]
+        ..state
+    }
+    let projected = new[Expr]()
+    loop_boundaries(field, [true], inline, projected, 64)
+    assert exact_expression(get(projected, 0), field)
+}

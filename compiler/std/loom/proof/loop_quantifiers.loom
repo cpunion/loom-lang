@@ -64,15 +64,6 @@ fn propose_quantified(proof Verification, candidates List[LoopCandidate], value 
     }
 }
 
-fn loop_cursor(source Expr, local Int, offset Int) Expr {
-    let cursor = proof_expr(source, ExprKind.Local, 1, "", local, new[Expr]())
-    if offset == 0 {
-        return cursor
-    }
-    let delta = proof_expr(source, ExprKind.Integer, 1, std.int.to_text(offset), -1, new[Expr]())
-    proof_expr(source, ExprKind.Binary, 1, "+", -1, proof_children(cursor, delta))
-}
-
 fn loop_replace_bound(value Expr, identity Int, replacement Expr) Expr {
     if bound_expression(value) && value.index == identity {
         return replacement
@@ -126,9 +117,9 @@ fn loop_counted_relation(value Expr) Bool {
 }
 
 fn loop_boundary_relations(proof Verification, value Expr, candidates List[LoopCandidate],
-    local Int, offset Int, entry State) {
-    let boundary = loop_cursor(value, local, offset)
-    let endpoint = loop_cursor(value, local, offset - 1)
+    boundary Expr, entry State) {
+    let endpoint = proof_expr(boundary, ExprKind.Binary, 1, "-", -1,
+        proof_children(boundary, proof_expr(boundary, ExprKind.Integer, 1, "1", -1, new[Expr]())))
     var side = 0
     while side < 2 {
         match loop_relation_boundary(get(value.children, 2), value.index, endpoint, side) {
@@ -150,7 +141,7 @@ fn loop_boundary_relations(proof Verification, value Expr, candidates List[LoopC
 // boundaries. Proposals are mathematical invariants, not evaluated source code;
 // every one must hold initially and on all backedges before it may be assumed.
 fn loop_quantified_clauses(proof Verification, value Expr, candidates List[LoopCandidate],
-    writes List[Bool], entry State, depth Int) {
+    boundaries List[Expr], entry State, depth Int) {
     if depth <= 0 || length(candidates) >= 64 {
         return
     }
@@ -167,43 +158,46 @@ fn loop_quantified_clauses(proof Verification, value Expr, candidates List[LoopC
             // Histogram equality is already a whole-sequence invariant.
             return
         }
-        var local = 0
-        while local < length(writes) && length(candidates) < 64 {
-            if get(writes, local) && local < length(proof.function.locals) &&
-            get(proof.function.locals, local).ty == 1 {
-                var offset = -1
-                while offset <= 1 {
-                    let boundary = loop_cursor(value, local, offset)
-                    propose_quantified(proof, candidates, quantified_value(value, value.index,
-                            get(value.children, 0), boundary, get(value.children, 2)), entry)
-                    propose_quantified(proof, candidates, quantified_value(value, value.index,
-                            boundary, get(value.children, 1), get(value.children, 2)), entry)
-                    loop_boundary_relations(proof, value, candidates, local, offset, entry)
-                    offset = offset + 1
-                }
-            }
-            local = local + 1
+        var index = 0
+        while index < length(boundaries) && length(candidates) < 64 {
+            let boundary = get(boundaries, index)
+            propose_quantified(proof, candidates, quantified_value(value, value.index,
+                    get(value.children, 0), boundary, get(value.children, 2)), entry)
+            propose_quantified(proof, candidates, quantified_value(value, value.index,
+                    boundary, get(value.children, 1), get(value.children, 2)), entry)
+            loop_boundary_relations(proof, value, candidates, boundary, entry)
+            index = index + 1
         }
     }
     var index = 0
     while index < length(value.children) {
-        loop_quantified_clauses(proof, get(value.children, index), candidates, writes, entry, depth - 1)
+        loop_quantified_clauses(proof, get(value.children, index), candidates, boundaries, entry, depth - 1)
         index = index + 1
     }
 }
 
-fn loop_quantified_candidates(proof Verification, clauses List[Expr], candidates List[LoopCandidate], writes List[Bool], guard Expr, entry State) {
+fn loop_quantified_candidates(proof Verification, clauses List[Expr], candidates List[LoopCandidate], writes List[Bool], loop Expr, entry State) {
     let cursors = clone(writes)
     var local = 0
     while local < length(cursors) {
-        if scan_mentions(guard, local) {
+        if scan_mentions(get(loop.children, 0), local) {
             set(cursors, local, true)
         }
         local = local + 1
     }
+    let boundaries = new[Expr]()
+    let source = if loop_call_free(loop) {
+        loop
+    } else {
+        match loop_affine_suggestion(proof, loop, [256]) {
+            Result.Ok(value) => value
+            Result.Err(_) => loop
+        }
+    }
+    loop_boundaries(source, cursors, entry, boundaries, 64)
     var index = 0
     while index < length(clauses) {
-        loop_quantified_clauses(proof, get(clauses, index), candidates, cursors, entry, 64)
+        loop_quantified_clauses(proof, get(clauses, index), candidates, boundaries, entry, 64)
         index = index + 1
     }
 }

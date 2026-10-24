@@ -1,0 +1,70 @@
+// Infer cuts from the loop's actual integer expressions, not a catalogue of
+// cursor offsets. These are only proposals; ordinary entry/backedge proofs
+// decide whether each quantified prefix or suffix is an invariant.
+fn loop_boundary_add(boundaries List[Expr], value Expr) {
+    if length(boundaries) >= 32 {
+        return
+    }
+    var index = 0
+    while index < length(boundaries) {
+        if exact_expression(get(boundaries, index), value) {
+            return
+        }
+        index = index + 1
+    }
+    push(boundaries, value)
+}
+
+fn loop_boundary_mentions(value Expr, writes List[Bool], entry State) Bool {
+    if value.kind == ExprKind.Local && value.index >= 0 && value.index < length(writes) &&
+    get(writes, value.index) {
+        return match get(entry.locals, value.index) {
+            Value.Empty => false
+            _ => true
+        }
+    }
+    var index = 0
+    while index < length(value.children) {
+        if loop_boundary_mentions(get(value.children, index), writes, entry) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn loop_boundaries(value Expr, writes List[Bool], entry State, boundaries List[Expr], depth Int) {
+    if depth <= 0 || length(boundaries) >= 32 {
+        return
+    }
+    let arithmetic = value.kind == ExprKind.Local || value.kind == ExprKind.Field ||
+    (value.kind == ExprKind.Unary && value.text == "-") ||
+    (value.kind == ExprKind.Binary && (value.text == "+" || value.text == "-" || value.text == "*"))
+    if value.ty == 1 && arithmetic && loop_boundary_mentions(value, writes, entry) {
+        match pure(value, entry) {
+            Result.Ok(Value.Number(_)) => {
+                loop_boundary_add(boundaries, value)
+                // A cell at i partitions integer indices at i and at i + 1.
+                loop_boundary_add(boundaries, proof_expr(value, ExprKind.Binary, 1, "+", -1,
+                        proof_children(value, proof_expr(value, ExprKind.Integer, 1, "1", -1, new[Expr]()))))
+            }
+            _ => {
+            }
+        }
+    }
+    var index = 0
+    while index < length(value.children) {
+        loop_boundaries(get(value.children, index), writes, entry, boundaries, depth - 1)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var child = 0
+        while child < length(body) {
+            loop_boundaries(get(body, child), writes, entry, boundaries, depth - 1)
+            child = child + 1
+        }
+        index = index + 1
+    }
+}

@@ -1,0 +1,84 @@
+import std.list.new
+import std.list.push
+
+fn zeroed(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        if get(values, index) != 0 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn translated(cursor Int, bias Int) Int {
+    cursor + bias
+}
+
+record ScanCursor {
+    position Int
+    bias Int
+}
+
+fn clear_shifted(values List[Int], bias Int)
+requires bias >= 0
+ensures zeroed(values)
+{
+    var cursor = -bias
+    while cursor < length(values) - bias {
+        set(values, translated(cursor, bias), 0)
+        cursor = cursor + 1
+    }
+}
+
+fn clear_descending(values List[Int], bias Int)
+requires bias >= 0
+ensures zeroed(values)
+{
+    var cursor = ScanCursor {
+        position = length(values) - bias
+        bias = bias
+    }
+    while cursor.position > -cursor.bias {
+        set(values, cursor.position + cursor.bias - 1, 0)
+        cursor = ScanCursor {
+            position = cursor.position - 1
+            bias = cursor.bias
+        }
+    }
+}
+
+fn shifted_copy(values List[Int], bias Int) List[Int]
+requires bias >= 0
+ensures identical(result, old(values))
+ensures permutation(result, old(values))
+ensures identical(values, old(values))
+{
+    let output = new[Int]()
+    var cursor = -bias
+    while cursor < length(values) - bias {
+        push(output, get(values, cursor + bias))
+        cursor = cursor + 1
+    }
+    output
+}
+
+fn affine_sequence_cases() {
+    let first = [3, -1, 2, -1]
+    let copied = shifted_copy(first, 7)
+    assert identical(first, copied)
+    clear_shifted(copied, 23)
+    assert identical(copied, [0, 0, 0, 0])
+    assert identical(first, [3, -1, 2, -1])
+    clear_descending(first, 9223372036854775807)
+    assert zeroed(first)
+    let empty List[Int] = []
+    clear_shifted(empty, 0)
+    clear_descending(empty, 7)
+    assert identical(shifted_copy(empty, 23), [])
+}
+
+test fn affine_sequence_boundaries_preserve_required_content_contracts() {
+    affine_sequence_cases()
+}
