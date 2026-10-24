@@ -60,6 +60,7 @@ test fn static_iteration_sources_reuse_type_syntax_without_erasing_value_names()
             discard comptime map Field in (T, Bool) { Field }
             comptime for Field in comptime { (T, Bool) } {}
             comptime for field in values { discard field }
+            comptime for Field in T.Fields {}
         }
         """), 0)
     let statements = body(declaration)
@@ -69,6 +70,7 @@ test fn static_iteration_sources_reuse_type_syntax_without_erasing_value_names()
     assert child(child(child(statements, 1), 0), 0).kind == NodeKind.TupleType
     assert child(child(statements, 2), 0).kind == NodeKind.Comptime
     assert child(child(statements, 3), 0).kind == NodeKind.Name
+    assert child(child(statements, 4), 0).kind == NodeKind.Type
 }
 
 test fn static_iteration_retains_optional_key_and_rejects_duplicate_bindings() {

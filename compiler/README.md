@@ -1218,7 +1218,7 @@ instead binds each field's type; no sample value is needed. The optional key is
 still the record field name or tuple index. Value bindings take precedence over
 type names. An unknown generic shape must be selected with `comptime if` before
 iteration. Sources use ordinary type syntax: generic instances such as
-`Pair[Int, Bool]`, tuples such as `(Int, Bool)`, qualified types and
+`Pair[Int, Bool]`, tuples such as `(Int, Bool)`, qualified/associated types and
 `comptime { ... }` type computations need no intermediate alias. A bare name
 may instead denote a generic `T`, a non-generic record, an immutable selected
 type binding or an aggregate value. Selected types use the same tuple/record

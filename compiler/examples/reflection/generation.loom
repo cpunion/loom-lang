@@ -11,10 +11,12 @@ record Empty {
 
 concept AssociatedSeed {
     type Item[T]
+    type Fields
 }
 
 impl AssociatedSeed for Int {
     type Item[T] = (Text, T)
+    type Fields = (Int, Bool)
 }
 
 fn associated_seed[T]() {
@@ -83,6 +85,7 @@ fn generation() {
     assert direct_type_sources(42) == 42
     assert direct_type_sources("generated") == "generated"
     assert type_width() == 0 && type_width(1, true, "value") == 3
+    assert associated_fields(0) == 7
     assert comptime {
         type_width(1, true)
     } == 2
@@ -120,6 +123,29 @@ fn direct_type_sources[T](value T) T {
 
 fn computed_shape(comptime select fn() type) type {
     select()
+}
+
+fn associated_fields[S AssociatedSeed](source S) Int {
+    discard source
+    comptime if S.Fields == (Int, Bool) {
+        comptime for Field in S.Fields {
+            discard 1
+        }
+        let Selected = comptime {
+            S
+        }
+        let fields = comptime map Field in Selected.Fields {
+            comptime if Field == Int {
+                7
+            } else {
+                true
+            }
+        }
+        assert fields.1
+        fields.0
+    } else {
+        0
+    }
 }
 
 fn type_width[Ts...](values Ts...) Int {
